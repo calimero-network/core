@@ -147,7 +147,6 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &datastore,
                     &ns_id.to_bytes().into(),
                     &joiner_identity,
-                    &signer_sk,
                 )?;
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
                     member: joiner_identity,

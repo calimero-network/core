@@ -301,39 +301,50 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
         }),
-        // DELIBERATELY still the stand-in, even though the op now carries the
-        // joiner's certified account.
+        // `member` is DELIBERATELY still the stand-in, even though the credential
+        // beside it names the joiner's real account.
         //
-        // Switching this to `account.cert.account` is correct and is slice B's job,
-        // not this one — because it cannot be done alone. The projection would then
-        // fold membership keyed by the REAL account while `MembershipRepository`
-        // still keys its rows by member key, so the two planes disagree about who is
-        // a member: `projection_membership_equivalence` fails with projection
-        // `Some(false)` against live `Some(true)`.
+        // Switching the membership key to `account.cert.account` is correct and is
+        // slice B's job, not this one — because it cannot be done alone. The
+        // projection would then fold membership keyed by the REAL account while
+        // `MembershipRepository` still keys its rows by member key, so the two
+        // planes would disagree about who is a member: the membership-equivalence
+        // suite fails with projection `Some(false)` against live `Some(true)`.
         //
-        // That is the same trap as the abandoned #3346 phase split — assuming a
-        // slice is separable because it compiles, when what matters is whether it
-        // changes what a principal IS. Both planes have to move together.
+        // The credential still has to be folded HERE, and that is not the same
+        // question. A binding is written by the apply path the moment a join
+        // lands, and `env::account_id()` reads those materialized rows — so
+        // withholding the credential from the projection does not keep the
+        // principal still, it just makes the peer that resolves the joiner's
+        // signature disagree with the joiner about who wrote. Both planes have to
+        // move together; that is exactly why the device half travels with the
+        // membership half instead of waiting for it.
         RootOp::MemberJoined {
             member,
             signed_invitation,
-            ..
+            account,
         }
         | RootOp::MemberJoinedAt {
             member,
             signed_invitation,
+            account,
             ..
-        } => Some(OpPayload::MemberAdded {
+        } => Some(OpPayload::MemberJoinedWithDevice {
             group: signed_invitation.invitation.group_id,
             member: legacy_account_id(member),
             role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
+            genesis: account.genesis,
+            chain: account.chain.clone(),
+            cert: account.cert,
         }),
-        RootOp::MemberJoinedOpen {
-            member, group_id, ..
-        } => Some(OpPayload::MemberAdded {
-            group: *group_id,
-            member: legacy_account_id(member),
-            role: GroupMemberRole::Member,
+        // No membership half: an open-subgroup self-join is a PROOF of
+        // inheritance, never a direct row (see `op_from_namespace_op`, which
+        // folds this op's membership as a graph-only node for that reason). The
+        // credential it carries is still a real device link and folds as one.
+        RootOp::MemberJoinedOpen { account, .. } => Some(OpPayload::DeviceLinked {
+            genesis: account.genesis,
+            chain: account.chain.clone(),
+            cert: account.cert,
         }),
         RootOp::GroupCreated {
             group_id,
@@ -911,19 +922,23 @@ mod tests {
                 policy_bytes: vec![1, 2, 3],
             })
         );
+        // An open-subgroup self-join folds its CREDENTIAL and nothing else: the
+        // membership is re-derived by the inheritance walk, so a direct row here
+        // would outlive the anchor that grants it.
+        let joined_open = test_join_account();
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedOpen {
                     member: m,
                     group_id: gid.into(),
-                    account: test_join_account(),
+                    account: joined_open.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::MemberAdded {
-                group: ContextGroupId::from(gid),
-                member: legacy_account_id(&m),
-                role: GroupMemberRole::Member,
+            Some(OpPayload::DeviceLinked {
+                genesis: joined_open.genesis,
+                chain: joined_open.chain.clone(),
+                cert: joined_open.cert,
             })
         );
         // Invitation-based join: group_id + role decoded off the admin-signed
@@ -942,37 +957,45 @@ mod tests {
             application_id: None,
             app_key: None,
         };
+        let invited = test_join_account();
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoined {
                     member: m,
                     signed_invitation: signed_invitation.clone(),
-                    account: test_join_account(),
+                    account: invited.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::MemberAdded {
+            Some(OpPayload::MemberJoinedWithDevice {
                 group: ContextGroupId::from(gid),
                 member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
+                genesis: invited.genesis,
+                chain: invited.chain.clone(),
+                cert: invited.cert,
             })
         );
         // `MemberJoinedAt` (the timestamped invitation join `join_group` emits)
         // decodes identically — it is NOT out-of-model.
+        let invited_at = test_join_account();
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedAt {
                     member: m,
                     signed_invitation,
                     joined_at: 42,
-                    account: test_join_account(),
+                    account: invited_at.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::MemberAdded {
+            Some(OpPayload::MemberJoinedWithDevice {
                 group: ContextGroupId::from(gid),
                 member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
+                genesis: invited_at.genesis,
+                chain: invited_at.chain.clone(),
+                cert: invited_at.cert,
             })
         );
         let parent = [0x70; 32]; // placeholder parent id

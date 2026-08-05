@@ -6576,3 +6576,221 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
         "a rejected GroupCreated must not write the subgroup meta"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Enrolment at join: the behaviour, not the wire shape.
+//
+// The layers below these (the op field, the apply plumbing, the golden vectors)
+// are covered elsewhere. What these pin is what an operator would actually
+// observe: that joining binds the device, that a credential this group cannot
+// admit costs the member nothing, and that joining twice does not mint a second
+// replica id for one machine.
+// ---------------------------------------------------------------------------
+
+/// Bootstrap a namespace and drive one open self-join carrying `account`.
+///
+/// Returns the joiner's key so the caller can look up what the join recorded.
+fn apply_open_join_with(
+    store: &Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    joiner_sk: &PrivateKey,
+    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
+    use super::NamespaceGovernance;
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let joiner = joiner_sk.public_key();
+    let gov = NamespaceGovernance::new(store, namespace_id.into());
+    let head = gov.read_head_record().expect("read head");
+    let join = SignedNamespaceOp::sign(
+        joiner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: joiner,
+            group_id: subgroup_id.into(),
+            account,
+        }),
+    )
+    .expect("joiner signs MemberJoinedOpen");
+    gov.apply_signed_op(&join)
+}
+
+/// Seed a namespace with an Open subgroup that `joiner` reaches by INHERITANCE.
+///
+/// `MemberJoinedOpen` is only for the inherited path — a direct member is turned
+/// away before the credential is ever looked at — so the joiner is a direct
+/// member of the root holding `CAN_JOIN_OPEN_SUBGROUPS`, and joins the child.
+/// Returns the subgroup id. The binding still lands under the NAMESPACE, which
+/// is where every reader looks for it.
+fn namespace_with_open_subgroup(
+    store: &Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    joiner: &PublicKey,
+) {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let child = ContextGroupId::from(subgroup_id);
+    let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(store, namespace_id);
+
+    nest_for_test(store, &ns_gid, &child);
+    CapabilitiesRepository::new(store)
+        .set_subgroup_visibility(&child, VisibilityMode::Open)
+        .expect("open the subgroup");
+    MetaRepository::new(store)
+        .save(&child, &sample_meta_with_admin(admin_pk))
+        .expect("seed subgroup meta");
+    CapabilitiesRepository::new(store)
+        .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
+        .expect("grant the open-join capability at the anchor");
+    MembershipRepository::new(store)
+        .add_member(&ns_gid, joiner, GroupMemberRole::Member)
+        .expect("seed the joiner's anchor membership");
+}
+
+#[test]
+fn a_join_records_the_joiners_binding_and_endorsement() {
+    let store = test_store();
+    let namespace_id = [0xC1u8; 32];
+    let subgroup_id = [0xD1u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner = joiner_sk.public_key();
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+
+    let account = crate::test_fixtures::real_join_account(&joiner);
+    let account_id = account.cert.account;
+    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
+        .expect("the join applies");
+
+    let bindings = crate::AccountBindingRepository::new(&store);
+    let binding = bindings
+        .binding_for_sign_pk(&ns_gid, &joiner)
+        .expect("read bindings")
+        .expect("joining binds the device in the same apply as the membership");
+    assert_eq!(binding.account, account_id);
+
+    // The endorsement, without which the binding is inert: every reader that
+    // turns a key into an account goes through the endorser rows.
+    assert_eq!(
+        crate::member_account_for_device_key(&store, &ns_gid, &joiner)
+            .expect("resolve the joiner's account"),
+        Some(account_id),
+        "a bound joiner must resolve to its account, or it gets no scope keys \
+         and cannot be selected as an executing identity"
+    );
+}
+
+#[test]
+fn a_refused_credential_leaves_the_membership_intact() {
+    let store = test_store();
+    let namespace_id = [0xC2u8; 32];
+    let subgroup_id = [0xD2u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner = joiner_sk.public_key();
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+
+    // Structurally well-formed, cryptographically filler — `apply_link` refuses it.
+    apply_open_join_with(
+        &store,
+        namespace_id,
+        subgroup_id,
+        &joiner_sk,
+        crate::test_fixtures::test_join_account(),
+    )
+    .expect("a credential this group cannot admit must not orphan the membership op");
+
+    assert!(
+        crate::AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&ns_gid, &joiner)
+            .expect("read bindings")
+            .is_none(),
+        "a refused credential records no binding"
+    );
+    assert_ne!(
+        MembershipRepository::new(&store)
+            .check_path(&ns_gid, &joiner)
+            .expect("check path"),
+        crate::membership::MembershipPath::None,
+        "and costs the joiner nothing: a member without a binding is survivable, \
+         a member the DAG cannot apply is not"
+    );
+}
+
+#[test]
+fn a_credential_certified_for_another_key_is_refused() {
+    let store = test_store();
+    let namespace_id = [0xC3u8; 32];
+    let subgroup_id = [0xD3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner = joiner_sk.public_key();
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+
+    // A credential lifted from somebody else's join: perfectly valid, certified
+    // for a key that is not the joiner's. These ops are cleartext, so observing
+    // one costs an attacker nothing.
+    let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let stolen = crate::test_fixtures::real_join_account(&victim);
+    let victim_account = stolen.cert.account;
+    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, stolen)
+        .expect("the membership still applies");
+
+    let bindings = crate::AccountBindingRepository::new(&store);
+    assert!(
+        bindings
+            .binding_for_sign_pk(&ns_gid, &victim)
+            .expect("read bindings")
+            .is_none(),
+        "replaying a stranger's credential must not graft their account in"
+    );
+    assert!(
+        bindings
+            .endorsers_of(&ns_gid, victim_account)
+            .expect("read endorsers")
+            .is_empty(),
+        "and must not make the replayer an endorser of it — that would aim the \
+         replayer's scope keys at the victim's devices"
+    );
+}
+
+#[test]
+fn rejoining_reuses_the_device_rather_than_refusing_it() {
+    let store = test_store();
+    let namespace_id = [0xC4u8; 32];
+    let subgroup_id = [0xD4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner = joiner_sk.public_key();
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+
+    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
+    let device = [0x7C; 32];
+    let first = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
+    let account_id = first.cert.account;
+    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, first)
+        .expect("first join applies");
+
+    // The same machine presenting the same credential again — a rejoin, and also
+    // exactly what an ordinary re-apply looks like, since every handler re-runs
+    // its mutation before the op-log dedup fires.
+    let again = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, again)
+        .expect("rejoin applies");
+
+    let bindings = crate::AccountBindingRepository::new(&store);
+    let live = bindings.live_bindings(&ns_gid).expect("read bindings");
+    assert_eq!(
+        live.len(),
+        1,
+        "a rejoin must reuse its device, not mint a second replica id and strand \
+         the CRDT state held under the first"
+    );
+    assert_eq!(live[0].device, calimero_account::DeviceId::from(device));
+    assert_eq!(live[0].account, account_id);
+}

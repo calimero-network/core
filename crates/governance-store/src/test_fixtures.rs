@@ -43,6 +43,61 @@ pub(super) fn test_join_account() -> Box<JoinAccountCredential> {
     })
 }
 
+/// A joiner's account credential that actually VERIFIES, certified for
+/// `sign_pk`.
+///
+/// The counterpart to [`test_join_account`]: use this wherever the test is about
+/// what happens when a credential is admitted, since the filler fixture is
+/// refused at `apply_link` by design. `device` is a parameter so a test can mint
+/// a second credential for the same joiner (a rejoin) or deliberately collide two
+/// devices.
+/// A fresh account root: its signing key and the genesis that names it.
+///
+/// Returned as a pair so a test can mint SEVERAL credentials under one account —
+/// a rejoin, or a person's second device — which is the whole distinction the
+/// account plane exists to draw.
+pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
+    let root_sk = PrivateKey::random(&mut OsRng);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    (root_sk, genesis)
+}
+
+/// Certify `sign_pk` as `device` under an existing account root.
+pub(super) fn join_account_for(
+    root_sk: &PrivateKey,
+    genesis: calimero_account::AccountGenesis,
+    sign_pk: &PublicKey,
+    device: [u8; 32],
+    device_epoch: u32,
+) -> Box<JoinAccountCredential> {
+    let cert = calimero_account::sign_device_cert(
+        root_sk,
+        genesis.account_id(),
+        calimero_account::DeviceId::from(device),
+        sign_pk,
+        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        0,
+        device_epoch,
+    )
+    .expect("the account root signs its own device cert");
+    Box::new(JoinAccountCredential {
+        genesis,
+        chain: vec![],
+        cert,
+    })
+}
+
+/// A credential that actually VERIFIES, certified for `sign_pk` under a brand-new
+/// account root.
+///
+/// The counterpart to [`test_join_account`]: use this wherever the test is about
+/// what happens when a credential is admitted, since the filler fixture is
+/// refused at `apply_link` by design.
+pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredential> {
+    let (root_sk, genesis) = test_account_root();
+    join_account_for(&root_sk, genesis, sign_pk, [0x3E; 32], 0)
+}
+
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }

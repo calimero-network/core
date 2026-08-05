@@ -27,15 +27,15 @@ pub(crate) fn apply(
     //
     // This is what "enrolled by construction" means: there is no ordering in which
     // this member is known to the group without its account also being known, so no
-    // grant can be made against a stand-in that its writes later fail to present
-    // (#3378 is what that window costs).
+    // grant can be made against a stand-in that its writes later fail to present.
     //
-    // No endorsement is checked, and that is not an omission. `AccountDeviceLinked`
-    // needs one because an account root is a member nowhere, so its gate asks
-    // whether some *member* vouched. Here the op is signed by the joining member and
-    // carries the admin-signed invitation authorising them, so both halves are
-    // already present — `apply_link` verifies the certificate against the genesis,
-    // which is the only question left.
-    super::member_joined_open::record_join_credential(ctx, *member, account);
+    // No endorsement travels on the wire, and that is not an omission.
+    // `AccountDeviceLinked` needs one because an account root is a member nowhere,
+    // so its gate asks whether some *member* vouched. Here the op is signed by the
+    // joining member and carries the admin-signed invitation authorising them, so
+    // both halves are already present; what is left is checking the certificate
+    // against the genesis and that it names this joiner's own key. The endorser row
+    // is still written — see `record_join_credential`.
+    super::member_joined_open::record_join_credential(ctx, *member, account)?;
     Ok(())
 }

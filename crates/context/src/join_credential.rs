@@ -26,7 +26,7 @@ use calimero_account::sign_device_cert;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::NodeDeviceRepository;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{Result as EyreResult, WrapErr as _};
 
@@ -42,16 +42,21 @@ use eyre::{Result as EyreResult, WrapErr as _};
 /// rejoin carries the same credential rather than minting a second replica id and
 /// stranding the CRDT state held under the first.
 ///
+/// Takes only the signing key's PUBLIC half: the certificate is signed by the
+/// account root, and the namespace identity appears in it as a subject, never as a
+/// signer. A joiner that had to hand its private key to this function would be
+/// handing it over for nothing.
+///
 /// # Errors
 /// Propagates the store read/write, the account-root generation, or a signing
 /// failure. A joiner that cannot build this cannot join — deliberately: joining
-/// without it is the pre-#3346 state where the member is account-addressed later
-/// than it is member-addressed, which is the window #3378 fell into.
+/// without it leaves the member account-addressed later than it is
+/// member-addressed, and a grant made in that window names a principal the
+/// member's own writes do not present.
 pub fn build(
     datastore: &Store,
     namespace_id: &ContextGroupId,
     signing_pk: &PublicKey,
-    _signing_sk: &PrivateKey,
 ) -> EyreResult<Box<JoinAccountCredential>> {
     let devices = NodeDeviceRepository::new(datastore);
     let root = devices

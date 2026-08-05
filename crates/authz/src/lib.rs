@@ -737,7 +737,13 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     //
     // `DeviceLinked` is exempt because it is the op that *establishes* a
     // binding; its own admission rules stand in for this check.
-    if !matches!(op.payload, OpPayload::DeviceLinked { .. }) {
+    // A join carries its own credential for the same reason, and carries it at
+    // the one cut where the binding provably cannot have folded yet — the op
+    // establishing it is this one.
+    if !matches!(
+        op.payload,
+        OpPayload::DeviceLinked { .. } | OpPayload::MemberJoinedWithDevice { .. }
+    ) {
         check_device_speaks_for_author(op, acl_at_cut)?;
     }
 
@@ -761,6 +767,21 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             }
         }
         OpPayload::MemberAdded { group, .. } | OpPayload::MemberRemoved { group, .. } => {
+            if acl_at_cut.is_group_admin(&op.author(), *group) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
+        // Same authority as the `MemberAdded` this bridges from, deliberately
+        // unchanged: a join's real warrant is the admin-signed invitation, and
+        // the unified payload does not carry one, so this decision is no more
+        // (and no less) able to stand on its own than it was before the device
+        // half rode along. The live governance apply is what actually gates a
+        // join today. Giving the invitation a home in the payload — and with it
+        // an authorization rule that can succeed for a non-admin joiner — is
+        // part of moving the principal fields to `AccountId`, not of this.
+        OpPayload::MemberJoinedWithDevice { group, .. } => {
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())
             } else {

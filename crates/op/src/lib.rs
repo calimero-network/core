@@ -283,6 +283,34 @@ pub enum OpPayload {
         /// The handoff, signed by the outgoing key.
         handoff: RootKeyHandoff,
     },
+    /// Add `member` to `group` **and** bind the device it joined with, as one
+    /// indivisible fact.
+    ///
+    /// A join carries both halves, so folding them as two ops would admit an
+    /// ordering in which the member is known and the device is not. That gap is
+    /// not cosmetic: a node's writer principal is its bound account when a binding
+    /// exists and a key-derived stand-in when it does not, so a member whose
+    /// device has not folded yet is a member whose own writes resolve to a
+    /// different principal than the one it writes under. One payload removes the
+    /// ordering entirely.
+    ///
+    /// The membership half folds exactly as [`Self::MemberAdded`] and the device
+    /// half exactly as [`Self::DeviceLinked`] — same LWW slot, same op-local
+    /// credential rules — so this variant adds no new semantics, only atomicity.
+    MemberJoinedWithDevice {
+        /// Group being joined.
+        group: ContextGroupId,
+        /// The joining member.
+        member: AccountId,
+        /// Role granted by the invitation.
+        role: GroupMemberRole,
+        /// The joiner's self-certifying account root.
+        genesis: AccountGenesis,
+        /// Signed root-key rollovers reaching `cert.key_epoch`.
+        chain: Vec<RootKeyHandoff>,
+        /// The root-signed grant binding the joining device.
+        cert: DeviceCert,
+    },
 }
 
 impl Op {
@@ -721,6 +749,14 @@ mod tests {
             },
             OpPayload::DeviceRevoked { account, device },
             OpPayload::AccountKeysRotated { handoff },
+            OpPayload::MemberJoinedWithDevice {
+                group,
+                member: account,
+                role: GroupMemberRole::Member,
+                genesis,
+                chain: vec![],
+                cert,
+            },
         ];
 
         // Exhaustive: a new variant forces a new arm here.
@@ -743,10 +779,11 @@ mod tests {
                 OpPayload::DeviceLinked { .. } => 14,
                 OpPayload::DeviceRevoked { .. } => 15,
                 OpPayload::AccountKeysRotated { .. } => 16,
+                OpPayload::MemberJoinedWithDevice { .. } => 17,
             }
         }
 
-        assert_eq!(all.len(), 17, "every OpPayload variant must be listed");
+        assert_eq!(all.len(), 18, "every OpPayload variant must be listed");
         for payload in &all {
             let bytes = borsh::to_vec(payload).expect("serialize");
             assert_eq!(

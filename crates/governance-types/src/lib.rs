@@ -765,11 +765,11 @@ pub enum RootOp {
         /// the stack. Borsh encodes `Box<T>` exactly as `T`, so this is invisible on
         /// the wire and does not affect the schema version.
         ///
-        /// Required, not optional — that is the point. While a member could exist
-        /// without a binding, its writes attributed to a stand-in account and every
-        /// account-keyed grant made to its real account silently failed to match
-        /// (see #3378). Carrying the credential here removes the window rather than
-        /// narrowing it.
+        /// Required, not optional — that is the point. A member that can exist
+        /// without a binding attributes its writes to a stand-in account, so every
+        /// account-keyed grant made to its real account silently fails to match,
+        /// and the mismatch surfaces far from the join that caused it. Carrying the
+        /// credential here removes that window rather than narrowing it.
         account: Box<JoinAccountCredential>,
     },
     /// Delivers a group key to a specific member, ECDH-wrapped so only
@@ -821,11 +821,11 @@ pub enum RootOp {
         /// this account" and "the root certifies this device" are both already
         /// present. The endorsement collapses into the op.
         ///
-        /// Required, not optional — that is the point. While a member could exist
-        /// without a binding, its writes attributed to a stand-in account and every
-        /// account-keyed grant made to its real account silently failed to match
-        /// (see #3378). Carrying the credential here removes the window rather than
-        /// narrowing it.
+        /// Required, not optional — that is the point. A member that can exist
+        /// without a binding attributes its writes to a stand-in account, so every
+        /// account-keyed grant made to its real account silently fails to match,
+        /// and the mismatch surfaces far from the join that caused it. Carrying the
+        /// credential here removes that window rather than narrowing it.
         account: Box<JoinAccountCredential>,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
@@ -849,11 +849,11 @@ pub enum RootOp {
         /// this account" and "the root certifies this device" are both already
         /// present. The endorsement collapses into the op.
         ///
-        /// Required, not optional — that is the point. While a member could exist
-        /// without a binding, its writes attributed to a stand-in account and every
-        /// account-keyed grant made to its real account silently failed to match
-        /// (see #3378). Carrying the credential here removes the window rather than
-        /// narrowing it.
+        /// Required, not optional — that is the point. A member that can exist
+        /// without a binding attributes its writes to a stand-in account, so every
+        /// account-keyed grant made to its real account silently fails to match,
+        /// and the mismatch surfaces far from the join that caused it. Carrying the
+        /// credential here removes that window rather than narrowing it.
         account: Box<JoinAccountCredential>,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:

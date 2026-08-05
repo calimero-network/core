@@ -15,7 +15,7 @@
 use super::context::NamespaceApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::{
-    ApplyError, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
+    ApplyError, BindingRejected, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
     NamespaceRepository, ReentryRepository,
 };
 use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -107,10 +107,10 @@ pub(crate) fn apply(
                 role: None,
             });
             // The join is accepted, so record the joiner's device binding in the
-            // same apply — see `member_joined::apply` for why no endorsement is
-            // required here and why a refused credential is reported rather than
-            // propagated.
-            record_join_credential(ctx, member, account);
+            // same apply — see `member_joined::apply` for why no endorsement
+            // travels on the wire here and why a refused credential is reported
+            // rather than propagated.
+            record_join_credential(ctx, member, account)?;
             Ok(())
         }
         AtCutMembershipPath::Direct => {
@@ -143,35 +143,83 @@ fn membership_path_kind(path: &MembershipPath) -> AtCutMembershipPath {
 /// Record a joiner's certified account alongside its membership.
 ///
 /// Shared by the open-join path and [`super::member_joined::apply`]. Reports a
-/// refusal instead of propagating it: a credential this group cannot admit must not
-/// orphan the membership op behind it. A member with no binding is the pre-#3346
-/// state and survivable; a member the DAG cannot apply at all is not.
+/// credential refusal instead of propagating it: a credential this group cannot
+/// admit must not orphan the membership op behind it. A member with no binding is
+/// the state that held before joins carried one at all — survivable; a member the
+/// DAG cannot apply at all is not.
+///
+/// A **store** failure is the opposite case and does propagate. It is not a verdict
+/// on the credential, and swallowing it would leave this replica holding the
+/// membership with no binding while its peers hold both — a permanent, silent
+/// disagreement about which principal that member writes as. Returning the error
+/// leaves the head unadvanced so the op is retried, which is what a transient
+/// failure deserves and what a persistent one should be loud about.
+///
+/// # Errors
+/// Propagates a store read/write failure from the binding or endorser write.
 pub(super) fn record_join_credential(
     ctx: &mut NamespaceApplyCtx<'_>,
     member: PublicKey,
     account: &calimero_context_client::local_governance::JoinAccountCredential,
-) {
+) -> EyreResult<()> {
     let namespace =
         calimero_context_config::types::ContextGroupId::from(ctx.namespace_id().to_bytes());
-    match crate::AccountBindingRepository::new(ctx.store()).apply_link(
-        &namespace,
-        &account.genesis,
-        &account.chain,
-        &account.cert,
-    ) {
-        Ok(Ok(_)) => {}
-        Ok(Err(rejected)) => tracing::warn!(
+
+    // The credential has to be the JOINER'S OWN, and this is the only check that
+    // establishes it. `apply_link` verifies the certificate against the genesis —
+    // that it is a real grant by some account root — but says nothing about whose.
+    // These ops are cleartext and gossip-visible, so any node can lift a
+    // credential out of somebody else's join and present it as the `account` of
+    // its own, signed honestly with its own key: `op.signer == member` proves the
+    // envelope, never the payload. Binding it anyway would graft a stranger's
+    // account into this namespace under the replayer's membership, and — because
+    // the endorser row below is what makes a member account-addressed — would aim
+    // the replayer's scope keys at the victim's devices.
+    //
+    // The certificate records the namespace identity as `sign_pk` precisely
+    // because that is the key that signs ops, so for an honest joiner this is an
+    // equality that already holds.
+    if account.cert.sign_pk != member {
+        tracing::warn!(
+            ?namespace,
+            %member,
+            cert_sign_pk = %account.cert.sign_pk,
+            "member joined presenting a credential certified for a different key; \
+             the credential is ignored and the member is recorded without a binding"
+        );
+        return Ok(());
+    }
+
+    let bindings = crate::AccountBindingRepository::new(ctx.store());
+    let outcome =
+        bindings.apply_link(&namespace, &account.genesis, &account.chain, &account.cert)?;
+
+    // The endorsement, materialized. `AccountDeviceLinked` carries an explicit
+    // `AccountMemberEndorsement` because an account root is a member nowhere, so
+    // its gate has to ask whether some member vouched. A join already answers
+    // that: it is signed by the joining member, it carries the admin-signed
+    // invitation authorising them, and the check above proves the certificate is
+    // theirs. So no endorsement travels on the wire — but the ROW still has to be
+    // written, because that is what every reader consults. Without it
+    // `member_account_for_device_key` resolves the joiner to `None` and
+    // `accounts_by_endorsing_member` never lists the account, leaving a binding
+    // that is recorded and inert: no per-device authorization, no scope keys.
+    if !outcome
+        .as_ref()
+        .err()
+        .is_some_and(BindingRejected::is_permanent)
+    {
+        bindings.record_endorser(&namespace, account.cert.account, &member)?;
+    }
+
+    if let Err(rejected) = outcome {
+        tracing::warn!(
             ?namespace,
             %member,
             ?rejected,
             "member joined but its account credential was refused; the member is \
              recorded without a binding, so its writes will attribute to a stand-in"
-        ),
-        Err(err) => tracing::warn!(
-            ?namespace,
-            %member,
-            %err,
-            "member joined but recording its account credential failed"
-        ),
+        );
     }
+    Ok(())
 }

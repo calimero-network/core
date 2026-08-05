@@ -376,12 +376,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // or encrypts, so the joiner's account travels WITH the membership
                 // it belongs to. That is what closes the window a separate
                 // `AccountDeviceLinked` left open.
-                let join_account = crate::join_credential::build(
-                    &datastore,
-                    &namespace_id.into(),
-                    &joiner_identity,
-                    &sk,
-                )?;
+                let join_account = crate::join_credential::build(&datastore, &namespace_id.into(), &joiner_identity)?;
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
                     member: joiner_identity,
                     signed_invitation: invitation,

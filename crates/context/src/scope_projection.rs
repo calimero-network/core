@@ -2153,21 +2153,24 @@ mod tests {
     }
 
     #[test]
-    fn open_subgroup_join_folds_as_noop_inheritance_proof() {
+    fn open_subgroup_join_folds_its_device_but_no_membership() {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF — live
         // writes no persistent direct row and re-derives membership from the
-        // anchor — so it folds as `Noop`, not a direct `MemberAdded`. The
-        // inheritance walk in `AclView::is_member_at_cut` derives the membership
-        // from the (foldable) anchor membership + visibility + cap, so it is
-        // revoked on anchor removal and restored on rejoin. Cross-validated
-        // against the live resolver in
-        // tests/projection_membership_equivalence.rs. The node still occupies its
-        // DAG place so an ancestry walk can pass through it.
+        // anchor — so it must NOT fold a direct `MemberAdded`. The inheritance
+        // walk in `AclView::is_member_at_cut` derives the membership from the
+        // (foldable) anchor membership + visibility + cap, so it is revoked on
+        // anchor removal and restored on rejoin. Cross-validated against the live
+        // resolver in tests/projection_membership_equivalence.rs.
+        //
+        // The credential it carries is a different fact and does fold: the apply
+        // path writes that binding either way, and a binding the projection never
+        // sees is one the joiner's peers resolve differently than the joiner does.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
         let group = [0x33; 32];
 
+        let account = test_join_account();
         let op = op_from_namespace_op(
             &signed_root(
                 ns,
@@ -2175,7 +2178,7 @@ mod tests {
                 RootOp::MemberJoinedOpen {
                     member,
                     group_id: group.into(),
-                    account: test_join_account(),
+                    account: account.clone(),
                 },
             ),
             None,
@@ -2187,10 +2190,18 @@ mod tests {
         assert_eq!(op.id(), [0x99; 32], "op still occupies its DAG node");
         assert_eq!(op.scope, ScopeId::from(ns));
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
+        // The device half folds; the MEMBERSHIP half must not. A direct row here
+        // would outlive the anchor that grants it — the inheritance walk in
+        // `AclView::is_member_at_cut` is what derives it, so it is revoked on
+        // anchor removal and restored on rejoin.
         assert_eq!(
             op.payload,
-            OpPayload::Noop,
-            "open-subgroup inheritance join is a Noop (derived by the walk)"
+            OpPayload::DeviceLinked {
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            },
+            "open-subgroup inheritance join folds its credential and no membership"
         );
     }
 
@@ -2213,6 +2224,7 @@ mod tests {
             app_key: None,
         };
 
+        let account = test_join_account();
         let op = op_from_namespace_op(
             &signed_root(
                 ns,
@@ -2220,7 +2232,7 @@ mod tests {
                 RootOp::MemberJoined {
                     member,
                     signed_invitation,
-                    account: test_join_account(),
+                    account: account.clone(),
                 },
             ),
             None,
@@ -2230,12 +2242,18 @@ mod tests {
         );
 
         assert_eq!(op.scope, ScopeId::from(ns));
+        // Group and role still come off the admin-signed invitation, and the
+        // joiner's credential rides with them in one payload — so no ordering
+        // exists in which the projection knows the member but not its device.
         assert_eq!(
             op.payload,
-            OpPayload::MemberAdded {
+            OpPayload::MemberJoinedWithDevice {
                 group,
                 member: legacy_account_id(&member),
                 role: GroupMemberRole::Admin,
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
             }
         );
     }

@@ -303,12 +303,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // path for them.
                 if was_inherited {
                     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
-                    let join_account = crate::join_credential::build(
-                        &datastore,
-                        &ns_id,
-                        &joiner_identity,
-                        &signer_sk,
-                    )?;
+                    let join_account = crate::join_credential::build(&datastore, &ns_id, &joiner_identity)?;
                     let op = calimero_context_client::local_governance::NamespaceOp::Root(
                         calimero_context_client::local_governance::RootOp::MemberJoinedOpen {
                             member: joiner_identity,
