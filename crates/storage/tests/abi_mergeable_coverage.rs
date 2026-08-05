@@ -25,52 +25,43 @@ fn covered<T: AbiType>() {}
 /// `#[cfg(test)]` fixtures that can never appear in real app state.
 const TEST_ONLY: &[&str] = &["DispatchTestApp", "MyState", "TestState", "TestVal"];
 
+/// One entry per production implementor: the scanned impl-target name and a
+/// concrete instantiation whose `covered::<$ty>()` call compiles only if the
+/// `AbiType` impl exists. One macro so the acknowledged name and its
+/// compile-time proof cannot drift apart.
+macro_rules! assert_covered {
+    ($( $name:ident => $ty:ty ),* $(,)?) => {{
+        $( covered::<$ty>(); )*
+        [$( stringify!($name) ),*]
+            .into_iter()
+            .collect::<BTreeSet<&str>>()
+    }};
+}
+
 #[test]
 fn every_mergeable_implementor_has_an_abi_type_impl() {
-    // One instantiation per production implementor; type arguments are
-    // arbitrary AbiType-satisfying picks. `SharedStorage` stands in for
-    // `PermissionedStorage` (its public alias).
-    covered::<AccessControl>();
-    covered::<AuthoredMap<String, u64>>();
-    covered::<AuthoredVector<u64>>();
-    covered::<Box<u64>>();
-    covered::<Counter>();
-    covered::<FrozenStorage<u64>>();
-    covered::<FrozenValue<u64>>();
-    covered::<LwwRegister<u64>>();
-    covered::<Option<u64>>();
-    covered::<ReplicatedGrowableArray>();
-    covered::<SharedStorage<LwwRegister<String>>>();
-    covered::<SortedMap<String, u64>>();
-    covered::<SortedSet<u64>>();
-    covered::<UnorderedMap<String, u64>>();
-    covered::<UnorderedSet<u64>>();
-    covered::<UserStorage<u64>>();
-    covered::<Vector<u64>>();
-    covered::<WriterSetCell<LwwRegister<String>>>();
-
-    let declared: BTreeSet<&str> = [
-        "AccessControl",
-        "AuthoredMap",
-        "AuthoredVector",
-        "Box",
-        "Counter",
-        "FrozenStorage",
-        "FrozenValue",
-        "LwwRegister",
-        "Option",
-        "PermissionedStorage",
-        "ReplicatedGrowableArray",
-        "SortedMap",
-        "SortedSet",
-        "UnorderedMap",
-        "UnorderedSet",
-        "UserStorage",
-        "Vector",
-        "WriterSetCell",
-    ]
-    .into_iter()
-    .collect();
+    // Type arguments are arbitrary AbiType-satisfying picks. `SharedStorage`
+    // stands in for `PermissionedStorage` (its public alias).
+    let declared = assert_covered!(
+        AccessControl => AccessControl,
+        AuthoredMap => AuthoredMap<String, u64>,
+        AuthoredVector => AuthoredVector<u64>,
+        Box => Box<u64>,
+        Counter => Counter,
+        FrozenStorage => FrozenStorage<u64>,
+        FrozenValue => FrozenValue<u64>,
+        LwwRegister => LwwRegister<u64>,
+        Option => Option<u64>,
+        PermissionedStorage => SharedStorage<LwwRegister<String>>,
+        ReplicatedGrowableArray => ReplicatedGrowableArray,
+        SortedMap => SortedMap<String, u64>,
+        SortedSet => SortedSet<u64>,
+        UnorderedMap => UnorderedMap<String, u64>,
+        UnorderedSet => UnorderedSet<u64>,
+        UserStorage => UserStorage<u64>,
+        Vector => Vector<u64>,
+        WriterSetCell => WriterSetCell<LwwRegister<String>>,
+    );
 
     let mut found = BTreeSet::new();
     scan(
