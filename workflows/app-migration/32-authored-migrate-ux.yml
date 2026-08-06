@@ -38,7 +38,7 @@ steps:
   - name: Install scenario-authored-migrate-ux-v1 on node 1
     type: install_application
     node: app-migration-ux-1
-    path: dist/scenario-authored-migrate-ux-v1.mpk
+    path: dist/com.calimero.scenario-authored-migrate-ux-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -169,7 +169,7 @@ steps:
   - name: Install scenario-authored-migrate-ux-v2 on node 1
     type: install_application
     node: app-migration-ux-1
-    path: dist/scenario-authored-migrate-ux-v2.mpk
+    path: dist/com.calimero.scenario-authored-migrate-ux-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

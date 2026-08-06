@@ -15,11 +15,11 @@ set -euo pipefail
 NODE="${NODE:-node1}"
 MEROCTL="${MEROCTL:-./target/debug/meroctl}"
 
-BUNDLE_V1_MPK="dist/migration-suite-v1.mpk"
-BUNDLE_V2_MPK="dist/migration-suite-v2-add-field.mpk"
-BUNDLE_V3_MPK="dist/migration-suite-v3-remove-field.mpk"
-BUNDLE_V4_MPK="dist/migration-suite-v4-rename-field.mpk"
-BUNDLE_V5_MPK="dist/migration-suite-v5-change-type.mpk"
+BUNDLE_V1_MPK="dist/com.calimero.migration-suite-1.0.0.mpk"
+BUNDLE_V2_MPK="dist/com.calimero.migration-suite-2.0.0.mpk"
+BUNDLE_V3_MPK="dist/com.calimero.migration-suite-3.0.0.mpk"
+BUNDLE_V4_MPK="dist/com.calimero.migration-suite-4.0.0.mpk"
+BUNDLE_V5_MPK="dist/com.calimero.migration-suite-5.0.0.mpk"
 
 # All fixtures are built + bundled by one tool-driven script.
 BUILD_WASMS_SCRIPT="workflows/app-migration/build-wasms.sh"

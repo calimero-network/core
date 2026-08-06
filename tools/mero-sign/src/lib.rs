@@ -10,13 +10,12 @@ use std::path::Path;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+pub use calimero_bundle::{
+    canonicalize_manifest, compute_signing_payload, derive_signer_id_did_key,
+};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-/// Multicodec indicator for ed25519-pub (0xed01, varint encoded).
-const ED25519_PUB_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
 /// Well-known development signing key seed.
 ///
@@ -46,50 +45,6 @@ struct SignatureObject {
     #[serde(rename = "publicKey")]
     public_key: String,
     signature: String,
-}
-
-/// Derives a did:key signerId from an Ed25519 public key.
-///
-/// The did:key format for Ed25519 is:
-/// - `did:key:` prefix
-/// - multibase base58btc encoding ('z' prefix)
-/// - multicodec indicator for ed25519-pub (0xed01)
-/// - the 32-byte Ed25519 public key
-pub fn derive_signer_id_did_key(pubkey: &[u8; 32]) -> String {
-    // Construct the multicodec-prefixed key
-    let mut multicodec_key = Vec::with_capacity(2 + 32);
-    multicodec_key.extend_from_slice(&ED25519_PUB_MULTICODEC);
-    multicodec_key.extend_from_slice(pubkey);
-
-    // Encode with base58btc (multibase 'z' prefix)
-    let encoded = bs58::encode(&multicodec_key).into_string();
-
-    format!("did:key:z{encoded}")
-}
-
-/// Canonicalizes a manifest JSON value using RFC 8785 (JCS).
-/// Removes the signature field and all underscore-prefixed transient fields before canonicalization.
-pub fn canonicalize_manifest(manifest_json: &serde_json::Value) -> Result<Vec<u8>> {
-    // Clone and remove the signature field for canonicalization
-    let mut signing_view = manifest_json.clone();
-    if let Some(obj) = signing_view.as_object_mut() {
-        obj.remove("signature");
-        // Remove all underscore-prefixed fields to prevent signature confusion.
-        obj.retain(|k, _| !k.starts_with('_'));
-    }
-
-    // Canonicalize using RFC 8785 JCS
-    let canonical_bytes = serde_json_canonicalizer::to_vec(&signing_view)
-        .context("failed to canonicalize manifest JSON")?;
-
-    Ok(canonical_bytes)
-}
-
-/// Computes the signing payload (SHA-256 hash of canonical manifest bytes).
-pub fn compute_signing_payload(canonical_bytes: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_bytes);
-    hasher.finalize().into()
 }
 
 /// Load a signing key from a key file
@@ -147,19 +102,22 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
     let mut manifest: serde_json::Value = serde_json::from_str(&manifest_content)
         .with_context(|| format!("failed to parse manifest: {}", manifest_path.display()))?;
 
+    // A signer must not rewrite the document it signs: `minRuntimeVersion` is
+    // required on the node's BundleManifest, so a manifest missing it is refused.
+    if manifest
+        .get("minRuntimeVersion")
+        .and_then(|v| v.as_str())
+        .is_none()
+    {
+        bail!("manifest is missing required field `minRuntimeVersion`");
+    }
+
     // Add signerId to the manifest
     if let Some(obj) = manifest.as_object_mut() {
         obj.insert(
             "signerId".to_string(),
             serde_json::Value::String(signer_id.clone()),
         );
-        // Also add minRuntimeVersion if not present
-        if !obj.contains_key("minRuntimeVersion") {
-            obj.insert(
-                "minRuntimeVersion".to_string(),
-                serde_json::Value::String("0.1.0".to_string()),
-            );
-        }
     }
 
     // Canonicalize the manifest (without signature)
@@ -383,7 +341,7 @@ mod tests {
         let path = dir.path().join("manifest.json");
         std::fs::write(
             &path,
-            r#"{"package":"com.example.app","appVersion":"1.0.0"}"#,
+            r#"{"package":"com.example.app","appVersion":"1.0.0","minRuntimeVersion":"0.1.0"}"#,
         )
         .unwrap();
 
@@ -404,12 +362,26 @@ mod tests {
     }
 
     #[test]
+    fn signing_refuses_a_manifest_missing_min_runtime_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        let original = r#"{"package":"com.example.app","appVersion":"1.0.0"}"#;
+        std::fs::write(&path, original).unwrap();
+
+        let err = sign_manifest(&path, &dev_signing_key()).unwrap_err();
+        assert!(err.to_string().contains("minRuntimeVersion"));
+
+        // A signer that refuses must leave the document exactly as it found it.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
     fn verify_manifest_accepts_valid_and_rejects_tampered() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("manifest.json");
         std::fs::write(
             &path,
-            r#"{"package":"com.example.app","appVersion":"1.0.0","wasm":{"path":"app.wasm","size":10}}"#,
+            r#"{"package":"com.example.app","appVersion":"1.0.0","minRuntimeVersion":"0.1.0","wasm":{"path":"app.wasm","size":10}}"#,
         )
         .unwrap();
 
@@ -502,6 +474,7 @@ mod tests {
             "version": "1.0",
             "package": "com.test.app",
             "appVersion": "1.0.0",
+            "minRuntimeVersion": "0.1.0",
             "wasm": {
                 "path": "app.wasm",
                 "size": 1024,

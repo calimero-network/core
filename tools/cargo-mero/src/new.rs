@@ -41,7 +41,7 @@ pub fn run(args: &NewArgs) -> Result<()> {
     println!("  cargo mero build      # compile -> wasm-opt -> embed ABI");
     println!("  cargo mero test       # TestHost + convergence tests (no node needed)");
     println!(
-        "  cargo mero bundle --dev   # signed dist/com.example.{}.mpk",
+        "  cargo mero bundle --dev --no-icon   # signed dist/com.example.{}-0.1.0.mpk",
         args.name
     );
 

@@ -4,6 +4,14 @@
 It scaffolds an app, compiles it to `wasm32-unknown-unknown` with the ABI embedded, runs the node-free test suite, and packages a signed `.mpk` bundle ready for `meroctl app install`.
 One tool covers the whole path from `cargo mero new` to an installable bundle, replacing the hand-written `build.sh` / `build-bundle.sh` scripts each app used to carry.
 
+## Breaking changes
+
+- **`bundle` now requires an icon decision.** Set `icon = "<path>"` or `icon = "default"` in `[package.metadata.calimero]`, or pass `--no-icon`. An existing app build fails until one of the three is chosen.
+- **Default output path changed.** `cargo mero bundle` now writes `dist/<package>-<appVersion>.mpk`; it previously wrote `dist/<package>.mpk`.
+- **`cargo mero abi extract --verify` is gone.** The flag was bound to `_verify` and silently ignored; nothing in a script relying on it needs to change beyond dropping the flag.
+- **`BundleManifest.migrations` is gone.** It had no producer and no consumer. Real migrations are ABI edges declared via `#[app::state(version = N, migration = ...)]` and read by `upgrade_group`.
+- **The manifest now always declares `handlers.slug`**, defaulting to the package id. An app that relied on the desktop's name-derived kebab-case fallback should set `slug` explicitly in `[package.metadata.calimero]` to keep its existing deep links.
+
 ## Install
 
 `cargo mero` is a Cargo subcommand: install the `cargo-mero` binary and Cargo picks it up as `cargo mero`.
@@ -33,8 +41,8 @@ The five steps below match `cargo mero guide` (the canonical source; run it any 
 cargo mero new my-app        # 1. scaffold an app (state, events, logic, tests)
 cargo mero build             # 2. compile -> wasm-opt -> embed ABI (res/my_app.wasm)
 cargo mero test              # 3. run TestHost unit tests + convergence tests (no node needed)
-cargo mero bundle --dev      # 4. build all services, write manifest.json, sign, tar dist/<package>.mpk
-meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (merod)
+cargo mero bundle --dev --no-icon      # 4. build all services, write manifest.json, sign, tar dist/<package>-<version>.mpk
+meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a node (merod)
 ```
 
 **1. `cargo mero new my-app`**
@@ -45,6 +53,7 @@ Takes the ABI manifest the app itself builds, compiles to `wasm32-unknown-unknow
 The manifest has one producer: the `__calimero_abi()` that `#[app::logic]` generates from the `AbiType` impls the app's types carry, so the compiler resolves aliases, macro-generated and re-exported types before anything is described.
 Artifacts: `res/<name>.wasm` (the built, ABI-embedded wasm) plus `res/abi.json` and `res/state-schema.json`. An app needs no `build.rs` for any of this.
 An app whose SDK predates `__calimero_abi` builds no manifest of its own; the build then warns, writes no `res/abi.json` or `res/state-schema.json`, and embeds no section. The wasm is still produced, but `bundle` refuses it - every bundle entry names an `abi.json`.
+Pass `--no-abi` to skip ABI extraction and embedding deliberately; the resulting wasm carries no `calimero_abi_v1` section and cannot be migrated.
 
 **3. `cargo mero test`**
 Runs the native test suite - the in-crate TestHost unit tests plus the `tests/converge.rs` convergence test.
@@ -52,13 +61,42 @@ No node or network is needed.
 
 **4. `cargo mero bundle`**
 Builds every service, stages the wasm/abi files under `res/bundle-temp/`, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk`.
-Artifact: `dist/<package>.mpk` (the `<package>` is the `[package.metadata.calimero] package` id; the app version lives inside the manifest, not the filename).
+Artifact: `dist/<package>-<appVersion>.mpk` (the `<package>` is the `[package.metadata.calimero] package` id; `<appVersion>` defaults to the crate's `[package] version`).
 Pass a signing method: `--dev` (local) or `--key <file>` (production).
 See [SIGNING.md](SIGNING.md).
 
-**5. `meroctl app install --path dist/<package>.mpk`**
+Bundling requires an icon decision - set `icon = "<path>"` in `[package.metadata.calimero]`, or pass `--no-icon` (fine when `frontend` is set: the desktop discovers a PWA icon at that URL). The tool reads the PNG and embeds it as a `data:image/png;base64,...` URI; `icon = "default"` selects the bundled Calimero mark.
+
+The default is never applied on its own, only when named. An app that ships no icon lets the desktop find its own artwork at the `frontend` URL, which beats a generic mark.
+
+Other `bundle` flags:
+
+| Flag | Effect |
+| ---- | ------ |
+| `--app-version <v>` | Override the app version recorded in `manifest.json` (defaults to `[package] version`). |
+| `--bump <patch\|minor\|major>` | Fetch the next `appVersion` from the registry instead: a bump over the highest version published for this package. Mutually exclusive with `--app-version`. |
+| `--package <id>` | Override the manifest's `package` id, e.g. to build a migration-target bundle under a distinct identity. |
+| `-o, --output <path>` | Override the output path (defaults to `dist/<package>-<appVersion>.mpk`). |
+| `--no-abi` | Omit the ABI artifact; the bundle cannot be migrated. |
+| `--no-icon` | Ship without an icon. |
+| `--no-logo` | Suppress the icon preview printed above the summary. |
+| `--print-output-path` | Print the built `.mpk` path as the last line, for scripts that need it. |
+| `--profiling` | Skip `wasm-opt` size optimization, keeping debug/profiling info. |
+
+**5. `meroctl app install --path dist/<package>-<appVersion>.mpk`**
 Installs the bundle on a running `merod` node.
-The node derives the `ApplicationId` from the bundle's `package` and signer (see [SIGNING.md](SIGNING.md)).
+The node derives the `ApplicationId` from the bundle's `package` and signer (see [SIGNING.md](SIGNING.md)); `bundle` prints it in the post-bundle summary.
+
+## Publishing to the registry
+
+`cargo mero publish <mpk>` uploads a signed `.mpk` to the Calimero App Registry.
+It requires `CALIMERO_API_KEY`; the registry base URL defaults to `https://apps.calimero.network` and is overridable with `CALIMERO_REGISTRY_URL`.
+
+```bash
+cargo mero bundle --key my-key.json --bump patch   # fetch and use the next patch version
+export CALIMERO_API_KEY=...
+cargo mero publish dist/com.example.my-app-1.2.4.mpk
+```
 
 ## Cargo features
 
@@ -66,7 +104,7 @@ The node derives the `ApplicationId` from the bundle's `package` and signer (see
 
 ```bash
 cargo mero build --features schema_v2
-cargo mero bundle --dev --features "schema_v2 telemetry" --no-default-features
+cargo mero bundle --dev --no-icon --features "schema_v2 telemetry" --no-default-features
 ```
 
 They reach `cargo build` and the `cargo metadata` call the ABI is emitted against, so the embedded `calimero_abi_v1` section always describes the schema the bytecode was compiled with.
@@ -102,12 +140,22 @@ The workspace table wins over the package table when both are present.
 | `name`                | `metadata.name`        | the crate name                   |
 | `description`         | `metadata.description` | omitted                          |
 | `author`              | `metadata.author`      | omitted                          |
+| `icon`                | `metadata.icon`        | required unless `--no-icon` (see below) |
+| `license`             | `metadata.license`     | omitted                          |
+| `tags`                | `metadata.tags`        | empty                            |
 | `min-runtime-version` | `minRuntimeVersion`    | `0.1.0`                          |
+| `slug`                | `handlers.slug`        | `package`                        |
 | `frontend`            | `links.frontend`       | omitted                          |
-| `services`            | `services[]`           | empty (workspace table only)     |
+| `github`              | `links.github`         | omitted                          |
+| `docs`                | `links.docs`           | omitted                          |
+| `services`            | `services[]`           | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
+
+`icon` is a filesystem path, resolved relative to the directory of the table that declares it (the crate's own directory for `[package.metadata.calimero]`, the workspace root for `[workspace.metadata.calimero]`); `cargo mero bundle` reads the PNG at that path and writes the base64-encoded `data:` URI into the manifest, so the `Cargo.toml` value and the `manifest.json` value are never the same string.
+`slug` is the deep-link handler slug (`https://links.calimero.network/<slug>/...`, `calimero://<slug>/...`); it defaults to `package` when not set.
+`author` is not just displayed: the registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) on publish, and refuses a new version of the package when it doesn't match.
 
 The app version (`manifest.json` `appVersion`) is not a metadata key.
-It defaults to the crate's `[package] version` and is overridable with `cargo mero bundle --app-version <v>`.
+It defaults to the crate's `[package] version` and is overridable with `cargo mero bundle --app-version <v>` or `--bump <patch|minor|major>`.
 The `manifest.json` `version` field is the manifest schema version and is always `1.0`.
 
 Single-service `Cargo.toml`:
@@ -117,14 +165,18 @@ Single-service `Cargo.toml`:
 package = "com.example.my-app"
 name = "My App"
 description = "A collaborative example app"
+icon = "assets/icon.png"
+license = "MIT"
+tags = ["social", "chat"]
 min-runtime-version = "0.7.0"
 frontend = "https://my-app.example.com"
+github = "https://github.com/example/my-app"
 ```
 
 ### Multi-service workspaces
 
-A workspace that ships several wasm services declares them under `[workspace.metadata.calimero]`.
-Each `services` entry maps a bundle service `name` to the `crate` that builds it; `services` under a `[package.metadata.calimero]` table is rejected.
+A workspace that ships several wasm services declares them under `[workspace.metadata.calimero]`, which wins over a `[package.metadata.calimero]` table when both are present.
+Each `services` entry maps a bundle service `name` to the `crate` that builds it.
 The bundle then emits `services/<name>.wasm` + `services/<name>-abi.json` per service instead of a top-level `app.wasm` / `abi.json`.
 
 ```toml
@@ -133,6 +185,7 @@ The bundle then emits `services/<name>.wasm` + `services/<name>-abi.json` per se
 package = "network.calimero.mero-drive"
 name = "Mero Drive"
 description = "Collaborative file storage"
+icon = "assets/icon.png"
 min-runtime-version = "0.7.0"
 frontend = "https://drive.calimero.network"
 
@@ -145,6 +198,23 @@ name = "index"
 crate = "mero-index-service"
 ```
 
+A crate that is a member of a larger workspace (and so cannot own the workspace-root table) may instead declare `services` under its own `[package.metadata.calimero]`.
+A `crate` entry may name the declaring package itself; two entries naming the same crate build its wasm once and stage it under both service names:
+
+```toml
+[package.metadata.calimero]
+package = "com.example.my-suite"
+min-runtime-version = "0.7.0"
+
+[[package.metadata.calimero.services]]
+name = "store-a"
+crate = "my-suite"
+
+[[package.metadata.calimero.services]]
+name = "store-b"
+crate = "my-suite"
+```
+
 ## Two ABI payloads
 
 A built app carries the same *full* manifest in two places.
@@ -154,8 +224,7 @@ The node's xcall entry-point gate reads the per-method flags from this embedded 
 
 The bundle's `abi.json` sidecar is the same manifest, pretty-printed.
 
-`cargo mero build` name-sorts `methods` and `events` before embedding, which the node's `validate_manifest` requires (it silently discards a section that fails validation).
-An app built against today's SDK already carries them sorted, so the sort only bites for one built against an older one.
+`methods` and `events` are name-sorted before `cargo mero build` ever sees them: the SDK's generated `__calimero_abi()` builds the manifest through `ManifestBuilder`, which sorts both on `finish()`, because the node's `validate_manifest` requires them name-sorted (it silently discards a section that fails validation). `cargo mero build` does no sorting of its own - it just embeds what the SDK already produced.
 
 ## Links
 
@@ -165,7 +234,7 @@ An app built against today's SDK already carries them sorted, so the sort only b
 
 ## Repository layout
 
-- `tools/cargo-mero` - the `cargo mero` CLI (scaffold, build, test, bundle, plus abi/key/sign passthroughs)
+- `tools/cargo-mero` - the `cargo mero` CLI (scaffold, build, test, bundle, publish, plus abi/key/sign passthroughs)
 - `tools/calimero-abi` (crate `mero-abi`) - extracts and embeds the WASM ABI (backs `cargo mero abi`)
 - `tools/mero-sign` - Ed25519 signing, key generation, and did:key derivation (backs `cargo mero key` / `cargo mero sign`)
 
@@ -179,7 +248,7 @@ The tool now lives back in core's workspace at `tools/cargo-mero`, versioned and
 
 The scaffolded SDK version has a single source of truth; a bump moves it and the test that pins the expected value:
 
-- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/main.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (the SDK git tag) and that `cargo mero test`'s example dev-dep hint prints.
+- `DEFAULT_SDK_VERSION` in `tools/cargo-mero/src/lib.rs` - the one value `cargo mero new` substitutes into the scaffolded `Cargo.toml` (the SDK git tag) and that `cargo mero test`'s example dev-dep hint prints.
 - the version assertion in `tools/cargo-mero/src/new.rs` tests, which hardcodes the expected tag and so must be bumped in lockstep.
 - `new_build_test_bundle_ladder` in `tools/cargo-mero/tests/pipeline.rs`: it asserts the degraded no-ABI path, because every tag released so far predates `__calimero_abi`. Bumping to a tag that carries it turns those last assertions back into "bundle succeeds and writes the `.mpk`".
 

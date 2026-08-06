@@ -70,7 +70,10 @@ jobs:
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo "$TEST_HOSTS"
 
-          cargo test -- --nocapture
+          # bundle_produces_signed_mpk builds a wasm32 fixture and needs the
+          # cargo-mero-e2e job's fixture cache and target-dir isolation; skip
+          # it here so it doesn't build into this job's shared CARGO_TARGET_DIR.
+          cargo test -- --nocapture --skip bundle_produces_signed_mpk
 
       # The mock TEE attestation path is compiled out by default (the
       # `mock-attestation` feature is default-OFF so it never reaches a release
@@ -131,8 +134,10 @@ jobs:
             cargo-mero-fixtures-${{ runner.os }}-
 
       # env -u CARGO_TARGET_DIR: each fixture must build into its own cached target dir.
+      # --include-ignored: also runs bundle_produces_signed_mpk (skipped in the
+      # main Rust job's workspace-wide `cargo test`) alongside the #[ignore]d tests.
       - name: Run pipeline e2e
-        run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline -- --ignored --test-threads 1
+        run: env -u CARGO_TARGET_DIR cargo test -p cargo-mero --test pipeline -- --include-ignored --test-threads 1
 
   # The fuzzy suite installs profiling-built wasms but never runs on a PR;
   # this is the PR-time guard against a module merod refuses to load.

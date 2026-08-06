@@ -11,13 +11,15 @@ The Calimero app workflow
   1. cargo mero new my-app        scaffold an app (state, events, logic, tests)
   2. cargo mero build             compile -> wasm-opt -> embed ABI (res/<name>.wasm)
   3. cargo mero test              run TestHost unit tests + convergence tests (no node needed)
-  4. cargo mero bundle --dev      build all services, write manifest.json, sign, tar dist/<package>.mpk
-  5. meroctl app install --path dist/<package>.mpk ...   install on a node (merod)
+  4. cargo mero bundle --dev --no-icon      build all services, write manifest.json, sign, tar dist/<package>-<version>.mpk
+  5. meroctl app install --path dist/<package>-<version>.mpk ...   install on a node (merod)
+
+Bundling needs an icon decision: icon = \"<path>\" in [package.metadata.calimero], or --no-icon.
 
 Signing:
-  cargo mero key generate -o key.json      create a production Ed25519 key
-  cargo mero bundle --key key.json         sign with it (CI: export MERO_SIGN_KEY=...)
-  cargo mero bundle --dev                  well-known dev key: fine locally, REFUSED by the registry
+  cargo mero key generate -o key.json           create a production Ed25519 key
+  cargo mero bundle --key key.json --no-icon    sign with it (CI: export MERO_SIGN_KEY=...)
+  cargo mero bundle --dev --no-icon             well-known dev key: fine locally, REFUSED by the registry
 
 Next steps: e2e-test networked flows with merobox (https://github.com/calimero-network/merobox).
 Full docs: https://calimero-network.github.io/core/

@@ -51,8 +51,9 @@ cargo test
 # Format check
 cargo fmt --check
 
-# Lint
-cargo clippy -- -A warnings
+# Lint, exactly as CI runs it. `-D warnings` is the gate; `-A warnings` allows
+# every lint, so it passes locally and then fails in CI.
+cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
 ```
 
 A pre-commit hook (`cargo fmt --check` on staged Rust files) installs itself on
@@ -171,6 +172,7 @@ Every crate has its own `AGENTS.md`; [crates/AGENTS.md](crates/AGENTS.md) is the
 | `crates/server/`     | HTTP/WS/SSE server            | [crates/server/AGENTS.md](crates/server/AGENTS.md)         |
 | `crates/network/`    | P2P networking (libp2p)       | [crates/network/AGENTS.md](crates/network/AGENTS.md)       |
 | `crates/primitives/` | Shared types (ids, keys, hash)| [crates/primitives/AGENTS.md](crates/primitives/AGENTS.md) |
+| `crates/bundle/`     | `.mpk` manifest + signature   | [crates/bundle/AGENTS.md](crates/bundle/AGENTS.md)         |
 | `crates/crypto/`     | ECDH shared-key encryption    | [crates/crypto/AGENTS.md](crates/crypto/AGENTS.md)         |
 | `apps/`              | Example WASM apps             | [apps/AGENTS.md](apps/AGENTS.md)                           |
 | `tools/`             | Dev tools (merodb, abi)       | [tools/AGENTS.md](tools/AGENTS.md)                         |
@@ -257,7 +259,9 @@ Every node in a merobox run is the **same build against fresh state**. So it val
 Before creating a PR:
 
 1. `cargo fmt --check` passes
-2. `cargo clippy -- -A warnings` passes
+2. `cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings` passes.
+   Run it with `-D`, the way CI does: `-A warnings` allows every lint, so it can only ever pass.
+   `merod` also gets a second pass under `--features mock-attestation`, which CI runs separately.
 3. `cargo test` passes
 4. `cargo deny check licenses sources` passes (if modifying dependencies)
 5. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge

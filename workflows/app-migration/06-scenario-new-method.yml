@@ -40,7 +40,7 @@ steps:
   - name: Install scenario-new-method-v1 on node 1
     type: install_application
     node: app-migration-newmethod-1
-    path: dist/scenario-new-method-v1.mpk
+    path: dist/com.calimero.scenario-new-method-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -191,7 +191,7 @@ steps:
   - name: Install scenario-new-method-v2 on node 1
     type: install_application
     node: app-migration-newmethod-1
-    path: dist/scenario-new-method-v2.mpk
+    path: dist/com.calimero.scenario-new-method-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

@@ -37,6 +37,7 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | Crate                 | Purpose                                                         |
 | --------------------- | --------------------------------------------------------------- |
 | `calimero-primitives` | Shared types: `ContextId`, `ApplicationId`, `PublicKey`, `Hash` |
+| `calimero-bundle`     | `.mpk` manifest types + signature canonicalization, shared by `calimero-node-primitives`, `cargo-mero`, `mero-sign` |
 | `calimero-crypto`     | Cryptographic utilities                                         |
 | `calimero-config`     | Configuration parsing                                           |
 | `calimero-client`     | HTTP/WS client for nodes                                        |
@@ -188,6 +189,7 @@ Unified causal log & governance:
 Foundations & support:
 
 - [primitives/AGENTS.md](primitives/AGENTS.md) - Shared types (`ContextId`, `PublicKey`, `Hash`)
+- [bundle/AGENTS.md](bundle/AGENTS.md) - `.mpk` manifest types & signature canonicalization
 - [crypto/AGENTS.md](crypto/AGENTS.md) - ECDH shared-key encryption
 - [config/AGENTS.md](config/AGENTS.md) - Node configuration parsing
 - [sys/AGENTS.md](sys/AGENTS.md) - WASM host ABI types

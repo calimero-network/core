@@ -36,7 +36,7 @@ steps:
   - name: Install scenario-identity-downgrade-v1 on node 1
     type: install_application
     node: app-migration-iddowngrade-1
-    path: dist/scenario-identity-downgrade-v1.mpk
+    path: dist/com.calimero.scenario-identity-downgrade-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -108,7 +108,7 @@ steps:
   - name: Install scenario-identity-downgrade-v2 on node 1
     type: install_application
     node: app-migration-iddowngrade-1
-    path: dist/scenario-identity-downgrade-v2.mpk
+    path: dist/com.calimero.scenario-identity-downgrade-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

@@ -77,16 +77,6 @@ fn create_test_bundle(
             hash: artifact_hash(content),
             size: content.len() as u64,
         }),
-        migrations: migrations
-            .iter()
-            .map(
-                |(path, content)| calimero_node_primitives::bundle::BundleArtifact {
-                    path: path.to_string(),
-                    hash: artifact_hash(content),
-                    size: content.len() as u64,
-                },
-            )
-            .collect(),
         links: None,
         services: None,
         signature: None,
@@ -456,7 +446,6 @@ fn create_test_bundle_custom_wasm_path(
             size: wasm_content.len() as u64,
         }),
         abi: None,
-        migrations: vec![],
         links: None,
         services: None,
         signature: None,
@@ -1429,7 +1418,6 @@ fn create_test_bundle_with_key(
             size: wasm_content.len() as u64,
         }),
         abi: None,
-        migrations: vec![],
         links: None,
         services: None,
         signature: None,

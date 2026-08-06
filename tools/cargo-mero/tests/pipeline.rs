@@ -57,7 +57,7 @@ fn new_build_test_bundle_ladder() {
     assert!(!app_dir.join("res/abi.json").exists());
 
     let bundle = Command::new(bin)
-        .args(["mero", "bundle", "--dev", "--manifest-path"])
+        .args(["mero", "bundle", "--dev", "--no-icon", "--manifest-path"])
         .arg(app_dir.join("Cargo.toml"))
         .output()
         .unwrap();
@@ -176,13 +176,13 @@ fn build_produces_embedded_abi_wasm() {
 fn multi_service_bundle() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi-app");
     let status = Command::new(env!("CARGO_BIN_EXE_cargo-mero"))
-        .args(["mero", "bundle", "--dev"])
+        .args(["mero", "bundle", "--dev", "--no-icon"])
         .current_dir(&fixture)
         .status()
         .unwrap();
     assert!(status.success(), "cargo mero bundle --dev failed");
 
-    let mpk = fixture.join("dist/com.example.multi-app.mpk");
+    let mpk = fixture.join("dist/com.example.multi-app-0.1.0.mpk");
     assert!(mpk.exists(), "expected bundle at {}", mpk.display());
 
     let mut entries = Vec::new();
@@ -218,8 +218,26 @@ fn multi_service_bundle() {
     );
 }
 
+/// Fails if `value` contains a `null` anywhere: a registry validator that
+/// tolerates an absent field still rejects one present as explicit `null`.
+fn assert_no_nulls(value: &serde_json::Value, path: &str) {
+    match value {
+        serde_json::Value::Null => panic!("unexpected null at {path}"),
+        serde_json::Value::Object(map) => {
+            for (key, v) in map {
+                assert_no_nulls(v, &format!("{path}.{key}"));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, v) in items.iter().enumerate() {
+                assert_no_nulls(v, &format!("{path}[{i}]"));
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
-#[ignore = "slow: compiles the fixture app"]
 fn bundle_produces_signed_mpk() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-app");
     let status = Command::new(env!("CARGO_BIN_EXE_cargo-mero"))
@@ -229,9 +247,9 @@ fn bundle_produces_signed_mpk() {
         .unwrap();
     assert!(status.success());
 
-    // Default output: <base>/dist/<package>.mpk, package from the fixture's
-    // [package.metadata.calimero] table.
-    let mpk = fixture.join("dist/com.example.demo-app.mpk");
+    // Default output: <base>/dist/<package>-<appVersion>.mpk, package and
+    // version from the fixture's [package.metadata.calimero] table.
+    let mpk = fixture.join("dist/com.example.demo-app-0.1.0.mpk");
     assert!(mpk.exists(), "expected bundle at {}", mpk.display());
 
     let mut entries = Vec::new();
@@ -255,4 +273,17 @@ fn bundle_produces_signed_mpk() {
         mero_sign::verify_manifest(&manifest).unwrap(),
         "signature must verify against the embedded public key"
     );
+
+    assert_eq!(
+        manifest["handlers"]["slug"], "com.example.demo-app",
+        "slug must default to the package id"
+    );
+    assert!(
+        manifest["metadata"]["icon"]
+            .as_str()
+            .is_some_and(|icon| icon.starts_with("data:image/png;base64,")),
+        "icon must be encoded as a PNG data URI: {}",
+        manifest["metadata"]["icon"]
+    );
+    assert_no_nulls(&manifest, "$");
 }

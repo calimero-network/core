@@ -186,10 +186,8 @@ impl NodeClient {
         );
         application.services = services;
 
-        let application_id = {
-            let components = (&application.package, &application.signer_id);
-            ApplicationId::from(*Hash::hash_borsh(&components)?)
-        };
+        let application_id =
+            ApplicationId::for_bundle(&application.package, &application.signer_id)?;
 
         // Bundle ids are version-stable (hash(package, signer)), so a new
         // version overwrites the row in place. The row is a download-cache
