@@ -39,7 +39,7 @@ steps:
   - name: Install multi-service bundle on node-1
     type: install_application
     node: e2e-node-1
-    path: res/scaffolding-e2e-multi-0.1.0.mpk
+    path: dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk
     dev: true
     outputs:
       app_id: applicationId

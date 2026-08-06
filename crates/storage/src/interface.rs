@@ -733,6 +733,45 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
+        let verdict = Self::verify_snapshot_entity_signature_inner(id, data, metadata);
+        if verdict.is_err() {
+            // Name the storage type and the entity, because the error variant
+            // cannot. One `InvalidSignature` is returned by three different arms,
+            // and on core#3376 every rejection was a `SharedMember` while the
+            // error text said "user-owned data" — the investigation went to the
+            // wrong arm twice. A rejection here aborts the whole HashComparison
+            // session, so it is worth a line: without it the only way to learn
+            // which entity failed is to download the node-log artifact and read
+            // the DEBUG line that happens to precede the warning.
+            //
+            // `signature_shape` is the discriminator, and it is the field worth
+            // having: "rejected" alone left core#3376 guessing which sub-case it
+            // was, and six hypotheses were spent deciding that from code instead
+            // of from the one place that already knows. `absent` /
+            // `placeholder` / `signed-but-unnamed-signer` each point at a
+            // different producer; `signed` means the bytes and a real signature
+            // genuinely disagree, which is a different investigation entirely.
+            tracing::warn!(
+                %id,
+                storage_type = crate::entities::storage_type_name(&metadata.storage_type),
+                signature = crate::entities::signature_shape(&metadata.storage_type),
+                crdt_type = ?metadata.crdt_type,
+                data_len = data.len(),
+                "snapshot entity signature rejected; the HashComparison session \
+                 using this leaf cannot complete"
+            );
+        }
+        verdict
+    }
+
+    /// The verdict itself. Split out so [`Self::verify_snapshot_entity_signature`]
+    /// can log every rejection in one place — several arms bail early, so a tail
+    /// log on the public function would miss them.
+    fn verify_snapshot_entity_signature_inner(
+        id: crate::address::Id,
+        data: &[u8],
+        metadata: &crate::entities::Metadata,
+    ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
 
@@ -2344,8 +2383,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 // leaf (HashComparison ships the entity's own index
                 // `storage_type` as the wire authorization) that NO peer — nor the
                 // node itself on a pushed-back leaf — could verify: the residual
-                // concurrent-rotation `SharedMember` "Invalid signature for
-                // user-owned data" split-brain (two writers stamp the same HLC on
+                // concurrent-rotation `SharedMember` `InvalidSignature`
+                // split-brain (two writers stamp the same HLC on
                 // different content; the equal-HLC `lww_pick` keeps one side's
                 // bytes while the signature stayed the other's).
                 //

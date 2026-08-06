@@ -1653,6 +1653,88 @@ mod verify_snapshot_entity_signature_tests {
         }
     }
 
+    /// `signature_shape` is only useful if it never mislabels — a wrong
+    /// discriminator is worse than none, because it sends an investigation at a
+    /// producer that is not involved. core#3376 lost six rounds to exactly that
+    /// kind of misdirection from the error text.
+    #[test]
+    fn signature_shape_names_each_case() {
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::entities::signature_shape;
+
+        let sig = |signature: [u8; 64], signer: Option<PublicKey>| {
+            Some(SignatureData {
+                signature,
+                nonce: 7,
+                signer,
+            })
+        };
+        let signer = PublicKey::from([0x11; 32]);
+        let real = [0x22u8; 64];
+        let writers = crate::entities::full_mask(BTreeSet::from([AccountId::from([0xAA; 32])]));
+
+        // Types that are never signature-verified.
+        assert_eq!(signature_shape(&StorageType::Public), "n/a");
+        assert_eq!(signature_shape(&StorageType::Frozen), "n/a");
+
+        // No signature data at all — a producer skipped signing entirely.
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: None,
+            }),
+            "absent"
+        );
+
+        // The all-zero placeholder `save_raw` writes before the signing pass.
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: sig([0u8; 64], Some(signer)),
+            }),
+            "placeholder"
+        );
+
+        // A real signature naming nobody: fatal for the writer-set arms, because
+        // resolving the author is what makes "is this a writer?" a separate
+        // question from "does this verify?".
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: sig(real, None),
+            }),
+            "signed-but-unnamed-signer"
+        );
+        assert_eq!(
+            signature_shape(&StorageType::Shared {
+                writers: writers.clone(),
+                signature_data: sig(real, None),
+            }),
+            "signed-but-unnamed-signer"
+        );
+
+        // ...but NOT for `User`, which verifies against `owner` and ignores the
+        // hint. Reporting a finding here would be the mislabel that matters.
+        assert_eq!(
+            signature_shape(&StorageType::User {
+                owner: signer,
+                signature_data: sig(real, None),
+            }),
+            "signed"
+        );
+
+        // Fully formed: the bytes and a real signature genuinely disagree, which
+        // is a different investigation from any of the above.
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: sig(real, Some(signer)),
+            }),
+            "signed"
+        );
+    }
+
     #[test]
     fn public_accepted_without_verify() {
         // Public entities don't require a signature.

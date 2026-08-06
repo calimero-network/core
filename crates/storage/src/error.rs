@@ -52,7 +52,16 @@ pub enum StorageError {
     InvalidTimestamp(u64, u64),
 
     /// The provided signature for an action is invalid.
-    #[error("Invalid signature for user-owned data")]
+    ///
+    /// Returned by the `User`, `Shared` **and** `SharedMember` arms of
+    /// `Interface::verify_snapshot_entity_signature`, so the text deliberately
+    /// does not name one of them. It used to read "for user-owned data", which
+    /// cost real time on core#3376: every failure there was a `SharedMember`
+    /// leaf, and the message pointed the investigation at `User` storage for two
+    /// rounds. The storage type and entity id are logged at the rejection site
+    /// instead — a single error variant cannot carry them without touching 25
+    /// return sites and the wire-visible serialization below.
+    #[error("Invalid signature for signed storage (User, Shared or SharedMember)")]
     InvalidSignature,
 
     /// The action's claimed ancestor merkle hash does not match the receiver's

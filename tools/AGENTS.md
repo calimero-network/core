@@ -34,6 +34,7 @@ cargo install --path tools/cargo-mero      # picked up as `cargo mero`
 | `abi` | Passthrough to `mero-abi`: `extract` / `state` / `types` / `inspect` / `embed` / `diff` |
 | `key` | Signing-key utilities: `generate` / `derive-signer-id` (backed by `mero-sign`) |
 | `sign` | Sign a bundle `manifest.json` in place |
+| `publish` | Publish a signed `.mpk` to the app registry |
 | `guide` | Print the 5-step workflow guide (the canonical wording, in `src/guide.rs`) |
 
 ### Usage
@@ -43,12 +44,18 @@ cargo install --path tools/cargo-mero      # picked up as `cargo mero`
 cargo mero new my-app
 cargo mero build             # -> res/my_app.wasm (ABI embedded)
 cargo mero test
-cargo mero bundle --dev      # -> dist/<package>.mpk (dev key; --key <file> for prod)
+cargo mero bundle --dev --no-icon      # -> dist/<package>-<appVersion>.mpk (dev key; --key <file> for prod)
 
 # CI signing without a checked-in key
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
-cargo mero bundle            # reads MERO_SIGN_KEY when no --key/--dev
+cargo mero bundle --no-icon  # reads MERO_SIGN_KEY when no --key/--dev
+
+# Registry: bump to the next published version and publish
+cargo mero bundle --key my-key.json --bump patch
+CALIMERO_API_KEY=... cargo mero publish dist/<package>-<appVersion>.mpk
 ```
+
+`bundle` refuses to run without an icon decision: `icon = "<path>"` in `[package.metadata.calimero]`, or `--no-icon`.
 
 ### File Organization
 
@@ -58,27 +65,34 @@ cargo-mero/
 ├── README.md                # user-facing workflow + metadata reference
 ├── SIGNING.md               # dev vs prod keys, MERO_SIGN_KEY, ApplicationId derivation
 ├── src/
-│   ├── main.rs              # CLI (DEFAULT_SDK_VERSION lives here)
-│   ├── new.rs               # `new` scaffold (+ version-pin tests)
-│   ├── build.rs             # `build`: emit ABI -> compile -> wasm-opt -> embed ABI
-│   ├── test_cmd.rs          # `test`
-│   ├── bundle.rs            # `bundle`: stage, manifest, sign, package
-│   ├── manifest.rs          # manifest.json shape
-│   ├── meta.rs              # [package.metadata.calimero] parsing
-│   └── guide.rs             # `guide` text (canonical 5-step wording)
-├── templates/              # scaffold templates for `new`
+│   ├── main.rs          # fn main() { cargo_mero::run() } - all logic lives in lib.rs
+│   ├── lib.rs           # CLI (clap) + dispatch; DEFAULT_SDK_VERSION lives here
+│   ├── new.rs           # `new` scaffold (+ version-pin tests)
+│   ├── build.rs         # `build`: emit ABI -> compile -> wasm-opt -> embed ABI
+│   ├── test_cmd.rs      # `test`
+│   ├── bundle.rs        # `bundle`: stage, manifest, sign, package
+│   ├── manifest.rs      # constructs calimero-bundle's BundleManifest
+│   ├── meta.rs          # [package.metadata.calimero] parsing
+│   ├── icon.rs          # PNG -> data: URI encoding + the --no-icon/"default" policy
+│   ├── logo.rs          # terminal icon preview (ANSI half-blocks)
+│   ├── registry.rs      # app registry client: --bump, `publish`
+│   └── guide.rs         # `guide` text (canonical 5-step wording)
+├── templates/          # scaffold templates for `new`
 └── tests/
-    ├── pipeline.rs          # end-to-end ladder tests (all #[ignore]d)
-    └── fixtures/            # demo-app + multi-app crates
+    ├── pipeline.rs               # end-to-end ladder tests (mostly #[ignore]d)
+    ├── manifest_roundtrip.rs     # renders through calimero-bundle's own BundleManifest type
+    └── fixtures/                 # demo-app + multi-app crates
 ```
 
 ### Common Gotchas
 
-- The `tests/pipeline.rs` end-to-end tests are all `#[ignore]`d because they scaffold and compile fresh crates (slow, and `new_build_test_bundle_ladder` needs network for the git SDK deps). Run them with `cargo test -p cargo-mero -- --ignored`.
-- Bumping the scaffolded SDK version touches two files in lockstep: `DEFAULT_SDK_VERSION` in `src/main.rs` and the version assertions in `src/new.rs` tests.
-- `services` is a workspace-only key: it is rejected under a `[package.metadata.calimero]` table, only accepted under `[workspace.metadata.calimero]`.
+- Four of the five `tests/pipeline.rs` end-to-end tests are `#[ignore]`d because they scaffold and compile fresh crates (slow, and `new_build_test_bundle_ladder` needs network for the git SDK deps); run those with `cargo test -p cargo-mero -- --ignored`. `bundle_produces_signed_mpk` runs in the default `cargo test -p cargo-mero` - its fixture uses path deps, so it needs no network.
+- Bumping the scaffolded SDK version touches two files in lockstep: `DEFAULT_SDK_VERSION` in `src/lib.rs` and the version assertions in `src/new.rs` tests.
+- `services` lives under `[workspace.metadata.calimero]`, which wins when both are present, or under `[package.metadata.calimero]` for a crate that cannot own a workspace table of its own; either way a `crate` entry may name the declaring package itself, and two entries naming the same crate build it once and stage it under both names.
 - `--features` is resolved once and used for both the compile and the ABI extraction (`workspace::FeatureArgs` feeds `cargo build` and `cargo metadata`). Keep them together: a wasm and an embedded ABI that disagree fail silently, as a wrong migration plan.
 - A `#[cfg]` on an `#[app::logic]` method still lands in the ABI: the attribute macro sees the method before cfg is applied. Struct fields and enum variants are cfg-stripped before the derive runs, so those are honored.
+- `cargo-mero` has a lib target (`src/lib.rs`), not just a binary: `main.rs` is a one-line `cargo_mero::run()` call, and `manifest`/`meta` are `pub mod` so `tests/*.rs` can drive them directly instead of spawning a subprocess.
+- `manifest::render` builds `calimero_bundle::BundleManifest` directly, with no `..Default::default()` and no `..` in the node's `BundleManifest::artifacts()` destructure - a new field on that type is a compile error here until handled, not silent drift.
 
 ## merodb - Database Tool
 

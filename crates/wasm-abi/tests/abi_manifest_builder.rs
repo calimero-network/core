@@ -53,8 +53,8 @@ fn finish_sorts_methods_and_events_by_name_and_validates() {
     assert!(validate_manifest(&manifest).is_ok());
 }
 
-// Two entries that sort to the same key keep their push order, matching the
-// stable-sort rule build.rs's canonicalize_abi relies on.
+// Two entries that sort to the same key keep their push order: validate_manifest
+// accepts only this ordering, so the sort here is the one that has to be stable.
 #[test]
 fn finish_sort_is_stable_for_equal_names() {
     let mut b = ManifestBuilder::new();

@@ -45,8 +45,8 @@ Treat the key file the way you would treat any signing credential:
 - **Never commit it.**
   Keep key files out of the repository (the scaffold's `.gitignore` already ignores them; if you store one elsewhere, add its path).
 - **In CI, inject it, do not check it in.**
-  Point `cargo mero bundle` at a key file through the `MERO_SIGN_KEY` environment variable instead of `--key`.
-  When none of `--key` / `--dev` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file, so a CI job can materialize the key from a secret at build time and set the variable:
+  Point `cargo mero bundle` or `cargo mero sign` at a key file through the `MERO_SIGN_KEY` environment variable instead of `--key`.
+  Both commands resolve a signing key the same way and in the same order - `--key`, then `--dev`, then `MERO_SIGN_KEY` - so a CI job can materialize the key from a secret at build time and set the variable once:
 
   ```bash
   export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
@@ -78,15 +78,12 @@ The same public key always yields the same `signerId`, and the node recomputes i
 ## How package + signer become the ApplicationId
 
 The node does **not** hash the wasm to identify an app.
-It derives the `ApplicationId` from the manifest's `package` string and the bundle's `signerId`.
+It derives the `ApplicationId` from the manifest's `package` string and the bundle's `signerId`, through `ApplicationId::for_bundle` (`crates/primitives/src/application.rs`), the same helper `cargo mero bundle` calls to print the Application line in its post-bundle summary:
 
-> Rule, from core `crates/node/primitives/src/client/application/install.rs:194-196`:
->
 > ```rust
-> let application_id = {
->     let components = (&application.package, &application.signer_id);
->     ApplicationId::from(*Hash::hash_borsh(&components)?)
-> };
+> pub fn for_bundle(package: &str, signer_id: &str) -> eyre::Result<Self> {
+>     Ok(Self::from(*Hash::hash_borsh(&(package, signer_id))?))
+> }
 > ```
 >
 > `Hash::hash_borsh` is `SHA-256` over the borsh serialization of the value
@@ -112,6 +109,11 @@ Because the signer is half of the `ApplicationId`, the signing key is part of yo
 - If you lose the production key, you cannot publish an in-place upgrade; a replacement key means a new app identity and a migration for existing users.
 
 Pick the production key before your first published release and guard it accordingly.
+
+## `metadata.author` is a registry permission, not just a label
+
+`author` (`[package.metadata.calimero] author`) is separate from the signer above and is not verified cryptographically.
+The registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) before accepting a publish, and refuses a new version of the package when it doesn't match.
 
 ## See also
 

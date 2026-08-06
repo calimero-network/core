@@ -443,8 +443,8 @@ where
         // `or_else`/collection-first while the other unioned), two nodes
         // resolved DIFFERENT writer sets for the same anchor (collection on the
         // originator, side store on a reconcile-only receiver), so a value
-        // signed against one set failed verification on the other ("Invalid
-        // signature for user-owned data") and the cluster split-brained on the
+        // signed against one set failed verification on the other
+        // (`StorageError::InvalidSignature`) and the cluster split-brained on the
         // value entry under concurrent rotation. One resolver ⇒ one writer set.
         crate::interface::Interface::<S>::resolve_anchor_writers(self.inner.id())
     }

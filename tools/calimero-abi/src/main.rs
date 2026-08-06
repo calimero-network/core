@@ -21,10 +21,6 @@ enum Commands {
         /// Output JSON file
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
-
-        /// Verify ABI using get_abi* exports
-        #[arg(long)]
-        verify: bool,
     },
     /// Extract only the types schema from a WASM file
     Types {
@@ -81,12 +77,8 @@ fn main() -> eyre::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Extract {
-            wasm_file,
-            output,
-            verify,
-        } => {
-            mero_abi::extract_abi(&wasm_file, output.as_deref(), verify)?;
+        Commands::Extract { wasm_file, output } => {
+            mero_abi::extract_abi(&wasm_file, output.as_deref())?;
         }
         Commands::Types { wasm_file, output } => {
             mero_abi::extract_types_schema(&wasm_file, output.as_deref())?;

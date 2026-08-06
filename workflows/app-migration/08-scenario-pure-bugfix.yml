@@ -41,7 +41,7 @@ steps:
   - name: Install scenario-pure-bugfix-v1 on node 1
     type: install_application
     node: app-migration-bugfix-1
-    path: dist/scenario-pure-bugfix-v1.mpk
+    path: dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -196,7 +196,7 @@ steps:
   - name: Install scenario-pure-bugfix-v2 on node 1
     type: install_application
     node: app-migration-bugfix-1
-    path: dist/scenario-pure-bugfix-v2.mpk
+    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

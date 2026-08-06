@@ -85,6 +85,7 @@ members = [
     "./crates/account",
     "./crates/auth",
     "./crates/build-utils",
+    "./crates/bundle",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -255,6 +256,7 @@ owo-colors = "3.5.0"
 parking_lot = "0.12.3"
 pastey = "0.2.3" # maintained drop-in for the unmaintained `paste`
 percent-encoding = "2.3"
+png = "0.17"
 prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 prometheus-client = "0.23"
@@ -316,6 +318,7 @@ zeroize = "1.8"
 pyo3 = "0.20"
 
 calimero-build-utils = { path = "./crates/build-utils" }
+calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 calimero-client = { path = "./crates/client" }
 calimero-config = { path = "./crates/config" }

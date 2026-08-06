@@ -5,9 +5,8 @@ use axum::http::HeaderMap;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use url::Url;
-use {hex, uuid};
+use uuid::Uuid;
 
 use crate::config::JwtConfig;
 use crate::secrets::{SecretManager, SecretType};
@@ -270,7 +269,7 @@ impl TokenManager {
             aud: self.config.issuer.clone(),
             exp: exp.timestamp() as u64,
             iat: now.timestamp() as u64,
-            jti: uuid::Uuid::new_v4().to_string(),
+            jti: Uuid::new_v4().to_string(),
             token_type,
             permissions,
             node_url,
@@ -933,11 +932,7 @@ impl TokenManager {
             }
             // For client tokens, rotate the key ID
             KeyType::Client => {
-                // Generate new client ID
-                let timestamp = Utc::now().timestamp();
-                let mut hasher = Sha256::new();
-                hasher.update(format!("refresh:{}:{}", claims.sub, timestamp).as_bytes());
-                let new_client_id = hex::encode(hasher.finalize());
+                let new_client_id = Uuid::new_v4().to_string();
 
                 // Log only short id prefixes; the full client key ids are
                 // sensitive and add noise to debug logs.

@@ -1,0 +1,24 @@
+[package]
+name = "calimero-bundle"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = true
+
+[dependencies]
+base64.workspace = true
+bs58.workspace = true
+ed25519-dalek.workspace = true
+eyre.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+calimero-primitives = { workspace = true, features = ["borsh"] }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand.workspace = true

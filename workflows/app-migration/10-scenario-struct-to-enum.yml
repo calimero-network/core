@@ -40,7 +40,7 @@ steps:
   - name: Install scenario-struct-to-enum-v1 on node 1
     type: install_application
     node: app-migration-struct2enum-1
-    path: dist/scenario-struct-to-enum-v1.mpk
+    path: dist/com.calimero.scenario-struct-to-enum-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -172,7 +172,7 @@ steps:
   - name: Install scenario-struct-to-enum-v2 on node 1
     type: install_application
     node: app-migration-struct2enum-1
-    path: dist/scenario-struct-to-enum-v2.mpk
+    path: dist/com.calimero.scenario-struct-to-enum-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

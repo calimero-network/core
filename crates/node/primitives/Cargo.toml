@@ -11,6 +11,7 @@ publish = true
 [dependencies]
 actix.workspace = true
 calimero-account.workspace = true
+calimero-bundle.workspace = true
 async-stream.workspace = true
 async-trait.workspace = true
 borsh.workspace = true

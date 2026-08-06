@@ -10,6 +10,8 @@ readme = "README.md"
 publish = true
 
 [dependencies]
+calimero-bundle.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh"] }
 clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -21,11 +23,15 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 sha2.workspace = true
 tar.workspace = true
 flate2.workspace = true
+ureq.workspace = true
+hex.workspace = true
 wasm-opt.workspace = true
 tempfile.workspace = true
 mero-abi.workspace = true
 mero-sign.workspace = true
 calimero-wasm-abi.workspace = true
+base64.workspace = true
+png.workspace = true
 
 [dev-dependencies]
 wasmparser.workspace = true

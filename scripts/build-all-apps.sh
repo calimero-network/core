@@ -33,4 +33,4 @@ for manifest in "${APPS[@]}"; do
 done
 
 # Apps that also ship an installable, signed .mpk bundle.
-cargo mero bundle --dev --manifest-path apps/kv-store/Cargo.toml
+cargo mero bundle --dev --no-icon --manifest-path apps/kv-store/Cargo.toml

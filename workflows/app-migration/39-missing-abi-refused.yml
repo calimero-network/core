@@ -6,7 +6,8 @@ description: >
   context, writes v1 state, and sets the upgrade policy to lazy_on_access.
   It then attempts to upgrade to an UNEMBEDDED v2 build (the
   `com.calimero.migration-suite-noabi` bundle, whose wasm carries no
-  `calimero_abi_v1` section - built before the embed step in build-wasms.sh).
+  `calimero_abi_v1` section - bundled with `cargo mero bundle --no-abi` in
+  build-wasms.sh).
 
   With no embedded ABI on the target, the node cannot prove the swap is a
   code-only activation rather than a needed migration, so
@@ -41,7 +42,7 @@ steps:
   - name: Install migration-suite-v1 on node 1
     type: install_application
     node: app-migration-missing-abi-1
-    path: dist/migration-suite-v1.mpk
+    path: dist/com.calimero.migration-suite-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -105,7 +106,7 @@ steps:
   - name: Install unembedded migration-suite-v2 (no ABI) on node 1
     type: install_application
     node: app-migration-missing-abi-1
-    path: apps/migrations/migration-suite-v2-add-field/res/migration-suite-noabi-2.0.0.mpk
+    path: dist/com.calimero.migration-suite-noabi-2.0.0.mpk
     dev: true
     outputs:
       app_v2_noabi: applicationId
