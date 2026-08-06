@@ -6,9 +6,9 @@
 //! file is what catches it.
 
 use calimero_storage::collections::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister,
-    Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
-    UnorderedSet, UserStorage, Vector,
+    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, GCounter,
+    LwwRegister, Ownable, PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet,
+    UnorderedMap, UnorderedSet, UserStorage, Vector, WriterSetCell,
 };
 use calimero_wasm_abi::abi_type::{AbiType, TypeRegistry};
 use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, TypeRef};
@@ -247,4 +247,24 @@ fn nested_crdts_recurse_without_special_handling() {
     assert_eq!(inner_crdt, Some(CrdtCollectionType::AuthoredVector));
     assert_eq!(inner_inner, None);
     assert!(matches!(inner_c, CollectionType::List { .. }));
+}
+
+// ── FrozenValue is transparent ──────────────────────────────────────────
+
+#[test]
+fn frozen_value_is_the_inner_type() {
+    // Borsh-transparent wrapper: no collection, no crdt_type - the ABI ref
+    // IS the inner type's ref, nested or scalar alike.
+    assert_eq!(ref_of::<FrozenValue<String>>(), ref_of::<String>());
+    assert_eq!(ref_of::<FrozenValue<Vec<u8>>>(), ref_of::<Vec<u8>>());
+}
+
+#[test]
+fn writer_set_cell_shares_the_shared_storage_shape() {
+    // PermissionedStorage is a thin wrapper over WriterSetCell; the storage
+    // layout is identical, so the ABI shape must be too.
+    assert_eq!(
+        ref_of::<WriterSetCell<LwwRegister<String>>>(),
+        ref_of::<SharedStorage<LwwRegister<String>>>()
+    );
 }
