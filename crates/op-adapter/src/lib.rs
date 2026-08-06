@@ -136,6 +136,32 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     }
 }
 
+/// Whether a join op's credential is certified for the key that is joining.
+///
+/// The projection has to reach the SAME verdict the apply path does, and for the
+/// same reason it exists there: join ops are cleartext, so any node can lift a
+/// credential out of another join and present it as its own. If the two planes
+/// disagree here, a replayed credential is refused a binding in the materialized
+/// rows and granted one in the folded view — the same split this whole change
+/// closes, running the other way.
+///
+/// The certificate names the namespace identity as `sign_pk` because that is the
+/// key that signs ops, so for an honest joiner this already holds.
+fn credential_is_the_joiners(op: &RootOp) -> bool {
+    match op {
+        RootOp::MemberJoined {
+            member, account, ..
+        }
+        | RootOp::MemberJoinedAt {
+            member, account, ..
+        }
+        | RootOp::MemberJoinedOpen {
+            member, account, ..
+        } => account.cert.sign_pk == *member,
+        _ => false,
+    }
+}
+
 /// Encode a per-group governance op ([`GroupOp`], already decrypted) as an
 /// [`OpPayload`] for `group`.
 ///
@@ -329,22 +355,43 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             signed_invitation,
             account,
             ..
-        } => Some(OpPayload::MemberJoinedWithDevice {
-            group: signed_invitation.invitation.group_id,
-            member: legacy_account_id(member),
-            role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
-            genesis: account.genesis,
-            chain: account.chain.clone(),
-            cert: account.cert,
-        }),
+        } => {
+            let group = signed_invitation.invitation.group_id;
+            let role =
+                GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role);
+            let member = legacy_account_id(member);
+            Some(if credential_is_the_joiners(op) {
+                OpPayload::MemberJoinedWithDevice {
+                    group,
+                    member,
+                    role,
+                    genesis: account.genesis,
+                    chain: account.chain.clone(),
+                    cert: account.cert,
+                }
+            } else {
+                // Membership stands, the device does not — the same verdict the
+                // apply path reaches, which is the whole requirement.
+                OpPayload::MemberAdded {
+                    group,
+                    member,
+                    role,
+                }
+            })
+        }
         // No membership half: an open-subgroup self-join is a PROOF of
         // inheritance, never a direct row (see `op_from_namespace_op`, which
         // folds this op's membership as a graph-only node for that reason). The
-        // credential it carries is still a real device link and folds as one.
-        RootOp::MemberJoinedOpen { account, .. } => Some(OpPayload::DeviceLinked {
-            genesis: account.genesis,
-            chain: account.chain.clone(),
-            cert: account.cert,
+        // credential it carries is still a real device link and folds as one —
+        // or, if it is not the joiner's, as the graph-only node it used to be.
+        RootOp::MemberJoinedOpen { account, .. } => Some(if credential_is_the_joiners(op) {
+            OpPayload::DeviceLinked {
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            }
+        } else {
+            OpPayload::Noop
         }),
         RootOp::GroupCreated {
             group_id,
@@ -382,14 +429,16 @@ mod tests {
     /// `payload_from_root_op` FOLDS, and the bridge deliberately still keys
     /// membership by `legacy_account_id(member)` until slice B moves the live plane
     /// too — so nothing here reads the credential, it only has to be present.
-    fn test_join_account() -> Box<calimero_governance_types::JoinAccountCredential> {
+    fn test_join_account_for(
+        sign_pk: PublicKey,
+    ) -> Box<calimero_governance_types::JoinAccountCredential> {
         let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
         let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
         Box::new(calimero_governance_types::JoinAccountCredential {
             cert: calimero_account::DeviceCert {
                 account: genesis.account_id(),
                 device: calimero_account::DeviceId::from([0x3E; 32]),
-                sign_pk: calimero_primitives::identity::PublicKey::from([0x7B; 32]),
+                sign_pk,
                 kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
                 key_epoch: 0,
                 device_epoch: 0,
@@ -896,6 +945,63 @@ mod tests {
         );
     }
 
+    /// A credential that is not the joiner's folds like the apply path refuses it.
+    ///
+    /// Both planes have to reach the same verdict. If the projection admitted a
+    /// lifted credential the apply path refuses, a replayed device would be bound
+    /// in the folded view and absent from the materialized rows — the same split
+    /// this encoder exists to close, running the other way.
+    #[test]
+    fn a_replayed_credential_folds_no_device_on_either_join_shape() {
+        use calimero_context_config::types::{GroupInvitationFromAdmin, SignedGroupOpenInvitation};
+
+        let m = PublicKey::from([7u8; 32]);
+        let stranger = PublicKey::from([8u8; 32]);
+        let gid = [0x44; 32];
+
+        // Open self-join: back to the graph-only node, no device.
+        assert_eq!(
+            payload_from_root_op(
+                &RootOp::MemberJoinedOpen {
+                    member: m,
+                    group_id: gid.into(),
+                    account: test_join_account_for(stranger),
+                },
+                PublicKey::from([1u8; 32])
+            ),
+            Some(OpPayload::Noop)
+        );
+
+        // Invitation join: the membership still stands, the device does not.
+        let signed_invitation = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0xA1; 32].into(),
+                group_id: ContextGroupId::from(gid),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 0,
+            },
+            inviter_signature: "deadbeef".to_string(),
+            application_id: None,
+            app_key: None,
+        };
+        assert_eq!(
+            payload_from_root_op(
+                &RootOp::MemberJoined {
+                    member: m,
+                    signed_invitation,
+                    account: test_join_account_for(stranger),
+                },
+                PublicKey::from([1u8; 32])
+            ),
+            Some(OpPayload::MemberAdded {
+                group: ContextGroupId::from(gid),
+                member: legacy_account_id(&m),
+                role: GroupMemberRole::Admin,
+            })
+        );
+    }
+
     #[test]
     fn root_op_encoder_mapping() {
         let admin = PublicKey::from([1u8; 32]);
@@ -925,7 +1031,7 @@ mod tests {
         // An open-subgroup self-join folds its CREDENTIAL and nothing else: the
         // membership is re-derived by the inheritance walk, so a direct row here
         // would outlive the anchor that grants it.
-        let joined_open = test_join_account();
+        let joined_open = test_join_account_for(m);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedOpen {
@@ -957,7 +1063,7 @@ mod tests {
             application_id: None,
             app_key: None,
         };
-        let invited = test_join_account();
+        let invited = test_join_account_for(m);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoined {
@@ -978,7 +1084,7 @@ mod tests {
         );
         // `MemberJoinedAt` (the timestamped invitation join `join_group` emits)
         // decodes identically — it is NOT out-of-model.
-        let invited_at = test_join_account();
+        let invited_at = test_join_account_for(m);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedAt {

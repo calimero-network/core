@@ -2073,8 +2073,9 @@ mod tests {
     /// FOLDS from an op, so the credential only has to be well-formed — except that
     /// the account it names is now the membership key, so it must be stable and
     /// readable, which is why the caller reads `cert.account` back off it.
-    fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential>
-    {
+    fn test_join_account_for(
+        sign_pk: PublicKey,
+    ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
         let root =
             calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
         let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
@@ -2083,10 +2084,7 @@ mod tests {
                 cert: calimero_account::DeviceCert {
                     account: genesis.account_id(),
                     device: calimero_account::DeviceId::from([0x3E; 32]),
-                    sign_pk: calimero_primitives::identity::PrivateKey::random(
-                        &mut rand::rngs::OsRng,
-                    )
-                    .public_key(),
+                    sign_pk,
                     kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
                     key_epoch: 0,
                     device_epoch: 0,
@@ -2148,7 +2146,7 @@ mod tests {
                 application_id: None,
                 app_key: None,
             },
-            account: test_join_account(),
+            account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
     }
 
@@ -2170,7 +2168,7 @@ mod tests {
         let member = PublicKey::from([0x55; 32]);
         let group = [0x33; 32];
 
-        let account = test_join_account();
+        let account = test_join_account_for(member);
         let op = op_from_namespace_op(
             &signed_root(
                 ns,
@@ -2224,7 +2222,7 @@ mod tests {
             app_key: None,
         };
 
-        let account = test_join_account();
+        let account = test_join_account_for(member);
         let op = op_from_namespace_op(
             &signed_root(
                 ns,
