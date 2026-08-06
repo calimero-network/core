@@ -215,6 +215,17 @@ impl<T: AbiType> AbiType for Option<T> {
     }
 }
 
+/// `Box<T>` is borsh-transparent (the pointee's bytes), so it describes as `T`.
+impl<T: AbiType> AbiType for Box<T> {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <T as AbiType>::type_ref(reg)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <T as AbiType>::register(reg);
+    }
+}
+
 /// `Result<T, E>` describes as `T`: errors ride the return envelope, never the
 /// type. `E` is unbounded because it is discarded, so aliased Results resolve.
 impl<T: AbiType, E> AbiType for Result<T, E> {
