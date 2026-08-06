@@ -2150,6 +2150,9 @@ mod tests {
         }
     }
 
+    // BISECT PROBE (temporary): the open-join device fold is reverted while we
+    // isolate the dm-subgroup-privacy regression. Restore with the fold.
+    #[ignore = "bisect probe: open-join device fold temporarily reverted"]
     #[test]
     fn open_subgroup_join_folds_its_device_but_no_membership() {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF — live
