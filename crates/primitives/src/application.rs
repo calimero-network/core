@@ -55,6 +55,13 @@ impl ApplicationId {
     pub const fn zero() -> Self {
         Self(Hash::zero())
     }
+
+    /// Bundle ids are version-stable: the package and signing key together
+    /// decide which app a bundle IS, so every later version reuses the pair.
+    #[cfg(feature = "borsh")]
+    pub fn for_bundle(package: &str, signer_id: &str) -> eyre::Result<Self> {
+        Ok(Self::from(*Hash::hash_borsh(&(package, signer_id))?))
+    }
 }
 
 /// Sentinel value representing "no application" or an uninitialized application ID.

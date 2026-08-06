@@ -30,7 +30,7 @@ steps:
   - name: Install scenario-shared-storage-v1 on node 1
     type: install_application
     node: app-migration-shared-1
-    path: dist/scenario-shared-storage-v1.mpk
+    path: dist/com.calimero.scenario-shared-storage-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -166,7 +166,7 @@ steps:
   - name: Install scenario-shared-storage-v2 on node 1
     type: install_application
     node: app-migration-shared-1
-    path: dist/scenario-shared-storage-v2.mpk
+    path: dist/com.calimero.scenario-shared-storage-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

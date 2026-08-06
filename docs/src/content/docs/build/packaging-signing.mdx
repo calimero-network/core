@@ -7,10 +7,9 @@ sidebar:
 
 import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-Once your app compiles, it still has to become something a node can install. That
-deliverable is an **`.mpk` bundle**: a single archive carrying your WASM, its ABI,
-the state schema, a `manifest.json`, and an Ed25519 signature. This page walks the
-builder workflow that produces one.
+Once your app compiles, it still has to become something a node can install.
+That deliverable is an **`.mpk` bundle**: a single archive carrying your WASM, its ABI, a `manifest.json`, and an Ed25519 signature.
+This page walks the builder workflow that produces one.
 
 The signing tool is `mero-sign` (`tools/mero-sign/`), also exposed as
 `cargo mero key` and `cargo mero sign`. The node side — how a bundle
@@ -73,10 +72,10 @@ detail.
 3. **Sign the manifest and create the `.mpk`.**
 
    Point `mero-sign sign` at your `manifest.json`. It derives the `signerId` from
-   the key, sets `minRuntimeVersion` if absent, canonicalizes the manifest with
-   RFC 8785 (JCS), signs the SHA-256 of those canonical bytes, and writes a
-   `signature` object back into the manifest. It then packages the bundle
-   directory into an `.mpk`.
+   the key, refuses to sign if `minRuntimeVersion` is absent (a signer must not
+   rewrite the document it signs), canonicalizes the manifest with RFC 8785 (JCS),
+   signs the SHA-256 of those canonical bytes, and writes a `signature` object
+   back into the manifest. It then packages the bundle directory into an `.mpk`.
 
    ```bash
    mero-sign sign bundle-temp/manifest.json --key my-signing-key.json
@@ -86,8 +85,8 @@ detail.
    ```
 
    The resulting `.mpk` is a gzip-compressed tar archive whose required entry is
-   `manifest.json`, alongside the WASM, ABI, state-schema, and migration artifacts
-   the manifest references.
+   `manifest.json`, alongside the WASM and ABI artifacts the manifest references.
+   `state-schema.json` is a build output only and is never staged into the bundle.
 
 4. **Install with `meroctl`.**
 

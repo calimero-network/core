@@ -66,7 +66,13 @@ fn run_inner(args: &BuildArgs, all_services: bool) -> Result<Vec<BuiltWasm>> {
 
     let mut built = Vec::with_capacity(targets.len());
     for target in targets {
-        built.push(build_one(&metadata, &target, profile, !profiling)?);
+        built.push(build_one(
+            &metadata,
+            &target,
+            profile,
+            !profiling,
+            args.no_abi,
+        )?);
     }
     Ok(built)
 }
@@ -113,7 +119,9 @@ fn resolve_targets(
                 root_manifest,
             )?
         };
-        return selected
+        // Two service names may point at the same crate (e.g. one wasm
+        // installed under two names): build it once, not once per service.
+        return dedup(selected)
             .iter()
             .map(|name| target_for_named(metadata, name))
             .collect();
@@ -164,6 +172,16 @@ fn select_service_builds(
         "--manifest-path matches no package in this workspace: point it at a member \
          crate, or at the workspace root to build all declared services, or pass `-p <crate>`"
     )
+}
+
+/// Drops repeat crate names, keeping first-seen order, so a crate named by
+/// two services is only ever a single build `Target`.
+fn dedup(names: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .filter(|n| seen.insert(n.clone()))
+        .collect()
 }
 
 /// meta::load's "no calimero table / no package id" error, which `build`
@@ -298,6 +316,7 @@ fn build_one(
     target: &Target,
     profile: &str,
     optimize: bool,
+    no_abi: bool,
 ) -> Result<BuiltWasm> {
     let crate_name = &target.crate_name;
     let underscored = crate_name.replace('-', "_");
@@ -315,8 +334,12 @@ fn build_one(
     // wasm behind on failure, which trips the CI ABI guard.
     let res_dir = target.crate_dir.join("res");
     std::fs::create_dir_all(&res_dir).wrap_err_with(|| format!("failed to create {res_dir}"))?;
-    let features = resolved_features(metadata, crate_name)?;
-    let abi_json = emit_abi(&target.crate_dir, &res_dir, &features)?;
+    let abi_json = if no_abi {
+        None
+    } else {
+        let features = resolved_features(metadata, crate_name)?;
+        emit_abi(&target.crate_dir, &res_dir, &features)?
+    };
 
     let wasm_path = res_dir.join(format!("{underscored}.wasm"));
     std::fs::copy(&artifact, &wasm_path)
@@ -337,15 +360,7 @@ fn build_one(
     // gate reads, which a state schema alone would drop.
     if let Some(abi_json) = &abi_json {
         println!("• embedding {abi_json} into {wasm_path}");
-        let mut manifest: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(abi_json).wrap_err_with(|| format!("failed to read {abi_json}"))?,
-        )
-        .wrap_err_with(|| format!("failed to parse {abi_json} as JSON"))?;
-        canonicalize_abi(&mut manifest);
-        let canonical = tempfile::NamedTempFile::new().wrap_err("failed to create temp file")?;
-        serde_json::to_writer(&canonical, &manifest)
-            .wrap_err("failed to write canonicalized ABI")?;
-        mero_abi::run_embed(wasm_path.as_std_path(), canonical.path())?;
+        mero_abi::run_embed(wasm_path.as_std_path(), abi_json.as_std_path())?;
     }
 
     Ok(BuiltWasm {
@@ -353,25 +368,6 @@ fn build_one(
         wasm: wasm_path.into_std_path_buf(),
         abi_json: abi_json.map(Utf8PathBuf::into_std_path_buf),
     })
-}
-
-/// Name-sort `methods` and `events` so `validate_manifest` accepts a manifest
-/// an older SDK emitted in source order. Nothing else is touched.
-pub fn canonicalize_abi(manifest: &mut serde_json::Value) {
-    let name_of = |v: &serde_json::Value| {
-        v.get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_owned()
-    };
-    for key in ["methods", "events"] {
-        if let Some(arr) = manifest
-            .get_mut(key)
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            arr.sort_by_key(&name_of);
-        }
-    }
 }
 
 /// Compile every target in one invocation. Cargo rejects a plain `--features`
@@ -487,9 +483,8 @@ strip = false"#;
 #[cfg(test)]
 mod tests {
     use camino::Utf8PathBuf;
-    use serde_json::json;
 
-    use super::{canonicalize_abi, compose_rustflags, select_service_builds, write_state_schema};
+    use super::{compose_rustflags, dedup, select_service_builds, write_state_schema};
 
     /// res/ is not cleaned between builds, so a schema left by an earlier build
     /// must not survive a build that can extract none - `bundle` ships res/ as-is,
@@ -575,61 +570,18 @@ mod tests {
     }
 
     #[test]
+    fn dedup_builds_a_shared_crate_once_keeping_first_seen_order() {
+        // Two services ("store-a", "store-b") both named `suite` as their crate.
+        assert_eq!(
+            dedup(vec!["suite".into(), "other".into(), "suite".into()]),
+            vec!["suite".to_string(), "other".to_string()]
+        );
+    }
+
+    #[test]
     fn selection_rejects_unmatched_manifest_path() {
         // --manifest-path given, not root, matched no member: error, not build-all.
         let err = select_service_builds(&services(), None, None, false).unwrap_err();
         assert!(err.to_string().contains("--manifest-path"));
-    }
-
-    fn names(v: &serde_json::Value, key: &str) -> Vec<String> {
-        v[key]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|m| m["name"].as_str().unwrap().to_owned())
-            .collect()
-    }
-
-    #[test]
-    fn sorts_unsorted_methods_and_events() {
-        // Mirrors the demo-app fixture: update_if_exists precedes get_or_insert.
-        let mut m = json!({
-            "methods": [
-                { "name": "update_if_exists", "kind": "call" },
-                { "name": "get_or_insert", "kind": "call" },
-            ],
-            "events": [
-                { "name": "Updated" },
-                { "name": "Created" },
-            ],
-        });
-        canonicalize_abi(&mut m);
-        assert_eq!(names(&m, "methods"), ["get_or_insert", "update_if_exists"]);
-        assert_eq!(names(&m, "events"), ["Created", "Updated"]);
-    }
-
-    #[test]
-    fn missing_keys_are_a_no_op() {
-        let mut m = json!({ "types": { "State": {} } });
-        let before = m.clone();
-        canonicalize_abi(&mut m);
-        assert_eq!(m, before);
-    }
-
-    #[test]
-    fn only_the_two_arrays_are_reordered() {
-        // `types` object and per-method inner content must be left untouched.
-        let mut m = json!({
-            "methods": [
-                { "name": "b", "params": ["z", "a"] },
-                { "name": "a" },
-            ],
-            "types": { "Zeta": {}, "Alpha": {} },
-        });
-        canonicalize_abi(&mut m);
-        assert_eq!(names(&m, "methods"), ["a", "b"]);
-        // Inner params of the (now second) method keep their original order.
-        assert_eq!(m["methods"][1]["params"], json!(["z", "a"]));
-        assert_eq!(m["types"], json!({ "Zeta": {}, "Alpha": {} }));
     }
 }

@@ -43,7 +43,7 @@ steps:
   - name: Install migration-suite-v1 on node 1
     type: install_application
     node: app-migration-status-1
-    path: dist/migration-suite-v1.mpk
+    path: dist/com.calimero.migration-suite-1.0.0.mpk
     dev: true
     outputs:
       app_v1: applicationId
@@ -141,7 +141,7 @@ steps:
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-status-1
-    path: dist/migration-suite-v2-add-field.mpk
+    path: dist/com.calimero.migration-suite-2.0.0.mpk
     dev: true
     outputs:
       app_v2: applicationId

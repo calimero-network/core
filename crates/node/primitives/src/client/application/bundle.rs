@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::bundle::{
     verify_manifest_signature, BundleArtifact, BundleManifest, ManifestVerification,
+    MAX_MANIFEST_BYTES,
 };
 use eyre::bail;
 use flate2::read::GzDecoder;
@@ -21,10 +22,6 @@ use tracing::{debug, warn};
 /// How far the manifest scan may decompress. It runs before any signature is
 /// checked, and the manifest must appear within it or the archive is refused.
 const MAX_MANIFEST_SCAN_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Bounds the JSON parse that follows, which the stream cap does not: a `Value`
-/// tree costs several times the bytes it was built from.
-const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 /// How far any one archive walk may decompress. Every read walks the whole
 /// archive, so this bounds a bundle's total decompressed size.

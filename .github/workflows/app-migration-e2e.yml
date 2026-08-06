@@ -95,11 +95,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: app-migration-wasm-fixtures
-          # Repo-root-relative roots so paths restore verbatim. The unembedded
-          # fixture lands beside its suite, not in dist/.
+          # Repo-root-relative roots so paths restore verbatim.
           path: |
             apps/migrations/**/res/*.wasm
-            apps/migrations/**/res/*.mpk
             dist/*.mpk
           retention-days: 1
           if-no-files-found: error

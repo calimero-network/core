@@ -37,11 +37,13 @@ Output: `res/scaffolding_e2e.wasm`
 
 ### Build bundle (.mpk)
 
+`[package.metadata.calimero]` declares two services, `store-a` and `store-b`, both backed by this crate's own wasm - built once and staged under both names, exercising merod's multi-service install + `service_name` selection path (`workflows/group-multi-service.yml`).
+
 ```bash
-cargo mero bundle --dev
+cargo mero bundle --dev --no-icon --app-version 0.1.0
 ```
 
-Output: `dist/com.calimero.scaffolding-e2e.mpk` (at the repo root)
+Output: `dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk`, with `services/store-a.wasm` and `services/store-b.wasm` inside.
 
 ## State Structure
 

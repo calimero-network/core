@@ -11,6 +11,14 @@ import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components'
 It scaffolds an app, compiles it to `wasm32-unknown-unknown` with the ABI embedded, runs the node-free test suite, and packages a signed `.mpk` bundle ready for `meroctl app install`.
 One tool covers the whole path from `cargo mero new` to an installable bundle, replacing the hand-written `build.sh` / `build-bundle.sh` scripts each app used to carry.
 
+<Aside type="caution" title="Breaking changes">
+- `bundle` now requires an icon decision: `icon = "<path>"` (or `"default"`) in `[package.metadata.calimero]`, or `--no-icon`. An existing app build fails until one is chosen.
+- Default output is now `dist/<package>-<appVersion>.mpk`, previously `dist/<package>.mpk`.
+- `cargo mero abi extract --verify` is gone; it was bound but never actually used.
+- `BundleManifest.migrations` is gone. Real migrations are ABI edges from `#[app::state(version = N, migration = ...)]`, read by `upgrade_group`.
+- The manifest now always declares `handlers.slug`, defaulting to the package id. An app that relied on the desktop's name-derived kebab-case fallback should set `slug` explicitly in `[package.metadata.calimero]` to keep its existing deep links.
+</Aside>
+
 ## Install
 
 `cargo mero` is a Cargo subcommand: install the `cargo-mero` binary and Cargo picks it up as `cargo mero`.
@@ -51,6 +59,7 @@ The optimizer is compiled into `cargo-mero`, so there is nothing to install on `
 | `cargo mero abi` | ABI utilities: `extract`, `state`, `types`, `inspect`, `embed`, `diff`. |
 | `cargo mero key` | Signing-key utilities: `generate`, `derive-signer-id`. |
 | `cargo mero sign` | Sign a bundle `manifest.json` in place. |
+| `cargo mero publish` | Publish a signed `.mpk` to the app registry. |
 | `cargo mero guide` | Print the end-to-end workflow guide. |
 
 ## The workflow
@@ -61,8 +70,8 @@ The five steps below match `cargo mero guide` (the canonical source; run it any 
 cargo mero new my-app        # 1. scaffold an app (state, events, logic, tests)
 cargo mero build             # 2. compile -> wasm-opt -> embed ABI (res/my_app.wasm)
 cargo mero test              # 3. run TestHost + convergence tests (no node needed)
-cargo mero bundle --dev      # 4. build all services, write manifest.json, sign, tar dist/<package>.mpk
-meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (merod)
+cargo mero bundle --dev --no-icon      # 4. build all services, write manifest.json, sign, tar dist/<package>-<version>.mpk
+meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a node (merod)
 ```
 
 <Steps>
@@ -110,29 +119,35 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
    ```
 
 4. **Bundle.**
-   Builds every service, stages the wasm/abi files, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk` at `dist/<package>.mpk`.
-   Pass a signing method: `--dev` (local) or `--key <file>` (production).
+   Builds every service, stages the wasm/abi files, writes `manifest.json`, signs it, and packages everything into a tar.gz `.mpk` at `dist/<package>-<appVersion>.mpk`.
+   Pass a signing method: `--dev` (local) or `--key <file>` (production), and an icon: `icon = "<path>"` in `[package.metadata.calimero]`, or `--no-icon`.
 
    ```
-   $ cargo mero bundle --dev
+   $ cargo mero bundle --dev --no-icon
    • staging bundle files in ...
    • writing manifest.json
-   • signing manifest.json with the DEV key
    ============================================================
      WARNING: signing with the DEVELOPMENT key
      The dev key is well-known and public: fine locally, REFUSED
      by the registry. For a publishable bundle, use --key.
    ============================================================
-   • packaging dist/com.example.my-app.mpk
+   • signing manifest.json with the DEV key
+   • packaging dist/com.example.my-app-0.1.0.mpk
 
-   bundle:     dist/com.example.my-app.mpk
-   package:    com.example.my-app
-   appVersion: 0.1.0
-   signerId:   did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd
+   ✓ bundle  dist/com.example.my-app-0.1.0.mpk  (12.3 KiB)
+
+     Name           My App
+     Package        com.example.my-app
+     Version        0.1.0
+     Application    7E6eADgrrxr98AUpFUaisPHAvwZofq41xqDD9357ctU9
+     Signer         did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd
    ```
 
+   The Application line is the `ApplicationId` a context binds to; see [Signing](#signing) for how `package` and `signerId` derive it.
+   Both are printed in full so you can paste them into a command or compare them against a previous release.
+
 5. **Install.**
-   `meroctl app install --path dist/<package>.mpk` installs the bundle on a running `merod` node.
+   `meroctl app install --path dist/<package>-<appVersion>.mpk` installs the bundle on a running `merod` node.
    The node derives the `ApplicationId` from the bundle's `package` and signer (see [Signing](#signing)).
 
 </Steps>
@@ -143,7 +158,7 @@ meroctl app install --path dist/<package>.mpk ...   # 5. install on a node (mero
 
 ```bash
 cargo mero build --features schema_v2
-cargo mero bundle --dev --features "schema_v2 telemetry" --no-default-features
+cargo mero bundle --dev --no-icon --features "schema_v2 telemetry" --no-default-features
 ```
 
 They reach `cargo build` and the `cargo metadata` call the ABI is emitted against, so the embedded `calimero_abi_v1` section always describes the schema the bytecode was compiled with.
@@ -177,12 +192,22 @@ Keys are kebab-case.
 | `name` | `metadata.name` | the crate name |
 | `description` | `metadata.description` | omitted |
 | `author` | `metadata.author` | omitted |
+| `icon` | `metadata.icon` | required unless `--no-icon` |
+| `license` | `metadata.license` | omitted |
+| `tags` | `metadata.tags` | empty |
 | `min-runtime-version` | `minRuntimeVersion` | `0.1.0` |
+| `slug` | `handlers.slug` | `package` |
 | `frontend` | `links.frontend` | omitted |
-| `services` | `services[]` | empty (workspace table only) |
+| `github` | `links.github` | omitted |
+| `docs` | `links.docs` | omitted |
+| `services` | `services[]` | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
+
+`icon` is a filesystem path (resolved against the directory of the table that declares it), not the manifest value itself: `cargo mero bundle` reads the PNG and writes a base64-encoded `data:image/png;base64,...` URI into `metadata.icon`.
+`slug` names the deep-link handler (`https://links.calimero.network/<slug>/...`) and defaults to `package` when unset.
+`author` is not just displayed: the registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) on publish, and refuses a new version of the package when it doesn't match.
 
 The app version (`manifest.json` `appVersion`) is not a metadata key.
-It defaults to the crate's `[package] version` and is overridable with `cargo mero bundle --app-version <v>`.
+It defaults to the crate's `[package] version` and is overridable with `cargo mero bundle --app-version <v>` or `--bump <patch|minor|major>` (the next version published to the registry).
 The `manifest.json` `version` field is the manifest schema version and is always `1.0`.
 
 ```toml
@@ -190,6 +215,8 @@ The `manifest.json` `version` field is the manifest schema version and is always
 package = "com.example.my-app"
 name = "My App"
 description = "A collaborative example app"
+icon = "assets/icon.png"
+license = "MIT"
 min-runtime-version = "0.7.0"
 frontend = "https://my-app.example.com"
 ```
@@ -197,7 +224,7 @@ frontend = "https://my-app.example.com"
 ### Multi-service workspaces
 
 A workspace that ships several wasm services declares them under `[workspace.metadata.calimero]`, which wins over a `[package.metadata.calimero]` table when both are present.
-Each `services` entry maps a bundle service `name` to the `crate` that builds it; `services` under a `[package.metadata.calimero]` table is rejected.
+Each `services` entry maps a bundle service `name` to the `crate` that builds it.
 The bundle then emits `services/<name>.wasm` + `services/<name>-abi.json` per service instead of a top-level `app.wasm` / `abi.json`.
 
 ```toml
@@ -206,6 +233,7 @@ The bundle then emits `services/<name>.wasm` + `services/<name>-abi.json` per se
 package = "network.calimero.mero-drive"
 name = "Mero Drive"
 description = "Collaborative file storage"
+icon = "assets/icon.png"
 min-runtime-version = "0.7.0"
 frontend = "https://drive.calimero.network"
 
@@ -216,6 +244,23 @@ crate = "mero-drive-service"
 [[workspace.metadata.calimero.services]]
 name = "index"
 crate = "mero-index-service"
+```
+
+A crate that is a member of a larger workspace (and so cannot own the workspace-root table) may instead declare `services` under its own `[package.metadata.calimero]`.
+A `crate` entry may name the declaring package itself; two entries naming the same crate build its wasm once and stage it under both service names:
+
+```toml
+[package.metadata.calimero]
+package = "com.example.my-suite"
+min-runtime-version = "0.7.0"
+
+[[package.metadata.calimero.services]]
+name = "store-a"
+crate = "my-suite"
+
+[[package.metadata.calimero.services]]
+name = "store-b"
+crate = "my-suite"
 ```
 
 ## Signing
@@ -230,7 +275,7 @@ There are two kinds of key:
   A private Ed25519 key that only you hold, for anything you publish or install against a registry.
   Generate one with `cargo mero key generate -o my-key.json`.
 
-In CI, inject the key rather than checking it in: when neither `--key` nor `--dev` is passed, `bundle` reads `MERO_SIGN_KEY` as the path to a key file.
+In CI, inject the key rather than checking it in: when neither `--key` nor `--dev` is passed, both `bundle` and `sign` read `MERO_SIGN_KEY` as the path to a key file.
 
 ```bash
 export MERO_SIGN_KEY="$RUNNER_TEMP/mero-key.json"
@@ -245,6 +290,19 @@ Pick the production key before your first published release and keep signing wit
 </Aside>
 
 Full details - key generation, the `did:key` derivation, and how package + signer become the `ApplicationId` - are in the toolchain's [SIGNING.md](https://github.com/calimero-network/core/blob/master/tools/cargo-mero/SIGNING.md).
+
+## Publishing to the registry
+
+`cargo mero publish <mpk>` uploads a signed `.mpk` to the Calimero App Registry.
+It requires the `CALIMERO_API_KEY` environment variable; the registry base URL defaults to `https://apps.calimero.network` and is overridable with `CALIMERO_REGISTRY_URL`.
+
+```bash
+cargo mero bundle --key my-key.json --bump patch   # fetch and use the next patch version
+export CALIMERO_API_KEY=...
+cargo mero publish dist/com.example.my-app-1.2.4.mpk
+```
+
+The registry refuses bundles signed with the development key, so publishing always needs a production key.
 
 ## What gets embedded
 
