@@ -18,7 +18,7 @@ use crate::{
     ApplyError, BindingRejected, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
     NamespaceRepository, ReentryRepository,
 };
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{JoinAccountCredential, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
@@ -28,7 +28,7 @@ pub(crate) fn apply(
     op: &SignedNamespaceOp,
     member: PublicKey,
     group_id: [u8; 32],
-    account: &calimero_context_client::local_governance::JoinAccountCredential,
+    account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -160,10 +160,9 @@ fn membership_path_kind(path: &MembershipPath) -> AtCutMembershipPath {
 pub(super) fn record_join_credential(
     ctx: &mut NamespaceApplyCtx<'_>,
     member: PublicKey,
-    account: &calimero_context_client::local_governance::JoinAccountCredential,
+    account: &JoinAccountCredential,
 ) -> EyreResult<()> {
-    let namespace =
-        calimero_context_config::types::ContextGroupId::from(ctx.namespace_id().to_bytes());
+    let namespace = ContextGroupId::from(ctx.namespace_id().to_bytes());
 
     // The credential has to be the JOINER'S OWN, and this is the only check that
     // establishes it. `apply_link` verifies the certificate against the genesis —
