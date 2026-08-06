@@ -113,9 +113,13 @@ type AuthCutContext = (
 /// precisely what `denied_members` and `accounts_by_endorsing_member` avoid: it can
 /// only be populated while observing bindings, so it comes back empty after a
 /// projection rebuild and silently reverts every device to the fallback.
-fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> AccountId {
+fn account_for_author(
+    view: &calimero_authz::AclView,
+    key: &PublicKey,
+    root: Option<(ContextGroupId, AccountId)>,
+) -> AccountId {
     let own = legacy_account_id(key);
-    if view_knows_author(view, &own) {
+    if view_knows_author(view, &own, root) {
         return own;
     }
     view.devices
@@ -130,10 +134,25 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Accoun
 /// admin, with no member row, and resolving such a key through a device binding
 /// would strip its admin authority exactly as it stripped membership above. Any
 /// authority at all is enough to say "this key speaks for itself".
-fn view_knows_author(view: &calimero_authz::AclView, account: &AccountId) -> bool {
+///
+/// `root` is the namespace's GENESIS admin, and it has to be here even though it is
+/// not folded state — it is the one authority no op carries, so it is the one
+/// principal the folded checks above structurally cannot see. A namespace founder
+/// that never appears in a membership op, never authored a `SubgroupCreated`, and
+/// never changed the admin (all three ordinary) is known to this view ONLY through
+/// this parameter. Leaving it out resolved that founder through its own device
+/// binding the moment one folded, to an `AccountId` that matches neither the
+/// membership rows nor `root` itself — both keyed by the stand-in — so the founder
+/// stopped being a member of its own namespace's open subgroups.
+fn view_knows_author(
+    view: &calimero_authz::AclView,
+    account: &AccountId,
+    root: Option<(ContextGroupId, AccountId)>,
+) -> bool {
     view.is_scope_member(account)
         || view.is_root_admin(account)
         || view.group_admin.values().any(|admin| admin == account)
+        || root.is_some_and(|(_, genesis_admin)| genesis_admin == *account)
 }
 
 fn build_op(
@@ -1595,7 +1614,7 @@ impl ScopeProjections {
         if view.as_ref().is_some_and(|v| {
             v.is_member_at_cut(
                 group,
-                &account_for_author(v, author),
+                &account_for_author(v, author, root),
                 root,
                 default_cap_base,
             )
@@ -1741,7 +1760,7 @@ impl ScopeProjections {
         Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
             v.is_member_at_cut(
                 group,
-                &account_for_author(&v, author),
+                &account_for_author(&v, author, root),
                 root,
                 default_cap_base,
             )
@@ -1763,7 +1782,7 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
-        Some(view.is_authorized_admin(group, &account_for_author(&view, author), root))
+        Some(view.is_authorized_admin(group, &account_for_author(&view, author, root), root))
     }
 
     /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
@@ -1780,7 +1799,7 @@ impl ScopeProjections {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
         Some(view.member_path_at_cut(
             group,
-            &account_for_author(&view, member),
+            &account_for_author(&view, member, root),
             root,
             default_cap_base,
         ))
@@ -1802,10 +1821,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        if view.is_authorized_admin(group, &account_for_author(&view, author), root) {
+        if view.is_authorized_admin(group, &account_for_author(&view, author, root), root) {
             return Some(true);
         }
-        let folded = view.capability(&group, &account_for_author(&view, author));
+        let folded = view.capability(&group, &account_for_author(&view, author, root));
         let effective = if folded != 0 {
             folded
         } else {
@@ -1959,9 +1978,17 @@ impl ScopeProjections {
             None => 0,
         };
         let view = self.acl_view_at(&scope, heads);
+        // Resolved exactly as the gates do, so a diagnostic can never disagree
+        // with the decision it is meant to explain.
+        let root_group = ContextGroupId::from(ns_bytes);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
         let author_in_any = view
             .as_ref()
-            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author)));
+            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author, root)));
         // Is the DECISION group folded at all, and how big? Distinguishes
         // "subgroup membership never folded" (group absent / size 0 — a
         // decrypt/sync gap) from "folded but author absent" (re-add / deny-list).
@@ -2150,9 +2177,6 @@ mod tests {
         }
     }
 
-    // BISECT PROBE (temporary): the open-join device fold is reverted while we
-    // isolate the dm-subgroup-privacy regression. Restore with the fold.
-    #[ignore = "bisect probe: open-join device fold temporarily reverted"]
     #[test]
     fn open_subgroup_join_folds_its_device_but_no_membership() {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF — live

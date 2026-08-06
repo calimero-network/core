@@ -384,11 +384,15 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         // folds this op's membership as a graph-only node for that reason). The
         // credential it carries is still a real device link and folds as one —
         // or, if it is not the joiner's, as the graph-only node it used to be.
-        // BISECT PROBE (temporary): open-join credentials are NOT folded, so this
-        // op is the graph-only node it was before this branch. Invitation joins
-        // still fold theirs. Reverting this half isolates whether the
-        // dm-subgroup-privacy regression comes from the open-join fold.
-        RootOp::MemberJoinedOpen { .. } => Some(OpPayload::Noop),
+        RootOp::MemberJoinedOpen { account, .. } => Some(if credential_is_the_joiners(op) {
+            OpPayload::DeviceLinked {
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            }
+        } else {
+            OpPayload::Noop
+        }),
         RootOp::GroupCreated {
             group_id,
             parent_id,
@@ -1024,18 +1028,24 @@ mod tests {
                 policy_bytes: vec![1, 2, 3],
             })
         );
-        // BISECT PROBE (temporary): open joins fold no device while we isolate the
-        // dm-subgroup-privacy regression, so this is the graph-only node again.
+        // An open-subgroup self-join folds its CREDENTIAL and nothing else: the
+        // membership is re-derived by the inheritance walk, so a direct row here
+        // would outlive the anchor that grants it.
+        let joined_open = test_join_account_for(m);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedOpen {
                     member: m,
                     group_id: gid.into(),
-                    account: test_join_account_for(m),
+                    account: joined_open.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::Noop)
+            Some(OpPayload::DeviceLinked {
+                genesis: joined_open.genesis,
+                chain: joined_open.chain.clone(),
+                cert: joined_open.cert,
+            })
         );
         // Invitation-based join: group_id + role decoded off the admin-signed
         // invitation (invited_role 0 = Admin). The joiner can't escalate — the

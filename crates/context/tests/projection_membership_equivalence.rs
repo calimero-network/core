@@ -802,10 +802,14 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         .unwrap();
 
     let mut proj = ScopeProjections::new();
+    // The SUBGROUP IS CREATED BY THE JOINER, not the admin — as in the scenario,
+    // where node-2 creates the Open subgroup. That matters: the creator becomes
+    // the folded `group_admin`, so the namespace admin ends up with NO folded
+    // presence at all and is reachable only through the out-of-band `root`.
     let s2 = fold_subgroup_structure(
         &mut proj,
         ns.to_bytes(),
-        admin,
+        joiner,
         subgroup,
         [0xB0; 32],
         [0xBF; 32],
@@ -816,6 +820,40 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         proj.member_at_cut(&store, subgroup, &admin, &[s2]),
         Some(true),
         "baseline: the root admin reaches an Open child by inheritance"
+    );
+
+    // The ADMIN's OWN device folds — the case that matters. The genesis admin has
+    // no membership OP anywhere: it is seeded as a store row and reaches the
+    // folded view only through the out-of-band `root` parameter, keyed by
+    // `legacy_account_id`. So it is exactly the principal `account_for_author`'s
+    // own precedence guard cannot see.
+    let admin_join_open = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns.to_bytes().into(),
+        vec![],
+        7,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: admin,
+            group_id: subgroup.to_bytes().into(),
+            account: real_join_account_for(&admin, [0x7A; 32]),
+        }),
+    )
+    .expect("sign admin open-join");
+    let id0 = [0xB7; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &admin_join_open,
+        None,
+        id0,
+        hlc(1),
+        &[s2],
+    ));
+
+    assert_eq!(
+        proj.member_at_cut(&store, subgroup, &admin, &[id0]),
+        Some(true),
+        "folding the admin's OWN device must not un-member it: membership on this \
+         plane is keyed by the stand-in, and the genesis admin is known only \
+         through the out-of-band root"
     );
 
     // The joiner joins the namespace carrying a credential that really folds.

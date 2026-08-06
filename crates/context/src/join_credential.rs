@@ -79,9 +79,18 @@ pub fn build(
 
     Ok(Box::new(JoinAccountCredential {
         genesis: enrolled.genesis,
-        // Epoch 0 with an empty chain: the account root has not rotated, so there
-        // are no handoffs for a verifier to walk. Same shape as every other
-        // credential this node mints today.
+        // Both epochs above are 0 and the chain is empty, and that is a guarantee
+        // rather than an assumption: nothing in the tree rotates a node's OWN
+        // account root. `RootKeyHandoff` is produced by no node-side flow, so a
+        // root this node minted has never advanced past epoch 0 and there are no
+        // handoffs for a verifier to walk. `ensure_enrolled` likewise returns the
+        // same device on a rejoin rather than bumping its epoch, and re-presenting
+        // an identical credential is admitted rather than refused as stale.
+        //
+        // When rotation does arrive, both epochs have to be read from the group's
+        // own binding rows (`account_key` for the key epoch, `raw_binding` for the
+        // device epoch) — a first join has no such rows to read, so that is a
+        // different function, not a bigger one.
         chain: vec![],
         cert,
     }))
