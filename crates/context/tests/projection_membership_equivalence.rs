@@ -32,6 +32,31 @@ use core::num::NonZeroU128;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
+/// A joiner credential. Note this test asserts the projection's fold matches the
+/// LIVE membership resolver — and the projection now keys `MemberAdded` by
+/// `cert.account` rather than a key-derived stand-in, so the account here is
+/// load-bearing, not filler.
+fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    use calimero_primitives::identity::PrivateKey;
+    let root = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+                sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0x11; 64],
+            },
+            genesis,
+            chain: vec![],
+        },
+    )
+}
+
 fn store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -214,6 +239,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .expect("sign join_ns");
@@ -231,6 +257,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .expect("sign join_sub");
@@ -367,6 +394,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -387,6 +415,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -445,6 +474,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -525,6 +555,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -537,6 +568,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -633,6 +665,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: joiner,
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -645,6 +678,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner,
             group_id: subgroup.to_bytes().into(),
+            account: test_join_account(),
         }),
     )
     .unwrap();
@@ -697,5 +731,172 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[id_sub_join]),
         Some(true),
         "after refreshing the durable ancestor, the authoritative resolver must grant"
+    );
+}
+
+/// A credential that VERIFIES and is certified for `sign_pk`, so folding it
+/// actually inserts a device. The filler fixture above cannot: `fold_device_link`
+/// checks the certificate, so a `[0x11; 64]` signature is dropped before any
+/// device lands.
+fn real_join_account_for(
+    sign_pk: &PublicKey,
+    device: [u8; 32],
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    let root_sk = PrivateKey::random(&mut OsRng);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let cert = calimero_account::sign_device_cert(
+        &root_sk,
+        genesis.account_id(),
+        calimero_account::DeviceId::from(device),
+        sign_pk,
+        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        0,
+        0,
+    )
+    .expect("sign the device cert");
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            cert,
+        },
+    )
+}
+
+/// Folding a joiner's DEVICE must not disturb who is a MEMBER.
+///
+/// The dm-subgroup-privacy shape: the namespace admin holds no direct row in an
+/// Open subgroup and reaches it purely by the inheritance walk, while a joiner in
+/// the same namespace carries a credential that folds. If the device half
+/// perturbs the membership half — through `account_for_author`'s precedence, the
+/// enumeration, or the walk — the admin stops resolving as a member and every
+/// projection-backed membership read for that subgroup denies.
+#[test]
+fn a_folded_join_device_does_not_hide_an_inherited_admin() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner = joiner_sk.public_key();
+
+    let ns = ContextGroupId::from([0x31; 32]);
+    let subgroup = ContextGroupId::from([0x32; 32]);
+
+    // The admin is a direct member of the ROOT ONLY — its subgroup access is
+    // inherited, exactly like the namespace owner in the scenario.
+    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &meta(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
+        .unwrap();
+
+    let mut proj = ScopeProjections::new();
+    // The SUBGROUP IS CREATED BY THE JOINER, not the admin — as in the scenario,
+    // where node-2 creates the Open subgroup. That matters: the creator becomes
+    // the folded `group_admin`, so the namespace admin ends up with NO folded
+    // presence at all and is reachable only through the out-of-band `root`.
+    let s2 = fold_subgroup_structure(
+        &mut proj,
+        ns.to_bytes(),
+        joiner,
+        subgroup,
+        [0xB0; 32],
+        [0xBF; 32],
+    );
+
+    // Baseline: before any join folds, the admin inherits into the subgroup.
+    assert_eq!(
+        proj.member_at_cut(&store, subgroup, &admin, &[s2]),
+        Some(true),
+        "baseline: the root admin reaches an Open child by inheritance"
+    );
+
+    // The ADMIN's OWN device folds — the case that matters. The genesis admin has
+    // no membership OP anywhere: it is seeded as a store row and reaches the
+    // folded view only through the out-of-band `root` parameter, keyed by
+    // `legacy_account_id`. So it is exactly the principal `account_for_author`'s
+    // own precedence guard cannot see.
+    let admin_join_open = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns.to_bytes().into(),
+        vec![],
+        7,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: admin,
+            group_id: subgroup.to_bytes().into(),
+            account: real_join_account_for(&admin, [0x7A; 32]),
+        }),
+    )
+    .expect("sign admin open-join");
+    let id0 = [0xB7; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &admin_join_open,
+        None,
+        id0,
+        hlc(1),
+        &[s2],
+    ));
+
+    assert_eq!(
+        proj.member_at_cut(&store, subgroup, &admin, &[id0]),
+        Some(true),
+        "folding the admin's OWN device must not un-member it: membership on this \
+         plane is keyed by the stand-in, and the genesis admin is known only \
+         through the out-of-band root"
+    );
+
+    // The joiner joins the namespace carrying a credential that really folds.
+    let join_ns = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner,
+            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            account: real_join_account_for(&joiner, [0x3E; 32]),
+        }),
+    )
+    .expect("sign join_ns");
+    let id1 = [0xB1; 32];
+    proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[s2]));
+
+    // ...and then into the Open subgroup by inheritance, credential and all.
+    let join_sub = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes().into(),
+        vec![],
+        2,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: joiner,
+            group_id: subgroup.to_bytes().into(),
+            account: real_join_account_for(&joiner, [0x3F; 32]),
+        }),
+    )
+    .expect("sign join_sub");
+    let id2 = [0xB2; 32];
+    proj.ingest_op(&op_from_namespace_op(&join_sub, None, id2, hlc(2), &[id1]));
+
+    assert_eq!(
+        proj.member_at_cut(&store, subgroup, &admin, &[id2]),
+        Some(true),
+        "the admin's inherited membership must survive another member's device \
+         folding — this is what dm-subgroup-privacy waits on"
+    );
+    assert_eq!(
+        proj.member_at_cut(&store, ns, &admin, &[id2]),
+        Some(true),
+        "and its direct root membership too"
     );
 }

@@ -136,6 +136,54 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
     }
 }
 
+/// Whether a join op's credential is admissible **on the op's own bytes** — the
+/// one predicate both the projection encoder and the governance apply path use.
+///
+/// Two questions, and both have to be asked in both places or the planes split:
+///
+/// 1. **Is it the joiner's?** Join ops are cleartext, so any node can lift a
+///    credential out of another join and present it as its own; `op.signer ==
+///    member` proves the envelope, never the payload. The certificate names the
+///    namespace identity as `sign_pk` because that is the key that signs ops, so
+///    for an honest joiner this already holds.
+/// 2. **Is it internally valid?** `verify_device_cert` checks that the genesis
+///    hashes to the account the certificate claims and that the certificate is
+///    signed by the root key its chain reaches — the same call `apply_link` makes.
+///
+/// Deliberately **op-local only**. Revocation and epoch supersession are stateful,
+/// so they cannot be answered from the op alone; the apply path answers them from
+/// its rows and the projection from its fold, and both refuse the same
+/// credentials. Keeping this function to the decidable half is what lets one
+/// predicate serve both without either pretending to know the other's state.
+#[must_use]
+pub fn join_credential_is_the_joiners(
+    member: &PublicKey,
+    genesis: &calimero_account::AccountGenesis,
+    chain: &[calimero_account::RootKeyHandoff],
+    cert: &calimero_account::DeviceCert,
+) -> bool {
+    cert.sign_pk == *member
+        && calimero_account::verify_device_cert(cert.account, genesis, chain, cert).is_ok()
+}
+
+/// [`join_credential_is_the_joiners`] applied to whichever join variant `op` is.
+fn credential_is_the_joiners(op: &RootOp) -> bool {
+    match op {
+        RootOp::MemberJoined {
+            member, account, ..
+        }
+        | RootOp::MemberJoinedAt {
+            member, account, ..
+        }
+        | RootOp::MemberJoinedOpen {
+            member, account, ..
+        } => {
+            join_credential_is_the_joiners(member, &account.genesis, &account.chain, &account.cert)
+        }
+        _ => false,
+    }
+}
+
 /// Encode a per-group governance op ([`GroupOp`], already decrypted) as an
 /// [`OpPayload`] for `group`.
 ///
@@ -301,23 +349,71 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
         }),
+        // `member` is DELIBERATELY still the stand-in, even though the credential
+        // beside it names the joiner's real account.
+        //
+        // Switching the membership key to `account.cert.account` is correct and is
+        // slice B's job, not this one — because it cannot be done alone. The
+        // projection would then fold membership keyed by the REAL account while
+        // `MembershipRepository` still keys its rows by member key, so the two
+        // planes would disagree about who is a member: the membership-equivalence
+        // suite fails with projection `Some(false)` against live `Some(true)`.
+        //
+        // The credential still has to be folded HERE, and that is not the same
+        // question. A binding is written by the apply path the moment a join
+        // lands, and `env::account_id()` reads those materialized rows — so
+        // withholding the credential from the projection does not keep the
+        // principal still, it just makes the peer that resolves the joiner's
+        // signature disagree with the joiner about who wrote. Both planes have to
+        // move together; that is exactly why the device half travels with the
+        // membership half instead of waiting for it.
         RootOp::MemberJoined {
             member,
             signed_invitation,
+            account,
         }
         | RootOp::MemberJoinedAt {
             member,
             signed_invitation,
+            account,
             ..
-        } => Some(OpPayload::MemberAdded {
-            group: signed_invitation.invitation.group_id,
-            member: legacy_account_id(member),
-            role: GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role),
-        }),
-        RootOp::MemberJoinedOpen { member, group_id } => Some(OpPayload::MemberAdded {
-            group: *group_id,
-            member: legacy_account_id(member),
-            role: GroupMemberRole::Member,
+        } => {
+            let group = signed_invitation.invitation.group_id;
+            let role =
+                GroupMemberRole::from_invited_role(signed_invitation.invitation.invited_role);
+            let member = legacy_account_id(member);
+            Some(if credential_is_the_joiners(op) {
+                OpPayload::MemberJoinedWithDevice {
+                    group,
+                    member,
+                    role,
+                    genesis: account.genesis,
+                    chain: account.chain.clone(),
+                    cert: account.cert,
+                }
+            } else {
+                // Membership stands, the device does not — the same verdict the
+                // apply path reaches, which is the whole requirement.
+                OpPayload::MemberAdded {
+                    group,
+                    member,
+                    role,
+                }
+            })
+        }
+        // No membership half: an open-subgroup self-join is a PROOF of
+        // inheritance, never a direct row (see `op_from_namespace_op`, which
+        // folds this op's membership as a graph-only node for that reason). The
+        // credential it carries is still a real device link and folds as one —
+        // or, if it is not the joiner's, as the graph-only node it used to be.
+        RootOp::MemberJoinedOpen { account, .. } => Some(if credential_is_the_joiners(op) {
+            OpPayload::DeviceLinked {
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            }
+        } else {
+            OpPayload::Noop
         }),
         RootOp::GroupCreated {
             group_id,
@@ -351,6 +447,56 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
 
 #[cfg(test)]
 mod tests {
+    /// A joiner credential for the bridge tests. These assert what
+    /// `payload_from_root_op` FOLDS, and the bridge deliberately still keys
+    /// membership by `legacy_account_id(member)` until slice B moves the live plane
+    /// too — so nothing here reads the credential, it only has to be present.
+    /// A credential that actually VERIFIES for `sign_pk`. The filler fixture
+    /// above cannot fold a device now that the shared predicate checks the
+    /// certificate, so any test asserting the device half needs this one.
+    fn real_join_account_for(
+        sign_pk: PublicKey,
+        seed: u8,
+    ) -> Box<calimero_governance_types::JoinAccountCredential> {
+        let root_sk = calimero_primitives::identity::PrivateKey::from([seed; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let cert = calimero_account::sign_device_cert(
+            &root_sk,
+            genesis.account_id(),
+            calimero_account::DeviceId::from([0x3E; 32]),
+            &sign_pk,
+            &calimero_account::KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("sign the device cert");
+        Box::new(calimero_governance_types::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            cert,
+        })
+    }
+
+    fn test_join_account_for(
+        sign_pk: PublicKey,
+    ) -> Box<calimero_governance_types::JoinAccountCredential> {
+        let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+        Box::new(calimero_governance_types::JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+                sign_pk,
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0x11; 64],
+            },
+            genesis,
+            chain: vec![],
+        })
+    }
+
     use super::*;
 
     use core::num::NonZeroU128;
@@ -847,6 +993,105 @@ mod tests {
         );
     }
 
+    /// A credential that is not the joiner's folds like the apply path refuses it.
+    ///
+    /// Both planes have to reach the same verdict. If the projection admitted a
+    /// lifted credential the apply path refuses, a replayed device would be bound
+    /// in the folded view and absent from the materialized rows — the same split
+    /// this encoder exists to close, running the other way.
+    /// The shared predicate must refuse a credential that does not VERIFY, not
+    /// only one certified for the wrong key.
+    ///
+    /// The apply path runs the same function, so a gap here is a gap there —
+    /// and a credential the encoder waved through while the apply path refused
+    /// would be a device folded on one plane and absent from the other.
+    #[test]
+    fn the_shared_predicate_refuses_an_unverifiable_credential() {
+        let m = PublicKey::from([7u8; 32]);
+
+        // Certified for the right key, but the signature is filler, so
+        // `verify_device_cert` refuses it.
+        let filler = test_join_account_for(m);
+        assert!(
+            !join_credential_is_the_joiners(&m, &filler.genesis, &filler.chain, &filler.cert),
+            "a certificate that does not verify is not admissible, whoever it names"
+        );
+
+        // A genuinely signed credential for this key is admissible.
+        let root_sk = calimero_primitives::identity::PrivateKey::from([0x91; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let cert = calimero_account::sign_device_cert(
+            &root_sk,
+            genesis.account_id(),
+            calimero_account::DeviceId::from([0x3E; 32]),
+            &m,
+            &calimero_account::KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert");
+        assert!(join_credential_is_the_joiners(&m, &genesis, &[], &cert));
+
+        // ...and not for anybody else's key.
+        assert!(!join_credential_is_the_joiners(
+            &PublicKey::from([8u8; 32]),
+            &genesis,
+            &[],
+            &cert
+        ));
+    }
+
+    #[test]
+    fn a_replayed_credential_folds_no_device_on_either_join_shape() {
+        use calimero_context_config::types::{GroupInvitationFromAdmin, SignedGroupOpenInvitation};
+
+        let m = PublicKey::from([7u8; 32]);
+        let stranger = PublicKey::from([8u8; 32]);
+        let gid = [0x44; 32];
+
+        // Open self-join: back to the graph-only node, no device.
+        assert_eq!(
+            payload_from_root_op(
+                &RootOp::MemberJoinedOpen {
+                    member: m,
+                    group_id: gid.into(),
+                    account: test_join_account_for(stranger),
+                },
+                PublicKey::from([1u8; 32])
+            ),
+            Some(OpPayload::Noop)
+        );
+
+        // Invitation join: the membership still stands, the device does not.
+        let signed_invitation = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0xA1; 32].into(),
+                group_id: ContextGroupId::from(gid),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 0,
+            },
+            inviter_signature: "deadbeef".to_string(),
+            application_id: None,
+            app_key: None,
+        };
+        assert_eq!(
+            payload_from_root_op(
+                &RootOp::MemberJoined {
+                    member: m,
+                    signed_invitation,
+                    account: test_join_account_for(stranger),
+                },
+                PublicKey::from([1u8; 32])
+            ),
+            Some(OpPayload::MemberAdded {
+                group: ContextGroupId::from(gid),
+                member: legacy_account_id(&m),
+                role: GroupMemberRole::Admin,
+            })
+        );
+    }
+
     #[test]
     fn root_op_encoder_mapping() {
         let admin = PublicKey::from([1u8; 32]);
@@ -873,18 +1118,23 @@ mod tests {
                 policy_bytes: vec![1, 2, 3],
             })
         );
+        // An open-subgroup self-join folds its CREDENTIAL and nothing else: the
+        // membership is re-derived by the inheritance walk, so a direct row here
+        // would outlive the anchor that grants it.
+        let joined_open = real_join_account_for(m, 0x61);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedOpen {
                     member: m,
                     group_id: gid.into(),
+                    account: joined_open.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::MemberAdded {
-                group: ContextGroupId::from(gid),
-                member: legacy_account_id(&m),
-                role: GroupMemberRole::Member,
+            Some(OpPayload::DeviceLinked {
+                genesis: joined_open.genesis,
+                chain: joined_open.chain.clone(),
+                cert: joined_open.cert,
             })
         );
         // Invitation-based join: group_id + role decoded off the admin-signed
@@ -903,35 +1153,45 @@ mod tests {
             application_id: None,
             app_key: None,
         };
+        let invited = real_join_account_for(m, 0x62);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoined {
                     member: m,
                     signed_invitation: signed_invitation.clone(),
+                    account: invited.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::MemberAdded {
+            Some(OpPayload::MemberJoinedWithDevice {
                 group: ContextGroupId::from(gid),
                 member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
+                genesis: invited.genesis,
+                chain: invited.chain.clone(),
+                cert: invited.cert,
             })
         );
         // `MemberJoinedAt` (the timestamped invitation join `join_group` emits)
         // decodes identically — it is NOT out-of-model.
+        let invited_at = real_join_account_for(m, 0x63);
         assert_eq!(
             payload_from_root_op(
                 &RootOp::MemberJoinedAt {
                     member: m,
                     signed_invitation,
                     joined_at: 42,
+                    account: invited_at.clone(),
                 },
                 PublicKey::from([1u8; 32])
             ),
-            Some(OpPayload::MemberAdded {
+            Some(OpPayload::MemberJoinedWithDevice {
                 group: ContextGroupId::from(gid),
                 member: legacy_account_id(&m),
                 role: GroupMemberRole::Admin,
+                genesis: invited_at.genesis,
+                chain: invited_at.chain.clone(),
+                cert: invited_at.cert,
             })
         );
         let parent = [0x70; 32]; // placeholder parent id

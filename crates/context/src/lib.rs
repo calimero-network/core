@@ -37,6 +37,7 @@ pub mod error;
 pub mod governance_dag;
 pub mod handlers;
 pub mod hlc_fence;
+pub mod join_credential;
 mod lifecycle;
 pub mod membership_events;
 pub mod migration_plan;

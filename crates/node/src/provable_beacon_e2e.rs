@@ -339,6 +339,7 @@ fn queued_join_op(
             member: joiner_sk.public_key(),
             signed_invitation: invitation,
             joined_at: 0,
+            account: test_join_account(),
         }),
     )
     .expect("sign join op")
@@ -484,4 +485,26 @@ async fn beacon_carries_no_proof_without_a_queued_join() {
         beacon.admission_proof.is_none(),
         "steady state must stay one byte: no queued join means no proof"
     );
+}
+
+/// A joiner credential for tests that only need a `MemberJoinedAt` to be
+/// well-formed — readiness and beacon tests assert on op flow, not on accounts.
+fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+                sign_pk: calimero_primitives::identity::PublicKey::from([0x7B; 32]),
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0x11; 64],
+            },
+            genesis,
+            chain: vec![],
+        },
+    )
 }

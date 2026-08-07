@@ -372,10 +372,16 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // locally regardless of transport readiness so a later
                 // `MemberJoinedOpen` can causally parent onto this op; publish
                 // is best-effort on top of that.
+                // Built here rather than after key delivery: nothing in it publishes
+                // or encrypts, so the joiner's account travels WITH the membership
+                // it belongs to. That is what closes the window a separate
+                // `AccountDeviceLinked` left open.
+                let join_account = crate::join_credential::build(&datastore, &namespace_id.into(), &joiner_identity)?;
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
                     member: joiner_identity,
                     signed_invitation: invitation,
                     joined_at: now_secs,
+                    account: join_account,
                 });
                 match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
                     &datastore,

@@ -100,19 +100,14 @@ pub(crate) fn apply_device_linked(
     // an ORDER-DEPENDENT outcome (revoked, epoch not advanced) would let two
     // arrival orders leave different endorser sets behind.
     //
-    // But not for a credential that can never succeed. An endorser row makes the
-    // member count as account-addressed, and `current_key_recipients` then fans out
-    // over `devices_of(account)` — which stays empty forever if no device ever
-    // bound. One malformed certificate would otherwise cost that member every
-    // future scope key, with no recovery path, despite a perfectly valid membership.
-    // Skipping these is still order-independent: each is decided by the op's bytes
-    // alone, so every replica reaches the same verdict whatever it has folded.
-    let credential_can_never_succeed = matches!(
-        outcome,
-        Err(BindingRejected::CredentialInvalid(_)
-            | BindingRejected::ChainTooLong { .. }
-            | BindingRejected::RotationSignatureInvalid)
-    );
+    // But not for a credential that can never succeed — see
+    // [`BindingRejected::is_permanent`], which both endorser-recording paths
+    // share so the two cannot drift into disagreeing about which refusals are
+    // terminal.
+    let credential_can_never_succeed = outcome
+        .as_ref()
+        .err()
+        .is_some_and(BindingRejected::is_permanent);
     if !credential_can_never_succeed {
         bindings.record_endorser(&group_id, cert.account, &endorsement.member)?;
     }

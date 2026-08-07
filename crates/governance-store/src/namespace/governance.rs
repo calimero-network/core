@@ -284,6 +284,7 @@ impl<'a> NamespaceGovernance<'a> {
                     RootOp::MemberJoined {
                         member,
                         signed_invitation,
+                        ..
                     }
                     | RootOp::MemberJoinedAt {
                         member,
@@ -313,7 +314,9 @@ impl<'a> NamespaceGovernance<'a> {
                         let group_id = signed_invitation.invitation.group_id;
                         DenyListRepository::new(self.store).clear(&group_id, member)?;
                     }
-                    RootOp::MemberJoinedOpen { member, group_id } => {
+                    RootOp::MemberJoinedOpen {
+                        member, group_id, ..
+                    } => {
                         // The joiner pulls the subgroup key directly from a
                         // sync peer; no delivery is triggered here. Authority
                         // for this op is validated in `execute_member_joined_open`

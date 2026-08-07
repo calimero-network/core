@@ -96,6 +96,31 @@ pub enum BindingRejected {
     AccountNotMember,
 }
 
+impl BindingRejected {
+    /// Whether no later op could ever make this credential bind a device.
+    ///
+    /// The question every caller that records an endorser has to answer first.
+    /// An endorser row makes its member account-addressed, and the scope-key
+    /// fan-out then delivers to `devices_of(account)` — which stays empty
+    /// forever if no device of that account can ever bind. One malformed
+    /// certificate would cost that member every future scope key, with no
+    /// recovery path, despite a perfectly good membership.
+    ///
+    /// The permanent rejections are exactly those decided by the credential's
+    /// own bytes, so every replica reaches the same verdict whatever it has
+    /// folded. The rest depend on rows that later ops can change (a revocation,
+    /// a rotation, an epoch that has not been reached yet), and making the
+    /// endorser conditional on one of those would let two arrival orders leave
+    /// different endorser sets behind.
+    #[must_use]
+    pub const fn is_permanent(&self) -> bool {
+        matches!(
+            self,
+            Self::CredentialInvalid(_) | Self::ChainTooLong { .. } | Self::RotationSignatureInvalid
+        )
+    }
+}
+
 /// The account `sign_pk` speaks for in `group`, if it is a **live device of an
 /// account a member endorsed** — the entitlement a paired device participates on.
 ///
@@ -597,6 +622,33 @@ impl<'a> AccountBindingRepository<'a> {
             Some(existing) => {
                 if existing.account != *verified.account.as_bytes() {
                     return Ok(Err(BindingRejected::AccountReassignment));
+                }
+                // A credential that re-states EXACTLY what is already stored is a
+                // replay, not a stale offer, and re-applying it must succeed.
+                // Every apply handler re-runs its mutation before the op-log
+                // dedup fires, so an op reaching this code a second time is
+                // ordinary — re-gossip, DAG replay, a crash between the nonce
+                // write and the log append. Answering `EpochNotAdvanced` there
+                // reports a refusal for a binding this group holds and agrees
+                // with, which is how a join came to log a rejection on every
+                // replica on every replay.
+                //
+                // Narrow on purpose: same device, same account, same keys, same
+                // epochs. Anything else at an unadvanced epoch — a different
+                // signing key, a different KEM key — is a fork of a spent epoch
+                // and still refused.
+                if existing.sign_pk == *AsRef::<[u8; 32]>::as_ref(&verified.sign_pk)
+                    && existing.kem_pk == *verified.kem_pk.as_bytes()
+                    && existing.device_epoch == verified.device_epoch
+                    && existing.key_epoch == verified.key_epoch
+                {
+                    return Ok(Ok(DeviceBinding {
+                        device: verified.device,
+                        account: verified.account,
+                        sign_pk: verified.sign_pk,
+                        kem_pk: *verified.kem_pk.as_bytes(),
+                        device_epoch: verified.device_epoch,
+                    }));
                 }
                 if verified.device_epoch <= existing.device_epoch {
                     return Ok(Err(BindingRejected::EpochNotAdvanced {

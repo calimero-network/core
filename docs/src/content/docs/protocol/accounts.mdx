@@ -118,11 +118,89 @@ A link is admitted only if **both** hold and the endorser is a member **at the o
 
 Endorsers are stored as a **grow-only set**, never a single field. Two links for one account may legitimately name different endorsers, and collapsing them to one value would make the stored state depend on which link folded last — order-dependent state on the authorization path. Set union is a join, and "is *any* endorser a member at this cut" is order-independent.
 
-## Enrolling the first device
+## Enrolling at join — the default path
+
+A member and the device it joined with become known **together**, in one operation, because the three cleartext join operations (`MemberJoined`, `MemberJoinedAt`, `MemberJoinedOpen`) carry the joiner's credential as a required field:
+
+```
+  JoinAccountCredential { genesis, chain, cert }
+```
+
+Everything a peer needs to verify the account and the device, from the operation alone — no prior operation about this account has to have been folded first.
+
+<SeqDiagram
+  id="d-account-enrol-at-join"
+  title="Enrolment rides the join"
+  lanes={[
+    { label: 'Joining node', color: '#58a6ff' },
+    { label: 'Its own store', color: '#a5ff11' },
+    { label: 'Peers', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'ensure_enrolled: mint (or recover) this device — LOCAL only' },
+    { from: 1, to: 0, label: 'genesis + device id + KEM key' },
+    { from: 0, to: 0, label: 'cert signed by ACCOUNT ROOT, naming the namespace identity as sign_pk' },
+    { from: 0, to: 2, label: 'MemberJoined* carrying the credential (CLEARTEXT)', color: '#a5ff11' },
+    { from: 2, to: 2, label: 'same apply: record membership AND the device binding' },
+    { from: 2, to: 2, label: 'record the joining member as endorser of its own account' },
+  ]}
+/>
+
+### Why this is possible at all
+
+Nothing in building the credential publishes or encrypts. `ensure_enrolled` mints the device row **locally** and returns the genesis derived from the node's account root; the certificate is signed by that root. The whole credential therefore exists *before* the node holds any scope key — which is exactly what lets it ride a cleartext join operation, and why enrolment no longer waits on key delivery.
+
+### Why no endorsement travels on the wire
+
+`AccountDeviceLinked` needs an `AccountMemberEndorsement` because an account root is deliberately a member nowhere, so its gate has to ask whether some *member* vouched. A join operation already carries both halves: it is signed by the joining member's own namespace identity, **and** it carries the admin-signed invitation authorising that member. The endorsement collapses into the operation.
+
+What does **not** collapse is the endorser *row*. Every reader that turns a key into an account consults those rows, so the join still records the joining member as an endorser of its own account. A binding without one is recorded and inert: no per-device authorization, no scope keys.
+
+### What the join verifies
+
+Two questions, both answerable from the operation's own bytes:
+
+| Check | Guards against |
+| --- | --- |
+| `cert.sign_pk == member` | Join operations are cleartext, so anyone can lift a credential out of somebody else's join and present it as their own. `op.signer == member` proves the envelope, never the payload. |
+| `verify_device_cert(...)` | The genesis hashes to the account the certificate claims, and the certificate is signed by the root key its chain reaches. |
+
+Both live in one predicate that the apply path and the projection encoder **share**, because a credential admitted by one plane and refused by the other is the split this whole design exists to prevent.
+
+Revocation and epoch supersession are deliberately *not* in that predicate: they are stateful, so they cannot be decided from the operation alone. Each plane answers them from its own view, and both refuse the same credentials.
+
+### A refused credential never orphans the membership
+
+If the credential cannot be admitted, the member is still recorded — without a binding — and the refusal is logged. A member with no binding is the state that held before joins carried one at all, and it is survivable. A membership operation the DAG cannot apply is not: it would stall every operation behind it on that replica alone.
+
+A **store** failure is the opposite case and does propagate, because it is not a verdict on the credential. Swallowing it would leave one replica holding the membership with no binding while its peers hold both — a permanent, silent disagreement about which principal that member writes as.
+
+## One principal, two resolvers — and they must agree
+
+This is the invariant most easily broken by accident, so it is worth stating on its own.
+
+"Which account does this key write as" is answered in **two** places, and they have to give the same answer:
+
+| Plane | Path | Reads |
+| --- | --- | --- |
+| **Writer** — what the node itself writes as | `env::account_id()` → `account_for_group` → `binding_for_sign_pk` | materialized binding rows |
+| **Peer** — what everyone else resolves that key to | `device_account_at_cut` → `AclView::devices` | the folded projection |
+
+A writer set the node seeds names whatever the first returns. Every peer matches incoming signatures against whatever the second returns. If a fact reaches one plane and not the other, the node writes as somebody its peers do not recognise, and its writes match no grant — with no permission error anywhere, because from each side's own point of view nothing is wrong. It presents as data that silently never converges.
+
+`AccountDeviceLinked` feeds both: the apply path writes the rows, and the operation folds into the projection as `DeviceLinked`. A join has to do the same, so it folds too — as `MemberJoinedWithDevice` for the invitation joins (membership and device as one indivisible fact) and as a bare `DeviceLinked` for an open self-join, whose membership stays inheritance-derived because a direct row would outlive the anchor that grants it.
+
+:::caution
+Anything that records a binding must move **both** planes. "Does this change what a principal *is*" is the question to ask before splitting work across operations — and if the answer is yes, ask which planes observe that principal.
+:::
+
+## Enrolling a device into an existing membership
+
+`AccountDeviceLinked` is the standalone form, for a device that is added to a membership that already exists — a paired second device, or a replacement after a revocation. A *joining* node does not use it; see [Enrolling at join](#enrolling-at-join--the-default-path).
 
 <SeqDiagram
   id="d-account-enrol"
-  title="Enrolling a device under a fresh account"
+  title="Linking a device to a membership that already exists"
   lanes={[
     { label: 'Node (a member)', color: '#58a6ff' },
     { label: 'Account plane', color: '#a5ff11' },
@@ -139,7 +217,9 @@ Endorsers are stored as a **grow-only set**, never a single field. Two links for
   ]}
 />
 
-Note the ordering constraint: the link is an **encrypted** group operation, so the node must already hold the scope key. Enrolment cannot happen at join time. This is exactly why key delivery can still address a *member* — otherwise a new member could never obtain the first key. That member-addressed envelope is the bootstrap form and is permanent, not legacy.
+Note the ordering constraint on **this** path: the link is an **encrypted** group operation, so the node must already hold the scope key. That is what makes it unusable at join time, and why the join carries its credential in the clear instead.
+
+It is also why key delivery can still address a *member* rather than a device. A joiner is now bound the moment it is a member, so the device-addressed fan-out covers it — but the member-addressed envelope remains the bootstrap form for the cases that still need one (a re-admission, or an explicit delivery by an admin to a member whose devices are gone). It is permanent, not legacy.
 
 ## Pairing a second device
 
@@ -573,14 +653,15 @@ than just the key round trip.
 
 ## Known limits
 
+- **There is no longer an un-enrolled window, and that was a real class of bug.** A member that could exist before its account was known wrote as a key-derived stand-in until it enrolled, then switched to its real `AccountId` — so any account-keyed grant made on either side of that switch silently stopped matching, and the mismatch surfaced far from the join that caused it. Joins now carry the credential precisely to remove the window rather than narrow it.
 - **Root-key compromise is unrecoverable.** A stolen root signs its own handoff. Whoever holds the root is the account.
-- **The root is exportable; the rest of recovery is manual.** `merod account export|import` back it up and restore it, but a recovered node still has to rejoin its namespaces and enrol a device before a peer will deliver the scope key — and its old devices are gone for good. Both commands need the node stopped and cannot read a KMS-encrypted store. See [Backing up and recovering an account](#backing-up-and-recovering-an-account).
+- **The root is exportable; the rest of recovery is manual.** `merod account export|import` back it up and restore it, but a recovered node still has to rejoin its namespaces before a peer will deliver the scope key — and its old devices are gone for good. Enrolment is no longer a separate step: rejoining carries the credential, so the replacement device is bound in the same operation that makes the node a member again. Both commands need the node stopped and cannot read a KMS-encrypted store. See [Backing up and recovering an account](#backing-up-and-recovering-an-account).
 - **Revocation latency is per scope.** A scope that has not folded the revocation still honours the old binding. Inherent to causal revocation.
 - **Self-service revocation cannot rotate.** The device stops writing at once but can read until an admin rotates.
 - **Pairing is only as good as the channel the confirmation code travels on.** `pair-init` signs a statement over the account, the device id and both keys, and `pair-complete` refuses to certify key material that does not carry it — so nobody can swap the KEM key under a captured device id, which is what previously made the exchange only as safe as the channel carrying it. What a signature cannot settle is a *wholesale* substitution: an attacker that replaces both keys and re-signs with its own produces a statement that verifies, because nothing on the certifying side commits to the genuine keys in advance. Binding the keys into the `DeviceId` would fix it and is deliberately unavailable — the id excludes them so a device survives key rotation. What closes it instead is the confirmation code: a 64-bit value over exactly what gets certified, which `pair-complete` **requires** and checks against the keys that arrived, so the comparison cannot be skipped. It is 64 bits and not the six digits that would be pleasant to read aloud because the attacker knows the genuine code and can grind its own keypairs offline until one matches — the width is the work factor. What remains is not a gap in the check but in the channel: a code pasted alongside the keys it describes was rewritten by the same hand, so the code has to reach the account holder some other way — read out, or over a channel the payload did not take.
 - **A device cannot revoke itself.** If it could, compromising one would hand the attacker a revocation primitive instead of taking one away. Revoking is the account's authority, exercised from elsewhere — see [Revoking with only the account root](#revoking-with-only-the-account-root).
 - **Key-delivery fan-out is quadratic in group size.** `current_key_recipients` resolves devices per member, and each resolution scans the group's bindings, so a rotation costs on the order of members × devices. It runs at rotation and join time — never per operation — and each recipient already needs a KEM wrap, which dominates. Hoisting one binding scan out of the loop collapses it when group sizes justify the change.
-- **A member with no live device cannot self-recover.** Re-enrolling needs an encrypted group operation, which needs the key — so they depend on an admin to re-deliver it or to publish the replacement link. If they could re-key themselves, revocation would mean nothing.
+- **A member with no live device cannot self-recover.** Enrolment-at-join does not help here, because they are *already* a member — there is no join operation left to carry a credential. Linking a replacement means `AccountDeviceLinked`, which is encrypted and so needs the key they no longer have, leaving them dependent on an admin to re-deliver it or to publish the replacement link. If they could re-key themselves, revocation would mean nothing.
 - **Member-addressed delivery remains reachable by admin action.** Re-admission and an explicit key delivery both wrap to a member identity, so an admin can hand a key to a node still running a revoked device. An explicit privileged act, not an automatic path.
 - **Storage gates take accounts; storage stamps keep devices.** `AccessControl`'s admins *are* the backing `SharedStorage`'s writer set, and `PermissionedStorage`'s capability map is keyed the same way — both now name **accounts**, so one grant covers every device a person holds. Owner stamps in `UserStorage`, `AuthoredMap` and `AuthoredVector` still name the **device**, and must: they are per-writer state, and two devices sharing a counter slot or an HLC seed lose each other's writes. The rule for any change here is the one this page opens with — if correctness depends on two devices of one account being distinct, it stays device-keyed.
 
