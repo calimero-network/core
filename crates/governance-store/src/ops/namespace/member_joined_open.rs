@@ -15,10 +15,10 @@
 use super::context::NamespaceApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::{
-    ApplyError, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
+    ApplyError, BindingRejected, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
     NamespaceRepository, ReentryRepository,
 };
-use calimero_context_client::local_governance::SignedNamespaceOp;
+use calimero_context_client::local_governance::{JoinAccountCredential, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
@@ -28,6 +28,7 @@ pub(crate) fn apply(
     op: &SignedNamespaceOp,
     member: PublicKey,
     group_id: [u8; 32],
+    account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -105,6 +106,11 @@ pub(crate) fn apply(
                 member,
                 role: None,
             });
+            // The join is accepted, so record the joiner's device binding in the
+            // same apply — see `member_joined::apply` for why no endorsement
+            // travels on the wire here and why a refused credential is reported
+            // rather than propagated.
+            record_join_credential(ctx, member, account)?;
             Ok(())
         }
         AtCutMembershipPath::Direct => {
@@ -132,4 +138,93 @@ fn membership_path_kind(path: &MembershipPath) -> AtCutMembershipPath {
         MembershipPath::Direct => AtCutMembershipPath::Direct,
         MembershipPath::None => AtCutMembershipPath::None,
     }
+}
+
+/// Record a joiner's certified account alongside its membership.
+///
+/// Shared by the open-join path and [`super::member_joined::apply`]. Reports a
+/// credential refusal instead of propagating it: a credential this group cannot
+/// admit must not orphan the membership op behind it. A member with no binding is
+/// the state that held before joins carried one at all — survivable; a member the
+/// DAG cannot apply at all is not.
+///
+/// A **store** failure is the opposite case and does propagate. It is not a verdict
+/// on the credential, and swallowing it would leave this replica holding the
+/// membership with no binding while its peers hold both — a permanent, silent
+/// disagreement about which principal that member writes as. Returning the error
+/// leaves the head unadvanced so the op is retried, which is what a transient
+/// failure deserves and what a persistent one should be loud about.
+///
+/// # Errors
+/// Propagates a store read/write failure from the binding or endorser write.
+pub(super) fn record_join_credential(
+    ctx: &mut NamespaceApplyCtx<'_>,
+    member: PublicKey,
+    account: &JoinAccountCredential,
+) -> EyreResult<()> {
+    let namespace = ContextGroupId::from(ctx.namespace_id().to_bytes());
+
+    // The credential has to be the JOINER'S OWN and internally valid, and this is
+    // the check that establishes both. `apply_link` below verifies the certificate
+    // too, but says nothing about WHOSE it is: these ops are cleartext, so any
+    // node can lift a credential out of somebody else's join and present it as the
+    // `account` of its own, signed honestly with its own key. `op.signer ==
+    // member` proves the envelope, never the payload. Binding it anyway would
+    // graft a stranger's account into this namespace under the replayer's
+    // membership, and — because the endorser row below is what makes a member
+    // account-addressed — would aim the replayer's scope keys at the victim's
+    // devices.
+    //
+    // Shared verbatim with the projection encoder, which has to reach the same
+    // verdict or the two planes disagree about the same op in the opposite
+    // direction: a credential refused a binding here and granted one in the fold.
+    if !calimero_op_adapter::join_credential_is_the_joiners(
+        &member,
+        &account.genesis,
+        &account.chain,
+        &account.cert,
+    ) {
+        tracing::warn!(
+            ?namespace,
+            %member,
+            cert_sign_pk = %account.cert.sign_pk,
+            "member joined presenting a credential that is not its own or does not \
+             verify; the credential is ignored and the member is recorded without a \
+             binding"
+        );
+        return Ok(());
+    }
+
+    let bindings = crate::AccountBindingRepository::new(ctx.store());
+    let outcome =
+        bindings.apply_link(&namespace, &account.genesis, &account.chain, &account.cert)?;
+
+    // The endorsement, materialized. `AccountDeviceLinked` carries an explicit
+    // `AccountMemberEndorsement` because an account root is a member nowhere, so
+    // its gate has to ask whether some member vouched. A join already answers
+    // that: it is signed by the joining member, it carries the admin-signed
+    // invitation authorising them, and the check above proves the certificate is
+    // theirs. So no endorsement travels on the wire — but the ROW still has to be
+    // written, because that is what every reader consults. Without it
+    // `member_account_for_device_key` resolves the joiner to `None` and
+    // `accounts_by_endorsing_member` never lists the account, leaving a binding
+    // that is recorded and inert: no per-device authorization, no scope keys.
+    if !outcome
+        .as_ref()
+        .err()
+        .is_some_and(BindingRejected::is_permanent)
+    {
+        bindings.record_endorser(&namespace, account.cert.account, &member)?;
+    }
+
+    if let Err(rejected) = outcome {
+        tracing::warn!(
+            ?namespace,
+            %member,
+            ?rejected,
+            "member joined but its account credential was refused; the member is \
+             recorded without a binding, so its writes will attribute to a stand-in"
+        );
+    }
+    Ok(())
 }

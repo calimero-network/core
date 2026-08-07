@@ -113,9 +113,13 @@ type AuthCutContext = (
 /// precisely what `denied_members` and `accounts_by_endorsing_member` avoid: it can
 /// only be populated while observing bindings, so it comes back empty after a
 /// projection rebuild and silently reverts every device to the fallback.
-fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> AccountId {
+fn account_for_author(
+    view: &calimero_authz::AclView,
+    key: &PublicKey,
+    root: Option<(ContextGroupId, AccountId)>,
+) -> AccountId {
     let own = legacy_account_id(key);
-    if view_knows_author(view, &own) {
+    if view_knows_author(view, &own, root) {
         return own;
     }
     view.devices
@@ -130,10 +134,25 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Accoun
 /// admin, with no member row, and resolving such a key through a device binding
 /// would strip its admin authority exactly as it stripped membership above. Any
 /// authority at all is enough to say "this key speaks for itself".
-fn view_knows_author(view: &calimero_authz::AclView, account: &AccountId) -> bool {
+///
+/// `root` is the namespace's GENESIS admin, and it has to be here even though it is
+/// not folded state — it is the one authority no op carries, so it is the one
+/// principal the folded checks above structurally cannot see. A namespace founder
+/// that never appears in a membership op, never authored a `SubgroupCreated`, and
+/// never changed the admin (all three ordinary) is known to this view ONLY through
+/// this parameter. Leaving it out resolved that founder through its own device
+/// binding the moment one folded, to an `AccountId` that matches neither the
+/// membership rows nor `root` itself — both keyed by the stand-in — so the founder
+/// stopped being a member of its own namespace's open subgroups.
+fn view_knows_author(
+    view: &calimero_authz::AclView,
+    account: &AccountId,
+    root: Option<(ContextGroupId, AccountId)>,
+) -> bool {
     view.is_scope_member(account)
         || view.is_root_admin(account)
         || view.group_admin.values().any(|admin| admin == account)
+        || root.is_some_and(|(_, genesis_admin)| genesis_admin == *account)
 }
 
 fn build_op(
@@ -1595,7 +1614,7 @@ impl ScopeProjections {
         if view.as_ref().is_some_and(|v| {
             v.is_member_at_cut(
                 group,
-                &account_for_author(v, author),
+                &account_for_author(v, author, root),
                 root,
                 default_cap_base,
             )
@@ -1741,7 +1760,7 @@ impl ScopeProjections {
         Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
             v.is_member_at_cut(
                 group,
-                &account_for_author(&v, author),
+                &account_for_author(&v, author, root),
                 root,
                 default_cap_base,
             )
@@ -1763,7 +1782,7 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
-        Some(view.is_authorized_admin(group, &account_for_author(&view, author), root))
+        Some(view.is_authorized_admin(group, &account_for_author(&view, author, root), root))
     }
 
     /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
@@ -1780,7 +1799,7 @@ impl ScopeProjections {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
         Some(view.member_path_at_cut(
             group,
-            &account_for_author(&view, member),
+            &account_for_author(&view, member, root),
             root,
             default_cap_base,
         ))
@@ -1802,10 +1821,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        if view.is_authorized_admin(group, &account_for_author(&view, author), root) {
+        if view.is_authorized_admin(group, &account_for_author(&view, author, root), root) {
             return Some(true);
         }
-        let folded = view.capability(&group, &account_for_author(&view, author));
+        let folded = view.capability(&group, &account_for_author(&view, author, root));
         let effective = if folded != 0 {
             folded
         } else {
@@ -1959,9 +1978,17 @@ impl ScopeProjections {
             None => 0,
         };
         let view = self.acl_view_at(&scope, heads);
+        // Resolved exactly as the gates do, so a diagnostic can never disagree
+        // with the decision it is meant to explain.
+        let root_group = ContextGroupId::from(ns_bytes);
+        let root = MetaRepository::new(store)
+            .load(&root_group)
+            .ok()
+            .flatten()
+            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
         let author_in_any = view
             .as_ref()
-            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author)));
+            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author, root)));
         // Is the DECISION group folded at all, and how big? Distinguishes
         // "subgroup membership never folded" (group absent / size 0 — a
         // decrypt/sync gap) from "folded but author absent" (re-add / deny-list).
@@ -2069,6 +2096,37 @@ impl ScopeProjections {
 
 #[cfg(test)]
 mod tests {
+    /// A joiner credential for projection tests. These assert what the projection
+    /// FOLDS from an op, so the credential only has to be well-formed — except that
+    /// the account it names is now the membership key, so it must be stable and
+    /// readable, which is why the caller reads `cert.account` back off it.
+    /// A credential that VERIFIES for `sign_pk` — the encoder now checks the
+    /// certificate, not just the key it names, so a filler signature folds no
+    /// device at all.
+    fn test_join_account_for(
+        sign_pk: PublicKey,
+    ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+        let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let cert = calimero_account::sign_device_cert(
+            &root_sk,
+            genesis.account_id(),
+            calimero_account::DeviceId::from([0x3E; 32]),
+            &sign_pk,
+            &calimero_account::KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("sign the device cert");
+        Box::new(
+            calimero_context_client::local_governance::JoinAccountCredential {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+        )
+    }
+
     use core::num::NonZeroU128;
 
     use calimero_context_config::types::{
@@ -2119,25 +2177,29 @@ mod tests {
                 application_id: None,
                 app_key: None,
             },
+            account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
     }
 
     #[test]
-    fn open_subgroup_join_folds_as_noop_inheritance_proof() {
+    fn open_subgroup_join_folds_its_device_but_no_membership() {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF — live
         // writes no persistent direct row and re-derives membership from the
-        // anchor — so it folds as `Noop`, not a direct `MemberAdded`. The
-        // inheritance walk in `AclView::is_member_at_cut` derives the membership
-        // from the (foldable) anchor membership + visibility + cap, so it is
-        // revoked on anchor removal and restored on rejoin. Cross-validated
-        // against the live resolver in
-        // tests/projection_membership_equivalence.rs. The node still occupies its
-        // DAG place so an ancestry walk can pass through it.
+        // anchor — so it must NOT fold a direct `MemberAdded`. The inheritance
+        // walk in `AclView::is_member_at_cut` derives the membership from the
+        // (foldable) anchor membership + visibility + cap, so it is revoked on
+        // anchor removal and restored on rejoin. Cross-validated against the live
+        // resolver in tests/projection_membership_equivalence.rs.
+        //
+        // The credential it carries is a different fact and does fold: the apply
+        // path writes that binding either way, and a binding the projection never
+        // sees is one the joiner's peers resolve differently than the joiner does.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
         let group = [0x33; 32];
 
+        let account = test_join_account_for(member);
         let op = op_from_namespace_op(
             &signed_root(
                 ns,
@@ -2145,6 +2207,7 @@ mod tests {
                 RootOp::MemberJoinedOpen {
                     member,
                     group_id: group.into(),
+                    account: account.clone(),
                 },
             ),
             None,
@@ -2156,10 +2219,18 @@ mod tests {
         assert_eq!(op.id(), [0x99; 32], "op still occupies its DAG node");
         assert_eq!(op.scope, ScopeId::from(ns));
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
+        // The device half folds; the MEMBERSHIP half must not. A direct row here
+        // would outlive the anchor that grants it — the inheritance walk in
+        // `AclView::is_member_at_cut` is what derives it, so it is revoked on
+        // anchor removal and restored on rejoin.
         assert_eq!(
             op.payload,
-            OpPayload::Noop,
-            "open-subgroup inheritance join is a Noop (derived by the walk)"
+            OpPayload::DeviceLinked {
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            },
+            "open-subgroup inheritance join folds its credential and no membership"
         );
     }
 
@@ -2182,6 +2253,7 @@ mod tests {
             app_key: None,
         };
 
+        let account = test_join_account_for(member);
         let op = op_from_namespace_op(
             &signed_root(
                 ns,
@@ -2189,6 +2261,7 @@ mod tests {
                 RootOp::MemberJoined {
                     member,
                     signed_invitation,
+                    account: account.clone(),
                 },
             ),
             None,
@@ -2198,12 +2271,18 @@ mod tests {
         );
 
         assert_eq!(op.scope, ScopeId::from(ns));
+        // Group and role still come off the admin-signed invitation, and the
+        // joiner's credential rides with them in one payload — so no ordering
+        // exists in which the projection knows the member but not its device.
         assert_eq!(
             op.payload,
-            OpPayload::MemberAdded {
+            OpPayload::MemberJoinedWithDevice {
                 group,
                 member: legacy_account_id(&member),
                 role: GroupMemberRole::Admin,
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
             }
         );
     }

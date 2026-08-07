@@ -14,8 +14,9 @@ use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType, ScalarType, 
 use super::crdt_meta::Mergeable;
 use super::permissioned::{Authorizer, PermissionedStorage};
 use super::{
-    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, LwwRegister,
+    AccessControl, AuthoredMap, AuthoredVector, Counter, FrozenStorage, FrozenValue, LwwRegister,
     ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap, UnorderedSet, UserStorage, Vector,
+    WriterSetCell,
 };
 use crate::store::StorageAdaptor;
 
@@ -144,6 +145,34 @@ where
 impl<T: AbiType> AbiType for LwwRegister<T> {
     fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
         cell_ref::<T>(reg, CrdtCollectionType::LwwRegister)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <T as AbiType>::register(reg);
+    }
+}
+
+/// Borsh-transparent immutable wrapper: the stored bytes are exactly the inner
+/// value's, so the ABI sees the inner type itself, with no collection wrapper.
+impl<T: AbiType> AbiType for FrozenValue<T> {
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        <T as AbiType>::type_ref(reg)
+    }
+
+    fn register(reg: &mut TypeRegistry) {
+        <T as AbiType>::register(reg);
+    }
+}
+
+/// The engine under `PermissionedStorage`, and storable directly: identical
+/// layout, so it carries the same `SharedStorage` shape.
+impl<T, S> AbiType for WriterSetCell<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + AbiType,
+    S: StorageAdaptor,
+{
+    fn type_ref(reg: &mut TypeRegistry) -> TypeRef {
+        cell_ref::<T>(reg, CrdtCollectionType::SharedStorage)
     }
 
     fn register(reg: &mut TypeRegistry) {

@@ -599,6 +599,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 0, 0, 0, // signed_invitation.application_id = None:
     0, // signed_invitation.app_key = None:
     0,
+    // account: JoinAccountCredential — appended when the joiner's credential moved
+    // onto the join ops. Decode-only, like every golden vector here, so the field
+    // values only have to be structurally valid: `AccountGenesis::version` is
+    // checked at VERIFY time (`verify_device_cert`), never at decode.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
@@ -657,6 +679,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account: JoinAccountCredential — appended when the joiner's credential moved
+    // onto the join ops. Decode-only, like every golden vector here, so the field
+    // values only have to be structurally valid: `AccountGenesis::version` is
+    // checked at VERIFY time (`verify_device_cert`), never at decode.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedAt) — RootOp ordinal 8
@@ -680,6 +724,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, // application_id = None
     0, // app_key = None
     0, 0, 0, 0, 0, 0, 0, 0, // joined_at u64 = 0
+    // account: JoinAccountCredential — appended when the joiner's credential moved
+    // onto the join ops. Decode-only, like every golden vector here, so the field
+    // values only have to be structurally valid: `AccountGenesis::version` is
+    // checked at VERIFY time (`verify_device_cert`), never at decode.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
@@ -1393,7 +1459,7 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     }
 }
 
-// C5.S3b flag-day boundary: an op signed under the OLD schema must be REJECTED on
+// C5.S3b schema boundary: an op signed under the OLD schema must be REJECTED on
 // the new build, never silently misparsed. The `version` field is the first borsh
 // field, so it survives the layout change and the version check fires before any
 // signable-bytes reconstruction. These tests pin that boundary so a future refactor
@@ -1528,6 +1594,37 @@ mod governance_op_storage_roundtrip {
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
 
+    /// A joiner's account credential for wire tests. Values are structurally valid
+    /// but not cryptographically meaningful — these tests exercise the codec, and
+    /// signature verification has its own coverage.
+    fn sample_join_account() -> Box<JoinAccountCredential> {
+        let root = PrivateKey::random(&mut OsRng).public_key();
+
+        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+
+        Box::new(JoinAccountCredential {
+            cert: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+
+                device: calimero_account::DeviceId::from([0x3E; 32]),
+
+                sign_pk: PrivateKey::random(&mut OsRng).public_key(),
+
+                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+
+                key_epoch: 0,
+
+                device_epoch: 0,
+
+                signature: [0x11; 64],
+            },
+
+            genesis,
+
+            chain: vec![],
+        })
+    }
+
     fn sample_invitation() -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
             invitation: GroupInvitationFromAdmin {
@@ -1584,6 +1681,7 @@ mod governance_op_storage_roundtrip {
             member: PrivateKey::random(&mut OsRng).public_key(),
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
+            account: sample_join_account(),
         })));
     }
 
@@ -1613,15 +1711,18 @@ mod governance_op_storage_roundtrip {
             RootOp::MemberJoined {
                 member: PrivateKey::random(&mut OsRng).public_key(),
                 signed_invitation: sample_invitation(),
+                account: sample_join_account(),
             },
             RootOp::MemberJoinedOpen {
                 member: PrivateKey::random(&mut OsRng).public_key(),
                 group_id: [7; 32].into(),
+                account: sample_join_account(),
             },
             RootOp::MemberJoinedAt {
                 member: PrivateKey::random(&mut OsRng).public_key(),
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
+                account: sample_join_account(),
             },
         ];
         for root in ops {

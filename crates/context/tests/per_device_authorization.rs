@@ -391,3 +391,127 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
          override for one that is a member in its own right"
     );
 }
+
+/// The join's two planes must resolve a joiner's key to the SAME account.
+///
+/// A node's writer principal comes from the materialized binding rows
+/// (`env::account_id()` → `account_for_group` → `binding_for_sign_pk`), while the
+/// peer verifying that node's signature resolves it from the FOLDED projection
+/// (`device_account_at_cut` → `AclView::devices`). Both are fed by a join, and
+/// they have to agree: a writer set the joiner seeds names whatever the first
+/// answers, and every peer matches signatures against whatever the second does.
+///
+/// Recording the binding at apply time without folding the credential broke
+/// exactly this. The joiner wrote as its real account while every peer resolved
+/// it to `legacy_account_id`, so the joiner's `Shared` writes matched no grant —
+/// which surfaces far from the join, as data that silently never converges.
+#[test]
+fn a_joiners_writer_account_matches_what_its_peers_resolve() {
+    use calimero_governance_store::{NamespaceGovernance, NamespaceRepository};
+
+    let store = store();
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner = joiner_sk.public_key();
+
+    let ns_bytes = [0x5C; 32];
+    let ns = ContextGroupId::from(ns_bytes);
+
+    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns, &admin, &[0x11; 32], &[0u8; 32])
+        .unwrap();
+
+    // A credential the joiner can actually present: certified by its own account
+    // root, naming the joiner's namespace identity as the device's `sign_pk`.
+    let account_root = PrivateKey::from([0x77; 32]);
+    let genesis = AccountGenesis::new(account_root.public_key(), [0xCD; 16]);
+    let real_account = genesis.account_id();
+    let kem_secret = X25519SecretKey::from([0x34; 32]);
+    let cert = sign_device_cert(
+        &account_root,
+        real_account,
+        DeviceId::mint(real_account, [0xCD; 16]),
+        &joiner,
+        &KemPublicKey::from(*kem_secret.public_key().as_bytes()),
+        0,
+        0,
+    )
+    .unwrap();
+    let credential = Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            cert,
+        },
+    );
+
+    // 0 is the canonical "no expiry" sentinel: `MemberJoined` carries no
+    // `joined_at`, so a non-zero expiration is rejected by the apply gate.
+    let invitation_body = calimero_context_config::types::GroupInvitationFromAdmin {
+        inviter_identity: calimero_context_config::types::SignerId::from(*admin.digest()),
+        group_id: ns,
+        expiration_timestamp: 0,
+        invitation_nonce: [0x21; 32],
+        invited_role: 1,
+    };
+    let inv_sig = admin_sk
+        .sign(&<sha2::Sha256 as sha2::Digest>::digest(
+            borsh::to_vec(&invitation_body).expect("borsh invitation"),
+        ))
+        .expect("admin signs the invitation");
+    let invitation = calimero_context_config::types::SignedGroupOpenInvitation {
+        invitation: invitation_body,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        app_key: None,
+    };
+
+    let gov = NamespaceGovernance::new(&store, ns_bytes.into());
+    let head = gov.read_head_record().expect("read head");
+    let join = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_bytes.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Root(
+            calimero_context_client::local_governance::RootOp::MemberJoined {
+                member: joiner,
+                signed_invitation: invitation,
+                account: credential,
+            },
+        ),
+    )
+    .expect("joiner signs its join");
+    gov.apply_signed_op(&join).expect("the join applies");
+
+    // Plane one: what the joiner itself writes as.
+    let binding = AccountBindingRepository::new(&store)
+        .binding_for_sign_pk(&ns, &joiner)
+        .expect("read bindings")
+        .map(|b| b.account);
+    let writes_as = calimero_op_adapter::writer_account(binding, &joiner);
+    assert_eq!(
+        writes_as, real_account,
+        "a join binds the device, so the joiner writes as its real account"
+    );
+
+    // Plane two: what a peer resolves that same key to, from the folded log.
+    let delta_id = join.content_hash().unwrap();
+    let mut proj = ScopeProjections::new();
+    proj.ingest_op(&op_from_namespace_op(&join, None, delta_id, hlc(1), &[]));
+    let peers_resolve = proj
+        .device_account_at_cut(&store, ns, &joiner, &[delta_id])
+        .expect("the cut is fully folded, so this is a settled answer");
+
+    assert_eq!(
+        peers_resolve, writes_as,
+        "the writer plane and the projection must name the same principal for one \
+         key, or every write the joiner makes is refused by every peer"
+    );
+}

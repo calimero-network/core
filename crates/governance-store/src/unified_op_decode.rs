@@ -8,7 +8,7 @@
 //! op-store can never lag the gov-DAG). `calimero-context` re-exports these so the
 //! existing projection callers keep compiling unchanged.
 
-use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::{legacy_authorship, payload_from_group_op, payload_from_root_op};
@@ -79,13 +79,18 @@ pub fn op_from_namespace_op(
         // direct membership: live's apply requires `check_path == Inherited` and
         // writes NO persistent `GroupMember` row, re-deriving the membership from
         // the anchor each time (so it is revoked when the anchor's membership is
-        // removed, and restored on rejoin). Folding it as a direct `MemberAdded`
-        // would make it permanent and survive anchor removal (the over-grant). Fold
-        // it as a `Noop` graph node; the inheritance walk in
-        // `AclView::is_member_at_cut` derives the membership from the foldable
-        // anchor membership + visibility + cap (default cap via base fact), so it
-        // tracks the anchor both ways.
-        NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => OpPayload::Noop,
+        // removed, and restored on rejoin). Folding its MEMBERSHIP as a direct
+        // `MemberAdded` would make it permanent and survive anchor removal (the
+        // over-grant); the inheritance walk in `AclView::is_member_at_cut` derives
+        // it from the foldable anchor membership + visibility + cap (default cap
+        // via base fact) instead, so it tracks the anchor both ways.
+        //
+        // Its CREDENTIAL is a different matter and is folded. The encoder returns
+        // a bare `DeviceLinked` for exactly this op, so what used to be a
+        // graph-only node now carries the device and nothing else — membership
+        // still inherited, binding still recorded. Leaving it a `Noop` was what
+        // let the apply path write a binding the projection never saw, which
+        // re-keys the joiner's writer principal on one plane only.
         NamespaceOp::Root(root) => {
             payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
         }

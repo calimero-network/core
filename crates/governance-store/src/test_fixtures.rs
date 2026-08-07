@@ -8,7 +8,7 @@
 use super::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
-use calimero_context_client::local_governance::GroupOp;
+use calimero_context_client::local_governance::{GroupOp, JoinAccountCredential};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
@@ -17,6 +17,87 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
 use rand::rngs::OsRng;
+/// A joiner's account credential for tests that only need a join op to be
+/// well-formed.
+///
+/// Structurally valid but not cryptographically meaningful: the certificate's
+/// signature is filler. Tests that care whether a credential VERIFIES must build a
+/// real one — `apply_link` checks the certificate against the genesis, so this
+/// fixture is refused on that path by design, and the join still applies because a
+/// refused credential is reported rather than propagated.
+pub(super) fn test_join_account() -> Box<JoinAccountCredential> {
+    let root = PrivateKey::random(&mut OsRng).public_key();
+    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    Box::new(JoinAccountCredential {
+        cert: calimero_account::DeviceCert {
+            account: genesis.account_id(),
+            device: calimero_account::DeviceId::from([0x3E; 32]),
+            sign_pk: PrivateKey::random(&mut OsRng).public_key(),
+            kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
+            key_epoch: 0,
+            device_epoch: 0,
+            signature: [0x11; 64],
+        },
+        genesis,
+        chain: vec![],
+    })
+}
+
+/// A joiner's account credential that actually VERIFIES, certified for
+/// `sign_pk`.
+///
+/// The counterpart to [`test_join_account`]: use this wherever the test is about
+/// what happens when a credential is admitted, since the filler fixture is
+/// refused at `apply_link` by design. `device` is a parameter so a test can mint
+/// a second credential for the same joiner (a rejoin) or deliberately collide two
+/// devices.
+/// A fresh account root: its signing key and the genesis that names it.
+///
+/// Returned as a pair so a test can mint SEVERAL credentials under one account —
+/// a rejoin, or a person's second device — which is the whole distinction the
+/// account plane exists to draw.
+pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
+    let root_sk = PrivateKey::random(&mut OsRng);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    (root_sk, genesis)
+}
+
+/// Certify `sign_pk` as `device` under an existing account root.
+pub(super) fn join_account_for(
+    root_sk: &PrivateKey,
+    genesis: calimero_account::AccountGenesis,
+    sign_pk: &PublicKey,
+    device: [u8; 32],
+    device_epoch: u32,
+) -> Box<JoinAccountCredential> {
+    let cert = calimero_account::sign_device_cert(
+        root_sk,
+        genesis.account_id(),
+        calimero_account::DeviceId::from(device),
+        sign_pk,
+        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        0,
+        device_epoch,
+    )
+    .expect("the account root signs its own device cert");
+    Box::new(JoinAccountCredential {
+        genesis,
+        chain: vec![],
+        cert,
+    })
+}
+
+/// A credential that actually VERIFIES, certified for `sign_pk` under a brand-new
+/// account root.
+///
+/// The counterpart to [`test_join_account`]: use this wherever the test is about
+/// what happens when a credential is admitted, since the filler fixture is
+/// refused at `apply_link` by design.
+pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredential> {
+    let (root_sk, genesis) = test_account_root();
+    join_account_for(&root_sk, genesis, sign_pk, [0x3E; 32], 0)
+}
+
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }

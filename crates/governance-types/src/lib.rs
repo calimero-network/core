@@ -161,15 +161,55 @@ id_newtype! {
 /// signable/​signed op. It stopped being an apply gate in C5.S3a (`scope_root`
 /// is the authoritative convergence signal now), so it was pure dead weight in
 /// the signed bytes. Removing it changes every op's content hash (the op id),
-/// hence the version bump and the flag-day re-bootstrap.
+/// hence the version bump — and, because old-shape ops are rejected rather than
+/// migrated, a re-bootstrap of every node.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
 // member nowhere, so the link gate can no longer ask whether the root is a member.
 // A granted member key signs the account id instead. Adding a field to an existing
-// variant changes that variant's layout, so every group op's id changes; a flag day,
-// alongside the namespace v4 one already in this change.
+// variant changes that variant's layout, so every group op's id changes, so every
+// node re-bootstraps — as does the namespace bump in the same change.
+
+/// A joiner's account credential, carried by the cleartext join ops.
+///
+/// Genesis + chain + certificate, i.e. everything a peer needs to verify the
+/// account and the device from the op alone — deliberately self-verifying, so a
+/// receiver never has to have folded a prior op about this account. The cost is
+/// bytes on every join; the benefit is that a join can never be applied by a peer
+/// that would then disagree about who the joiner is.
+///
+/// **Why this rides the join op rather than a separate `AccountDeviceLinked`.**
+/// That op needs an `AccountMemberEndorsement` because an account root is
+/// deliberately a member nowhere, so its gate checks that some *member* vouched
+/// for the account. A join op needs no such bridge: it is signed by the joining
+/// member's own namespace identity and carries the admin-signed invitation
+/// authorising that member, so "a member endorses this account" and "the root
+/// certifies this device" are both already present. The endorsement collapses
+/// into the op, which is why there is no endorsement field here.
+///
+/// **Why the field carrying this is required, not optional.** A member that can
+/// exist without a binding attributes its writes to a stand-in account, so every
+/// account-keyed grant made to its real account silently fails to match, and the
+/// mismatch surfaces far from the join that caused it. Carrying the credential on
+/// the join removes that window rather than narrowing it.
+///
+/// **Why the field is boxed.** The credential is ~253 bytes, and inlining it in
+/// three `RootOp` variants pushed the largest variant past clippy's
+/// `large_enum_variant` threshold, making every `NamespaceOp` that size on the
+/// stack. Borsh encodes `Box<T>` exactly as `T`, so the boxing is invisible on the
+/// wire and does not affect the schema version.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct JoinAccountCredential {
+    /// The account's self-certifying root.
+    pub genesis: AccountGenesis,
+    /// Signed root-key rollovers, epoch 0 upward. Empty when the certificate was
+    /// signed by the genesis key.
+    pub chain: Vec<RootKeyHandoff>,
+    /// The root-signed grant for the device the joiner is joining with.
+    pub cert: DeviceCert,
+}
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -726,6 +766,12 @@ pub enum RootOp {
         /// identity, group_id, expiration, role, and the admin's
         /// signature. Peers use this to verify the join was authorized.
         signed_invitation: SignedGroupOpenInvitation,
+        /// The joiner's self-certifying account root, and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not optional.
+        account: Box<JoinAccountCredential>,
     },
     /// Delivers a group key to a specific member, ECDH-wrapped so only
     /// the recipient can decrypt it.
@@ -764,6 +810,12 @@ pub enum RootOp {
     MemberJoinedOpen {
         member: PublicKey,
         group_id: ContextGroupId,
+        /// The joiner's self-certifying account root, and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not optional.
+        account: Box<JoinAccountCredential>,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
     /// time (`joined_at`, unix seconds, covered by the joiner's
@@ -774,6 +826,12 @@ pub enum RootOp {
         member: PublicKey,
         signed_invitation: SignedGroupOpenInvitation,
         joined_at: u64,
+        /// The joiner's self-certifying account root, and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not optional.
+        account: Box<JoinAccountCredential>,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:
     /// authoritatively records the namespace's founding administrator/owner.
@@ -1053,19 +1111,19 @@ pub struct SignedNamespaceOp {
 /// v2 (cutover C5.S3b): dropped the vestigial `state_hash` field. It stopped
 /// being an apply gate in C5.S3a (`scope_root` is the convergence signal now);
 /// removing it from the signable/​signed structs changes every op id, hence the
-/// version bump and the flag-day re-bootstrap.
+/// version bump and a re-bootstrap.
 ///
 /// v3: the `KeyEnvelope` carried in a `NamespaceOp::Group` key rotation gained
 /// authenticated `sender` + `signature` fields (and its `ephemeral_pk` became a
 /// true per-envelope ephemeral). That changes the borsh layout of every group
-/// op that carries a rotation, so every op id changes — another flag-day.
+/// op that carries a rotation, so every op id changes — another re-bootstrap.
 ///
 /// v4: `KeyEnvelope::recipient` became [`EnvelopeRecipient`], a discriminated
 /// member-or-device address that carries its own ephemeral key (so the separate
 /// `ephemeral_pk` field is gone). Both `RootOp::KeyDelivery` and the rotation on
 /// `NamespaceOp::Group` embed an envelope, so every namespace op's layout and id
-/// changes — another flag-day.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 4;
+/// changes — another re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 5;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";

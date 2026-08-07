@@ -380,7 +380,7 @@ There is a subtlety for **nested** collections (`parent_id.is_some()`). Such a c
 
 Each entity's `Metadata` carries a `schema_version: Option<u32>` (`crates/storage/src/entities.rs:603-611`). Crucially it is **never folded into `own_hash`**: a leaf's `own_hash` is `Sha256` of its *data bytes* only, not its metadata (`crates/storage/src/interface.rs`), so stamping or bumping the version never changes the entity's Merkle leaf.
 
-That is precisely what makes identity-gated migration possible. An owner re-stamps its identity-gated entries at a new version on its next ordinary signed write (`with_schema_version`, `crates/storage/src/entities.rs:689-705`) without diverging peers' hashes and without a coordinated flag-day upgrade. A `None` tag reads as a legacy/v0 entry.
+That is precisely what makes identity-gated migration possible. An owner re-stamps its identity-gated entries at a new version on its next ordinary signed write (`with_schema_version`, `crates/storage/src/entities.rs:689-705`) without diverging peers' hashes and without a coordinated breaking schema upgrade. A `None` tag reads as a legacy/v0 entry.
 
 ## Summary
 

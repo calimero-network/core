@@ -32,6 +32,13 @@ fn option_is_its_inner_type() {
 }
 
 #[test]
+fn box_is_its_inner_type() {
+    // Borsh-transparent: a boxed value serializes as the pointee.
+    assert_eq!(ref_of::<Box<u64>>(), TypeRef::Scalar(ScalarType::U64));
+    assert_eq!(ref_of::<Box<Vec<String>>>(), ref_of::<Vec<String>>());
+}
+
+#[test]
 fn byte_array_is_sized_bytes() {
     let TypeRef::Scalar(ScalarType::Bytes { size, .. }) = ref_of::<[u8; 32]>() else {
         panic!("expected sized bytes");

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
 
-use calimero_account::{AccountGenesis, AccountId, DeviceId, RootKeyHandoff};
+use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
 use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
@@ -250,17 +250,7 @@ impl ScopeState {
                 group,
                 member,
                 role,
-            } => {
-                let key = (*group, *member);
-                if wins(stamp, self.member_clock.get(&key)) {
-                    let _ = self
-                        .groups
-                        .entry(*group)
-                        .or_default()
-                        .insert(*member, role.clone());
-                    let _ = self.member_clock.insert(key, stamp);
-                }
-            }
+            } => self.fold_member_added(*group, *member, role, stamp),
             OpPayload::MemberRemoved { group, member } => {
                 let key = (*group, *member);
                 if wins(stamp, self.member_clock.get(&key)) {
@@ -362,66 +352,24 @@ impl ScopeState {
                 genesis,
                 chain,
                 cert,
+            } => self.fold_device_linked(genesis, chain, cert),
+
+            // Both halves of a join, folded by the very same code the separate
+            // `MemberAdded` and `DeviceLinked` arms run. Neither half is
+            // conditional on the other: a credential this scope cannot admit
+            // still leaves the membership standing, which is the same verdict
+            // the live apply path reaches, and the membership half carries no
+            // information the device half needs.
+            OpPayload::MemberJoinedWithDevice {
+                group,
+                member,
+                role,
+                genesis,
+                chain,
+                cert,
             } => {
-                // The admission rule lives in `calimero-authz` and is shared
-                // verbatim with `authorize`, so a link can never be authorized
-                // here and refused there (or the reverse) — which would be a
-                // `scope_root` divergence between two nodes that saw the same
-                // ops.
-                // Learn the account FIRST, and unconditionally — the genesis
-                // is self-certifying (it hashes to the id it claims), so
-                // absorbing it is safe even when the device link that carried
-                // it turns out to be inadmissible. Doing this only on success
-                // would make the accounts map depend on delivery order: link
-                // then revoke would learn the account, revoke then link would
-                // not, and the two nodes' `scope_root` would disagree.
-                // Absorption runs before the credential is verified, so the cap
-                // inside `root_key_at_epoch` does not protect it: without one here,
-                // a single op could grow `handoffs` without limit, and this crate
-                // has no wire-bounds layer to lean on. Refusing the whole op's
-                // absorption (rather than truncating) keeps the decision a function
-                // of the op, so every replica absorbs the same set.
-                if genesis.account_id() == cert.account
-                    && chain.len() <= calimero_account::MAX_ROOT_KEY_HANDOFFS
-                {
-                    let _ = self.account_genesis.entry(cert.account).or_insert(*genesis);
-                    for handoff in chain {
-                        // A credential's chain speaks only for the account it
-                        // names. Absorbing entries for other accounts let one op
-                        // write into slots of accounts it has no relationship to.
-                        if handoff.account == cert.account {
-                            self.absorb_handoff(*handoff);
-                        }
-                    }
-                }
-
-                // Only the order-independent rules here. Supersession by a
-                // later root-key rotation is applied when the view is read (see
-                // `live_devices`), because it depends on the account's FINAL
-                // epoch — which this fold cannot know mid-stream.
-                let Ok(verified) = calimero_authz::fold_device_link(
-                    &self.devices,
-                    &self.revoked_devices,
-                    genesis,
-                    chain,
-                    cert,
-                ) else {
-                    // Deterministically inadmissible on every node, so ignoring
-                    // it keeps the projection convergent. The op still occupies
-                    // its place in the causal graph.
-                    return;
-                };
-
-                let _ = self.devices.insert(
-                    verified.device,
-                    DeviceBinding {
-                        account: verified.account,
-                        sign_pk: verified.sign_pk,
-                        kem_pk: verified.kem_pk,
-                        device_epoch: verified.device_epoch,
-                        key_epoch: verified.key_epoch,
-                    },
-                );
+                self.fold_member_added(*group, *member, role, stamp);
+                self.fold_device_linked(genesis, chain, cert);
             }
             OpPayload::DeviceRevoked { device, .. } => {
                 // The one account-plane arm with NO ownership gate, and the only
@@ -480,6 +428,100 @@ impl ScopeState {
                 }
             }
         }
+    }
+
+    /// LWW-set `member`'s role in `group`.
+    ///
+    /// Shared by the `MemberAdded` and `MemberJoinedWithDevice` arms so a join
+    /// and a plain add can never write the membership slot differently.
+    fn fold_member_added(
+        &mut self,
+        group: ContextGroupId,
+        member: AccountId,
+        role: &GroupMemberRole,
+        stamp: Stamp,
+    ) {
+        let key = (group, member);
+        if wins(stamp, self.member_clock.get(&key)) {
+            let _ = self
+                .groups
+                .entry(group)
+                .or_default()
+                .insert(member, role.clone());
+            let _ = self.member_clock.insert(key, stamp);
+        }
+    }
+
+    /// Absorb a credential's account facts and bind its device, if admissible.
+    ///
+    /// Shared by the `DeviceLinked` and `MemberJoinedWithDevice` arms: whether a
+    /// credential arrived on its own op or riding a join changes nothing about
+    /// what it means, and one body is what guarantees that.
+    ///
+    /// The admission rule lives in `calimero-authz` and is shared verbatim with
+    /// `authorize`, so a link can never be authorized here and refused there (or
+    /// the reverse) — which would be a `scope_root` divergence between two nodes
+    /// that saw the same ops.
+    fn fold_device_linked(
+        &mut self,
+        genesis: &AccountGenesis,
+        chain: &[RootKeyHandoff],
+        cert: &DeviceCert,
+    ) {
+        // Learn the account FIRST, and unconditionally — the genesis is
+        // self-certifying (it hashes to the id it claims), so absorbing it is
+        // safe even when the device link that carried it turns out to be
+        // inadmissible. Doing this only on success would make the accounts map
+        // depend on delivery order: link then revoke would learn the account,
+        // revoke then link would not, and the two nodes' `scope_root` would
+        // disagree.
+        // Absorption runs before the credential is verified, so the cap inside
+        // `root_key_at_epoch` does not protect it: without one here, a single op
+        // could grow `handoffs` without limit, and this crate has no wire-bounds
+        // layer to lean on. Refusing the whole op's absorption (rather than
+        // truncating) keeps the decision a function of the op, so every replica
+        // absorbs the same set.
+        if genesis.account_id() == cert.account
+            && chain.len() <= calimero_account::MAX_ROOT_KEY_HANDOFFS
+        {
+            let _ = self.account_genesis.entry(cert.account).or_insert(*genesis);
+            for handoff in chain {
+                // A credential's chain speaks only for the account it names.
+                // Absorbing entries for other accounts let one op write into
+                // slots of accounts it has no relationship to.
+                if handoff.account == cert.account {
+                    self.absorb_handoff(*handoff);
+                }
+            }
+        }
+
+        // Only the order-independent rules here. Supersession by a later
+        // root-key rotation is applied when the view is read (see
+        // `live_devices`), because it depends on the account's FINAL epoch —
+        // which this fold cannot know mid-stream.
+        let Ok(verified) = calimero_authz::fold_device_link(
+            &self.devices,
+            &self.revoked_devices,
+            genesis,
+            chain,
+            cert,
+        ) else {
+            // Deterministically inadmissible on every node, so ignoring it keeps
+            // the projection convergent. The op still occupies its place in the
+            // causal graph.
+            return;
+        };
+
+        let _ = self.devices.insert(
+            verified.device,
+            DeviceBinding {
+                account: verified.account,
+                sign_pk: verified.sign_pk,
+                kem_pk: verified.kem_pk,
+                device_epoch: verified.device_epoch,
+                key_epoch: verified.key_epoch,
+            },
+        );
     }
 
     /// Record a handoff in its epoch slot, resolving a same-epoch race

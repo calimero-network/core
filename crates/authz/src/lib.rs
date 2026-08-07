@@ -737,7 +737,13 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
     //
     // `DeviceLinked` is exempt because it is the op that *establishes* a
     // binding; its own admission rules stand in for this check.
-    if !matches!(op.payload, OpPayload::DeviceLinked { .. }) {
+    // A join carries its own credential for the same reason, and carries it at
+    // the one cut where the binding provably cannot have folded yet — the op
+    // establishing it is this one.
+    if !matches!(
+        op.payload,
+        OpPayload::DeviceLinked { .. } | OpPayload::MemberJoinedWithDevice { .. }
+    ) {
         check_device_speaks_for_author(op, acl_at_cut)?;
     }
 
@@ -761,6 +767,53 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             }
         }
         OpPayload::MemberAdded { group, .. } | OpPayload::MemberRemoved { group, .. } => {
+            if acl_at_cut.is_group_admin(&op.author(), *group) {
+                Ok(())
+            } else {
+                Err(Rejected::NotGroupAdmin)
+            }
+        }
+        // **This arm FAILS CLOSED for an ordinary self-service join, on purpose.**
+        //
+        // A join's real warrant is the admin-signed invitation, and `OpPayload`
+        // has nowhere to put one — so this gate cannot decide a join in the
+        // affirmative, and a gate that cannot decide must refuse rather than
+        // guess. A genuine non-admin joiner is therefore rejected here. That is
+        // survivable only because the live governance apply is what actually
+        // gates a join today; `authorize` has no caller on the join path.
+        //
+        // **Do not wire `authorize` into the join path until the invitation is
+        // carried in the payload** — doing so would refuse every self-service
+        // join. Giving it a home, and with it a rule that can succeed for a
+        // non-admin joiner, belongs with moving the principal fields to
+        // `AccountId`.
+        //
+        // The credential half IS decidable from the op alone, so it is decided
+        // here rather than deferred: without it this arm would accept whatever
+        // bytes the payload carried, which is a worse trap than refusing.
+        OpPayload::MemberJoinedWithDevice {
+            group,
+            genesis,
+            chain,
+            cert,
+            ..
+        } => {
+            // Cryptographic admissibility only. The two cross-checks the
+            // `DeviceLinked` arm adds are deliberately absent and cannot be
+            // reinstated here: a bridged join op's `authorship` is
+            // `legacy_authorship(signer)`, whose device is DERIVED from the
+            // stand-in rather than enrolled, so both the device-key and the
+            // account comparison would fail on a perfectly honest join. And
+            // `is_scope_member(verified.account)` cannot hold either — the whole
+            // point of a join is that the account is not a member yet.
+            let _verified = admit_device_link(
+                &acl_at_cut.accounts,
+                &acl_at_cut.devices,
+                &acl_at_cut.revoked_devices,
+                genesis,
+                chain,
+                cert,
+            )?;
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())
             } else {
