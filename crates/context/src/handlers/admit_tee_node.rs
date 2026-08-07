@@ -86,6 +86,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         AdmitTeeNodeRequest {
             group_id,
             member,
+            account,
             quote_hash,
             mrtd,
             rtmr0,
@@ -210,13 +211,22 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     PrivateKey::from(effective_signing_key.ok_or_else(|| {
                         eyre::eyre!("no signing key available for TEE admission")
                     })?);
-                let report = calimero_governance_store::sign_apply_and_publish(
-                    &datastore,
-                    &node_client,
-                    &ack_router,
-                    &group_id,
-                    &sk,
-                    GroupOp::MemberJoinedViaTeeAttestation {
+                // Two forms, one decision: does this admission have to carry a
+                // credential?
+                //
+                // A FLEET replica is an outsider joining the namespace, so its
+                // device has to be bound in the same apply as its membership —
+                // and that means peers must be able to read the credential,
+                // which means cleartext. A SUBGROUP admission is an existing
+                // namespace member moving inward; bindings are namespace-keyed,
+                // so it is already bound and the encrypted group op stays
+                // correct for it.
+                let report = if let Some(account) = account {
+                    let namespace_id =
+                        calimero_governance_store::NamespaceRepository::new(&datastore)
+                            .resolve(&group_id)?;
+                    let op = NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
+                        group_id,
                         member,
                         quote_hash,
                         mrtd,
@@ -226,9 +236,43 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         rtmr3,
                         tcb_status,
                         role: GroupMemberRole::ReadOnlyTee,
-                    },
-                )
-                .await?;
+                        account,
+                    });
+                    // The namespace publisher always returns a report; the group
+                    // one returns `Option` because a group op can be applied
+                    // without a publish. Normalise to the wider shape.
+                    Some(
+                        calimero_governance_store::sign_apply_and_publish_namespace_op(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            namespace_id.to_bytes().into(),
+                            &sk,
+                            op,
+                        )
+                        .await?,
+                    )
+                } else {
+                    calimero_governance_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &sk,
+                        GroupOp::MemberJoinedViaTeeAttestation {
+                            member,
+                            quote_hash,
+                            mrtd,
+                            rtmr0,
+                            rtmr1,
+                            rtmr2,
+                            rtmr3,
+                            tcb_status,
+                            role: GroupMemberRole::ReadOnlyTee,
+                        },
+                    )
+                    .await?
+                };
                 report.observe("admit_tee_node", "MemberJoinedViaTeeAttestation");
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");

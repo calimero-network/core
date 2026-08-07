@@ -21,6 +21,7 @@ mod group_deleted;
 mod group_reparented;
 mod member_joined;
 mod member_joined_open;
+mod member_joined_via_tee;
 mod namespace_created;
 mod policy_updated;
 
@@ -71,6 +72,34 @@ pub(crate) fn dispatch_root_op(
         } => group_reparented::apply(ctx, op, child_group_id.to_bytes(), new_parent_id.to_bytes()),
         RootOp::AdminChanged { new_admin } => admin_changed::apply(ctx, op, *new_admin),
         RootOp::PolicyUpdated { .. } => policy_updated::apply(ctx, op),
+        RootOp::MemberJoinedViaTeeAttestation {
+            group_id,
+            member,
+            quote_hash: _,
+            mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
+            tcb_status,
+            role,
+            account,
+        } => member_joined_via_tee::apply(
+            ctx,
+            op,
+            *group_id,
+            member,
+            &crate::membership::TeeAttestationClaims {
+                mrtd,
+                rtmr0,
+                rtmr1,
+                rtmr2,
+                rtmr3,
+                tcb_status,
+            },
+            role,
+            account,
+        ),
         RootOp::MemberJoined {
             member,
             signed_invitation,

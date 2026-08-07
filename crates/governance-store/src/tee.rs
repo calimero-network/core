@@ -1,5 +1,7 @@
 use crate::NamespaceRepository;
-use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+use calimero_context_client::local_governance::{
+    GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -144,6 +146,95 @@ pub struct TeeAdmissionRecord {
 /// [`read_tee_admission_policy`], which also takes the last write. Reusing a
 /// stale earlier verdict for subgroup fan-out would re-admit against outdated
 /// attestation data.
+/// The admission verdict carried by an encrypted [`GroupOp`] log entry.
+///
+/// Needs no group id: the per-group op log this reads is already scoped to one
+/// group. Its cleartext counterpart is [`tee_admission_from_root_op`], which
+/// does need one, because a namespace log carries every group's root ops.
+fn tee_admission_from_bytes(bytes: &[u8]) -> Option<(PublicKey, TeeAdmissionRecord)> {
+    if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+        if let GroupOp::MemberJoinedViaTeeAttestation {
+            member,
+            quote_hash,
+            mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
+            tcb_status,
+            role,
+        } = op.op
+        {
+            return Some((
+                member,
+                TeeAdmissionRecord {
+                    quote_hash,
+                    mrtd,
+                    rtmr0,
+                    rtmr1,
+                    rtmr2,
+                    rtmr3,
+                    tcb_status,
+                    role,
+                },
+            ));
+        }
+        return None;
+    }
+    None
+}
+
+/// This namespace's cleartext root ops, for the namespace owning `group_id`.
+fn root_ops_for(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<SignedNamespaceOp>> {
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    crate::NamespaceOpLogService::new(store, namespace.to_bytes().into()).collect_root_ops()
+}
+
+/// The admission verdict a cleartext [`RootOp`] carries, if it is one and it
+/// names `group_id`.
+fn tee_admission_from_root_op(
+    signed: &SignedNamespaceOp,
+    group_id: &ContextGroupId,
+) -> Option<(PublicKey, TeeAdmissionRecord)> {
+    {
+        if let NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
+            group_id: op_group,
+            member,
+            quote_hash,
+            mrtd,
+            rtmr0,
+            rtmr1,
+            rtmr2,
+            rtmr3,
+            tcb_status,
+            role,
+            ..
+        }) = &signed.op
+        {
+            // The cleartext form names its group explicitly, so an admission
+            // into a DIFFERENT group in this namespace must not be read as one
+            // into `group_id`.
+            if *op_group != *group_id {
+                return None;
+            }
+            return Some((
+                *member,
+                TeeAdmissionRecord {
+                    quote_hash: *quote_hash,
+                    mrtd: mrtd.clone(),
+                    rtmr0: rtmr0.clone(),
+                    rtmr1: rtmr1.clone(),
+                    rtmr2: rtmr2.clone(),
+                    rtmr3: rtmr3.clone(),
+                    tcb_status: tcb_status.clone(),
+                    role: role.clone(),
+                },
+            ));
+        }
+    }
+    None
+}
+
 pub fn tee_admission_record(
     store: &Store,
     group_id: &ContextGroupId,
@@ -153,31 +244,21 @@ pub fn tee_admission_record(
     let mut latest = None;
 
     for (_seq, bytes) in &entries {
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
-            if let GroupOp::MemberJoinedViaTeeAttestation {
-                member,
-                quote_hash,
-                mrtd,
-                rtmr0,
-                rtmr1,
-                rtmr2,
-                rtmr3,
-                tcb_status,
-                role,
-            } = op.op
-            {
-                if member == *identity {
-                    latest = Some(TeeAdmissionRecord {
-                        quote_hash,
-                        mrtd,
-                        rtmr0,
-                        rtmr1,
-                        rtmr2,
-                        rtmr3,
-                        tcb_status,
-                        role,
-                    });
-                }
+        if let Some((member, record)) = tee_admission_from_bytes(bytes) {
+            if member == *identity {
+                latest = Some(record);
+            }
+        }
+    }
+
+    // ...and the namespace log, where the CLEARTEXT admission lives. A fleet
+    // replica's admission is a `RootOp`, so it never appears in the per-group
+    // log scanned above; without this the subgroup fan-in finds no verdict for
+    // a replica the namespace has plainly admitted.
+    for signed in root_ops_for(store, group_id)? {
+        if let Some((member, record)) = tee_admission_from_root_op(&signed, group_id) {
+            if member == *identity {
+                latest = Some(record);
             }
         }
     }
@@ -202,34 +283,15 @@ pub fn tee_admission_records(
     let mut out = std::collections::BTreeMap::new();
 
     for (_seq, bytes) in &entries {
-        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
-            if let GroupOp::MemberJoinedViaTeeAttestation {
-                member,
-                quote_hash,
-                mrtd,
-                rtmr0,
-                rtmr1,
-                rtmr2,
-                rtmr3,
-                tcb_status,
-                role,
-            } = op.op
-            {
-                // Last-write-wins: a later re-admission supersedes the earlier verdict.
-                let _ = out.insert(
-                    member,
-                    TeeAdmissionRecord {
-                        quote_hash,
-                        mrtd,
-                        rtmr0,
-                        rtmr1,
-                        rtmr2,
-                        rtmr3,
-                        tcb_status,
-                        role,
-                    },
-                );
-            }
+        if let Some((member, record)) = tee_admission_from_bytes(bytes) {
+            // Last-write-wins: a later re-admission supersedes the earlier verdict.
+            let _ = out.insert(member, record);
+        }
+    }
+
+    for signed in root_ops_for(store, group_id)? {
+        if let Some((member, record)) = tee_admission_from_root_op(&signed, group_id) {
+            let _ = out.insert(member, record);
         }
     }
 
