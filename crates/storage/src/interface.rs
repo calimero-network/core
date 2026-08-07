@@ -764,6 +764,37 @@ impl<S: StorageAdaptor> Interface<S> {
         verdict
     }
 
+    /// Refuse an action's signature, naming WHICH of the apply path's checks
+    /// fired.
+    ///
+    /// Twelve distinct rejections in `apply_action` all return the same
+    /// `InvalidSignature`, whose Display names three storage types and no arm —
+    /// so a failure in the field says only "one of a dozen things went wrong
+    /// with one of three storage types". `verify_snapshot_entity_signature` was
+    /// given a discriminator for exactly this reason, but it sits on the
+    /// SNAPSHOT path; HashComparison applies through `apply_action` and never
+    /// reaches it, which is why reading that field yields nothing on the
+    /// failure everyone has actually been chasing.
+    ///
+    /// `reason` is the field to read first. It names the check, not the
+    /// symptom: `signer-not-in-writer-set` and `storage-type-changed` are
+    /// different investigations that were previously indistinguishable.
+    fn reject_action_signature(
+        reason: &'static str,
+        id: &crate::address::Id,
+        metadata: &crate::entities::Metadata,
+    ) -> StorageError {
+        tracing::warn!(
+            %id,
+            reason,
+            storage_type = crate::entities::storage_type_name(&metadata.storage_type),
+            signature = crate::entities::signature_shape(&metadata.storage_type),
+            crdt_type = ?metadata.crdt_type,
+            "action signature rejected while applying"
+        );
+        StorageError::InvalidSignature
+    }
+
     /// The verdict itself. Split out so [`Self::verify_snapshot_entity_signature`]
     /// can log every rejection in one place — several arms bail early, so a tail
     /// log on the public function would miss them.
@@ -1509,7 +1540,11 @@ impl<S: StorageAdaptor> Interface<S> {
                         );
 
                         if !verification_result {
-                            return Err(StorageError::InvalidSignature);
+                            return Err(Self::reject_action_signature(
+                                "stale-action-unauthenticated",
+                                id,
+                                metadata,
+                            ));
                         }
 
                         // Strictly stale: signature verified, but our
@@ -1685,7 +1720,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             &payload,
                             ctx.signer_account,
                         ) else {
-                            return Err(StorageError::InvalidSignature);
+                            return Err(Self::reject_action_signature(
+                                "shared-signer-not-in-writer-set",
+                                id,
+                                metadata,
+                            ));
                         };
                         // Operation-granularity gate: the signer is a current
                         // writer, but must also hold the capability for THIS op.
@@ -1836,7 +1875,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             &payload,
                             ctx.signer_account,
                         ) else {
-                            return Err(StorageError::InvalidSignature);
+                            return Err(Self::reject_action_signature(
+                                "sharedmember-signer-not-in-writer-set",
+                                id,
+                                metadata,
+                            ));
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
                         Self::enforce_op_mask(
@@ -1921,7 +1964,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             } => {
                                 // Check it matches the owner on record
                                 if *owner != existing_owner {
-                                    return Err(StorageError::InvalidSignature);
+                                    return Err(Self::reject_action_signature(
+                                        "user-owner-mismatch",
+                                        id,
+                                        metadata,
+                                    ));
                                 }
 
                                 let sig_data =
@@ -1968,7 +2015,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                     &payload,
                                 );
                                 if !verification_result {
-                                    return Err(StorageError::InvalidSignature);
+                                    return Err(Self::reject_action_signature(
+                                        "user-signature-absent",
+                                        id,
+                                        metadata,
+                                    ));
                                 }
 
                                 // Replay protection: nonce is the
@@ -1986,7 +2037,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             }
                             _ => {
                                 // Action metadata is not User, but existing is.
-                                return Err(StorageError::InvalidSignature);
+                                return Err(Self::reject_action_signature(
+                                    "storage-type-changed-to-user",
+                                    id,
+                                    metadata,
+                                ));
                             }
                         }
                     }
@@ -2004,7 +2059,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // Action's claimed writers must match stored — delete is
                                 // not a rotation channel.
                                 if action_writers != existing_writers {
-                                    return Err(StorageError::InvalidSignature);
+                                    return Err(Self::reject_action_signature(
+                                        "shared-rotation-channel-misuse",
+                                        id,
+                                        metadata,
+                                    ));
                                 }
 
                                 let sig_data =
@@ -2041,7 +2100,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                     &payload,
                                     ctx.signer_account,
                                 ) else {
-                                    return Err(StorageError::InvalidSignature);
+                                    return Err(Self::reject_action_signature(
+                                        "shared-signature-absent",
+                                        id,
+                                        metadata,
+                                    ));
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, existing_writers)?;
@@ -2076,7 +2139,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             }
                             _ => {
                                 // Action metadata is not Shared, but existing is.
-                                return Err(StorageError::InvalidSignature);
+                                return Err(Self::reject_action_signature(
+                                    "storage-type-changed-to-shared",
+                                    id,
+                                    metadata,
+                                ));
                             }
                         }
                     }
@@ -2094,7 +2161,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // The action's claimed anchor must match stored —
                                 // delete is not a re-anchor channel.
                                 if *action_anchor != existing_anchor {
-                                    return Err(StorageError::InvalidSignature);
+                                    return Err(Self::reject_action_signature(
+                                        "shared-delete-reanchor-misuse",
+                                        id,
+                                        metadata,
+                                    ));
                                 }
 
                                 let sig_data =
@@ -2128,7 +2199,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                     &payload,
                                     ctx.signer_account,
                                 ) else {
-                                    return Err(StorageError::InvalidSignature);
+                                    return Err(Self::reject_action_signature(
+                                        "sharedmember-signature-absent",
+                                        id,
+                                        metadata,
+                                    ));
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
                                 Self::enforce_op_mask(&signer, OpMask::DELETE, &existing_writers)?;
@@ -2152,7 +2227,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             }
                             _ => {
                                 // Action metadata is not SharedMember, but existing is.
-                                return Err(StorageError::InvalidSignature);
+                                return Err(Self::reject_action_signature(
+                                    "storage-type-changed-to-sharedmember",
+                                    id,
+                                    metadata,
+                                ));
                             }
                         }
                     }
