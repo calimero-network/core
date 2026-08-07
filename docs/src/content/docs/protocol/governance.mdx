@@ -313,7 +313,7 @@ struct KeyEnvelope {
 }
 ```
 
-- **Addressing** — `EnvelopeRecipient::Member { identity, ephemeral_pk }` or `Device { device, ephemeral_pk }`. The variant decides the agreement, so the two are one field. Member addressing is the bootstrap form and is permanent: enrolling a device requires an *encrypted* group op, so a node must already hold the scope key to do it.
+- **Addressing** — `EnvelopeRecipient::Member { identity, ephemeral_pk }` or `Device { device, ephemeral_pk }`. The variant decides the agreement, so the two are one field. Member addressing is the bootstrap form and is permanent. A *joiner* is bound the moment it is a member — its join op carries the credential in the clear — so the device-addressed form covers the ordinary case. What still needs member addressing is every enrolment that is **not** a join: `AccountDeviceLinked` is an *encrypted* group op, so a node must already hold the scope key to publish one, which is exactly the position a re-admitted member or one whose devices are all revoked is in.
 - **Shared secret** — a fresh ephemeral keypair per envelope (that is the forward secrecy), agreed against the recipient's key: ECDH on the Curve25519 form of the Ed25519 identity for a member, native X25519 for a device. The raw point is HKDF-derived into the AES-256 key, under a per-scheme label so the two agreements can never collide.
 - **AEAD** — AES-256-GCM, 12-byte nonce, empty additional data, GCM tag appended inline.
 - **Authentication** — `sender` signs the canonical envelope bytes bound to the `group_id`, checked *before* any ECDH, so a forged or cross-group-replayed envelope is rejected first. The addressing variant tag is inside those bytes, so the two modes cannot be swapped.

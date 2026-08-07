@@ -82,7 +82,7 @@ pub enum EnvelopeRecipient {
 }
 ```
 
-Both forms exist permanently. A device link travels as an *encrypted* group op, so a node must already hold the scope key to enroll a device — if the only way to receive a key were device-addressed, a new member could never obtain the first one. Member addressing is therefore the bootstrap path, not a legacy one.
+Both forms exist permanently. A **join** carries its device credential in the clear, so an ordinary joiner is already bound when the key is delivered and the device-addressed form reaches it. A standalone `AccountDeviceLinked` is different: it travels as an *encrypted* group op, so a node must already hold the scope key to publish one. Member addressing is therefore the bootstrap path for everyone who has no device the scope knows and no join left to carry one — a re-admitted member, or one whose devices have all been revoked.
 
 The wrap generates a **fresh ephemeral keypair per envelope** and derives the secret from that ephemeral against the recipient's key, which is what gives the wrap forward secrecy: compromising the sender's long-term key later does not decrypt past envelopes. The sender then signs the canonical envelope bytes, bound to the `group_id`, so a recipient can reject a forged or cross-group-replayed envelope before doing any ECDH work. The variant tag is inside those signed bytes, so the two addressing modes cannot be swapped by rewriting the discriminant.
 
@@ -258,7 +258,7 @@ The pull is the one path that can undo device-granular revocation, and it did: a
 
 So the responder resolves the reply by the same rule the rotation fan-out uses:
 
-- The requester's member key has **no account** in the scope → wrap to its identity. This is the bootstrap case and cannot be retired: enrolling a device needs an encrypted group op, hence the key, so a keyless joiner has no device the scope has heard of.
+- The requester's member key has **no account** in the scope → wrap to its identity. This is the bootstrap case and cannot be retired. It no longer covers the ordinary joiner, whose join op carries a credential and so binds a device before any key is pulled; what remains are the members with no join left to carry one — a re-admission, or a member whose every device is revoked — for whom enrolling still needs an encrypted group op, hence the key they are asking for.
 - It **has an account** → serve only a live device of that account, and only the one the request named. Identity addressing is no longer available, which is what closes the leak: a revoked device cannot simply omit its id and be served as its member.
 
 A member whose every device is revoked or superseded therefore receives **nothing** from the pull. That is deliberate, not a dead end. Re-enrolling needs an encrypted group op and so needs the key, so recovery is **admin-mediated**: an admin re-delivers the key with `RootOp::KeyDelivery`, or publishes the replacement link on the member's behalf (a link op need not be signed by the device it enrolls). If a member in that state could re-key itself, revocation would mean nothing.
