@@ -46,6 +46,7 @@ dashmap.workspace = true
 indexmap.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
+calimero-op-adapter.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-server.workspace = true
 calimero-storage.workspace = true

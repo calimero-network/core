@@ -177,6 +177,9 @@ fn credential_is_the_joiners(op: &RootOp) -> bool {
         }
         | RootOp::MemberJoinedOpen {
             member, account, ..
+        }
+        | RootOp::MemberJoinedViaTeeAttestation {
+            member, account, ..
         } => {
             join_credential_is_the_joiners(member, &account.genesis, &account.chain, &account.cert)
         }
@@ -414,6 +417,32 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             }
         } else {
             OpPayload::Noop
+        }),
+        // A TEE admission is a direct membership like an invitation join — the
+        // replica gets a real row, not an inherited path — so it folds the same
+        // way: membership and device as one indivisible fact, or membership
+        // alone if the credential is not the attested key's.
+        RootOp::MemberJoinedViaTeeAttestation {
+            group_id,
+            member,
+            role,
+            account,
+            ..
+        } => Some(if credential_is_the_joiners(op) {
+            OpPayload::MemberJoinedWithDevice {
+                group: *group_id,
+                member: legacy_account_id(member),
+                role: role.clone(),
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            }
+        } else {
+            OpPayload::MemberAdded {
+                group: *group_id,
+                member: legacy_account_id(member),
+                role: role.clone(),
+            }
         }),
         RootOp::GroupCreated {
             group_id,

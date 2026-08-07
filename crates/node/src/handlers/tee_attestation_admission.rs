@@ -40,8 +40,30 @@ pub async fn handle_tee_attestation_announce(
     public_key: PublicKey,
     nonce: [u8; 32],
     group_id_bytes: [u8; 32],
+    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<()> {
     let group_id = ContextGroupId::from(group_id_bytes);
+
+    // The credential arrives unauthenticated on a gossip message, so it is
+    // checked against the key the QUOTE binds to — not merely against itself.
+    // The same predicate the apply path and the projection encoder use: the
+    // certificate must name this key and must verify against its genesis.
+    // Without it, anyone could replay another replica's credential and have the
+    // verifier put it on an admission op signed with the verifier's own
+    // authority.
+    if !calimero_op_adapter::join_credential_is_the_joiners(
+        &public_key,
+        &account.genesis,
+        &account.chain,
+        &account.cert,
+    ) {
+        warn!(
+            %source,
+            %public_key,
+            "TEE announcement carried a credential that is not the attested key's; ignoring"
+        );
+        return Ok(());
+    }
 
     // Without the `mock-attestation` feature there is no mock path: every quote
     // is verified with the real DCAP verifier and a `MOCK_TDX_QUOTE_V1` blob just
@@ -100,6 +122,7 @@ pub async fn handle_tee_attestation_announce(
         .admit_tee_node(AdmitTeeNodeRequest {
             group_id,
             member: public_key,
+            account: Some(account),
             quote_hash,
             mrtd,
             rtmr0,
