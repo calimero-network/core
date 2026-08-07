@@ -565,7 +565,28 @@ pub(crate) async fn apply_authorized_state_delta(
             }
         }
 
-        if !missing_result.missing_ids.is_empty() {
+        if !missing_result.missing_ids.is_empty()
+            && !node_state.delta_fetch_allowed(context_id, source)
+        {
+            // The path to this peer has failed repeatedly and is inside a backoff
+            // window. Skip the attempt entirely: opening the stream is what fails,
+            // so there is nothing to retry against, and hammering it is part of
+            // what keeps a capacity-limited relay saturated. See
+            // `DeltaFetchBackoff` for the incident this comes from.
+            //
+            // Correctness is unaffected — periodic sync reconciles the context
+            // regardless. Only the latency of resolving these parents grows.
+            warn!(
+                %context_id,
+                ?source,
+                missing_count = missing_result.missing_ids.len(),
+                retry_in_ms = node_state
+                    .delta_fetch_retry_in(context_id, source)
+                    .map(|d| d.as_millis() as u64),
+                "Skipping missing-parent fetch: peer path is in backoff after repeated \
+                 failures; periodic sync will reconcile"
+            );
+        } else if !missing_result.missing_ids.is_empty() {
             warn!(
                 %context_id,
                 missing_count = missing_result.missing_ids.len(),
@@ -589,6 +610,9 @@ pub(crate) async fn apply_authorized_state_delta(
             .await
             {
                 Ok(peer_fetch_cascaded_events) => {
+                    // The path works: forget the failure history so a peer that
+                    // recovers is retried at full rate immediately.
+                    node_state.record_delta_fetch_success(context_id, source);
                     // Peer-fetched parents can cascade pending children via
                     // `apply_pending` inside `add_delta_with_events`. Those
                     // cascaded children's events were discarded before this
@@ -627,7 +651,16 @@ pub(crate) async fn apply_authorized_state_delta(
                     }
                 }
                 Err(e) => {
-                    warn!(?e, %context_id, ?source, "Failed to request missing deltas");
+                    node_state.record_delta_fetch_failure(context_id, source);
+                    warn!(
+                        ?e,
+                        %context_id,
+                        ?source,
+                        retry_in_ms = node_state
+                            .delta_fetch_retry_in(context_id, source)
+                            .map(|d| d.as_millis() as u64),
+                        "Failed to request missing deltas"
+                    );
                 }
             }
 

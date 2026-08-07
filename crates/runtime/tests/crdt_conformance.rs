@@ -1029,3 +1029,140 @@ fn unordered_set_single_writer_syncs() {
         assert_eq!(got, Some(true), "node {n} should have the synced tag");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Media-ring workload (mero-stream): concurrent same-key insert, and insert
+// racing a remove on the same key.
+//
+// These reproduce the write pattern behind a real cross-network failure. A
+// two-peer video call stored chunks in an `UnorderedMap` keyed by a sequence
+// number minted from a SHARED counter, and pruned a rolling window on every
+// write. That produced two things at once, continuously, from both peers:
+//
+//   * two nodes inserting the SAME key concurrently (both minted the same seq
+//     from their own stale view of the shared counter), and
+//   * one node removing a key while the other inserted it (each peer's reaper
+//     walked the shared window using its own local high-water mark).
+//
+// The nodes in that call reported `DIVERGENCE DETECTED: Same DAG heads but
+// different root hash` 71 times, persisting for 41 minutes, and
+// `HashComparison sync did not converge` 190 times. The app has since been
+// fixed to key per sender (so it no longer generates this pattern), but the
+// question of whether core CONVERGES under it is separate and still open —
+// `frozen_rga_e2e_sequence_converges` above documents an intermittent CI
+// failure with the identical signature.
+//
+// These tests exist to answer that question cheaply and deterministically. If
+// they pass, the media-ring pattern is NOT the reproducer for that flake and
+// the search narrows to the node sync layer (HashComparison repair, delta
+// ordering) rather than plain delta apply. If they ever fail, they are a
+// far smaller reproducer than the frozen/RGA sequence.
+// ---------------------------------------------------------------------------
+
+/// Both nodes mint the same key and write it concurrently — the exact collision
+/// the shared sequence counter produced on every frame.
+#[test]
+fn concurrent_same_key_inserts_converge() {
+    let mut c = Cluster::new(3);
+    let roots = round(
+        &mut c,
+        &[
+            (0, "set", json!({"key": "chunk-1", "value": "alice-frame"})),
+            (1, "set", json!({"key": "chunk-1", "value": "bob-frame"})),
+            (2, "set", json!({"key": "chunk-1", "value": "carol-frame"})),
+        ],
+    );
+    assert_converged("media_ring_same_key", &roots);
+
+    // A matching root with disagreeing values would be a deeper bug than
+    // divergence, so check the projection too, not just the hash.
+    let first = c.query(0, "get", json!({"key": "chunk-1"}));
+    for n in 1..c.len() {
+        assert_eq!(
+            c.query(n, "get", json!({"key": "chunk-1"})),
+            first,
+            "node {n} agrees on the root but not on the value"
+        );
+    }
+}
+
+/// One node's reaper removes a key while another node inserts it. Concurrent
+/// insert-vs-tombstone on one key is the pattern most likely to strand a
+/// replica, and the media ring generated it continuously.
+#[test]
+fn insert_racing_a_remove_on_the_same_key_converges() {
+    let mut c = Cluster::new(2);
+
+    // Both nodes hold `chunk-1` first, so the remove has something to target.
+    let seed = c.call(0, "set", json!({"key": "chunk-1", "value": "seed"}));
+    c.apply(1, &seed);
+
+    // CONCURRENT: node 0 reaps the key, node 1 rewrites it. Neither has seen
+    // the other's op when it acts.
+    let removed = c.call(0, "remove", json!({"key": "chunk-1"}));
+    let rewritten = c.call(1, "set", json!({"key": "chunk-1", "value": "late-frame"}));
+
+    // Cross-apply in OPPOSITE orders. A convergent merge cannot care.
+    let r0 = {
+        let m = c.module;
+        apply_delta(m, &mut c.nodes[0], &rewritten).unwrap()
+    };
+    let r1 = {
+        let m = c.module;
+        apply_delta(m, &mut c.nodes[1], &removed).unwrap()
+    };
+    assert_converged("media_ring_insert_vs_remove", &[r0, r1]);
+
+    let a = c.query(0, "get", json!({"key": "chunk-1"}));
+    let b = c.query(1, "get", json!({"key": "chunk-1"}));
+    assert_eq!(
+        a, b,
+        "insert-vs-remove: nodes disagree on the surviving value"
+    );
+}
+
+/// The sustained shape: several rounds of a rolling window, both peers
+/// inserting into a shared key space and both reaping behind it. One round
+/// proves the merge; the failure in the field only appeared after minutes of
+/// this, so drive it long enough for state to accumulate.
+#[test]
+fn media_ring_rolling_window_converges() {
+    let mut c = Cluster::new(2);
+    const WINDOW: usize = 4;
+
+    for seq in 1..=12usize {
+        // Both peers mint the SAME seq — the shared-counter collision.
+        let key = format!("chunk-{seq}");
+        let a = c.call(0, "set", json!({"key": key, "value": format!("a-{seq}")}));
+        let b = c.call(1, "set", json!({"key": key, "value": format!("b-{seq}")}));
+        c.apply(1, &a);
+        c.apply(0, &b);
+
+        // Both peers' reapers drop the same trailing key, concurrently — each
+        // walking the shared window from its own local high-water mark.
+        if seq > WINDOW {
+            let old = format!("chunk-{}", seq - WINDOW);
+            let ra = c.call(0, "remove", json!({"key": old}));
+            let rb = c.call(1, "remove", json!({"key": old}));
+            c.apply(1, &ra);
+            c.apply(0, &rb);
+        }
+    }
+
+    // Settle: exchange one more write each so both ends observe the same set.
+    let roots = round(
+        &mut c,
+        &[
+            (0, "set", json!({"key": "final", "value": "a"})),
+            (1, "set", json!({"key": "final", "value": "b"})),
+        ],
+    );
+    assert_converged("media_ring_rolling_window", &roots);
+
+    let a = c.query(0, "entries", json!({}));
+    let b = c.query(1, "entries", json!({}));
+    assert_eq!(
+        a, b,
+        "rolling window: nodes agree on root but not on entries"
+    );
+}
