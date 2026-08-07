@@ -670,6 +670,36 @@ jobs:
               echo "no op_store_incomplete or op_store_gate_unavailable markers — op-store mirrors the gov-DAG for every exercised namespace"
           fi
 
+      - name: Assert no blob chunk was served mid-write (HARD gate)
+        if: always()
+        run: |
+          # `blob chunk hash mismatch; refusing to serve` means a chunk failed the
+          # re-hash on the way out of the blobstore. No e2e scenario tampers with
+          # blob bytes, so the only way to produce it here is a torn read: a chunk
+          # observed while it was being rewritten.
+          #
+          # This gate exists because that is exactly how the bug it guards hid.
+          # `blob-cross-node-sizes` failed intermittently with a truncated HTTP
+          # body (run 31164570901), and the SAME error was already being logged on
+          # runs that PASSED — the scenario only went red when the mismatch landed
+          # in the streaming read rather than the probe before it. A passing job was
+          # therefore not evidence of a healthy blob path, which is why this asserts
+          # on the log marker and not just on the scenario's exit code.
+          #
+          # Fixed by writing chunks via temp-file + rename (atomic) and dropping the
+          # redundant second store on the download path. A marker here means one of
+          # those regressed, or a genuinely corrupt/tampered chunk reached disk —
+          # both are real bugs. Runs `always()` so it reports even when the scenario
+          # failed for another reason.
+          if grep -rl "blob chunk hash mismatch" docker-logs/ 2>/dev/null | grep -q .; then
+              count=$(grep -rho "blob chunk hash mismatch" docker-logs/ | wc -l | tr -d ' ')
+              echo "::error::blob chunk served mid-write in ${{ matrix.workflow }} — $count occurrence(s); a chunk failed its content-hash check on the serve path"
+              echo "sample:"
+              grep -rn "blob chunk hash mismatch" docker-logs/ | head -10
+              exit 1
+          fi
+          echo "no blob chunk hash mismatches — every chunk served passed its content-hash check"
+
       - name: Report scope_root governance-divergence pulls (P6.S2, observe-only)
         if: always()
         run: |
