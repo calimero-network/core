@@ -223,10 +223,10 @@ impl Handler<NetworkEvent> for NodeManager {
             NetworkEvent::BlobDownloaded {
                 blob_id,
                 context_id,
-                data,
+                size,
                 from_peer,
             } => {
-                blobs::handle_blob_downloaded(self, ctx, blob_id, context_id, data, from_peer);
+                blobs::handle_blob_downloaded(blob_id, context_id, size, from_peer);
             }
             NetworkEvent::BlobDownloadFailed {
                 blob_id,
