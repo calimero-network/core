@@ -360,15 +360,30 @@ steps:
   # device slot, so a fresh id on re-enrolment is only possible because the
   # revocation landed and node-2 folded it.
 
-  # A plain `wait`, deliberately, and NOT `wait_for_sync`: the tombstone is a
-  # GOVERNANCE op, and wait_for_sync compares context state. It gates nothing here
-  # — the first version of this scenario used it and it returned in 18ms, so
-  # node-2 was asked about its device before it had folded anything and handed back
-  # the row it already had. The assertion then failed for a reason that had nothing
-  # to do with the tombstone.
-  - name: Let the revocation reach node-2 over gossip
-    type: wait
-    seconds: 20
+  # NOT `wait_for_sync`: the tombstone is a GOVERNANCE op and wait_for_sync
+  # compares context state, so it gates nothing here — the first version of this
+  # scenario used it and it returned in 18ms, with node-2 asked about its device
+  # before it had folded anything.
+  #
+  # It used to be a flat `wait: 20` instead. That is a guess, and on a loaded
+  # runner it is sometimes wrong: node-2 re-enrols before folding the tombstone,
+  # its device slot was never released so it mints the SAME id back, and the run
+  # fails on `json_not_equal` below — which reads as "revocation broken" when the
+  # truth is "we did not wait long enough". Seen on run 31173763484; the same
+  # commit passed on re-run.
+  #
+  # So ask the node instead of guessing. `deviceId: null` from its account read is
+  # the post-condition of a revocation it has applied, and polling for it makes
+  # the gate a condition rather than a duration — fast when gossip is fast, and a
+  # real, diagnosed failure when the tombstone genuinely never lands.
+  - name: Wait until node-2 has folded the revocation
+    type: script
+    script: scripts/wait-for-device-released.sh
+    target: local
+    args:
+      - revoke-node-2
+      - '{{namespace_id}}'
+      - '120'
 
   - name: Settle after the tombstone
     type: wait_for_sync
