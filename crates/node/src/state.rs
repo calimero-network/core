@@ -95,6 +95,69 @@ pub(crate) struct SyncSession {
     pub last_drop_warning: Option<Instant>,
 }
 
+/// Consecutive failures before missing-parent fetches to a peer are paused.
+///
+/// One or two failures are ordinary — a peer restarting, a connection being
+/// re-established. Three in a row means the path itself is not working.
+pub(crate) const DELTA_FETCH_TRIP_AFTER: u32 = 3;
+
+/// First pause once tripped. Doubles per subsequent failure.
+pub(crate) const DELTA_FETCH_BACKOFF_BASE: Duration = Duration::from_secs(2);
+
+/// Ceiling on the pause. Periodic sync runs on a comparable cadence, so waiting
+/// longer than this buys nothing — sync would have reconciled the context first.
+pub(crate) const DELTA_FETCH_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// Failure history for missing-parent delta fetches to one peer in one context.
+///
+/// **Why this exists.** When a delta arrives whose parents are missing, the node
+/// opens a stream to the sender to fetch them. If that stream cannot be opened,
+/// there is nothing to retry *against* — but the receive path had no memory, so
+/// every subsequent delta from the same peer tried again immediately.
+///
+/// In the incident that motivated this (a two-node call over a circuit relay
+/// that was refusing new circuits with `Remote reported resource limit
+/// exceeded`), that produced 398 `Failed to request missing deltas` in seconds,
+/// each walking four or five relay addresses that had all just failed, while the
+/// delta-apply worker was already stalling for 60 s at a time. The retries could
+/// not succeed — the relay was out of capacity — and the attempts themselves
+/// were part of what kept it that way.
+///
+/// Periodic sync reconciles the context regardless, so skipping a fetch costs
+/// latency, never correctness.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DeltaFetchBackoff {
+    /// Consecutive failed fetch attempts.
+    pub(crate) failures: u32,
+    /// When the next attempt is allowed. `None` until tripped.
+    pub(crate) retry_after: Option<Instant>,
+}
+
+impl DeltaFetchBackoff {
+    /// Whether a fetch to this peer may be attempted at `now`.
+    pub(crate) fn may_attempt(&self, now: Instant) -> bool {
+        match self.retry_after {
+            Some(t) => now >= t,
+            None => true,
+        }
+    }
+
+    /// Fold in a failure, arming (or extending) the pause once tripped.
+    pub(crate) fn record_failure(&mut self, now: Instant) {
+        self.failures = self.failures.saturating_add(1);
+        if self.failures < DELTA_FETCH_TRIP_AFTER {
+            return;
+        }
+        // Exponential in the number of failures PAST the trip point, so the
+        // first pause is the base rather than already-doubled.
+        let shift = (self.failures - DELTA_FETCH_TRIP_AFTER).min(16);
+        let backoff = DELTA_FETCH_BACKOFF_BASE
+            .saturating_mul(1u32 << shift)
+            .min(DELTA_FETCH_BACKOFF_MAX);
+        self.retry_after = Some(now + backoff);
+    }
+}
+
 /// Mutable runtime state
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
@@ -158,6 +221,13 @@ pub(crate) struct NodeState {
     /// `(peer_id, identity)` pairs observed, which is itself bounded by
     /// group member count.
     pub(crate) peer_identities: Arc<DashMap<PeerId, BTreeSet<PublicKey>>>,
+    /// Missing-parent fetch failure history, per `(context, peer)`. See
+    /// [`DeltaFetchBackoff`] for why the receive path needs a memory here.
+    ///
+    /// Cleared on the first success, so a peer that recovers is retried at full
+    /// rate immediately. Bounded by `(contexts × peers)`, and entries are
+    /// removed rather than reset on success so a healthy fleet holds none.
+    pub(crate) delta_fetch_backoff: Arc<DashMap<(ContextId, PeerId), DeltaFetchBackoff>>,
     /// Durable backing for `peer_identities`: the same authenticated
     /// observations, structured per group with role + `last_seen`, so the
     /// membership signal survives a restart instead of being rebuilt from
@@ -229,11 +299,49 @@ impl NodeState {
             sync_sessions: Arc::new(DashMap::new()),
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),
+            delta_fetch_backoff: Arc::new(DashMap::new()),
             peer_identity_cache: Arc::new(Mutex::new(PeerIdentityCache::default())),
             peer_scores: Arc::new(Mutex::new(BTreeMap::new())),
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Whether a missing-parent fetch to `peer` in `context_id` may be attempted
+    /// now, or is inside a backoff window after repeated failures.
+    pub(crate) fn delta_fetch_allowed(&self, context_id: ContextId, peer: PeerId) -> bool {
+        self.delta_fetch_backoff
+            .get(&(context_id, peer))
+            .is_none_or(|e| e.may_attempt(Instant::now()))
+    }
+
+    /// How much longer the current backoff has to run, for logging.
+    pub(crate) fn delta_fetch_retry_in(
+        &self,
+        context_id: ContextId,
+        peer: PeerId,
+    ) -> Option<Duration> {
+        let now = Instant::now();
+        self.delta_fetch_backoff
+            .get(&(context_id, peer))
+            .and_then(|e| e.retry_after)
+            .and_then(|t| t.checked_duration_since(now))
+    }
+
+    /// Record a failed missing-parent fetch, arming the backoff once it trips.
+    pub(crate) fn record_delta_fetch_failure(&self, context_id: ContextId, peer: PeerId) {
+        self.delta_fetch_backoff
+            .entry((context_id, peer))
+            .or_default()
+            .record_failure(Instant::now());
+    }
+
+    /// Clear the failure history after a successful fetch.
+    ///
+    /// Removes rather than zeroes, so a fleet with no failing paths carries no
+    /// entries at all.
+    pub(crate) fn record_delta_fetch_success(&self, context_id: ContextId, peer: PeerId) {
+        let _ = self.delta_fetch_backoff.remove(&(context_id, peer));
     }
 
     /// Shared handle to the sync-status map, for the run-loop publisher.
@@ -893,5 +1001,124 @@ mod tests {
         assert!(state
             .governance_pending_source_peers(&ContextId::from([9u8; 32]))
             .is_empty());
+    }
+
+    // ── Missing-parent fetch backoff ─────────────────────────────────────────
+
+    #[test]
+    fn delta_fetch_is_allowed_with_no_history() {
+        let state = NodeState::new();
+        assert!(state.delta_fetch_allowed(ContextId::from([1u8; 32]), PeerId::random()));
+    }
+
+    /// The first failures must NOT pause anything — a peer restarting or a
+    /// connection re-establishing is ordinary, and pausing on one blip would
+    /// add latency to the common case.
+    #[test]
+    fn a_few_failures_do_not_trip_the_breaker() {
+        let state = NodeState::new();
+        let ctx = ContextId::from([1u8; 32]);
+        let peer = PeerId::random();
+        for _ in 0..(DELTA_FETCH_TRIP_AFTER - 1) {
+            state.record_delta_fetch_failure(ctx, peer);
+            assert!(state.delta_fetch_allowed(ctx, peer));
+        }
+    }
+
+    /// The incident shape: the path itself is down, so every attempt fails and
+    /// there is nothing to retry against.
+    #[test]
+    fn sustained_failure_trips_the_breaker() {
+        let state = NodeState::new();
+        let ctx = ContextId::from([1u8; 32]);
+        let peer = PeerId::random();
+        for _ in 0..DELTA_FETCH_TRIP_AFTER {
+            state.record_delta_fetch_failure(ctx, peer);
+        }
+        assert!(!state.delta_fetch_allowed(ctx, peer));
+        assert!(state.delta_fetch_retry_in(ctx, peer).is_some());
+    }
+
+    #[test]
+    fn backoff_grows_with_further_failures_and_is_capped() {
+        let mut b = DeltaFetchBackoff::default();
+        let now = Instant::now();
+        for _ in 0..DELTA_FETCH_TRIP_AFTER {
+            b.record_failure(now);
+        }
+        let first = b.retry_after.unwrap() - now;
+        assert_eq!(first, DELTA_FETCH_BACKOFF_BASE);
+
+        b.record_failure(now);
+        let second = b.retry_after.unwrap() - now;
+        assert!(second > first, "backoff must grow: {second:?} !> {first:?}");
+
+        // Far past any sane failure count: still bounded. Periodic sync runs on
+        // a comparable cadence, so waiting longer buys nothing.
+        for _ in 0..64 {
+            b.record_failure(now);
+        }
+        assert_eq!(b.retry_after.unwrap() - now, DELTA_FETCH_BACKOFF_MAX);
+    }
+
+    /// Overflow guard: the shift is clamped, so a very long failure streak must
+    /// saturate rather than panic on `1u32 << n`.
+    #[test]
+    fn a_very_long_failure_streak_does_not_overflow() {
+        let mut b = DeltaFetchBackoff::default();
+        let now = Instant::now();
+        for _ in 0..10_000 {
+            b.record_failure(now);
+        }
+        assert_eq!(b.retry_after.unwrap() - now, DELTA_FETCH_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn the_window_expires_and_allows_a_retry() {
+        let mut b = DeltaFetchBackoff::default();
+        let now = Instant::now();
+        for _ in 0..DELTA_FETCH_TRIP_AFTER {
+            b.record_failure(now);
+        }
+        assert!(!b.may_attempt(now));
+        assert!(b.may_attempt(now + DELTA_FETCH_BACKOFF_BASE));
+    }
+
+    /// A recovered peer must go straight back to full rate — the breaker is
+    /// there to stop pointless retries, not to penalise a peer that is working.
+    #[test]
+    fn success_clears_the_history_entirely() {
+        let state = NodeState::new();
+        let ctx = ContextId::from([1u8; 32]);
+        let peer = PeerId::random();
+        for _ in 0..(DELTA_FETCH_TRIP_AFTER + 5) {
+            state.record_delta_fetch_failure(ctx, peer);
+        }
+        assert!(!state.delta_fetch_allowed(ctx, peer));
+
+        state.record_delta_fetch_success(ctx, peer);
+        assert!(state.delta_fetch_allowed(ctx, peer));
+        // Removed, not zeroed: a healthy fleet carries no entries.
+        assert!(state.delta_fetch_backoff.get(&(ctx, peer)).is_none());
+        // And the next failure starts a fresh streak rather than resuming.
+        state.record_delta_fetch_failure(ctx, peer);
+        assert!(state.delta_fetch_allowed(ctx, peer));
+    }
+
+    /// One bad peer must not stop fetches from a healthy one, and the same peer
+    /// failing in one context must not pause it in another.
+    #[test]
+    fn backoff_is_scoped_to_one_context_and_peer() {
+        let state = NodeState::new();
+        let ctx_a = ContextId::from([1u8; 32]);
+        let ctx_b = ContextId::from([2u8; 32]);
+        let bad = PeerId::random();
+        let good = PeerId::random();
+        for _ in 0..DELTA_FETCH_TRIP_AFTER {
+            state.record_delta_fetch_failure(ctx_a, bad);
+        }
+        assert!(!state.delta_fetch_allowed(ctx_a, bad));
+        assert!(state.delta_fetch_allowed(ctx_a, good));
+        assert!(state.delta_fetch_allowed(ctx_b, bad));
     }
 }
