@@ -246,7 +246,7 @@ pub enum NetworkEvent {
     StreamOpened { peer_id, stream: Box<Stream>, protocol },
     BlobRequested { blob_id, context_id, requesting_peer },
     BlobProvidersFound { blob_id, context_id, providers },
-    BlobDownloaded { blob_id, context_id, data, from_peer },
+    BlobDownloaded { blob_id, context_id, size, from_peer },  // notification only — the requester stores
     BlobDownloadFailed { blob_id, context_id, from_peer, error },
 }
 ```

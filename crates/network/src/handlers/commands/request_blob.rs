@@ -325,11 +325,14 @@ impl Handler<RequestBlob> for NetworkManager {
                         "Blob download completed successfully"
                     );
 
-                    // Emit success event for NodeManager to handle storage
+                    // Notify only. The caller below stores what it receives —
+                    // it has to, since it serves the bytes straight after — so
+                    // this event carries the size rather than a second copy of
+                    // the blob.
                     let _ignored = event_dispatcher.dispatch(NetworkEvent::BlobDownloaded {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
-                        data: collected_data.clone(),
+                        size: collected_data.len(),
                         from_peer: request.peer_id,
                     });
 

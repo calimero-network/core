@@ -1,8 +1,10 @@
 use core::fmt::{self, Debug, Formatter};
 use core::pin::{pin, Pin};
+use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use core::task::{Context, Poll};
 use std::collections::HashSet;
 use std::io::ErrorKind as IoErrorKind;
+use std::process;
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
@@ -16,7 +18,7 @@ use futures_util::io::BufReader;
 use futures_util::{AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
-use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
+use tokio::fs::{create_dir_all, read as async_read, rename, try_exists, write as async_write};
 use tracing::{debug, error, trace};
 
 pub mod config;
@@ -666,6 +668,26 @@ impl FileSystem {
         self.root.join(id.to_string())
     }
 
+    /// A staging path for [`BlobRepository::put`], in the same directory as the
+    /// final one so the `rename` cannot fail with `EXDEV`.
+    ///
+    /// Unique per writer — pid for other processes on the same store, a counter
+    /// for tasks within this one. Deriving it from `id` alone would put two
+    /// concurrent puts of the same chunk on the same temp file, which is the very
+    /// tearing this is here to avoid, just moved one filename over.
+    ///
+    /// A blob id renders as base58, which has no `.`, so no temp name can ever
+    /// collide with a real blob's path.
+    fn tmp_path(&self, id: BlobId) -> Utf8PathBuf {
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+        self.root.join(format!(
+            "{id}.tmp-{}-{}",
+            process::id(),
+            TMP_SEQ.fetch_add(1, AtomicOrdering::Relaxed)
+        ))
+    }
+
     /// Get the path for a blob stored in a package/version directory
     ///
     /// # Errors
@@ -726,8 +748,43 @@ impl BlobRepository for FileSystem {
         }
     }
 
+    /// Write `data` under `id` so that a concurrent reader never observes a
+    /// partially-written file.
+    ///
+    /// The naive `write(path, data)` opens with **truncate**, so rewriting an
+    /// already-complete chunk empties the file and refills it. A reader landing
+    /// in that window reads a short file, and because a chunk id IS the hash of
+    /// its bytes, `load_verified_leaf` correctly rejects it as
+    /// [`BlobError::IntegrityMismatch`] — mid-stream, after the HTTP layer has
+    /// already committed to a `200`. That is a torn read of *valid* data, and it
+    /// is why this goes through a temp file and a `rename`.
+    ///
+    /// `rename` is atomic: a reader sees either the previous complete file or the
+    /// new complete one, and one that already has the file open keeps reading the
+    /// inode it opened. Concurrent writers are safe by content-addressing — both
+    /// carry the same bytes, so whichever rename lands last is still correct.
+    ///
+    /// Deliberately does NOT skip the write when the file already exists. That
+    /// would be the cheaper way to dodge the rewrite, but it would also stop a
+    /// corrupt or truncated file (from a crash mid-write under the old scheme)
+    /// from ever being repaired by a re-put.
     async fn put(&self, id: BlobId, data: &[u8]) -> EyreResult<()> {
-        async_write(self.path(id), data).await.map_err(Into::into)
+        let path = self.path(id);
+        let tmp_path = self.tmp_path(id);
+
+        // Write-then-rename, and clean up the temp file on either failure —
+        // otherwise a failing put leaks a `<id>.tmp-*` on every attempt.
+        if let Err(err) = async_write(&tmp_path, data).await {
+            let _ignored = tokio::fs::remove_file(&tmp_path).await;
+            return Err(err.into());
+        }
+
+        if let Err(err) = rename(&tmp_path, &path).await {
+            let _ignored = tokio::fs::remove_file(&tmp_path).await;
+            return Err(err.into());
+        }
+
+        Ok(())
     }
 
     async fn delete(&self, id: BlobId) -> EyreResult<bool> {
@@ -1062,6 +1119,132 @@ mod traversal_tests {
         assert!(
             matches!(err, BlobError::CorruptGraph { .. }),
             "expected CorruptGraph, got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod concurrent_write_tests {
+    use std::sync::atomic::{AtomicBool, Ordering as MemOrdering};
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    /// The id a chunk of `data` is stored under — the same derivation `put_sized`
+    /// uses, and the one `load_verified_leaf` re-checks on the way out.
+    fn chunk_id_of(data: &[u8]) -> BlobId {
+        BlobId::from(*AsRef::<[u8; 32]>::as_ref(&Sha256::digest(data)))
+    }
+
+    async fn filesystem(root: &std::path::Path) -> FileSystem {
+        let config = BlobStoreConfig::new(
+            Utf8PathBuf::from_path_buf(root.to_path_buf()).expect("a UTF-8 temp dir"),
+        );
+
+        FileSystem::new(&config).await.expect("open the blob store")
+    }
+
+    /// Reproduces the torn read behind the intermittent
+    /// `blob chunk hash mismatch; refusing to serve` in the `blob-cross-node-sizes`
+    /// e2e (core CI run 31164570901): a chunk read while it is being rewritten.
+    ///
+    /// Every write here carries the *same* bytes, so nothing is corrupt and no
+    /// read may fail. Under the old truncate-in-place `put` this asserts within a
+    /// handful of iterations.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_put_never_tears_a_read() {
+        let dir = tempdir().expect("a temp dir");
+        let blob_store = Arc::new(filesystem(dir.path()).await);
+
+        // A full chunk: the bigger the file, the wider the window between
+        // truncating it and having refilled it.
+        let data = vec![0xAB_u8; CHUNK_SIZE];
+        let id = chunk_id_of(&data);
+
+        // Seed it first, so the reader always has a file to open and every write
+        // below is a REWRITE — the case that used to truncate under the reader.
+        blob_store.put(id, &data).await.expect("seed the chunk");
+
+        let writing = Arc::new(AtomicBool::new(true));
+
+        let writer = {
+            let blob_store = Arc::clone(&blob_store);
+            let data = data.clone();
+            let writing = Arc::clone(&writing);
+
+            tokio::spawn(async move {
+                for _ in 0_u32..100 {
+                    blob_store.put(id, &data).await.expect("rewrite the chunk");
+                }
+                writing.store(false, MemOrdering::Release);
+            })
+        };
+
+        let reader = {
+            let blob_store = Arc::clone(&blob_store);
+            let writing = Arc::clone(&writing);
+
+            tokio::spawn(async move {
+                let mut reads = 0_u32;
+
+                while writing.load(MemOrdering::Acquire) {
+                    let bytes = blob_store
+                        .get(id)
+                        .await
+                        .expect("read the chunk")
+                        .expect("seeded before the writer started, and never deleted");
+
+                    assert_eq!(
+                        chunk_id_of(&bytes),
+                        id,
+                        "torn read: {} of {CHUNK_SIZE} bytes came back, so a chunk was \
+                         observed mid-rewrite and would be refused as IntegrityMismatch",
+                        bytes.len(),
+                    );
+
+                    reads = reads.saturating_add(1);
+                }
+
+                reads
+            })
+        };
+
+        writer.await.expect("the writer task");
+        let reads = reader.await.expect("the reader task");
+
+        assert!(
+            reads > 0,
+            "the reader never completed a read, so the race was never exercised"
+        );
+    }
+
+    /// The staging file is an implementation detail and must not outlive the put —
+    /// a leaked `<id>.tmp-*` would accumulate one file per write forever.
+    #[tokio::test]
+    async fn put_leaves_no_temp_file_behind() {
+        let dir = tempdir().expect("a temp dir");
+        let blob_store = filesystem(dir.path()).await;
+
+        let data = b"a blob small enough to read back in one go";
+        let id = chunk_id_of(data);
+
+        blob_store.put(id, data).await.expect("store the chunk");
+        blob_store.put(id, data).await.expect("rewrite the chunk");
+
+        let mut entries = tokio::fs::read_dir(dir.path())
+            .await
+            .expect("list the root");
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.expect("read an entry") {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+
+        assert_eq!(
+            names,
+            vec![id.to_string()],
+            "the blob itself must be the only file left"
         );
     }
 }
