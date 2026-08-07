@@ -119,11 +119,29 @@ pub async fn handler(
         .into_response();
     }
 
+    // The verifier publishes the admission op, but the credential is ours — so
+    // it has to travel with the announcement. Built locally: `ensure_enrolled`
+    // mints the device row without publishing or encrypting anything, which is
+    // exactly why a replica can produce one before it holds any scope key.
+    let account =
+        match calimero_context::join_credential::build(&state.store, &ns_id, &our_public_key) {
+            Ok(account) => account,
+            Err(err) => {
+                error!(error=?err, "fleet-join: could not build this replica's account credential");
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "could not build the account credential for this replica".to_owned(),
+                }
+                .into_response();
+            }
+        };
+
     let broadcast = BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,
         public_key: our_public_key,
         nonce,
         node_type: SpecializedNodeType::ReadOnly,
+        account,
     };
 
     let payload = match borsh::to_vec(&broadcast) {

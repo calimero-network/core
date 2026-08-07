@@ -153,12 +153,14 @@ impl Handler<NetworkEvent> for NodeManager {
                         public_key,
                         nonce,
                         node_type,
+                        account,
                     } => {
                         let specialized_message = BroadcastMessage::TeeAttestationAnnounce {
                             quote_bytes,
                             public_key,
                             nonce,
                             node_type,
+                            account,
                         };
                         let _handled = specialized::handle_specialized_broadcast(
                             self,

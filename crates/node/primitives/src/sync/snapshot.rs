@@ -853,6 +853,16 @@ pub enum BroadcastMessage<'a> {
         nonce: [u8; 32],
         /// Type of specialized node
         node_type: SpecializedNodeType,
+        /// The announcing node's account credential, so the verifier can put it
+        /// on the admission op and bind the device in the same apply as the
+        /// membership.
+        ///
+        /// Unauthenticated on its own, and it does not need to be: the quote
+        /// binds `report_data` to `public_key`, and the verifier refuses any
+        /// credential whose certificate does not name that same key. A
+        /// credential lifted from another announcement therefore fails the same
+        /// guard every other join uses.
+        account: Box<calimero_governance_types::JoinAccountCredential>,
     },
 
     /// Signed namespace governance operation (Phase 2 rewrite).

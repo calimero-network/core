@@ -152,6 +152,20 @@ pub enum MembershipError {
     #[error("MemberJoinedViaTeeAttestation must use ReadOnlyTee role")]
     TeeRoleMustBeReadOnly,
 
+    /// The cleartext TEE admission named a group belonging to a different
+    /// namespace than the one the op was published to. The encrypted form got
+    /// this guard for free from the envelope it travelled in; a `RootOp` names
+    /// its group explicitly, so it has to be pinned here.
+    #[error(
+        "TEE admission for group {group_id} resolves to namespace {resolved_ns}, not this one"
+    )]
+    TeeAdmissionWrongNamespace {
+        /// The group the op named.
+        group_id: String,
+        /// The namespace that group actually belongs to.
+        resolved_ns: String,
+    },
+
     /// Cannot remove the owner of a group; the owner must
     /// `TransferOwnership` to a successor first.
     #[error("cannot remove owner of group {0}; owner must transfer ownership first")]

@@ -756,6 +756,50 @@ const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
+/// NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation) — RootOp ordinal 10
+///
+/// Hand-written and decoded only, never re-encoded — see this file's header for
+/// why. The credential tail is the same 253 bytes the other three join vectors
+/// carry (`AccountGenesis` 49 + empty `chain` prefix 4 + `DeviceCert` 200), and
+/// `version` is `ACCOUNT_GENESIS_VERSION` rather than 0 so the vector could
+/// plausibly be a real op.
+const GOLDEN_ROOT_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
+    0,  // NamespaceOp::Root
+    10, // RootOp::MemberJoinedViaTeeAttestation discriminant
+    // group_id [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // member [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // quote_hash [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, // mrtd: String, len 0
+    0, 0, 0, 0, // rtmr0: String, len 0
+    0, 0, 0, 0, // rtmr1: String, len 0
+    0, 0, 0, 0, // rtmr2: String, len 0
+    0, 0, 0, 0, // rtmr3: String, len 0
+    0, 0, 0, 0, // tcb_status: String, len 0
+    3, // role: GroupMemberRole::ReadOnlyTee
+    1, // account.genesis.version = ACCOUNT_GENESIS_VERSION
+    // account.genesis.root_sign_pk [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account.genesis.nonce [0u8;16]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // account.chain: Vec<RootKeyHandoff>, len 0
+    // account.cert.account [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account.cert.device [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account.cert.sign_pk [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account.cert.kem_pk [0u8;32]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, // account.cert.key_epoch u32 = 0
+    0, 0, 0, 0, // account.cert.device_epoch u32 = 0
+    // account.cert.signature [0u8;64]:
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
 #[test]
 fn root_op_discriminants_are_golden() {
     // bytes[0] = NamespaceOp::Root discriminant (always 0).
@@ -821,6 +865,11 @@ fn root_op_discriminants_are_golden() {
         GOLDEN_ROOT_OP_NAMESPACE_CREATED,
         RootOp::NamespaceCreated { .. },
         9
+    );
+    check_root_op!(
+        GOLDEN_ROOT_OP_MEMBER_JOINED_VIA_TEE,
+        RootOp::MemberJoinedViaTeeAttestation { .. },
+        10
     );
 
     assert!(

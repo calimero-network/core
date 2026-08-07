@@ -47,6 +47,7 @@ pub(super) fn handle_specialized_broadcast(
             public_key,
             nonce,
             node_type: _,
+            account,
         } => {
             let topic_str = topic.as_str();
             // Fleet TEE nodes announce on the namespace governance topic
@@ -86,6 +87,7 @@ pub(super) fn handle_specialized_broadcast(
             let quote_bytes = quote_bytes.clone();
             let public_key = *public_key;
             let nonce = *nonce;
+            let account = account.clone();
             let _ignored = ctx.spawn(
                 async move {
                     if let Err(err) = tee_attestation_admission::handle_tee_attestation_announce(
@@ -95,6 +97,7 @@ pub(super) fn handle_specialized_broadcast(
                         public_key,
                         nonce,
                         namespace_id_bytes,
+                        account,
                     )
                     .await
                     {
