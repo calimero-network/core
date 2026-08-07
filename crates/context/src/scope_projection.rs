@@ -2100,25 +2100,29 @@ mod tests {
     /// FOLDS from an op, so the credential only has to be well-formed — except that
     /// the account it names is now the membership key, so it must be stable and
     /// readable, which is why the caller reads `cert.account` back off it.
+    /// A credential that VERIFIES for `sign_pk` — the encoder now checks the
+    /// certificate, not just the key it names, so a filler signature folds no
+    /// device at all.
     fn test_join_account_for(
         sign_pk: PublicKey,
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-        let root =
-            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
-        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+        let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let cert = calimero_account::sign_device_cert(
+            &root_sk,
+            genesis.account_id(),
+            calimero_account::DeviceId::from([0x3E; 32]),
+            &sign_pk,
+            &calimero_account::KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("sign the device cert");
         Box::new(
             calimero_context_client::local_governance::JoinAccountCredential {
-                cert: calimero_account::DeviceCert {
-                    account: genesis.account_id(),
-                    device: calimero_account::DeviceId::from([0x3E; 32]),
-                    sign_pk,
-                    kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
-                    key_epoch: 0,
-                    device_epoch: 0,
-                    signature: [0x11; 64],
-                },
                 genesis,
                 chain: vec![],
+                cert,
             },
         )
     }

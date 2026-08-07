@@ -180,7 +180,26 @@ pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
 /// bytes on every join; the benefit is that a join can never be applied by a peer
 /// that would then disagree about who the joiner is.
 ///
-/// No endorsement field: see the `account` field's documentation on the join ops.
+/// **Why this rides the join op rather than a separate `AccountDeviceLinked`.**
+/// That op needs an `AccountMemberEndorsement` because an account root is
+/// deliberately a member nowhere, so its gate checks that some *member* vouched
+/// for the account. A join op needs no such bridge: it is signed by the joining
+/// member's own namespace identity and carries the admin-signed invitation
+/// authorising that member, so "a member endorses this account" and "the root
+/// certifies this device" are both already present. The endorsement collapses
+/// into the op, which is why there is no endorsement field here.
+///
+/// **Why the field carrying this is required, not optional.** A member that can
+/// exist without a binding attributes its writes to a stand-in account, so every
+/// account-keyed grant made to its real account silently fails to match, and the
+/// mismatch surfaces far from the join that caused it. Carrying the credential on
+/// the join removes that window rather than narrowing it.
+///
+/// **Why the field is boxed.** The credential is ~253 bytes, and inlining it in
+/// three `RootOp` variants pushed the largest variant past clippy's
+/// `large_enum_variant` threshold, making every `NamespaceOp` that size on the
+/// stack. Borsh encodes `Box<T>` exactly as `T`, so the boxing is invisible on the
+/// wire and does not affect the schema version.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 pub struct JoinAccountCredential {
     /// The account's self-certifying root.
@@ -750,26 +769,8 @@ pub enum RootOp {
         /// The joiner's self-certifying account root, and the root-signed grant
         /// for the device it is joining with.
         ///
-        /// **Why this rides the join and not a separate `AccountDeviceLinked`.**
-        /// That op needs an `AccountMemberEndorsement` because an account root is
-        /// deliberately a member nowhere, so its gate checks that some *member*
-        /// vouched for the account. A join op needs no such bridge: it is signed by
-        /// the joining member's own namespace identity and carries the
-        /// admin-signed invitation authorising that member, so "a member endorses
-        /// this account" and "the root certifies this device" are both already
-        /// present. The endorsement collapses into the op.
-        ///
-        /// Boxed because the credential is ~253 bytes and inlining it in three
-        /// variants pushed `RootOp`'s largest variant past clippy's
-        /// `large_enum_variant` threshold, making every `NamespaceOp` that size on
-        /// the stack. Borsh encodes `Box<T>` exactly as `T`, so this is invisible on
-        /// the wire and does not affect the schema version.
-        ///
-        /// Required, not optional — that is the point. A member that can exist
-        /// without a binding attributes its writes to a stand-in account, so every
-        /// account-keyed grant made to its real account silently fails to match,
-        /// and the mismatch surfaces far from the join that caused it. Carrying the
-        /// credential here removes that window rather than narrowing it.
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not optional.
         account: Box<JoinAccountCredential>,
     },
     /// Delivers a group key to a specific member, ECDH-wrapped so only
@@ -812,20 +813,8 @@ pub enum RootOp {
         /// The joiner's self-certifying account root, and the root-signed grant
         /// for the device it is joining with.
         ///
-        /// **Why this rides the join and not a separate `AccountDeviceLinked`.**
-        /// That op needs an `AccountMemberEndorsement` because an account root is
-        /// deliberately a member nowhere, so its gate checks that some *member*
-        /// vouched for the account. A join op needs no such bridge: it is signed by
-        /// the joining member's own namespace identity and carries the
-        /// admin-signed invitation authorising that member, so "a member endorses
-        /// this account" and "the root certifies this device" are both already
-        /// present. The endorsement collapses into the op.
-        ///
-        /// Required, not optional — that is the point. A member that can exist
-        /// without a binding attributes its writes to a stand-in account, so every
-        /// account-keyed grant made to its real account silently fails to match,
-        /// and the mismatch surfaces far from the join that caused it. Carrying the
-        /// credential here removes that window rather than narrowing it.
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not optional.
         account: Box<JoinAccountCredential>,
     },
     /// Invitation-based join carrying the joiner's claimed redemption
@@ -840,20 +829,8 @@ pub enum RootOp {
         /// The joiner's self-certifying account root, and the root-signed grant
         /// for the device it is joining with.
         ///
-        /// **Why this rides the join and not a separate `AccountDeviceLinked`.**
-        /// That op needs an `AccountMemberEndorsement` because an account root is
-        /// deliberately a member nowhere, so its gate checks that some *member*
-        /// vouched for the account. A join op needs no such bridge: it is signed by
-        /// the joining member's own namespace identity and carries the
-        /// admin-signed invitation authorising that member, so "a member endorses
-        /// this account" and "the root certifies this device" are both already
-        /// present. The endorsement collapses into the op.
-        ///
-        /// Required, not optional — that is the point. A member that can exist
-        /// without a binding attributes its writes to a stand-in account, so every
-        /// account-keyed grant made to its real account silently fails to match,
-        /// and the mismatch surfaces far from the join that caused it. Carrying the
-        /// credential here removes that window rather than narrowing it.
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not optional.
         account: Box<JoinAccountCredential>,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:

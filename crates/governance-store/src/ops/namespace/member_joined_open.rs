@@ -164,27 +164,33 @@ pub(super) fn record_join_credential(
 ) -> EyreResult<()> {
     let namespace = ContextGroupId::from(ctx.namespace_id().to_bytes());
 
-    // The credential has to be the JOINER'S OWN, and this is the only check that
-    // establishes it. `apply_link` verifies the certificate against the genesis —
-    // that it is a real grant by some account root — but says nothing about whose.
-    // These ops are cleartext and gossip-visible, so any node can lift a
-    // credential out of somebody else's join and present it as the `account` of
-    // its own, signed honestly with its own key: `op.signer == member` proves the
-    // envelope, never the payload. Binding it anyway would graft a stranger's
-    // account into this namespace under the replayer's membership, and — because
-    // the endorser row below is what makes a member account-addressed — would aim
-    // the replayer's scope keys at the victim's devices.
+    // The credential has to be the JOINER'S OWN and internally valid, and this is
+    // the check that establishes both. `apply_link` below verifies the certificate
+    // too, but says nothing about WHOSE it is: these ops are cleartext, so any
+    // node can lift a credential out of somebody else's join and present it as the
+    // `account` of its own, signed honestly with its own key. `op.signer ==
+    // member` proves the envelope, never the payload. Binding it anyway would
+    // graft a stranger's account into this namespace under the replayer's
+    // membership, and — because the endorser row below is what makes a member
+    // account-addressed — would aim the replayer's scope keys at the victim's
+    // devices.
     //
-    // The certificate records the namespace identity as `sign_pk` precisely
-    // because that is the key that signs ops, so for an honest joiner this is an
-    // equality that already holds.
-    if account.cert.sign_pk != member {
+    // Shared verbatim with the projection encoder, which has to reach the same
+    // verdict or the two planes disagree about the same op in the opposite
+    // direction: a credential refused a binding here and granted one in the fold.
+    if !calimero_op_adapter::join_credential_is_the_joiners(
+        &member,
+        &account.genesis,
+        &account.chain,
+        &account.cert,
+    ) {
         tracing::warn!(
             ?namespace,
             %member,
             cert_sign_pk = %account.cert.sign_pk,
-            "member joined presenting a credential certified for a different key; \
-             the credential is ignored and the member is recorded without a binding"
+            "member joined presenting a credential that is not its own or does not \
+             verify; the credential is ignored and the member is recorded without a \
+             binding"
         );
         return Ok(());
     }

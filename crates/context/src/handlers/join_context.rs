@@ -303,7 +303,27 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // path for them.
                 if was_inherited {
                     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
-                    let join_account = crate::join_credential::build(&datastore, &ns_id, &joiner_identity)?;
+                    // NOT `?`. By this point the join has already happened locally —
+                    // the identity marker is written, the leave tombstone cleared,
+                    // and the context subscribed and synced. Propagating here would
+                    // report the whole join as failed while leaving the node a member
+                    // of it, which is a worse state than the one it is reporting.
+                    //
+                    // A credential this node cannot build is the same class of
+                    // problem as a publish it cannot complete, and is handled the
+                    // same way a few lines below: warn and skip the publish. The
+                    // joiner then waits on key delivery exactly as it did before
+                    // joins carried a credential at all.
+                    match crate::join_credential::build(&datastore, &ns_id, &joiner_identity) {
+                    Err(err) => warn!(
+                        ?err,
+                        %joiner_identity,
+                        %context_id,
+                        "join_context: could not build the join credential — skipping the \
+                         MemberJoinedOpen publish; the join stands, but key delivery to this \
+                         inherited joiner waits for an admin to add_group_members them"
+                    ),
+                    Ok(join_account) => {
                     let op = calimero_context_client::local_governance::NamespaceOp::Root(
                         calimero_context_client::local_governance::RootOp::MemberJoinedOpen {
                             member: joiner_identity,
@@ -329,6 +349,8 @@ impl Handler<JoinContextRequest> for ContextManager {
                              inherited joiner will be skipped; messages will appear local-only \
                              until an admin explicitly add_group_members the joiner"
                         );
+                    }
+                    }
                     }
                 }
 
