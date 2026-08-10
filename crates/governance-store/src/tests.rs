@@ -10030,15 +10030,25 @@ mod account_plane_apply {
     }
 
     /// A group with `admin` as its sole admin — the minimum for signing ops.
-    fn group_with_admin(store: &Store, gid: &ContextGroupId, admin: &PrivateKey) {
+    fn group_with_admin(store: &Store, gid: &ContextGroupId, admin: &PrivateKey) -> AccountId {
         MetaRepository::new(store).save(gid, &test_meta()).unwrap();
+        let account = enrol_member(store, gid, &admin.public_key());
         MembershipRepository::new(store)
-            .add_member(
-                gid,
-                &AccountId::from(*admin.public_key()),
-                GroupMemberRole::Admin,
-            )
+            .add_member(gid, &account, GroupMemberRole::Admin)
             .unwrap();
+        account
+    }
+
+    /// The bindings in force for `account` alone. The assertions below are about
+    /// one account's devices, and enrolling a member records that member's own
+    /// binding too, so counting every row in the group would count the setup.
+    fn live_for(store: &Store, gid: &ContextGroupId, account: AccountId) -> Vec<DeviceBinding> {
+        AccountBindingRepository::new(store)
+            .live_bindings(gid)
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.account == account)
+            .collect()
     }
 
     #[test]
@@ -10079,7 +10089,7 @@ mod account_plane_apply {
         .unwrap();
         let repo = AccountBindingRepository::new(&store);
         assert!(
-            repo.live_bindings(&gid).unwrap().is_empty(),
+            live_for(&store, &gid, account).is_empty(),
             "a device must not link into a group its account does not belong to"
         );
 
@@ -10089,7 +10099,7 @@ mod account_plane_apply {
         MembershipRepository::new(&store)
             .add_member(
                 &gid,
-                &AccountId::from(*key(9).public_key()),
+                &enrol_member(&store, &gid, &key(9).public_key()),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -10106,7 +10116,7 @@ mod account_plane_apply {
         )
         .unwrap();
 
-        let live = repo.live_bindings(&gid).unwrap();
+        let live = live_for(&store, &gid, account);
         assert_eq!(live.len(), 1, "the device must now be bound");
         assert_eq!(live[0].account, account);
         assert_eq!(live[0].device, device);
@@ -10126,7 +10136,7 @@ mod account_plane_apply {
         MembershipRepository::new(&store)
             .add_member(
                 &gid,
-                &AccountId::from(*key(9).public_key()),
+                &enrol_member(&store, &gid, &key(9).public_key()),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -10203,10 +10213,7 @@ mod account_plane_apply {
             },
         )
         .unwrap();
-        assert!(AccountBindingRepository::new(&store)
-            .live_bindings(&gid)
-            .unwrap()
-            .is_empty());
+        assert!(live_for(&store, &gid, account).is_empty());
     }
 
     #[test]
@@ -10222,7 +10229,7 @@ mod account_plane_apply {
         MembershipRepository::new(&store)
             .add_member(
                 &gid,
-                &AccountId::from(*key(9).public_key()),
+                &enrol_member(&store, &gid, &key(9).public_key()),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -10256,10 +10263,7 @@ mod account_plane_apply {
         )
         .unwrap();
         assert!(
-            AccountBindingRepository::new(&store)
-                .live_bindings(&gid)
-                .unwrap()
-                .is_empty(),
+            live_for(&store, &gid, account).is_empty(),
             "passing the membership gate must not enroll a device without the root key"
         );
     }
@@ -10294,7 +10298,7 @@ mod account_plane_apply {
 
         let repo = AccountBindingRepository::new(&store);
         assert!(repo.is_revoked(&gid, device).unwrap());
-        assert!(repo.live_bindings(&gid).unwrap().is_empty());
+        assert!(live_for(&store, &gid, account).is_empty());
     }
 
     #[test]
@@ -10341,7 +10345,7 @@ mod account_plane_apply {
         )
         .unwrap();
         assert!(
-            bindings.live_bindings(&gid).unwrap().is_empty(),
+            live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
         );
 
@@ -10362,7 +10366,7 @@ mod account_plane_apply {
         )
         .unwrap();
         assert!(
-            bindings.live_bindings(&gid).unwrap().is_empty(),
+            live_for(&store, &gid, account).is_empty(),
             "naming a member is not endorsing — the signature has to verify"
         );
 
@@ -10383,7 +10387,7 @@ mod account_plane_apply {
             },
         )
         .unwrap();
-        assert!(bindings.live_bindings(&gid).unwrap().is_empty());
+        assert!(live_for(&store, &gid, account).is_empty());
 
         // Endorsed by a member, correctly, for this account → admitted. Note the
         // root never had to be a member.
@@ -10400,7 +10404,7 @@ mod account_plane_apply {
             },
         )
         .unwrap();
-        let live = bindings.live_bindings(&gid).unwrap();
+        let live = live_for(&store, &gid, account);
         assert_eq!(
             live.len(),
             1,
@@ -10461,7 +10465,7 @@ mod account_plane_apply {
         )
         .unwrap();
         let bindings = AccountBindingRepository::new(&store);
-        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+        assert_eq!(live_for(&store, &gid, account).len(), 1);
 
         // The owner's own root withdraws its own device, and the op is signed by a
         // plain member — NOT the admin. The proof is the whole authority.
@@ -10489,7 +10493,7 @@ mod account_plane_apply {
              admin involved — that is the lost-laptop case the proof exists for"
         );
         assert!(
-            bindings.live_bindings(&gid).unwrap().is_empty(),
+            live_for(&store, &gid, account).is_empty(),
             "and the binding must no longer be in force"
         );
     }
@@ -10557,7 +10561,7 @@ mod account_plane_apply {
         )
         .unwrap();
         let bindings = AccountBindingRepository::new(&store);
-        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+        assert_eq!(live_for(&store, &gid, account).len(), 1);
 
         // The attacker's OWN account, and a proof naming it beside the victim's
         // device. Every signature here is genuine; that is the point.
@@ -10599,7 +10603,7 @@ mod account_plane_apply {
              somebody else's — the tombstone is terminal"
         );
         assert_eq!(
-            bindings.live_bindings(&gid).unwrap().len(),
+            live_for(&store, &gid, account).len(),
             1,
             "the victim's device must still be in force"
         );
@@ -10658,7 +10662,7 @@ mod account_plane_apply {
         )
         .unwrap();
         let bindings = AccountBindingRepository::new(&store);
-        assert_eq!(bindings.live_bindings(&gid).unwrap().len(), 1);
+        assert_eq!(live_for(&store, &gid, account).len(), 1);
 
         // A fellow member signs the revocation. Refused deterministically — the
         // apply returns Ok (every replica reaches the same verdict, and erroring
@@ -10679,7 +10683,7 @@ mod account_plane_apply {
             "a non-admin must not be able to spend another member's device id"
         );
         assert_eq!(
-            bindings.live_bindings(&gid).unwrap().len(),
+            live_for(&store, &gid, account).len(),
             1,
             "the victim's device must still be in force"
         );

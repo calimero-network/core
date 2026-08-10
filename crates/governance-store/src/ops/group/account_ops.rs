@@ -287,6 +287,14 @@ fn endorser_is_member(
     let endorser_key = *endorser;
     let Some(endorser) = crate::member_account_in_namespace(ctx.store(), ctx.group_id(), endorser)?
     else {
+        // "Bound to no account" is a LIVE answer — binding rows are plane state
+        // that a replica folds like any other, so an endorser this node cannot
+        // resolve yet may be one whose link simply has not arrived. Returning a
+        // refusal here would decide from live rows exactly where the at-cut gate
+        // below refuses to, and two replicas at different fold depths would
+        // record different outcomes for the same op. So a live answer is only
+        // permitted where a live answer is sound at all; otherwise park.
+        ctx.ensure_live_fallback_is_sound(&endorser_key)?;
         return Ok(false);
     };
     let endorser = &endorser;
