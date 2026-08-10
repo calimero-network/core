@@ -7397,3 +7397,45 @@ fn founder_resolves_when_genesis_lands_on_locally_prewritten_rows() {
         "genesis landing on the founder's own pre-written rows must still bind its account"
     );
 }
+
+/// A RECEIVER that has applied only the genesis op must already be able to
+/// authorize the founder.
+///
+/// This is the whole cross-node contract in one assertion: node 2 joins, syncs
+/// the namespace DAG from its root, and every later op the founder signs is
+/// gated on node 2 resolving the founder's KEY to the account its rows are keyed
+/// by. Genesis is the only op that can teach it that — no join admits a founder —
+/// so if this fails, node 2 silently refuses or parks everything the founder
+/// publishes while node 1 accepts it all.
+#[test]
+fn a_receiver_that_applied_genesis_can_authorize_the_founder() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let founder_sk = PrivateKey::from([0x64u8; 32]);
+    let founder = founder_sk.public_key();
+    let namespace_id = *founder;
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let (genesis, founder_account) = namespace_genesis_for(&founder_sk);
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
+        .expect("sign genesis");
+
+    // A second, independent store: everything it knows comes from the op.
+    let receiver = test_store();
+    NamespaceGovernance::new(&receiver, namespace_id.into())
+        .apply_signed_op(&signed)
+        .expect("the receiver applies genesis");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&receiver, &ns_gid, &founder).expect("resolve"),
+        Some(founder_account),
+        "the receiver must resolve the founder's key to the account genesis bound"
+    );
+    assert!(
+        crate::PermissionChecker::new(&receiver, ns_gid)
+            .can_manage_application(&founder)
+            .expect("capability check"),
+        "and must authorize what the founder signs — otherwise every op it \
+         publishes is refused or parked here while it accepts them itself"
+    );
+}

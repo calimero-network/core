@@ -1432,21 +1432,26 @@ impl SyncManager {
             }
         };
 
-        // The device we ask as, when this node has enrolled one. Once a peer
-        // knows an account for our identity this is the only way it will serve
-        // us — without it, a revoked device would still be its member and would
-        // be handed the very key the rotation excluded it from. `None` on a node
-        // that has enrolled no device, which is served member-addressed only
-        // while its member has no account in the group (the bootstrap case).
+        // The device we ask as — MINTED here if this node has none yet, not just
+        // read.
+        //
+        // A responder that knows an account for our identity serves that account's
+        // devices and nothing else: identity addressing cannot be a fallback,
+        // because a revoked device would simply omit its id and be handed the very
+        // key the rotation excluded it from. So asking without a device is asking
+        // for nothing, and a node that has not enrolled yet would sit keyless —
+        // unable to decrypt any group op — until something else happened to enrol
+        // it. `ensure_enrolled` is idempotent and returns the existing device when
+        // there is one, so this only ever mints on the first pull.
         let requester = calimero_governance_store::KeyRequester {
             identity: requester_public_key,
             device: calimero_governance_store::NodeDeviceRepository::new(&store)
-                .device_secret(&ns_gid)
+                .ensure_enrolled(&ns_gid)
+                .map(|own| Some(own.secret.device))
                 .unwrap_or_else(|err| {
-                    debug!(%err, "failed to read node device identity for key recovery");
+                    debug!(%err, "failed to enrol this node's device for key recovery");
                     None
-                })
-                .map(|own| own.device),
+                }),
         };
 
         // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
