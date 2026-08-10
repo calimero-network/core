@@ -732,7 +732,6 @@ async fn get_migration_status() {
                 "report": {
                     "schemaVersion": 1,
                     "residueAuto": 0,
-                    "residueIdentity": 2,
                     "syncedUpToHlc": 0,
                     "reportedAt": 100,
                     "authoredRemaining": 2,

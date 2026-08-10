@@ -33,8 +33,8 @@ pub struct ApplicationMeta {
     pub state_version: u32,
 }
 
-// Custom deserialization: handle backwards compatibility for old data
-// that doesn't have the `services` field (added in rc.19).
+// Custom deserialization: the services EOF-branch is retained for shape only;
+// old records lacking `services` fail hard at the state_version read (clean break).
 impl BorshDeserialize for ApplicationMeta {
     fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
         let bytecode = key::BlobMeta::deserialize_reader(reader)?;
@@ -46,8 +46,8 @@ impl BorshDeserialize for ApplicationMeta {
         let version = Box::<str>::deserialize_reader(reader)?;
         let signer_id = Box::<str>::deserialize_reader(reader)?;
 
-        // `services` was added after the initial schema, so old records end after
-        // `signer_id`. Try to read it; if there's no more data, default to empty.
+        // `services` was added after the initial schema; try to read it.
+        // Missing it does not gracefully degrade — the following state_version read fails.
         let services = match Vec::<ServiceMeta>::deserialize_reader(reader) {
             Ok(v) => v,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Vec::new(),

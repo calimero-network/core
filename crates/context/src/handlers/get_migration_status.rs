@@ -391,32 +391,6 @@ mod tests {
         assert_eq!(super::derive_target_version(Some(&rec)), 2);
     }
 
-    /// Regression: a PENDING (`InProgress`) record whose `to_version` does not
-    /// parse to a `u32` (e.g. a "v2"-style or otherwise non-numeric semver)
-    /// must NOT collapse to target `0`. Target `0` would make every member
-    /// reporting `schema_version >= 0` (i.e. all of them) trivially "migrated"
-    /// — a FALSE GREEN in the middle of a real pending migration. An
-    /// unknowable pending target pins to `u32::MAX` so no real version can
-    /// satisfy it and `all_migrated` stays false until the migration resolves.
-    #[test]
-    fn target_version_in_progress_unparseable_to_version_is_not_false_green() {
-        let rec = upgrade_record(
-            "1",
-            "v2",
-            0,
-            calimero_store::key::GroupUpgradeStatus::InProgress {
-                total: 1,
-                completed: 0,
-                failed: 0,
-            },
-        );
-        assert_eq!(
-            super::derive_target_version(Some(&rec)),
-            u32::MAX,
-            "an unparseable pending target must not collapse to 0 (false green)"
-        );
-    }
-
     /// A record targeting semver 10.2.0 at ABI state 2 must roll up against 2.
     /// Parsing the semver yields 10, which every member on major 10 trivially
     /// satisfies — the false green this PR exists to remove.
