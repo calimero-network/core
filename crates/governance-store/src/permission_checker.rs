@@ -397,8 +397,17 @@ impl<'a> PermissionChecker<'a> {
         Ok(())
     }
 
-    pub fn require_admin_or_self(&self, signer: &PublicKey, member: &PublicKey) -> EyreResult<()> {
-        if !self.is_admin(signer)? && *signer != *member {
+    /// An admin, or the member acting on their own behalf.
+    ///
+    /// The self-check crosses the key/account boundary — `signer` is a key, and
+    /// `member` names the principal the row belongs to — so it resolves rather
+    /// than comparing. It used to be `*signer != *member` with both sides keys,
+    /// which kept compiling after the flip because both ids are 32 bytes: the
+    /// comparison simply stopped ever being true, silently narrowing this gate
+    /// to admins only.
+    pub fn require_admin_or_self(&self, signer: &PublicKey, member: &AccountId) -> EyreResult<()> {
+        let is_self = self.live_account(signer)?.as_ref() == Some(member);
+        if !is_self && !self.is_admin(signer)? {
             bail!(CapabilitiesError::Unauthorized {
                 group_id: format!("{:?}", self.group_id),
                 operation: "set member alias (admin or self only)".into(),
