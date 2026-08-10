@@ -1974,4 +1974,51 @@ mod migration_status_tests {
         assert_eq!(a_row.state, MemberMigrationState::Migrated);
         assert_eq!(a_row.report.expect("report kept").reported_at, 0);
     }
+
+    /// The bug this PR fixes: a same-major release where one member has not
+    /// swapped. Before the fix both sides resolved to 10 and this rolled up
+    /// all_migrated. Now the target is state 2 and the laggard reports state 1.
+    #[test]
+    fn same_major_release_does_not_report_a_laggard_as_migrated() {
+        let migrated_peer = pk(0xA1);
+        let laggard_peer = pk(0xB2);
+        let closure = vec![migrated_peer, laggard_peer];
+
+        let status = compute_migration_status_rollup(
+            2, // target ABI state version, from a 10.2.0 bundle
+            None,
+            None,
+            &closure,
+            |peer| {
+                if *peer == migrated_peer {
+                    Some(MemberMigrationReport {
+                        schema_version: 2,
+                        residue_auto: 0,
+                        residue_identity: 0,
+                        synced_up_to_hlc: 5,
+                        reported_at: 1_000,
+                        authored_remaining: 0,
+                        migration_failed: None,
+                    })
+                } else {
+                    Some(MemberMigrationReport {
+                        schema_version: 1, // still on the 10.1.3 binary
+                        residue_auto: 1,
+                        residue_identity: 0,
+                        synced_up_to_hlc: 5,
+                        reported_at: 1_000,
+                        authored_remaining: 0,
+                        migration_failed: None,
+                    })
+                }
+            },
+        );
+
+        assert_eq!(status.rollup.migrated, 1);
+        assert_eq!(status.rollup.total, 2);
+        assert!(
+            !status.rollup.all_migrated,
+            "a member still on the old binary must not count as migrated"
+        );
+    }
 }
