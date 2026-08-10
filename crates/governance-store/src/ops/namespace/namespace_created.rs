@@ -80,7 +80,6 @@ use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(

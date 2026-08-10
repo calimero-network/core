@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn flip_back_to_restricted_revokes_context_authorization() {
         let store = store();
-        let (_root, sub, context, tee, tee_pk) = seed_inherited_context_open(&store);
+        let (_root, sub, context, _tee, tee_pk) = seed_inherited_context_open(&store);
 
         assert!(
             is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn flip_back_to_restricted_leaves_stale_context_identity_row() {
         let store = store();
-        let (_root, sub, context, tee, tee_pk) = seed_inherited_context_open(&store);
+        let (_root, sub, context, _tee, tee_pk) = seed_inherited_context_open(&store);
         // The join that happened while the subgroup was Open.
         put_identity(&store, &context, &tee_pk, true);
 

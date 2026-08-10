@@ -199,7 +199,7 @@ fn tee_admission_from_root_op(
     {
         if let NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
             group_id: op_group,
-            member,
+            member: _,
             quote_hash,
             mrtd,
             rtmr0,

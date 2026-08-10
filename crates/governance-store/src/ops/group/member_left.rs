@@ -12,7 +12,6 @@ use crate::{
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 

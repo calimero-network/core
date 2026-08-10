@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{AutoFollowFlags, GroupMember, GroupMemberValue, GROUP_MEMBER_PREFIX};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};

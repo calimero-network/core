@@ -457,7 +457,6 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         // alone if the credential is not the attested key's.
         RootOp::MemberJoinedViaTeeAttestation {
             group_id,
-            member,
             role,
             account,
             ..

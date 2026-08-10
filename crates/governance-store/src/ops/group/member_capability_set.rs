@@ -4,7 +4,6 @@
 use super::context::GroupApplyCtx;
 use crate::{CapabilitiesRepository, MembershipError, MembershipRepository};
 use calimero_account::AccountId;
-use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(

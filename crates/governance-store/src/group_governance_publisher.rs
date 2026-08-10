@@ -5,7 +5,7 @@ use crate::{
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use rand::{rngs::OsRng, Rng};

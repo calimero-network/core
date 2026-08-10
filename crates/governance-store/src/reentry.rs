@@ -71,7 +71,6 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupConsumedInvitation, GroupExitReason, GroupReentryBlock, GroupReentryBlockValue,
     GROUP_CONSUMED_INVITATION_PREFIX, GROUP_REENTRY_BLOCK_PREFIX,

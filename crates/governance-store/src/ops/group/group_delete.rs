@@ -8,7 +8,7 @@ use crate::{
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
-    let signer = ctx.signer();
+    let _signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
 

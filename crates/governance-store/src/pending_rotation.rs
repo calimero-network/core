@@ -43,7 +43,6 @@
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupPendingKeyRotation, GROUP_PENDING_KEY_ROTATION_PREFIX};
 use calimero_store::Store;
 use eyre::Result as EyreResult;

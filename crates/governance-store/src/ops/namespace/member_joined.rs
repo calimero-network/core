@@ -7,7 +7,6 @@ use calimero_account::AccountId;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::SignedGroupOpenInvitation;
-use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(

@@ -20,9 +20,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
-    founder_account_for, namespace_genesis_for, namespace_genesis_naming, nest_for_test,
-    sample_meta_with_admin, test_group_id, test_meta, test_store,
+    bootstrap_namespace_with_admin, founder_account_for, namespace_genesis_for,
+    namespace_genesis_naming, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
+    test_store,
 };
 use super::super::*;
 
@@ -1428,8 +1428,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // The founder/verifier = the KeyDelivery signer the replica TOFU-trusts.
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
-    let founder_account = founder_account_for(&founder_sk);
-    let founder_account = AccountId::from(*founder);
+    let _founder_account = founder_account_for(&founder_sk);
 
     // The TEE node being admitted.
     let tee_member = PublicKey::from([0xD7; 32]);
@@ -1448,7 +1447,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // founder here IS the verifier that authors the TEE ops below, so it must be
     // admin for those ops to apply. ----
     {
-        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+        use calimero_context_client::local_governance::SignedNamespaceOp;
         let (genesis, _) = namespace_genesis_for(&founder_sk);
         let signed_genesis =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
@@ -1741,7 +1740,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     //  (c) a seed-PLACEHOLDER meta (admin == zero) does NOT block genesis —
     //      genesis fills in the real founder over it, proving seed-vs-genesis
     //      ordering converges either way.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -1750,7 +1749,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
     let attacker_sk = PrivateKey::random(&mut rng);
     let attacker = attacker_sk.public_key();
@@ -1897,7 +1896,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     // genesis PROCEED on such a partial-write state and write the real founder
     // as admin (repair), since `admin_identity == placeholder` means no real
     // admin exists yet.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -1905,7 +1904,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
     let stray_owner_sk = PrivateKey::random(&mut rng);
     let stray_owner = stray_owner_sk.public_key();
@@ -1955,7 +1954,7 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     // op must make the handler SELF-CONTAINED: it must UPGRADE that existing
     // `Member` row to `Admin`, not no-op on it leaving a stale `Member`. This
     // guards the upsert semantics of `add_member` the genesis handler relies on.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -2035,7 +2034,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     // must happen ONLY when the established admin == the op's founder; a
     // different established admin must stay a pure no-op (covered by the
     // anti-hijack case in `namespace_created_genesis_on_bare_store_and_anti_hijack`).
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -2044,7 +2043,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
@@ -2110,7 +2109,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     // a plain Member. With the founder ALREADY Admin, a parentless same-founder
     // genesis re-arrival must leave the role at Admin (never overwrite/downgrade
     // it).
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -2118,7 +2117,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
@@ -2172,7 +2171,7 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     // who signs `NamespaceCreated { founder: <someone-else> }` with their own
     // key, on a namespace with no prior genesis, must be REJECTED — never
     // applied (which would pin a forged admin) and never silently no-op'd.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -2229,7 +2228,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     // advance the head on a bare namespace and BRICK the later parentless
     // genesis. (The head-not-advanced behaviour is pinned by its own test below,
     // `namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head`.)
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -2237,7 +2236,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
@@ -2309,7 +2308,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     // runs `advance_dag_head` + `store_operation`. So an `Err` from the handler
     // propagates BEFORE the head advances. A no-op `Ok()` (the reverted
     // regression) would have advanced the head here and wedged establishment.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -2317,7 +2316,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
@@ -2385,14 +2384,14 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     // `Err` here, which the `apply_signed_op` caller can treat as fatal and
     // STALL DAG processing. On an established namespace nothing can be
     // hijacked, so the structural parents check must not even be consulted.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
@@ -2447,7 +2446,7 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     // genesis even when it names the established founder, so it must be a PURE
     // no-op that mutates NOTHING — not the member row, not caps, not owner meta.
     // (It still returns Ok, per #591, so the DAG does not stall.)
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
@@ -2455,7 +2454,7 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder_account = AccountId::from(*founder_sk.public_key());
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let stray_owner = PrivateKey::random(&mut rng).public_key();
     let stray_owner_account = AccountId::from(*stray_owner);
 
@@ -2537,14 +2536,14 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     // admin but not owner), an idempotent same-founder `NamespaceCreated`
     // re-arrival must REPAIR `owner_identity` back to the founder while
     // preserving every other meta field.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
+    let _founder = founder_sk.public_key();
     let founder_account = founder_account_for(&founder_sk);
     let stray_owner = PrivateKey::random(&mut rng).public_key();
     let stray_owner_account = AccountId::from(*stray_owner);
@@ -2631,7 +2630,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     // op so it is the would-be DAG root) and asserts the head is left exactly
     // as it was pre-genesis (empty heads, next_nonce == 1), so a retry re-signs
     // a clean parentless genesis that passes the gate.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -6478,7 +6477,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_account = AccountId::from(*owner_sk.public_key());
-    let owner = owner_sk.public_key();
+    let _owner = owner_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner = joiner_sk.public_key();
     let joiner_account = AccountId::from(*joiner);
@@ -6555,13 +6554,13 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_account = AccountId::from(*owner_sk.public_key());
-    let owner = owner_sk.public_key();
+    let _owner = owner_sk.public_key();
     // A namespace member with NO admin row and NO capability row: the live
     // resolver denies them outright. They stand for a signer whose
     // CAN_CREATE_SUBGROUP grant this replica has not folded yet.
     let creator_sk = PrivateKey::random(&mut rng);
     let creator_account = AccountId::from(*creator_sk.public_key());
-    let creator = creator_sk.public_key();
+    let _creator = creator_sk.public_key();
 
     let namespace_id = [0xE1u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -6626,7 +6625,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     // At the op's cut, though, the signer had no authority, so it must be rejected.
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_account = AccountId::from(*owner_sk.public_key());
-    let owner = owner_sk.public_key();
+    let _owner = owner_sk.public_key();
 
     let namespace_id = [0xE3u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);

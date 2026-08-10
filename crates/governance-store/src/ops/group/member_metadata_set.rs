@@ -5,7 +5,6 @@ use super::super::super::now_millis;
 use super::context::GroupApplyCtx;
 use crate::{MembershipError, MembershipRepository, MetadataRepository};
 use calimero_account::AccountId;
-use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::{bail, Result as EyreResult};
 use std::collections::BTreeMap;

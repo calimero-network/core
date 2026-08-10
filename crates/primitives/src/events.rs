@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::{ContextId, GroupMemberRole};
 use crate::hash::Hash;
-use crate::identity::PublicKey;
 use crate::sync_status::SyncState;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -34,7 +34,6 @@
 //! Pure store rows; presence of the key IS the marker (value is `()`),
 //! mirroring [`crate::DenyListRepository`].
 
-use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::{PendingSelfPurge, PENDING_SELF_PURGE_PREFIX};
 use calimero_store::Store;
@@ -119,6 +118,7 @@ impl<'a> PendingSelfPurgeRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
+    use calimero_account::AccountId;
 
     #[test]
     fn is_marked_returns_false_when_unset() {
@@ -195,7 +195,7 @@ mod tests {
         // The scan must stop at the PendingSelfPurge prefix boundary and not
         // bleed into neighbouring column families (e.g. NamespaceIdentity /
         // GroupDeniedMember rows written under different prefixes).
-        use calimero_primitives::identity::PublicKey;
+
         use calimero_store::key::{GroupDeniedMember, NamespaceIdentity, NamespaceIdentityValue};
 
         let store = test_store();

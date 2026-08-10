@@ -2,7 +2,6 @@ use crate::{MembershipRepository, MetaError};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{ContextMeta, GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};

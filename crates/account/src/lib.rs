@@ -43,7 +43,6 @@
 //! `calimero-authz`, because only those see the causal cut.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
 use calimero_primitives::identity::{PrivateKey, PublicKey};

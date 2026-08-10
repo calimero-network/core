@@ -7,7 +7,6 @@ use crate::membership::TeeAttestationClaims;
 use crate::{DenyListRepository, MembershipError, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
@@ -17,7 +16,7 @@ pub(crate) fn apply(
     claims: &TeeAttestationClaims<'_>,
     role: &GroupMemberRole,
 ) -> EyreResult<()> {
-    let signer = ctx.signer();
+    let _signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
 
