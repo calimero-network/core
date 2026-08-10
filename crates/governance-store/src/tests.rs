@@ -5804,7 +5804,7 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup, admin_account) = reentry_fixture(&store, &admin_pk);
+    let (ns_id, _ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_pk);
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
@@ -5853,7 +5853,7 @@ fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (_ns_id, _ns_gid, subgroup, admin_account) = reentry_fixture(&store, &admin_pk);
+    let (_ns_id, _ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_pk);
 
     let member_pk = PublicKey::from([0xC7; 32]);
 
@@ -5914,7 +5914,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup, admin_account) = reentry_fixture(&store, &admin_pk);
+    let (ns_id, _ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_pk);
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
@@ -5981,7 +5981,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup, admin_account) = reentry_fixture(&store, &admin_pk);
+    let (ns_id, _ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_pk);
 
     let bob_sk = PrivateKey::random(&mut rng);
     let carol_sk = PrivateKey::random(&mut rng);
@@ -6148,7 +6148,7 @@ fn member_joined_invite_emits_membership_op_event() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup, admin_account) = reentry_fixture(&store, &admin_pk);
+    let (ns_id, _ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_pk);
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
@@ -7196,8 +7196,8 @@ mod auto_follow_tests {
         let admin_sk = PrivateKey::random(rng);
         let member_sk = PrivateKey::random(rng);
         let admin_account = enrol_member(&store, &gid, &admin_sk.public_key());
-        let admin = admin_account;
-        let admin = admin_account;
+        let _admin = admin_account;
+        let _admin = admin_account;
         let member_account = enrol_member(&store, &gid, &member_sk.public_key());
         MembershipRepository::new(&store)
             .add_member(&gid, &admin_account, GroupMemberRole::Admin)
@@ -7219,7 +7219,7 @@ mod auto_follow_tests {
     #[test]
     fn admin_can_set_member_auto_follow() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
+        let (store, gid, gid_bytes, admin_sk, _member_sk, _admin_account, member_account) =
             seed(&mut rng);
 
         let op = SignedGroupOp::sign(
@@ -7275,7 +7275,7 @@ mod auto_follow_tests {
     #[test]
     fn non_admin_cannot_set_others_auto_follow() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, member_account) =
+        let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, _member_account) =
             seed(&mut rng);
 
         // `other_sk` is a real member of the group — we add them first so
@@ -7327,7 +7327,7 @@ mod auto_follow_tests {
     #[test]
     fn rejects_non_member_target() {
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, admin_sk, _member_sk, _admin_account, member_account) =
+        let (store, _gid, gid_bytes, admin_sk, _member_sk, _admin_account, _member_account) =
             seed(&mut rng);
         let stranger = PrivateKey::random(&mut rng).public_key();
         let stranger = AccountId::from(*stranger);
@@ -7527,8 +7527,15 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, member_account) =
-            seed(&mut rng);
+        let (
+            store,
+            _gid,
+            gid_bytes,
+            admin_sk,
+            _existing_member_sk,
+            _admin_account,
+            _member_account,
+        ) = seed(&mut rng);
 
         // Subscribe BEFORE applying ops so the broadcast channel
         // doesn't drop events we care about.
@@ -7630,7 +7637,7 @@ mod auto_follow_tests {
     #[test]
     fn explicit_opt_out_after_member_added_is_preserved() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, _, _admin_account, member_account) = seed(&mut rng);
+        let (store, gid, gid_bytes, admin_sk, _, _admin_account, _member_account) = seed(&mut rng);
 
         let target_sk = PrivateKey::random(&mut rng);
         let target_pk = target_sk.public_key();
@@ -7710,7 +7717,7 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, member_account) =
+        let (store, gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, _member_account) =
             seed(&mut rng);
 
         // Subscribe BEFORE spawning the observer / applying.
@@ -7826,8 +7833,15 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, member_account) =
-            seed(&mut rng);
+        let (
+            store,
+            _gid,
+            gid_bytes,
+            admin_sk,
+            _existing_member_sk,
+            _admin_account,
+            _member_account,
+        ) = seed(&mut rng);
 
         let new_member_sk = PrivateKey::random(&mut rng);
         let new_member_pk = new_member_sk.public_key();
@@ -9345,8 +9359,8 @@ mod undecidable_authority_parks {
         // Live rows would GRANT. Guessing from them would apply an op the peers
         // (resolving at the real cut) might reject.
         let signer_pk = PublicKey::from([0x11; 32]);
-        let signer = AccountId::from(*signer_pk);
-        let (store, gid, signer) = group_with_live_admin(&signer_pk);
+        let _signer = AccountId::from(*signer_pk);
+        let (store, gid, _signer) = group_with_live_admin(&signer_pk);
 
         let err = apply_group_op_mutations(
             &store,
@@ -9398,7 +9412,7 @@ mod undecidable_authority_parks {
         // folded) applied. After: both park. They still agree — which is the only
         // property that matters — and both proceed once the ancestry arrives.
         let signer_pk = PublicKey::from([0x11; 32]);
-        let signer = AccountId::from(*signer_pk);
+        let _signer = AccountId::from(*signer_pk);
         let (store_a, gid_a) = group_with_live_stranger(); // would have REJECTED
         let (store_b, gid_b, _signer_b) = group_with_live_admin(&signer_pk); // would have APPLIED
 
@@ -9433,7 +9447,7 @@ mod undecidable_authority_parks {
         //
         // 1. A resolvable cut decides normally (no spurious parking).
         let signer_pk = PublicKey::from([0x11; 32]);
-        let signer = AccountId::from(*signer_pk);
+        let _signer = AccountId::from(*signer_pk);
         let (store, gid) = group_with_live_stranger();
         let (handled, _, _) = apply_group_op_mutations(
             &store,
@@ -9449,7 +9463,7 @@ mod undecidable_authority_parks {
         // 2. No apply-auth context (empty cut + live-fallback authorizer) — the emit
         //    path, the local apply, tests. Abstention here means "no cut", so live
         //    decides and a live admin is authorized. This must NOT become undecidable.
-        let (store, gid, signer) = group_with_live_admin(&signer_pk);
+        let (store, gid, _signer) = group_with_live_admin(&signer_pk);
         let (handled, _, _) = apply_group_op_mutations(
             &store,
             &gid,
@@ -10120,7 +10134,7 @@ mod account_plane_apply {
             },
         )
         .unwrap();
-        let repo = AccountBindingRepository::new(&store);
+        let _repo = AccountBindingRepository::new(&store);
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a device must not link into a group its account does not belong to"
@@ -10359,7 +10373,7 @@ mod account_plane_apply {
             0,
         )
         .unwrap();
-        let bindings = AccountBindingRepository::new(&store);
+        let _bindings = AccountBindingRepository::new(&store);
 
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.

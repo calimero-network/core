@@ -2655,7 +2655,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     let mut rng = OsRng;
     let attacker_sk = PrivateKey::random(&mut rng);
     let real_founder_sk = PrivateKey::random(&mut rng);
-    let real_founder = real_founder_sk.public_key();
+    let _real_founder = real_founder_sk.public_key();
     let real_founder_account = founder_account_for(&real_founder_sk);
 
     let store = test_store();
@@ -4491,7 +4491,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     let store = test_store();
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let ((admin_sk, admin_pk), admin_account) =
+    let ((admin_sk, _admin_pk), admin_account) =
         bootstrap_namespace_with_admin_account(&store, ns_id);
 
     // Build: namespace → A → B (two-level subtree).
@@ -4577,7 +4577,7 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     let store = test_store();
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let ((admin_sk, admin_pk), admin_account) =
+    let ((admin_sk, _admin_pk), admin_account) =
         bootstrap_namespace_with_admin_account(&store, ns_id);
 
     // Build: namespace → A → B (the subtree the signer legitimately owns),
@@ -6516,7 +6516,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let mut rng = OsRng;
 
     let owner_sk = PrivateKey::random(&mut rng);
-    let owner_account = founder_account_for(&owner_sk);
+    let _owner_account = founder_account_for(&owner_sk);
     let _owner = owner_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner = joiner_sk.public_key();
@@ -6593,7 +6593,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let mut rng = OsRng;
 
     let owner_sk = PrivateKey::random(&mut rng);
-    let owner_account = founder_account_for(&owner_sk);
+    let _owner_account = founder_account_for(&owner_sk);
     let _owner = owner_sk.public_key();
     // A namespace member with NO admin row and NO capability row: the live
     // resolver denies them outright. They stand for a signer whose
@@ -7234,7 +7234,7 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
     let subgroup_id = [0xF2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let sub_gid = ContextGroupId::from(subgroup_id);
-    let ((_admin_sk, admin_pk), admin_account) =
+    let ((_admin_sk, _admin_pk), admin_account) =
         bootstrap_namespace_with_admin_account(&store, namespace_id);
 
     nest_for_test(&store, &ns_gid, &sub_gid);
