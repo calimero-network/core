@@ -979,9 +979,9 @@ fn namespace_nesting_resolve_and_read_only_checks() {
     let outsider = ContextGroupId::from([0xA4; 32]);
     let context = ContextId::from([0xB1; 32]);
     let ro_member = PublicKey::from([0xB2; 32]);
-    let ro_member_account = AccountId::from(*ro_member);
+    let ro_member_account = enrol_member(&store, &parent, &ro_member);
     let rw_member = PublicKey::from([0xB3; 32]);
-    let rw_member_account = AccountId::from(*rw_member);
+    let rw_member_account = enrol_member(&store, &parent, &rw_member);
 
     NamespaceRepository::new(&store)
         .nest(&parent, &child)
@@ -1201,9 +1201,9 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     let child = ContextGroupId::from([0xC1; 32]);
     let context = ContextId::from([0xC2; 32]);
     let admin = PublicKey::from([0xC3; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &child, &admin);
     let inherited = PublicKey::from([0xC4; 32]);
-    let inherited_account = AccountId::from(*inherited);
+    let inherited_account = enrol_member(&store, &child, &inherited);
 
     nest_for_test(&store, &ns, &child);
     CapabilitiesRepository::new(&store)

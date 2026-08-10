@@ -5599,9 +5599,9 @@ fn inherited_deny_does_not_drop_a_direct_member_of_the_owning_subgroup() {
     let subgroup = ContextGroupId::from([0xF4u8; 32]);
     let ctx = ContextId::from([0xFDu8; 32]);
     let admin_pk = PublicKey::from([0xA2; 32]);
-    let admin = AccountId::from(*admin_pk);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
     let member_pk = PublicKey::from([0xE8; 32]);
-    let member = AccountId::from(*member_pk);
+    let member = enrol_member(&store, &ns_gid, &member_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin))
