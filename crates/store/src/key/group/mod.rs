@@ -1344,6 +1344,11 @@ pub struct GroupUpgradeValue {
     /// cascade_seq` like-for-like. `None` for non-cascade upgrades and pre-existing
     /// records.
     pub cascade_seq: Option<u64>,
+    /// ABI state version of the target application, from its embedded schema.
+    /// The migration rollup compares each member's loaded state version against
+    /// this. `0` means the target's ABI was unreadable, which the rollup treats
+    /// as an unsatisfiable target rather than a satisfied one.
+    pub to_state_version: u32,
 }
 
 #[cfg(feature = "borsh")]
@@ -1402,6 +1407,19 @@ impl BorshDeserialize for GroupUpgradeValue {
                 }
             }
         };
+        // Third backward-compatible trailing field. A record written before it
+        // ends right after `cascade_seq`; a clean EOF there decodes as `0`,
+        // which the migration rollup reads as "target state version unknown".
+        let to_state_version = {
+            let mut first = [0u8; 1];
+            if !read_byte(reader, &mut first)? {
+                0
+            } else {
+                let mut rest = [0u8; 3];
+                reader.read_exact(&mut rest)?;
+                u32::from_le_bytes([first[0], rest[0], rest[1], rest[2]])
+            }
+        };
         Ok(Self {
             from_version,
             to_version,
@@ -1411,6 +1429,7 @@ impl BorshDeserialize for GroupUpgradeValue {
             status,
             cascade_hlc,
             cascade_seq,
+            to_state_version,
         })
     }
 }
@@ -3385,6 +3404,7 @@ mod tests {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3392,6 +3412,7 @@ mod tests {
 
             assert_eq!(decoded.from_version, "1.0.0");
             assert_eq!(decoded.to_version, "2.0.0");
+            assert_eq!(decoded.to_state_version, 2);
             assert_eq!(decoded.migration, Some(vec![0xDE, 0xAD]));
             assert_eq!(decoded.initiated_at, value.initiated_at);
             assert_eq!(decoded.initiated_by, value.initiated_by);
@@ -3457,6 +3478,7 @@ mod tests {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 4,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3464,6 +3486,7 @@ mod tests {
 
             assert_eq!(decoded.from_version, "3.0.0");
             assert_eq!(decoded.to_version, "4.0.0");
+            assert_eq!(decoded.to_state_version, 4);
             assert_eq!(decoded.migration, None);
             match decoded.status {
                 GroupUpgradeStatus::Completed { completed_at } => {
@@ -3494,6 +3517,7 @@ mod cascade_hlc_borsh_tests {
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc,
             cascade_seq: None,
+            to_state_version: 2,
         }
     }
 
@@ -3564,6 +3588,55 @@ mod cascade_hlc_borsh_tests {
         let decoded = GroupUpgradeValue::try_from_slice(&bytes).unwrap();
         assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
         assert_eq!(decoded.cascade_seq, Some(12));
+    }
+
+    #[test]
+    fn group_upgrade_value_roundtrips_to_state_version() {
+        let value = GroupUpgradeValue {
+            from_version: "10.1.3".to_owned(),
+            to_version: "10.2.0".to_owned(),
+            migration: None,
+            initiated_at: 7,
+            initiated_by: PrimitivePublicKey::from([3; 32]),
+            status: GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+            cascade_hlc: None,
+            cascade_seq: None,
+            to_state_version: 2,
+        };
+
+        let bytes = to_vec(&value).expect("serialize");
+        let back = GroupUpgradeValue::try_from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(back.to_state_version, 2);
+        assert_eq!(back.to_version, "10.2.0");
+    }
+
+    #[test]
+    fn old_format_without_to_state_version_decodes_as_zero() {
+        // A record written before `to_state_version`: it ends right after
+        // `cascade_seq`, so the field must decode as `0` (clean EOF), not error.
+        let mut legacy = to_vec(&sample(Some(HybridTimestamp::zero()))).unwrap();
+        legacy.truncate(legacy.len() - 4);
+
+        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
+        assert_eq!(decoded.to_state_version, 0);
+        assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
+    }
+
+    #[test]
+    fn rejects_partial_to_state_version() {
+        let mut bytes = to_vec(&sample(None)).unwrap();
+        // Two of the four `u32` bytes — a truncated tail, not a legacy record.
+        bytes.truncate(bytes.len() - 2);
+
+        assert!(
+            GroupUpgradeValue::try_from_slice(&bytes).is_err(),
+            "expected Err for truncated to_state_version"
+        );
     }
 
     #[test]

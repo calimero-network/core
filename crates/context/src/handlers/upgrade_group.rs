@@ -167,6 +167,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                // Unresolvable here: reading the target's ABI needs an async
+                // blob read. The async block below overwrites this record.
+                to_state_version: 0,
             };
             if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &inprogress)
             {
@@ -180,7 +183,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     // and one-hop upgrades; a multi-version target discovers
                     // installed intermediates so the group moves rung by rung
                     // and behind members replay the same sequence.
-                    let rungs = {
+                    let (rungs, target_state_version) = {
                         let target_blob = target_blob_bytes
                             .ok_or_else(|| eyre::eyre!("target application not found"))?;
                         let target_size = app_meta_for_contract
@@ -288,6 +291,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         status: completed_status.clone(),
                         cascade_hlc: None,
                         cascade_seq: None,
+                        to_state_version: target_state_version,
                     };
 
                     UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
@@ -366,6 +370,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             status: initial_status.clone(),
             cascade_hlc: None,
             cascade_seq: None,
+            // Stamped with the resolved value by the canary task below, which
+            // can do the async blob read this synchronous section cannot.
+            to_state_version: 0,
         };
 
         if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
@@ -417,6 +424,16 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                          run under the LazyOnAccess upgrade policy",
                         declared.method
                     );
+                }
+                // Finish the record the synchronous section wrote: without the
+                // target's state version the rollup can never call this satisfied.
+                let to_state_version = blob_max_state_version(&node_client, target_blob)
+                    .await
+                    .unwrap_or_default();
+                let repo = UpgradesRepository::new(&datastore_for_canary);
+                if let Some(mut value) = repo.load(&group_id)? {
+                    value.to_state_version = to_state_version;
+                    repo.save(&group_id, &value)?;
                 }
             }
             {
@@ -750,6 +767,9 @@ async fn resolve_blob_schema(
 /// and validates every consecutive pair with the same single-hop rules, so
 /// an admin moves a group several versions in one action while behind
 /// members replay the identical rung sequence.
+///
+/// Returns the ladder alongside the target's ABI state version (`0` when
+/// unreadable), which the caller records on the group's upgrade record.
 async fn plan_emit_ladder(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
@@ -757,19 +777,23 @@ async fn plan_emit_ladder(
     target_blob: [u8; 32],
     target_size: u64,
     force_code_only: bool,
-) -> eyre::Result<Vec<EmitRung>> {
+) -> eyre::Result<(Vec<EmitRung>, u32)> {
     let from_sv = blob_max_state_version(node_client, current_app_key).await;
     let to_sv = blob_max_state_version(node_client, target_blob).await;
+    let target_state_version = to_sv.unwrap_or_default();
     let multi_hop = matches!((from_sv, to_sv), (Some(f), Some(t)) if t > f + 1);
     if !multi_hop {
         let migration =
             resolve_upgrade_from_abis(node_client, current_app_key, target_blob, force_code_only)
                 .await?;
-        return Ok(vec![EmitRung {
-            app_key: target_blob,
-            size: target_size,
-            migration,
-        }]);
+        return Ok((
+            vec![EmitRung {
+                app_key: target_blob,
+                size: target_size,
+                migration,
+            }],
+            target_state_version,
+        ));
     }
     let (from_sv, to_sv) = (from_sv.unwrap_or_default(), to_sv.unwrap_or_default());
 
@@ -811,7 +835,7 @@ async fn plan_emit_ladder(
         size: target_size,
         migration,
     });
-    Ok(rungs)
+    Ok((rungs, target_state_version))
 }
 
 /// An installed release considered for an intermediate rung of a multi-hop
@@ -1736,6 +1760,11 @@ fn dispatch_cascade(
             }
             resolved
         };
+        // Every matched descendant lands on the same target blob, so one
+        // resolution covers the whole cascade.
+        let target_state_version = blob_max_state_version(&node_client_for_publish, new_app_key)
+            .await
+            .unwrap_or_default();
         let migration_bytes_for_publish = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
         let has_migration = migration.is_some();
         // L1 identity-downgrade gate: refuse a migration cascade that strips
@@ -1772,12 +1801,12 @@ fn dispatch_cascade(
         .await?;
         report.observe("upgrade_group", "CascadeUpgrade");
 
-        Ok::<_, eyre::Report>(migration)
+        Ok::<_, eyre::Report>((migration, target_state_version))
     }
     .into_actor(actor);
 
     ActorResponse::r#async(publish_task.map(move |publish_result, act, ctx| {
-        let migration = publish_result?;
+        let (migration, target_state_version) = publish_result?;
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
         // After successful publish + local apply, spawn one propagator
@@ -1813,6 +1842,7 @@ fn dispatch_cascade(
                 },
                 cascade_hlc: Some(cascade_hlc),
                 cascade_seq,
+                to_state_version: target_state_version,
             };
             if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
                 error!(
@@ -2227,6 +2257,7 @@ mod tests {
                     },
                     cascade_hlc: None,
                     cascade_seq: None,
+                    to_state_version: 1,
                 },
             )
             .expect("save in-progress record");

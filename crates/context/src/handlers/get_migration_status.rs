@@ -349,6 +349,7 @@ mod tests {
     fn upgrade_record(
         from: &str,
         to: &str,
+        to_state_version: u32,
         status: calimero_store::key::GroupUpgradeStatus,
     ) -> calimero_store::key::GroupUpgradeValue {
         calimero_store::key::GroupUpgradeValue {
@@ -360,6 +361,7 @@ mod tests {
             status,
             cascade_hlc: None,
             cascade_seq: None,
+            to_state_version,
         }
     }
 
@@ -382,6 +384,7 @@ mod tests {
         let rec = upgrade_record(
             "1",
             "2",
+            2,
             calimero_store::key::GroupUpgradeStatus::Completed { completed_at: None },
         );
         assert_eq!(super::derive_target_version(Some(&rec)), 2);
@@ -393,6 +396,7 @@ mod tests {
         let rec = upgrade_record(
             "1",
             "2",
+            2,
             calimero_store::key::GroupUpgradeStatus::InProgress {
                 total: 1,
                 completed: 0,
@@ -414,6 +418,7 @@ mod tests {
         let rec = upgrade_record(
             "1",
             "v2",
+            0,
             calimero_store::key::GroupUpgradeStatus::InProgress {
                 total: 1,
                 completed: 0,
@@ -456,6 +461,7 @@ mod tests {
                 &upgrade_record(
                     "1",
                     "3",
+                    3,
                     calimero_store::key::GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,

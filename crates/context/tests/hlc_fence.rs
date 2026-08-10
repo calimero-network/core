@@ -74,6 +74,7 @@ fn upgrade_with_hlc(cascade_hlc: Option<HybridTimestamp>) -> GroupUpgradeValue {
         status: GroupUpgradeStatus::Completed { completed_at: None },
         cascade_hlc,
         cascade_seq: None,
+        to_state_version: 2,
     }
 }
 

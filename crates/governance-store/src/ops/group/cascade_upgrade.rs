@@ -122,6 +122,9 @@ pub(crate) fn apply(
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
             cascade_seq: None,
+            // The op carries no state version, so a fresh record has none to
+            // resolve — same reason `to_version` defaults empty here.
+            to_state_version: 0,
         });
         // Reflect THIS cascade's migration bytes on an existing record too, so
         // the record's `migration` matches the `GroupMeta.migration` we just

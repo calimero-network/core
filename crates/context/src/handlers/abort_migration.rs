@@ -221,6 +221,7 @@ mod tests {
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
             cascade_seq: None,
+            to_state_version: 2,
         }
     }
 
