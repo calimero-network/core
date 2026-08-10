@@ -20,7 +20,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    bootstrap_namespace_with_admin, founder_account_for, namespace_genesis_for,
+    bootstrap_namespace_with_admin, enrol_member, founder_account_for, namespace_genesis_for,
     namespace_genesis_naming, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
     test_store,
 };
@@ -1035,13 +1035,13 @@ fn authorized_for_state_op_admits_admin_and_member_only() {
     let gid = ContextGroupId::from([0xC0; 32]);
     let context = ContextId::from([0xC1; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &gid, &admin);
     let member = PublicKey::from([0x02; 32]);
-    let member_account = AccountId::from(*member);
+    let member_account = enrol_member(&store, &gid, &member);
     let ro = PublicKey::from([0x03; 32]);
-    let ro_account = AccountId::from(*ro);
+    let ro_account = enrol_member(&store, &gid, &ro);
     let ro_tee = PublicKey::from([0x04; 32]);
-    let ro_tee_account = AccountId::from(*ro_tee);
+    let ro_tee_account = enrol_member(&store, &gid, &ro_tee);
     let outsider = PublicKey::from([0x05; 32]);
 
     let mut meta = test_meta();
@@ -1100,9 +1100,9 @@ fn authorized_for_state_op_rejects_removed_member() {
     let gid = ContextGroupId::from([0xD0; 32]);
     let context = ContextId::from([0xD1; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &gid, &admin);
     let target = PublicKey::from([0xDD; 32]);
-    let target_account = AccountId::from(*target);
+    let target_account = enrol_member(&store, &gid, &target);
 
     let mut meta = test_meta();
     meta.admin_identity = admin_account;
@@ -1149,7 +1149,7 @@ fn authorized_for_state_op_recognises_namespace_creator() {
     let gid = ContextGroupId::from([0xE0; 32]);
     let context = ContextId::from([0xE1; 32]);
     let creator = PublicKey::from([0xEE; 32]);
-    let creator_account = AccountId::from(*creator);
+    let creator_account = enrol_member(&store, &gid, &creator);
 
     let mut meta = test_meta();
     meta.admin_identity = creator_account;
@@ -3081,9 +3081,9 @@ fn recursive_remove_cascades_to_all_descendants() {
     let child = ContextGroupId::from([0xE1; 32]);
     let grandchild = ContextGroupId::from([0xE2; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &root, &admin);
     let member = PublicKey::from([0x02; 32]);
-    let member_account = AccountId::from(*member);
+    let member_account = enrol_member(&store, &root, &member);
 
     // Build hierarchy
     NamespaceRepository::new(&store)
@@ -3150,9 +3150,9 @@ fn recursive_remove_from_child_does_not_affect_parent() {
     let child = ContextGroupId::from([0xE1; 32]);
     let grandchild = ContextGroupId::from([0xE2; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &root, &admin);
     let member = PublicKey::from([0x02; 32]);
-    let member_account = AccountId::from(*member);
+    let member_account = enrol_member(&store, &root, &member);
 
     NamespaceRepository::new(&store)
         .nest(&root, &child)
@@ -3198,9 +3198,9 @@ fn recursive_remove_member_not_in_some_descendants() {
     let root = ContextGroupId::from([0xE0; 32]);
     let child = ContextGroupId::from([0xE1; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &root, &admin);
     let member = PublicKey::from([0x02; 32]);
-    let member_account = AccountId::from(*member);
+    let member_account = enrol_member(&store, &root, &member);
 
     NamespaceRepository::new(&store)
         .nest(&root, &child)
@@ -3245,9 +3245,9 @@ fn recursive_remove_skips_inherited_only_members() {
     let root = ContextGroupId::from([0xF0; 32]);
     let open_child = ContextGroupId::from([0xF1; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &root, &admin);
     let member = PublicKey::from([0x02; 32]);
-    let member_account = AccountId::from(*member);
+    let member_account = enrol_member(&store, &root, &member);
 
     NamespaceRepository::new(&store)
         .nest(&root, &open_child)
@@ -3317,9 +3317,9 @@ fn recursive_remove_nonexistent_member_returns_empty() {
     let store = test_store();
     let root = ContextGroupId::from([0xE0; 32]);
     let admin = PublicKey::from([0x01; 32]);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = enrol_member(&store, &root, &admin);
     let stranger = PublicKey::from([0x99; 32]);
-    let stranger_account = AccountId::from(*stranger);
+    let stranger_account = enrol_member(&store, &root, &stranger);
 
     MetaRepository::new(&store)
         .save(&root, &test_meta())
@@ -3877,13 +3877,13 @@ fn rotation_test_setup() -> (
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     let local_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let local_sk = PrivateKey::from(local_sk_bytes);
     let local_pk = local_sk.public_key();
-    let local_account = AccountId::from(*local_pk);
+    let local_account = enrol_member(&store, &ns_gid, &local_pk);
     let removed_pk = PrivateKey::random(&mut rng).public_key();
-    let removed_account = AccountId::from(*removed_pk);
+    let removed_account = enrol_member(&store, &ns_gid, &removed_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
@@ -4469,7 +4469,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
-    let admin_account = AccountId::from(*admin_pk);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
 
     // Build: namespace → A → B (two-level subtree).
     let a_id = [0xAAu8; 32];
@@ -4555,7 +4555,7 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
-    let admin_account = AccountId::from(*admin_pk);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
 
     // Build: namespace → A → B (the subtree the signer legitimately owns),
     // plus an unrelated sibling X directly under the namespace root that the
@@ -5525,7 +5525,7 @@ fn groups_member_but_keyless_reports_then_clears() {
     // This node's namespace identity — the member we'd be missing a key for.
     let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
     let my_id = PrivateKey::from(sk_bytes).public_key();
-    let my_id_account = AccountId::from(*my_id);
+    let my_id_account = enrol_member(&store, &ns_gid, &my_id);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
         .unwrap();
@@ -5890,10 +5890,10 @@ fn responder_refuses_delivery_to_non_member() {
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
-    let responder_account = AccountId::from(*responder_pk);
     let stranger_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
 
     let store = test_store();
+    let responder_account = enrol_member(&store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -5945,10 +5945,10 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     let namespace_id: [u8; 32] = ns_gid.to_bytes();
     let responder_sk = PrivateKey::from([0x52u8; 32]);
     let responder_pk = responder_sk.public_key();
-    let responder_account = AccountId::from(*responder_pk);
     let member_sk = PrivateKey::from([0x53u8; 32]);
 
     let store = test_store();
+    let responder_account = enrol_member(&store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &responder_pk, &[0x52u8; 32], &[0u8; 32])
         .unwrap();
@@ -6139,7 +6139,7 @@ fn curative_sweep_redrives_stranded_context() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_pk);
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
 
@@ -6359,7 +6359,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_pk);
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
 
@@ -6925,7 +6925,7 @@ fn a_tee_admission_binds_the_replicas_device() {
 
     let replica_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let replica = replica_sk.public_key();
-    let replica_account = AccountId::from(*replica);
+    let replica_account = enrol_member(&store, &ns_gid, &replica);
     let account = crate::test_fixtures::real_join_account(&replica);
     let account_id = account.cert.account;
 
@@ -7027,7 +7027,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         .expect("store the group key");
 
     let replica = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
-    let replica_account = AccountId::from(*replica);
+    let replica_account = enrol_member(&store, &ns_gid, &replica);
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
     let victim_account = stolen.cert.account;
@@ -7133,7 +7133,7 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let sub_gid = ContextGroupId::from(subgroup_id);
     let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
-    let admin_account = AccountId::from(*admin_pk);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
 
     nest_for_test(&store, &ns_gid, &sub_gid);
     MetaRepository::new(&store)
