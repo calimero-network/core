@@ -3901,7 +3901,9 @@ fn rotation_test_setup() -> (
     let local_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let local_sk = PrivateKey::from(local_sk_bytes);
     let local_pk = local_sk.public_key();
-    let local_account = enrol_member(&store, &ns_gid, &local_pk);
+    // The local node needs the secret half too: the rotation addresses its
+    // device, and the apply only stores the new key if it can open the envelope.
+    let local_account = crate::test_fixtures::enrol_local_device(&store, &ns_gid, &local_pk);
     let removed_pk = PrivateKey::random(&mut rng).public_key();
     let removed_account = enrol_member(&store, &ns_gid, &removed_pk);
 

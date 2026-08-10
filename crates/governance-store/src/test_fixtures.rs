@@ -476,3 +476,45 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
         false
     }
 }
+
+/// Enrol `sign_pk` as THIS NODE's device in `namespace`.
+///
+/// The difference from [`enrol_member`] is the secret half. `enrol_member`
+/// records a binding whose `kem_pk` is a placeholder with no private key behind
+/// it, which is fine while a test only needs the key to RESOLVE to an account.
+/// It is not fine the moment a test needs to OPEN something: scope keys are
+/// wrapped to a device now, and an envelope addressed to a placeholder can never
+/// be decrypted.
+///
+/// This writes both halves — the node's own `NodeDeviceIdentity` (with the
+/// matching X25519 secret) and the binding that names it — so the node can be
+/// addressed by a rotation and actually unwrap what it receives.
+pub(super) fn enrol_local_device(
+    store: &Store,
+    namespace: &ContextGroupId,
+    sign_pk: &PublicKey,
+) -> AccountId {
+    let root_sk = PrivateKey::from(*(*sign_pk));
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let node = crate::NodeDeviceRepository::new(store)
+        .ensure_enrolled_into(namespace, genesis)
+        .expect("mint this node's device");
+    let cert = calimero_account::sign_device_cert(
+        &root_sk,
+        node.account,
+        node.secret.device,
+        sign_pk,
+        &calimero_account::KemPublicKey::from(*node.secret.kem_secret.public_key().as_bytes()),
+        0,
+        0,
+    )
+    .expect("the account root certifies its own device");
+    let bindings = crate::AccountBindingRepository::new(store);
+    bindings
+        .record_endorser(namespace, node.account, &node.account)
+        .expect("endorse");
+    let _ = bindings
+        .apply_link(namespace, &genesis, &[], &cert)
+        .expect("record the binding");
+    node.account
+}
