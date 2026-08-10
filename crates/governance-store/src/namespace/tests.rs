@@ -6700,10 +6700,12 @@ fn apply_open_join_with(
     use super::NamespaceGovernance;
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
-    let joiner = joiner_sk.public_key();
-    let joiner_account = AccountId::from(*joiner);
+    // The op names the account the CREDENTIAL certifies, not one derived from
+    // the joiner's key: those are different values, and the apply checks the
+    // credential names the member it admits.
     let gov = NamespaceGovernance::new(store, namespace_id.into());
     let head = gov.read_head_record().expect("read head");
+    let joiner_account = account.cert.account;
     let join = SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
