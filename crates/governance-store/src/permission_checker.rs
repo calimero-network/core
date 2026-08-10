@@ -118,6 +118,49 @@ impl<'a> PermissionChecker<'a> {
         crate::member_account_in_namespace(self.store, &self.group_id, identity)
     }
 
+    /// Has this replica learned who holds authority in this namespace yet?
+    ///
+    /// Before genesis applies, the root meta carries
+    /// [`crate::PLACEHOLDER_ADMIN_IDENTITY`] and no binding has been written by
+    /// any join — so the namespace has no authority to check against, and every
+    /// answer this checker could give is about its own sync progress rather than
+    /// about the op.
+    fn authority_established(&self) -> EyreResult<bool> {
+        let root = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        Ok(crate::MetaRepository::new(self.store)
+            .load(&root)?
+            .is_some_and(|meta| meta.admin_identity != crate::placeholder_admin_identity()))
+    }
+
+    /// The account `identity` speaks for, or a PARK when this replica cannot yet
+    /// say and cannot honestly answer "no" either.
+    ///
+    /// "Bound to no account here" has two very different causes, and the key
+    /// alone does not distinguish them: a stranger who holds authority nowhere,
+    /// or a real member whose binding this replica has not folded yet. Answering
+    /// `false` for the second turns a timing gap into a permanent verdict — the
+    /// publisher authorized its own op from live rows and accepted it, the
+    /// receiver drops it, and no later op reconciles the two.
+    ///
+    /// The tie is broken on whether this namespace has any authority established
+    /// at all. Before genesis there is nothing to have been a stranger TO, so the
+    /// op parks and is retried once the ancestry arrives. After genesis the rows
+    /// are meaningful and an unresolvable signer is genuinely unauthorized —
+    /// which also keeps a forged op signed by an unbound key from stalling the
+    /// DAG, since parking on it would be a denial of service.
+    fn live_account_or_park(&self, identity: &PublicKey) -> EyreResult<Option<AccountId>> {
+        if let Some(account) = self.live_account(identity)? {
+            return Ok(Some(account));
+        }
+        if self.authority_established()? {
+            return Ok(None);
+        }
+        bail!(ApplyError::AuthorityUndecidable {
+            group_id: format!("{:?}", self.group_id),
+            signer: format!("{identity}"),
+        })
+    }
+
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
         // Decide from the PROJECTION at the op's causal cut — admin authority as of the
         // op's own parents, which is the same answer on every replica.
@@ -128,7 +171,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(verdict);
         }
         self.ensure_live_fallback_is_sound(identity)?;
-        let Some(account) = self.live_account(identity)? else {
+        let Some(account) = self.live_account_or_park(identity)? else {
             return Ok(false);
         };
         // Issue #2256: admin authority cascades into Open subgroups
@@ -348,7 +391,7 @@ impl<'a> PermissionChecker<'a> {
             return Ok(verdict);
         }
         self.ensure_live_fallback_is_sound(identity)?;
-        let Some(account) = self.live_account(identity)? else {
+        let Some(account) = self.live_account_or_park(identity)? else {
             return Ok(false);
         };
         let direct = MembershipRepository::new(self.store).is_admin_or_has_capability(
