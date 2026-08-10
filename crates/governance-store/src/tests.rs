@@ -105,14 +105,11 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     let admin_pk = PublicKey::from([0x21; 32]);
     let admin_account = AccountId::from(*admin_pk);
     let admin = AccountId::from(*admin_pk);
-    let admin_account = AccountId::from(*admin);
-    let admin_account = AccountId::from(*admin);
+    let admin_account = admin;
     let member_pk = PublicKey::from([0x22; 32]);
     let member_account = AccountId::from(*member_pk);
-    let member_account = AccountId::from(*member_pk);
     let member = AccountId::from(*member_pk);
-    let member_account = AccountId::from(*member);
-    let member_account = AccountId::from(*member);
+    let member_account = member;
     let app_id = ApplicationId::from([0x23; 32]);
 
     MembershipRepository::new(&store)
@@ -291,7 +288,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
     assert!(service
         .register(
             &permissions,
-            &AccountId::from([0x36; 32]),
+            &PublicKey::from([0x36; 32]),
             &context,
             &app_id
         )
@@ -431,7 +428,7 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
-    let admin_sk_account = AccountId::from(*admin_sk);
+    let admin_sk_account = admin_sk;
     let admin_pk = admin_sk.public_key();
     let admin_account = AccountId::from(*admin_pk);
     MembershipRepository::new(&store)
@@ -469,9 +466,12 @@ fn apply_local_signed_group_op_nonce_and_admin() {
 
     let non_admin_sk = PrivateKey::random(&mut rng);
 
-    let non_admin_sk_account = AccountId::from(*non_admin_sk);
     MembershipRepository::new(&store)
-        .add_member(&gid, &non_admin_sk_account.public_key(), GroupMemberRole::Member)
+        .add_member(
+            &gid,
+            &AccountId::from(*non_admin_sk.public_key()),
+            GroupMemberRole::Member,
+        )
         .unwrap();
     let op_bad = SignedGroupOp::sign(
         &non_admin_sk,
@@ -479,7 +479,7 @@ fn apply_local_signed_group_op_nonce_and_admin() {
         vec![],
         1,
         GroupOp::MemberAdded {
-            member: PrivateKey::random(&mut rng).public_key(),
+            member: AccountId::from(*PrivateKey::random(&mut rng).public_key()),
             role: GroupMemberRole::Member,
         },
     )
@@ -523,7 +523,6 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
 
     let member_high_account = AccountId::from(*member_high);
     let member_low = PrivateKey::random(&mut rng).public_key();
-    let member_low_account = AccountId::from(*member_low);
     let member_low_account = AccountId::from(*member_low);
 
     // The HIGHER-nonce sibling (nonce 2) is delivered first.
@@ -629,13 +628,14 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
         .unwrap();
 
     let member = PrivateKey::random(&mut rng).public_key();
+    let member_account = AccountId::from(*member);
     let op = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes.into(),
         vec![],
         1,
         GroupOp::MemberAdded {
-            member_account,
+            member: AccountId::from(*member),
             role: GroupMemberRole::Member,
         },
     )
@@ -684,8 +684,7 @@ fn nonce_window_round_trips_through_single_key() {
     let gid = test_group_id();
     let signer_pk = PublicKey::from([0x7Bu8; 32]);
     let signer = AccountId::from(*signer_pk);
-    let signer_account = AccountId::from(*signer);
-    let signer_account = AccountId::from(*signer);
+    let signer_account = signer;
 
     let mut window = NonceWindow::new(4, []);
     assert!(window.record(6));
@@ -761,10 +760,6 @@ fn reject_read_only_tee_via_member_role_set() {
         .unwrap();
 
     let member_sk = PrivateKey::random(&mut rng);
-
-    let member_sk_account = AccountId::from(*member_sk);
-
-    let member_sk_account = AccountId::from(*member_sk);
     let member_pk = member_sk.public_key();
     let member_account = AccountId::from(*member_pk);
     MembershipRepository::new(&store)
@@ -843,9 +838,9 @@ fn apply_local_member_alias_member_signer_or_admin() {
 
     let other_sk = PrivateKey::random(&mut rng);
 
-    let other_sk_account = AccountId::from(*other_sk);
+    let other_sk_account = other_sk;
 
-    let other_sk_account = AccountId::from(*other_sk);
+    let other_sk_account = other_sk;
     let op_bad = SignedGroupOp::sign(
         &other_sk,
         gid_bytes.into(),
@@ -1116,9 +1111,8 @@ fn transfer_ownership_rejects_non_owner_signer() {
 
     let owner_sk = PrivateKey::random(&mut rng);
 
-    let owner_sk_account = AccountId::from(*owner_sk);
+    let owner_sk_account = owner_sk;
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
     let owner_account = AccountId::from(*owner_pk);
     // A second admin — privileged, but not the owner.
     let other_admin_sk = PrivateKey::random(&mut rng);
@@ -1127,7 +1121,6 @@ fn transfer_ownership_rejects_non_owner_signer() {
     // A third admin standing by as a valid successor, so the op fails on
     // the owner check rather than the new-owner-role check.
     let successor_pk = PrivateKey::random(&mut rng).public_key();
-    let successor_account = AccountId::from(*successor_pk);
     let successor_account = AccountId::from(*successor_pk);
 
     MetaRepository::new(&store)
@@ -1191,7 +1184,6 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
     let owner_account = AccountId::from(*owner_pk);
     let plain_member_pk = PrivateKey::random(&mut rng).public_key();
     let plain_member_account = AccountId::from(*plain_member_pk);
-    let plain_member_account = AccountId::from(*plain_member_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(owner_account))
@@ -1251,7 +1243,6 @@ fn transfer_ownership_rejects_new_owner_not_member() {
     let owner_pk = owner_sk.public_key();
     let owner_account = AccountId::from(*owner_pk);
     let outsider_pk = PrivateKey::random(&mut rng).public_key();
-    let outsider_account = AccountId::from(*outsider_pk);
     let outsider_account = AccountId::from(*outsider_pk);
 
     MetaRepository::new(&store)
@@ -1386,7 +1377,6 @@ fn context_capability_granted_rejects_unauthorized_signer() {
     let member_account = AccountId::from(*member_pk);
     let context_id = ContextId::from([0x44; 32]);
     let target_pk = PrivateKey::random(&mut rng).public_key();
-    let target_account = AccountId::from(*target_pk);
     let target_account = AccountId::from(*target_pk);
 
     MetaRepository::new(&store)
@@ -1716,8 +1706,10 @@ fn cross_node_state_hash_is_order_independent() {
     let admin0_account = AccountId::from(*admin0_pk);
     let admin1_sk = PrivateKey::random(&mut rng);
     let admin1_pk = admin1_sk.public_key();
+    let admin1_account = AccountId::from(*admin1_pk);
     let admin2_sk = PrivateKey::random(&mut rng);
     let admin2_pk = admin2_sk.public_key();
+    let admin2_account = AccountId::from(*admin2_pk);
 
     // Three members each op will add. Distinct identities → the ops commute
     // (the member set is the same regardless of insertion order).
@@ -1739,9 +1731,9 @@ fn cross_node_state_hash_is_order_independent() {
         MetaRepository::new(store)
             .save(&gid, &sample_meta_with_admin(admin0_account))
             .unwrap();
-        for admin in [&admin0_pk, &admin1_pk, &admin2_pk] {
+        for admin in [&admin0_account, &admin1_account, &admin2_account] {
             MembershipRepository::new(store)
-                .add_member(&gid, admin_account, GroupMemberRole::Admin)
+                .add_member(&gid, admin, GroupMemberRole::Admin)
                 .unwrap();
         }
     };
@@ -1794,9 +1786,9 @@ fn cross_node_state_hash_is_order_independent() {
     // vacuously.
     for store in [&store_a, &store_b] {
         let members = MembershipRepository::new(store);
-        for member in [member_x, member_y, member_z] {
+        for member in [member_x_account, member_y_account, member_z_account] {
             assert!(
-                members.is_member(&gid, &member_account).unwrap(),
+                members.is_member(&gid, &member).unwrap(),
                 "each added member must be present on both nodes after convergence"
             );
         }
@@ -2040,7 +2032,7 @@ fn save_load_delete_upgrade() {
         to_version: "2.0.0".to_owned(),
         migration: None,
         initiated_at: 1_700_000_000,
-        initiated_by: AccountId::from([0x01; 32]),
+        initiated_by: PublicKey::from([0x01; 32]),
         status: GroupUpgradeStatus::InProgress {
             total: 5,
             completed: 0,
@@ -2078,7 +2070,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 to_version: "2.0.0".to_owned(),
                 migration: None,
                 initiated_at: 1_700_000_000,
-                initiated_by: AccountId::from([0x01; 32]),
+                initiated_by: PublicKey::from([0x01; 32]),
                 status: GroupUpgradeStatus::InProgress {
                     total: 5,
                     completed: 2,
@@ -2098,7 +2090,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 to_version: "2.0.0".to_owned(),
                 migration: None,
                 initiated_at: 1_700_000_000,
-                initiated_by: AccountId::from([0x01; 32]),
+                initiated_by: PublicKey::from([0x01; 32]),
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
                 },
@@ -2767,7 +2759,6 @@ fn auto_group_node_identity_is_admin_member() {
     // Simulate what create_context does: use node's group identity
     let node_sk = PrivateKey::random(&mut OsRng);
     let node_pk = node_sk.public_key();
-    let node_account = AccountId::from(*node_pk);
     let node_account = AccountId::from(*node_pk);
     let sender_key = PrivateKey::random(&mut OsRng);
 
@@ -3824,7 +3815,7 @@ fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
     let standalone_sk = [0x88u8; 32];
     let stranger_pk = PublicKey::from([0x33; 32]);
     let stranger = AccountId::from(*stranger_pk);
-    let stranger_account = AccountId::from(*stranger);
+    let stranger_account = stranger;
     let ctx = ContextId::from([0xE1; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
 
@@ -3916,7 +3907,7 @@ fn restore_member_context_identities_writes_missing_marker_rows() {
     let handle = store.handle();
     for ctx in [&ctx_a, &ctx_b] {
         let key = calimero_store::key::ContextIdentity::new(*ctx, member_pk);
-        let key_account = AccountId::from(*key);
+        let key_account = key;
         let row = handle
             .get(&key)
             .unwrap()
@@ -4472,6 +4463,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
 
     // Admin-signed open invitation for the subgroup (no expiry).
     let invitation = GroupInvitationFromAdmin {
+        inviter_account: AccountId::from([0x01; 32]),
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: subgroup,
         expiration_timestamp: 0,
@@ -4610,7 +4602,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     let ns_id = ContextGroupId::from([0xA1; 32]);
     let ns_bytes = ns_id.to_bytes();
 
-    let ns_pk = AccountId::from([0x11; 32]);
+    let ns_pk = PublicKey::from([0x11; 32]);
     NamespaceRepository::new(&store)
         .store_identity(&ns_id, &ns_pk, &[0x22; 32], &[0x33; 32])
         .unwrap();
@@ -5715,7 +5707,7 @@ fn inherited_deny_write_is_hash_neutral() {
 /// Returns `(ns_id, ns_gid, subgroup)`.
 fn reentry_fixture(
     store: &Store,
-    admin_pk: PublicKey,
+    admin_account: AccountId,
 ) -> ([u8; 32], ContextGroupId, ContextGroupId) {
     let ns_id = [0xE0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -5746,6 +5738,7 @@ fn signed_invitation_for(
     use sha2::{Digest, Sha256};
 
     let invitation = GroupInvitationFromAdmin {
+        inviter_account: AccountId::from([0x01; 32]),
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id,
         expiration_timestamp: 0,
@@ -5778,7 +5771,7 @@ fn apply_member_joined(
         vec![],
         nonce,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: member_sk_account.public_key(),
+            member: AccountId::from(*member_sk.public_key()),
             signed_invitation,
             account: crate::test_fixtures::test_join_account(),
         }),
@@ -5800,7 +5793,7 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, AccountId::from(*admin_pk));
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
@@ -5849,7 +5842,7 @@ fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (_ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+    let (_ns_id, _ns_gid, subgroup) = reentry_fixture(&store, AccountId::from(*admin_pk));
 
     let member_pk = AccountId::from([0xC7; 32]);
     MembershipRepository::new(&store)
@@ -5908,7 +5901,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, AccountId::from(*admin_pk));
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
@@ -5975,13 +5968,13 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, AccountId::from(*admin_pk));
 
     let bob_sk = PrivateKey::random(&mut rng);
 
-    let bob_sk_account = AccountId::from(*bob_sk);
+    let bob_sk_account = bob_sk;
     let carol_sk = PrivateKey::random(&mut rng);
-    let carol_sk_account = AccountId::from(*carol_sk);
+    let carol_sk_account = carol_sk;
     let shared = signed_invitation_for(&admin_sk, subgroup, [0x5A; 32]);
 
     // Bob joins with the shared link, then leaves — spending it for himself.
@@ -6053,7 +6046,6 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
     let bob_account = AccountId::from(*bob_pk);
-    let bob_account = AccountId::from(*bob_pk);
     MembershipRepository::new(&store)
         .add_member(&ns_gid, &bob_account, GroupMemberRole::Member)
         .unwrap();
@@ -6116,7 +6108,7 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
 fn drained_member_joined(
     rx: &mut tokio::sync::broadcast::Receiver<crate::op_events::OpEvent>,
     group: [u8; 32],
-    member: PublicKey,
+    member_account: AccountId,
 ) -> Option<Option<GroupMemberRole>> {
     let mut found = None;
     while let Ok(event) = rx.try_recv() {
@@ -6143,7 +6135,7 @@ fn member_joined_invite_emits_membership_op_event() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, admin_pk);
+    let (ns_id, _ns_gid, subgroup) = reentry_fixture(&store, AccountId::from(*admin_pk));
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
@@ -6357,7 +6349,6 @@ fn member_metadata_self_set_allowed_others_gated() {
 
     let alice_sk = PrivateKey::random(&mut rng);
     let alice_pk = alice_sk.public_key();
-    let alice_account = AccountId::from(*alice_pk);
     let alice_account = AccountId::from(*alice_pk);
     MembershipRepository::new(&store)
         .add_member(&gid, &alice_account, GroupMemberRole::Member)
@@ -7181,12 +7172,13 @@ mod auto_follow_tests {
         let gid = test_group_id();
         let gid_bytes = gid.to_bytes();
         let admin_sk = PrivateKey::random(rng);
+        let admin_sk_account = AccountId::from(*admin_sk);
         let member_sk = PrivateKey::random(rng);
         MembershipRepository::new(&store)
             .add_member(&gid, &admin_sk_account.public_key(), GroupMemberRole::Admin)
             .unwrap();
         MembershipRepository::new(&store)
-            .add_member(&gid, &member_sk_account.public_key(), GroupMemberRole::Member)
+            .add_member(&gid, &AccountId::from(*member_sk.public_key()), GroupMemberRole::Member)
             .unwrap();
         (store, gid, gid_bytes, admin_sk, member_sk)
     }
@@ -7202,7 +7194,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: member_sk_account.public_key(),
+                target: AccountId::from(*member_sk.public_key()),
                 auto_follow_contexts: true,
                 auto_follow_subgroups: true,
             },
@@ -7211,7 +7203,7 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &op).unwrap();
 
         let val = MembershipRepository::new(&store)
-            .member_value(&gid, &member_sk_account.public_key())
+            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts);
@@ -7229,7 +7221,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: member_sk_account.public_key(),
+                target: AccountId::from(*member_sk.public_key()),
                 auto_follow_contexts: true,
                 auto_follow_subgroups: false,
             },
@@ -7238,7 +7230,7 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &op).unwrap();
 
         let val = MembershipRepository::new(&store)
-            .member_value(&gid, &member_sk_account.public_key())
+            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts);
@@ -7256,6 +7248,7 @@ mod auto_follow_tests {
         // refactored to look up the target before checking auth, this
         // test would still correctly assert "non-admin, non-self rejected".
         let other_sk = PrivateKey::random(&mut rng);
+        let other_sk_account = AccountId::from(*other_sk);
         MembershipRepository::new(&store)
             .add_member(&gid, &other_sk_account.public_key(), GroupMemberRole::Member)
             .unwrap();
@@ -7300,6 +7293,7 @@ mod auto_follow_tests {
         let mut rng = OsRng;
         let (store, _gid, gid_bytes, admin_sk, _member_sk) = seed(&mut rng);
         let stranger = PrivateKey::random(&mut rng).public_key();
+        let stranger_account = AccountId::from(*stranger);
 
         let op = SignedGroupOp::sign(
             &admin_sk,
@@ -7329,7 +7323,7 @@ mod auto_follow_tests {
         // that's {contexts: true, subgroups: false} — explicit assertion
         // on the exact shape so a future default flip can't slip through.
         let before = MembershipRepository::new(&store)
-            .member_value(&gid, &member_sk_account.public_key())
+            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
             .unwrap()
             .unwrap();
         assert!(before.auto_follow.contexts);
@@ -7342,7 +7336,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: member_sk_account.public_key(),
+                target: AccountId::from(*member_sk.public_key()),
                 auto_follow_contexts: true,
                 auto_follow_subgroups: false,
             },
@@ -7357,7 +7351,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberRoleSet {
-                member: member_sk_account.public_key(),
+                member: AccountId::from(*member_sk.public_key()),
                 role: GroupMemberRole::ReadOnly,
             },
         )
@@ -7365,7 +7359,7 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &op2).unwrap();
 
         let after = MembershipRepository::new(&store)
-            .member_value(&gid, &member_sk_account.public_key())
+            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
             .unwrap()
             .unwrap();
         assert_eq!(after.role, GroupMemberRole::ReadOnly);
@@ -7402,7 +7396,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: member_sk_account.public_key(),
+                target: AccountId::from(*member_sk.public_key()),
                 auto_follow_contexts: true,
                 auto_follow_subgroups: true,
             },
@@ -7412,7 +7406,7 @@ mod auto_follow_tests {
 
         // Verify state landed
         let value = MembershipRepository::new(&store)
-            .member_value(&gid, &member_sk_account.public_key())
+            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
             .unwrap()
             .unwrap();
         assert!(value.auto_follow.contexts);
@@ -7502,7 +7496,6 @@ mod auto_follow_tests {
         // A brand-new joiner — not in the seed() pair.
         let new_member_sk = PrivateKey::random(&mut rng);
         let new_member_pk = new_member_sk.public_key();
-        let new_member_account = AccountId::from(*new_member_pk);
         let new_member_account = AccountId::from(*new_member_pk);
 
         let op = SignedGroupOp::sign(
@@ -8030,7 +8023,7 @@ mod tee_member_removed_event_tests {
     fn count_removed_events_for(
         rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
         gid_bytes: [u8; 32],
-        member: PublicKey,
+        member_account: AccountId,
     ) -> (usize, usize) {
         use tokio::sync::broadcast::error::TryRecvError;
         let mut member_removed = 0;
@@ -8074,7 +8067,7 @@ mod tee_member_removed_event_tests {
         rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
         gid_a: [u8; 32],
         gid_b: [u8; 32],
-        member: PublicKey,
+        member_account: AccountId,
     ) -> ((usize, usize), (usize, usize)) {
         use tokio::sync::broadcast::error::TryRecvError;
         let (mut a_mr, mut a_tmr) = (0, 0);
@@ -8683,7 +8676,6 @@ mod tee_member_removed_event_tests {
             let leaver_sk = PrivateKey::random(&mut OsRng);
             let leaver_pk = leaver_sk.public_key();
             let leaver_account = AccountId::from(*leaver_pk);
-            let leaver_account = AccountId::from(*leaver_pk);
 
             let mut meta = test_meta();
             meta.admin_identity = admin_account;
@@ -8945,7 +8937,7 @@ mod apply_auth_at_cut {
     use calimero_governance_types::GroupOp;
 
     /// Group whose live rows grant `signer` full admin authority.
-    fn store_with_live_admin(signer: &PublicKey) -> (Store, ContextGroupId) {
+    fn store_with_live_admin(signer_account: &AccountId) -> (Store, ContextGroupId) {
         let store = test_store();
         let gid = test_group_id();
         let mut meta = test_meta();
@@ -9264,7 +9256,7 @@ mod undecidable_authority_parks {
         }
     }
 
-    fn group_with_live_admin(signer: &PublicKey) -> (Store, ContextGroupId) {
+    fn group_with_live_admin(signer_account: &AccountId) -> (Store, ContextGroupId) {
         let store = test_store();
         let gid = test_group_id();
         let mut meta = test_meta();
@@ -9464,10 +9456,10 @@ mod self_leave_rotation {
         let ns_id = [0xA1u8; 32];
         let ns_gid = ContextGroupId::from(ns_id);
         let (_admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
+        let admin_account = AccountId::from(*admin);
 
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
-        let leaver_account = AccountId::from(*leaver);
         let leaver_account = AccountId::from(*leaver);
 
         let sub_gid = ContextGroupId::from([0xA2u8; 32]);
@@ -9504,7 +9496,7 @@ mod self_leave_rotation {
             vec![],
             1,
             GroupOp::MemberLeft {
-                member: f_account.leaver,
+                member: AccountId::from(*f.leaver),
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             },
@@ -9516,8 +9508,6 @@ mod self_leave_rotation {
     #[test]
     fn which_groups_owe_a_rotation_on_departure() {
         let f = fixture();
-        let f_account = AccountId::from(*f);
-        let f_account = AccountId::from(*f);
 
         // A Restricted subgroup holds its OWN key, which the leaver has. Rotate.
         assert!(
@@ -9553,14 +9543,14 @@ mod self_leave_rotation {
         let pending = PendingRotationRepository::new(&f.store);
 
         assert!(
-            !pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap(),
+            !pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap(),
             "precondition: nothing owed before the leave"
         );
 
         apply_member_left(&f, &f.sub_gid);
 
         assert!(
-            pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap(),
+            pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap(),
             "a self-leave from a Restricted subgroup must record the forward-secrecy debt — \
              without it, nobody ever rotates and the leaver keeps the subgroup key"
         );
@@ -9584,7 +9574,7 @@ mod self_leave_rotation {
 
         assert!(
             !PendingRotationRepository::new(&f.store)
-                .is_pending(&f.sub_gid, &f_account.leaver)
+                .is_pending(&f.sub_gid, &AccountId::from(*f.leaver))
                 .unwrap(),
             "an Open subgroup is encrypted with the namespace key, so a departure owes no \
              per-subgroup rotation — recording one would queue work that revokes nothing"
@@ -9602,12 +9592,12 @@ mod self_leave_rotation {
         apply_member_left(&f, &f.ns_gid);
 
         assert!(
-            pending.is_pending(&f.ns_gid, &f_account.leaver).unwrap(),
+            pending.is_pending(&f.ns_gid, &AccountId::from(*f.leaver)).unwrap(),
             "leaving the namespace must rotate the NAMESPACE key — otherwise the leaver keeps \
              reading the root and every Open subgroup under it"
         );
         assert!(
-            pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap(),
+            pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap(),
             "the cascade must also rotate every Restricted descendant the leaver had a row in \
              — each has its own key, which the leaver holds"
         );
@@ -9628,7 +9618,7 @@ mod self_leave_rotation {
         let f = fixture();
         let pending = PendingRotationRepository::new(&f.store);
         apply_member_left(&f, &f.sub_gid);
-        assert!(pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap());
+        assert!(pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap());
 
         // The admin's rotation carries the new key; applying it discharges the debt.
         let admin_sk = NamespaceRepository::new(&f.store)
@@ -9644,14 +9634,14 @@ mod self_leave_rotation {
                 f.sub_gid.to_bytes().into(),
                 vec![],
                 nonce,
-                GroupOp::GroupKeyRotated { departed: f_account.leaver },
+                GroupOp::GroupKeyRotated { departed: AccountId::from(*f.leaver) },
             )
             .expect("sign GroupKeyRotated")
         };
 
         apply_local_signed_group_op(&f.store, &rotate(1)).expect("admin's rotation must apply");
         assert!(
-            !pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap(),
+            !pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap(),
             "GroupKeyRotated must discharge the pending row"
         );
 
@@ -9660,7 +9650,7 @@ mod self_leave_rotation {
         // race would wedge the group's governance DAG on every replica.
         apply_local_signed_group_op(&f.store, &rotate(2))
             .expect("a second, redundant rotation must be a harmless no-op, not an error");
-        assert!(!pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap());
+        assert!(!pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap());
     }
 
     #[test]
@@ -9675,7 +9665,7 @@ mod self_leave_rotation {
 
         let outsider_sk = PrivateKey::random(&mut OsRng);
 
-        let outsider_sk_account = AccountId::from(*outsider_sk);
+        let outsider_sk_account = outsider_sk;
         MembershipRepository::new(&f.store)
             .add_member(
                 &f.sub_gid,
@@ -9689,14 +9679,14 @@ mod self_leave_rotation {
             f.sub_gid.to_bytes().into(),
             vec![],
             1,
-            GroupOp::GroupKeyRotated { departed: f_account.leaver },
+            GroupOp::GroupKeyRotated { departed: AccountId::from(*f.leaver) },
         )
         .expect("sign GroupKeyRotated");
 
         let _ = apply_local_signed_group_op(&f.store, &op)
             .expect_err("a non-admin's GroupKeyRotated must be rejected");
         assert!(
-            pending.is_pending(&f.sub_gid, &f_account.leaver).unwrap(),
+            pending.is_pending(&f.sub_gid, &AccountId::from(*f.leaver)).unwrap(),
             "the debt must survive a rejected rotation — otherwise it is silently written off \
              and no admin ever pays it"
         );
@@ -9732,6 +9722,7 @@ mod self_leave_rotation_crypto {
         let stayer_account = AccountId::from(*stayer);
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
+        let leaver_account = AccountId::from(*leaver);
 
         MembershipRepository::new(&store)
             .add_member(&ns_gid, &stayer_account, GroupMemberRole::Member)
@@ -9863,6 +9854,7 @@ mod self_leave_rotation_crypto {
 
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
+        let leaver_account = AccountId::from(*leaver);
         MembershipRepository::new(&store)
             .add_member(&ns_gid, &leaver_account, GroupMemberRole::Member)
             .unwrap();
@@ -9923,6 +9915,7 @@ mod parked_op_retries_to_success {
 
         let admin_sk = PrivateKey::random(&mut OsRng);
         let admin = admin_sk.public_key();
+        let admin_account = AccountId::from(*admin);
         let mut meta = test_meta();
         meta.admin_identity = admin_account;
         meta.owner_identity = admin_account;
@@ -10012,7 +10005,11 @@ mod account_plane_apply {
     fn group_with_admin(store: &Store, gid: &ContextGroupId, admin: &PrivateKey) {
         MetaRepository::new(store).save(gid, &test_meta()).unwrap();
         MembershipRepository::new(store)
-            .add_member(gid, &admin_account.public_key(), GroupMemberRole::Admin)
+            .add_member(
+                gid,
+                &AccountId::from(*admin.public_key()),
+                GroupMemberRole::Admin,
+            )
             .unwrap();
     }
 
@@ -10388,6 +10385,7 @@ mod account_plane_apply {
         group_with_admin(&store, &gid, &admin_sk);
 
         let owner_sk = key(9);
+        let owner_sk_account = AccountId::from(*owner_sk);
         let repo = MembershipRepository::new(&store);
         repo.add_member(&gid, &owner_sk_account.public_key(), GroupMemberRole::Member)
             .unwrap();
@@ -10473,9 +10471,9 @@ mod account_plane_apply {
 
         let victim_sk = key(9);
 
-        let victim_sk_account = AccountId::from(*victim_sk);
+        let victim_sk_account = victim_sk;
         let attacker_sk = key(7);
-        let attacker_sk_account = AccountId::from(*attacker_sk);
+        let attacker_sk_account = attacker_sk;
         let repo = MembershipRepository::new(&store);
         repo.add_member(&gid, &victim_sk_account.public_key(), GroupMemberRole::Member)
             .unwrap();
@@ -10570,7 +10568,9 @@ mod account_plane_apply {
         group_with_admin(&store, &gid, &admin_sk);
 
         let victim_sk = key(9);
+        let victim_sk_account = AccountId::from(*victim_sk);
         let attacker_sk = key(7);
+        let attacker_sk_account = AccountId::from(*attacker_sk);
         let repo = MembershipRepository::new(&store);
         repo.add_member(&gid, &victim_sk_account.public_key(), GroupMemberRole::Member)
             .unwrap();
