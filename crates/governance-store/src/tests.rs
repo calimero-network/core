@@ -6760,7 +6760,7 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let admin = enrol_member(&store, &gid, &admin_pk);
-    let (_target_pk, target_account) = enrolled(&store, &gid, 0xD0);
+    let (target_pk, target_account) = enrolled(&store, &gid, 0xD0);
     let (_bystander_pk, bystander_account) = enrolled(&store, &gid, 0xD1);
 
     // Bootstrap: a meta + admin + target + bystander member set.
@@ -6800,8 +6800,14 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     )
     .expect("sign MemberRemoved with real claims");
 
-    // Apply on a sibling store that started from the same state.
+    // Apply on a sibling store that started from the same state — including the
+    // bindings. A membership row names an account, but the apply resolves the
+    // SIGNER's key, and a store with no bindings resolves nobody. The
+    // credentials derive from the signing keys, so both stores land on the same
+    // accounts without either learning them from the other.
     let receiver = test_store();
+    let _ = enrol_member(&receiver, &gid, &admin_pk);
+    let _ = enrol_member(&receiver, &gid, &target_pk);
     MetaRepository::new(&receiver).save(&gid, &meta).unwrap();
     MembershipRepository::new(&receiver)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -7471,8 +7477,9 @@ mod auto_follow_tests {
         // (group_id, context_id) for ContextRegistered — other tests
         // running in parallel share the same global event channel and
         // `test_group_id()`, so group_id alone is not a unique filter.
-        let expected_member = member_sk.public_key();
-        let expected_member_account = AccountId::from(*expected_member);
+        // The event carries the account the member row is keyed by — the one the
+        // op named — not an account derived from the member's key.
+        let expected_member_account = member_account;
         let mut saw_auto_follow = false;
         let mut saw_context_registered = false;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -7627,7 +7634,9 @@ mod auto_follow_tests {
 
         let target_sk = PrivateKey::random(&mut rng);
         let target_pk = target_sk.public_key();
-        let target_account = AccountId::from(*target_pk);
+        // Enrolled: setting your own auto-follow resolves your key to an account
+        // and compares it to the member the op names.
+        let target_account = enrol_member(&store, &gid, &target_pk);
 
         // Add member — picks up the new default {true, false}
         apply_local_signed_group_op(
