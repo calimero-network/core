@@ -489,11 +489,18 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
 /// This writes both halves — the node's own `NodeDeviceIdentity` (with the
 /// matching X25519 secret) and the binding that names it — so the node can be
 /// addressed by a rotation and actually unwrap what it receives.
+/// Returns the account, the device it minted, and the credential that proves the
+/// pair — the credential so a SECOND store can record the same binding, which is
+/// what a cross-store test needs to have both ends agree on one device.
 pub(super) fn enrol_local_device(
     store: &Store,
     namespace: &ContextGroupId,
     sign_pk: &PublicKey,
-) -> AccountId {
+) -> (
+    AccountId,
+    calimero_account::DeviceId,
+    Box<JoinAccountCredential>,
+) {
     let root_sk = PrivateKey::from(*(*sign_pk));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
     let node = crate::NodeDeviceRepository::new(store)
@@ -509,12 +516,35 @@ pub(super) fn enrol_local_device(
         0,
     )
     .expect("the account root certifies its own device");
+    let credential = Box::new(JoinAccountCredential {
+        genesis,
+        chain: vec![],
+        cert,
+    });
+    record_credential(store, namespace, &credential);
+    (node.account, node.secret.device, credential)
+}
+
+/// Record `credential` as a binding in `store`, endorsed by its own account.
+///
+/// Split out so a cross-store test can put the SAME device in both ends: the
+/// responder has to resolve the requester's device to decide it is live, and the
+/// requester has to hold the secret to open what comes back.
+pub(super) fn record_credential(
+    store: &Store,
+    namespace: &ContextGroupId,
+    credential: &JoinAccountCredential,
+) {
     let bindings = crate::AccountBindingRepository::new(store);
     bindings
-        .record_endorser(namespace, node.account, &node.account)
+        .record_endorser(namespace, credential.cert.account, &credential.cert.account)
         .expect("endorse");
     let _ = bindings
-        .apply_link(namespace, &genesis, &[], &cert)
+        .apply_link(
+            namespace,
+            &credential.genesis,
+            &credential.chain,
+            &credential.cert,
+        )
         .expect("record the binding");
-    node.account
 }

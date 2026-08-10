@@ -3903,7 +3903,8 @@ fn rotation_test_setup() -> (
     let local_pk = local_sk.public_key();
     // The local node needs the secret half too: the rotation addresses its
     // device, and the apply only stores the new key if it can open the envelope.
-    let local_account = crate::test_fixtures::enrol_local_device(&store, &ns_gid, &local_pk);
+    let (local_account, _local_device, _local_credential) =
+        crate::test_fixtures::enrol_local_device(&store, &ns_gid, &local_pk);
     let removed_pk = PrivateKey::random(&mut rng).public_key();
     let removed_account = enrol_member(&store, &ns_gid, &removed_pk);
 
@@ -5666,7 +5667,12 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
-    let joiner_account = crate::test_fixtures::account_for(&joiner_pk);
+    // The joiner's own store owns the device secret; the responder's store gets
+    // the same binding below. A pull names a device — omitting one is refused,
+    // so a revoked device cannot dodge revocation by asking as its member.
+    let joiner_store = test_store();
+    let (joiner_account, joiner_device, joiner_credential) =
+        crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
@@ -5680,7 +5686,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     // credentials are derived from the signing keys, so the accounts match the
     // ones named above without either store having to learn them.
     let responder_store = test_store();
-    let _ = enrol_member(&responder_store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&responder_store, &ns_gid, &joiner_credential);
     let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&responder_store)
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
@@ -5708,7 +5714,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         subgroup_id,
         crate::KeyRequester {
             identity: joiner_pk,
-            device: None,
+            device: Some(joiner_device),
         },
         None,
     )
@@ -5720,7 +5726,6 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     assert_eq!(responder_identity, responder_pk);
 
     // ---- Joiner store: keyless, with a buffered encrypted op for the group. -
-    let joiner_store = test_store();
     NamespaceRepository::new(&joiner_store)
         .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -5801,7 +5806,12 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
-    let joiner_account = crate::test_fixtures::account_for(&joiner_pk);
+    // The joiner's own store owns the device secret; the responder's store gets
+    // the same binding below. A pull names a device — omitting one is refused,
+    // so a revoked device cannot dodge revocation by asking as its member.
+    let joiner_store = test_store();
+    let (joiner_account, joiner_device, joiner_credential) =
+        crate::test_fixtures::enrol_local_device(&joiner_store, &ns_gid, &joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
@@ -5813,7 +5823,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     // Enrolled here for the same reason as the cross-store case above: this is
     // the store that resolves a requester key to an account.
     let responder_store = test_store();
-    let _ = enrol_member(&responder_store, &ns_gid, &joiner_pk);
+    crate::test_fixtures::record_credential(&responder_store, &ns_gid, &joiner_credential);
     let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&responder_store)
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
@@ -5841,7 +5851,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         subgroup_id,
         crate::KeyRequester {
             identity: joiner_pk,
-            device: None,
+            device: Some(joiner_device),
         },
         None,
     )
@@ -5853,7 +5863,6 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     assert_eq!(responder_identity, responder_pk);
 
     // ---- Joiner store: keyless, with a buffered encrypted op for the group. -
-    let joiner_store = test_store();
     NamespaceRepository::new(&joiner_store)
         .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
         .unwrap();

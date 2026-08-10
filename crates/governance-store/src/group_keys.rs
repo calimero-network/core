@@ -765,14 +765,19 @@ impl<'a> GroupKeyring<'a> {
         };
 
         let Some(claimed) = requester.device else {
-            // A requester that names no device still gets its key, wrapped to the
-            // signing key it asked with. `device` is optional on the wire, so a
-            // peer that omits it is not making an unauthorized request — it has
-            // already passed the membership gate above. Refusing here would take
-            // a member's key away for naming one thing less, and there is no
-            // second address to try: an ECDH wrap has to be addressed to
-            // something, and without a device the requester's own key is it.
-            return Ok(Some(KeyRecipient::Member(requester.identity)));
+            // Served nothing, and NOT as an oversight. Once this group knows an
+            // account for the requester it knows which devices speak for it, so
+            // falling back to identity addressing here would let a REVOKED
+            // device simply omit its id and be served as its member. Revocation
+            // has to be unbypassable, which makes the absence of a device a
+            // refusal rather than a reason to address the member instead.
+            //
+            // The bootstrap this looks like it breaks is served elsewhere: a
+            // requester with no account at all is turned away by the membership
+            // gate in the caller, and a member that has not enrolled a device
+            // receives its first key member-addressed through key delivery,
+            // invitation, or TEE admission — never through this pull.
+            return Ok(None);
         };
         let bindings = AccountBindingRepository::new(self.store);
         for binding in bindings.live_bindings(&namespace)? {
