@@ -767,9 +767,8 @@ async fn resolve_blob_schema(
 /// and validates every consecutive pair with the same single-hop rules, so
 /// an admin moves a group several versions in one action while behind
 /// members replay the identical rung sequence.
-///
-/// Returns the ladder alongside the target's ABI state version (`0` when
-/// unreadable), which the caller records on the group's upgrade record.
+/// Also returns the target's ABI state version (`0` when unreadable), which
+/// the caller records on the group's upgrade record.
 async fn plan_emit_ladder(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
