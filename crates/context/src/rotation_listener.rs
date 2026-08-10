@@ -43,7 +43,6 @@ use std::sync::Mutex;
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::{op_events, op_events::OpEvent, PendingRotationRepository};
-use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};

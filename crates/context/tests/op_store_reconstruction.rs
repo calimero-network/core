@@ -36,7 +36,7 @@ use calimero_governance_store::{
 };
 use calimero_op::ScopeId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;

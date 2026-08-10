@@ -433,7 +433,11 @@ mod key_recovery_trigger {
             .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
             .unwrap();
         MembershipRepository::new(&store)
-            .add_member(&ns_gid, &my_id, GroupMemberRole::Member)
+            .add_member(
+                &ns_gid,
+                &calimero_context::test_support::enrol(&store, &ns_gid, &my_id),
+                GroupMemberRole::Member,
+            )
             .unwrap();
 
         // Op-driven set is empty (nothing buffered) — the old recovery had

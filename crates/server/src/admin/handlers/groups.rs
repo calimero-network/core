@@ -39,7 +39,6 @@ pub mod upgrade_group;
 use calimero_context_client::group::{GroupUpgradeInfo, GroupUpgradeStatus};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GroupUpgradeStatusApiData;
 use reqwest::StatusCode;
 
@@ -139,27 +138,11 @@ fn parse_account(s: &str) -> Result<calimero_account::AccountId, ApiError> {
         })
 }
 
-fn parse_identity(s: &str) -> Result<PublicKey, ApiError> {
-    if let Ok(identity) = s.parse::<PublicKey>() {
-        return Ok(identity);
-    }
-
-    let bytes = hex::decode(s).map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid identity format: expected public key or hex-encoded 32 bytes".into(),
-    })?;
-    let arr: [u8; 32] = bytes.try_into().map_err(|_| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Invalid identity: must be exactly 32 bytes".into(),
-    })?;
-    Ok(PublicKey::from(arr))
-}
-
 #[cfg(test)]
 mod tests {
     use calimero_primitives::identity::PublicKey;
 
-    use super::{parse_context_id, parse_identity};
+    use super::{parse_account, parse_context_id};
 
     #[test]
     fn parse_context_id_accepts_base58_context_ids() {
@@ -177,19 +160,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_identity_accepts_public_key_strings() {
-        let identity = PublicKey::from([0; 32]).to_string();
-
-        let parsed_identity = parse_identity(&identity);
-
-        assert!(parsed_identity.is_ok());
+    fn parse_account_accepts_the_hex_an_account_renders_as() {
+        assert!(
+            parse_account("0000000000000000000000000000000000000000000000000000000000000000")
+                .is_ok()
+        );
     }
 
+    /// A signing key must NOT parse as an account.
+    ///
+    /// Both are 32 bytes, so a shared encoding would let a key be pasted where a
+    /// member account belongs — naming a principal that exists nowhere, and
+    /// silently matching no member. The distinct encodings are what make that a
+    /// 400 instead of a no-op.
     #[test]
-    fn parse_identity_keeps_accepting_hex_identities() {
-        let identity =
-            parse_identity("0000000000000000000000000000000000000000000000000000000000000000");
+    fn parse_account_rejects_a_bs58_signing_key() {
+        let key = PublicKey::from([0; 32]).to_string();
 
-        assert!(identity.is_ok());
+        assert!(
+            parse_account(&key).is_err(),
+            "a bs58 key must not be accepted where an account is expected"
+        );
     }
 }

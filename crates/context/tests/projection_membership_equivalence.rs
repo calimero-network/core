@@ -36,25 +36,15 @@ use sha2::{Digest, Sha256};
 /// LIVE membership resolver — and the projection now keys `MemberAdded` by
 /// `cert.account` rather than a key-derived stand-in, so the account here is
 /// load-bearing, not filler.
-fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-    use calimero_primitives::identity::PrivateKey;
-    let root = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
-    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
-    Box::new(
-        calimero_context_client::local_governance::JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
-                account: genesis.account_id(),
-                device: calimero_account::DeviceId::from([0x3E; 32]),
-                sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
-                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
-                key_epoch: 0,
-                device_epoch: 0,
-                signature: [0x11; 64],
-            },
-            genesis,
-            chain: vec![],
-        },
-    )
+/// The joiner's credential, derived DETERMINISTICALLY from its signing key.
+///
+/// Deterministic because the op names the account this certifies and later
+/// assertions have to name the same one; a fresh random root per call would make
+/// every mention a different principal.
+fn test_join_account_for(
+    sign_pk: &calimero_primitives::identity::PublicKey,
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    calimero_context::test_support::credential(sign_pk)
 }
 
 fn store() -> Store {
@@ -246,7 +236,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .expect("sign join_ns");
@@ -264,7 +254,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .expect("sign join_sub");
@@ -413,7 +403,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -434,7 +424,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -496,7 +486,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -586,7 +576,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -599,7 +589,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -705,7 +695,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -718,7 +708,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -824,22 +814,26 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 
     // The admin is a direct member of the ROOT ONLY — its subgroup access is
     // inherited, exactly like the namespace owner in the scenario.
+    // Keyed by the KEY-derived account throughout this test, unlike the suites
+    // above. Its whole premise is that the admin has no folded presence, so the
+    // projection can only reach it through the out-of-band root — and that path
+    // compares the ROOT's `admin_identity` against what a key resolves to with
+    // nothing folded, which is this derivation. An enrolment-derived account
+    // would be unreachable there, and the test would fail for its setup rather
+    // than for the behaviour it guards.
     MetaRepository::new(&store)
-        .save(
-            &ns,
-            &meta(calimero_context::test_support::account_for(&admin)),
-        )
+        .save(&ns, &meta(calimero_op_adapter::legacy_account_id(&admin)))
         .unwrap();
     MetaRepository::new(&store)
         .save(
             &subgroup,
-            &meta(calimero_context::test_support::account_for(&admin)),
+            &meta(calimero_op_adapter::legacy_account_id(&admin)),
         )
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(
             &ns,
-            &calimero_context::test_support::enrol(&store, &ns, &admin),
+            &calimero_op_adapter::legacy_account_id(&admin),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -885,7 +879,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         7,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_context::test_support::account_for(&admin),
+            member: calimero_op_adapter::legacy_account_id(&admin),
             group_id: subgroup.to_bytes().into(),
             account: real_join_account_for(&admin, [0x7A; 32]),
         }),

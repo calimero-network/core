@@ -242,7 +242,7 @@ async fn remove_group_members() {
         .remove_group_members(
             GID,
             RemoveGroupMembersApiRequest {
-                members: vec![PublicKey::from([0u8; 32])],
+                members: vec![calimero_primitives::identity::AccountId::from([0u8; 32])],
                 requester: None,
             },
         )
@@ -519,6 +519,10 @@ async fn join_namespace() {
     let invitation: SignedGroupOpenInvitation = serde_json::from_value(serde_json::json!({
         "invitation": {
             "inviter_identity": zeros,
+            // The account the inviter acts as. Required: a joiner seeds the
+            // group's admin from it before it has synced anything, and an
+            // invitation without it names no principal.
+            "inviter_account": hex::encode([0u8; 32]),
             "group_id": zeros,
             "expiration_timestamp": 0u64,
             "secret_salt": zeros

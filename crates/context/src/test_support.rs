@@ -43,6 +43,25 @@ fn credential_for(
     (genesis, cert)
 }
 
+/// The credential `sign_pk` presents when it joins.
+///
+/// Use this wherever an op carries an `account` beside a `member`: the two have
+/// to name the same account, and a filler credential is refused before the op
+/// reaches whatever the test is aiming at.
+#[must_use]
+pub fn credential(
+    sign_pk: &PublicKey,
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    let (genesis, cert) = credential_for(sign_pk);
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            cert,
+        },
+    )
+}
+
 /// The account `sign_pk` will speak for once enrolled.
 #[must_use]
 pub fn account_for(sign_pk: &PublicKey) -> AccountId {

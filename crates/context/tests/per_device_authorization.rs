@@ -139,7 +139,7 @@ fn link_device(
         .record_endorser(
             &ns,
             account,
-            &calimero_context::test_support::account_for(&endorser),
+            &calimero_context::test_support::account_for(endorser),
         )
         .unwrap();
     bindings
@@ -498,7 +498,10 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         head.next_nonce,
         NamespaceOp::Root(
             calimero_context_client::local_governance::RootOp::MemberJoined {
-                member: calimero_context::test_support::account_for(&joiner),
+                // The account THIS credential certifies — the test builds its own
+                // rather than using the shared fixture, so the member must come
+                // off it and not from the fixture's derivation.
+                member: credential.cert.account,
                 signed_invitation: invitation,
                 account: credential,
             },

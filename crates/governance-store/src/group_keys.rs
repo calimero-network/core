@@ -1355,7 +1355,6 @@ mod delete_tests {
         ring.delete_all_for_group().unwrap();
     }
 
-    #[test]
     /// A keyless group with bound devices must still report holding no key.
     ///
     /// The device-binding and account-endorser families sort immediately after

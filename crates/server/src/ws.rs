@@ -976,7 +976,7 @@ mod tests {
         NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: group,
             payload: MembershipChangePayload::MemberJoined(MembershipChange {
-                member: PublicKey::from([9u8; 32]),
+                member: calimero_primitives::identity::AccountId::from([9u8; 32]),
                 role: None,
             }),
         })
@@ -1159,14 +1159,18 @@ mod tests {
         let subgroup = ContextGroupId::from([0xB1u8; 32]);
         let store = server.state.ctx_client.datastore();
 
+        // Enrolled at the namespace anchor, so every row below names the account
+        // Bob's key resolves to.
+        let bob = calimero_context::test_support::enrol(store, &ns_gid, &bob_pk);
+
         // Bob has no direct subgroup row, so he is an inherited member via the Open subgroup.
         MembershipRepository::new(store)
-            .add_member(&ns_gid, &bob_pk, GroupMemberRole::Member)
+            .add_member(&ns_gid, &bob, GroupMemberRole::Member)
             .unwrap();
         CapabilitiesRepository::new(store)
             .set_member_capability(
                 &ns_gid,
-                &bob_pk,
+                &bob,
                 MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
@@ -1180,17 +1184,17 @@ mod tests {
         // The kick: a per-subgroup deny-list entry. `is_member` (deny-list-blind)
         // still passes; `effective_capabilities` (deny-list-aware) does not.
         DenyListRepository::new(store)
-            .mark(&subgroup, &bob_pk)
+            .mark(&subgroup, &bob)
             .unwrap();
         assert!(
             MembershipRepository::new(store)
-                .is_member(&subgroup, &bob_pk)
+                .is_member(&subgroup, &bob)
                 .unwrap(),
             "precondition: the deny-list-blind check still sees Bob as a member (that is the bug)"
         );
         assert!(
             MembershipRepository::new(store)
-                .effective_capabilities(&subgroup, &bob_pk)
+                .effective_capabilities(&subgroup, &bob)
                 .unwrap()
                 .is_none(),
             "precondition: the deny-list-aware check must exclude the kicked member"

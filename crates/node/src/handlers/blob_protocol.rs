@@ -469,13 +469,16 @@ mod tests {
         NamespaceRepository::new(&store)
             .nest(&namespace, &subgroup)
             .unwrap();
+        // Enrolled at the anchor so the rows name the account this key resolves
+        // to; the blob gate resolves the requester the same way.
+        let member_account = calimero_context::test_support::enrol(&store, &namespace, member);
         MembershipRepository::new(&store)
-            .add_member(&namespace, member, GroupMemberRole::Member)
+            .add_member(&namespace, &member_account, GroupMemberRole::Member)
             .unwrap();
         CapabilitiesRepository::new(&store)
             .set_member_capability(
                 &namespace,
-                member,
+                &member_account,
                 MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
@@ -529,13 +532,15 @@ mod tests {
     fn inherited_open_subgroup_member_is_recognised() {
         let (_sk, alice) = keypair(0x01);
         let (store, context_id, subgroup) = open_subgroup_with_inherited_member(&alice);
+        // The rows the fixture wrote name the account Alice's key resolves to.
+        let alice_account = calimero_context::test_support::account_for(&alice);
 
         // Precondition: alice has NO direct membership row in the subgroup —
         // this is precisely why the old flat `has_member` check missed her and
         // blob sync broke one-directionally.
         assert!(
             !MembershipRepository::new(&store)
-                .has_direct_member(&subgroup, &alice)
+                .has_direct_member(&subgroup, &alice_account)
                 .unwrap(),
             "test setup invariant: inherited member must have no direct row"
         );

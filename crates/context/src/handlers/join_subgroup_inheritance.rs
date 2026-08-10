@@ -1,4 +1,3 @@
-use calimero_account::AccountId;
 use calimero_governance_store::{
     GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
 };

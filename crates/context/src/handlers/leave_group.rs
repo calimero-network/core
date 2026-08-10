@@ -27,7 +27,6 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::AccountId;
 use calimero_context_client::group::{LeaveGroupRequest, LeaveGroupResponse};
 use tracing::info;
 

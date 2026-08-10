@@ -456,6 +456,11 @@ mod tests {
         let state = NodeState::new();
         let group = ContextGroupId::from([7u8; 32]);
         let member = PublicKey::from([9u8; 32]);
+        // The event names an ACCOUNT while the cache is keyed by identity KEY,
+        // so the invalidation expands the account back to the devices that speak
+        // for it — which needs a store holding the binding.
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let member_account = calimero_context::test_support::enrol(&store, &group, &member);
         let peer = PeerId::random();
         state.observe_peer_identity(
             peer,
@@ -474,9 +479,10 @@ mod tests {
 
         apply_invalidation_event(
             &state,
+            &store,
             &OpEvent::MemberRemoved {
                 group_id: [7u8; 32],
-                member,
+                member: member_account,
             },
         );
         assert!(!cached(&state), "MemberRemoved dropped the cached member");

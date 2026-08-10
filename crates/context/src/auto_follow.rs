@@ -898,7 +898,7 @@ mod tests {
         fn context_registered_not_auto_following_when_flag_false() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x33u8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             let context_id = ContextId::from([0x44u8; 32]);
 
             // Post-#2422 the default for new members is `contexts: true`;
@@ -925,7 +925,7 @@ mod tests {
         fn context_registered_previously_left_when_marker_present() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x55u8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &gid,
@@ -964,7 +964,7 @@ mod tests {
         fn context_registered_join_on_happy_path() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x77u8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &gid,
@@ -1017,7 +1017,7 @@ mod tests {
         fn context_registered_join_for_inherited_open_subgroup_member() {
             let mut rng = OsRng;
             let root_gid = ContextGroupId::from([0xE1u8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, root_gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
 
             // Root row: CAN_JOIN_OPEN_SUBGROUPS + auto_follow.contexts = true.
             CapabilitiesRepository::new(&store)
@@ -1063,7 +1063,7 @@ mod tests {
         fn context_registered_not_auto_following_for_inherited_member_when_anchor_flag_false() {
             let mut rng = OsRng;
             let root_gid = ContextGroupId::from([0xE4u8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, root_gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
 
             CapabilitiesRepository::new(&store)
                 .set_member_capability(
@@ -1111,7 +1111,7 @@ mod tests {
             root_gid: ContextGroupId,
             sub_gid: ContextGroupId,
         ) -> (Store, PublicKey) {
-            let (store, _sk, pk, account) = seed_self_member(rng, root_gid);
+            let (store, _sk, pk, _account) = seed_self_member(rng, root_gid);
             CapabilitiesRepository::new(&store)
                 .set_member_capability(
                     &root_gid,
@@ -1262,7 +1262,7 @@ mod tests {
         fn auto_follow_enabled_not_for_self_when_event_targets_other_member() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xAAu8; 32]);
-            let (store, _sk, _self_pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, _self_pk, _account) = seed_self_member(&mut rng, gid);
             let other = PrivateKey::random(&mut rng).public_key();
 
             assert_eq!(
@@ -1279,7 +1279,7 @@ mod tests {
         fn auto_follow_enabled_nothing_to_backfill_when_group_empty() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xBBu8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             // No contexts registered in the group yet.
             assert_eq!(
                 decide_on_auto_follow_enabled(
@@ -1295,7 +1295,7 @@ mod tests {
         fn auto_follow_enabled_returns_backfill_with_existing_contexts() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xCCu8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
 
             let ctx_a = ContextId::from([0xC1u8; 32]);
             let ctx_b = ContextId::from([0xC2u8; 32]);
@@ -1331,7 +1331,7 @@ mod tests {
         fn auto_follow_enabled_truncates_backfill_at_limit() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xDDu8; 32]);
-            let (store, _sk, pk, account) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
 
             // Register BACKFILL_LIMIT + 1 contexts; only BACKFILL_LIMIT
             // should come back, and `truncated` should be true.

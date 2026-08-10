@@ -20,36 +20,12 @@ use calimero_governance_store::{
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::rngs::OsRng;
 
-/// A joiner's account credential for convergence tests, which care about op ORDER
-/// and apply outcomes rather than whether a credential verifies. Structurally valid,
-/// cryptographically filler — `apply_link` refuses it, and the join still applies
-/// because a refused credential is reported rather than propagated.
-fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-    use calimero_primitives::identity::PrivateKey;
-    let root = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
-    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
-    Box::new(
-        calimero_context_client::local_governance::JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
-                account: genesis.account_id(),
-                device: calimero_account::DeviceId::from([0x3E; 32]),
-                sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
-                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
-                key_epoch: 0,
-                device_epoch: 0,
-                signature: [0x11; 64],
-            },
-            genesis,
-            chain: vec![],
-        },
-    )
-}
 use sha2::{Digest, Sha256};
 
 fn empty_store() -> Store {
@@ -244,7 +220,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -326,7 +302,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -359,7 +335,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoined");
@@ -424,7 +400,7 @@ fn member_joined_at_rejects_expired_invitation() {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
             joined_at: 2_000_000,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -485,7 +461,7 @@ fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoined");
@@ -532,7 +508,7 @@ fn member_joined_at_accepts_in_window_invitation() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -550,7 +526,7 @@ fn member_joined_at_accepts_in_window_invitation() {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
             joined_at: 1_000_000,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -613,7 +589,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
             joined_at: 0,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -655,7 +631,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -675,7 +651,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
             joined_at: 999_999,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -731,7 +707,7 @@ fn member_joined_at_ignores_zero_expiration() {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
             joined_at: u64::MAX,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -762,13 +738,14 @@ fn recursive_invite_joins_all_descendant_groups() {
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner_pk = joiner_sk.public_key();
 
+    // Bound at the namespace ROOT — bindings live at the anchor and every reader
+    // resolves up to it, so enrolling per-child would go invisible once nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns_id, &admin_pk);
+
     // Setup: create namespace root + child groups, add admin to all
     for gid in [&ns_id, &child_a, &child_b, &grandchild] {
         MetaRepository::new(&store)
-            .save(
-                gid,
-                &sample_meta(calimero_context::test_support::account_for(&admin_pk)),
-            )
+            .save(gid, &sample_meta(admin_account))
             .unwrap();
         MembershipRepository::new(&store)
             .add_member(
@@ -819,7 +796,7 @@ fn recursive_invite_joins_all_descendant_groups() {
                 member: calimero_context::test_support::account_for(&joiner_pk),
                 signed_invitation: signed_inv.clone(),
                 joined_at: 1,
-                account: test_join_account(),
+                account: calimero_context::test_support::credential(&joiner_pk),
             }),
         )
         .expect("sign MemberJoinedAt");
@@ -971,14 +948,14 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &creator_pk),
+                &calimero_context::test_support::enrol(store, &gid, &creator_pk),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -1171,7 +1148,7 @@ fn offline_node_replays_missed_ops_from_log() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -1680,14 +1657,14 @@ fn concurrent_independent_member_adds_converge() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_a_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_a_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_c_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_c_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -1948,14 +1925,14 @@ fn cascade_removal_deterministic_across_nodes() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+                &calimero_context::test_support::enrol(store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::enrol(&store, &gid, &member_pk),
+                &calimero_context::test_support::enrol(store, &gid, &member_pk),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -2165,7 +2142,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
-            account: test_join_account(),
+            account: calimero_context::test_support::credential(&joiner_pk),
         }),
     )
     .expect("sign MemberJoined");

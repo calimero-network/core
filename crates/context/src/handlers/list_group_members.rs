@@ -1,5 +1,4 @@
 use actix::{ActorResponse, Handler, Message};
-use calimero_account::AccountId;
 use calimero_context_client::group::{
     GroupMemberEntry, ListGroupMembersRequest, ListGroupMembersResponse,
 };

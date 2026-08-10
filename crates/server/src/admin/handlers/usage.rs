@@ -248,13 +248,17 @@ mod tests {
 
     fn seed_namespace(store: &Store, namespace_id: ContextGroupId, node_identity_sk: &PrivateKey) {
         let node_identity_pk = node_identity_sk.public_key();
+        // Enrolled, so the admin row names the account this node's key resolves
+        // to — the usage endpoint reads that row through the same resolution.
+        let node_account =
+            calimero_context::test_support::enrol(store, &namespace_id, &node_identity_pk);
         let meta = GroupMetaValue {
             app_key: [0xAA; 32],
             target_application_id: ApplicationId::from([0xBB; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: node_identity_pk,
-            owner_identity: node_identity_pk,
+            admin_identity: node_account,
+            owner_identity: node_account,
             migration: None,
             auto_join: true,
         };
@@ -270,7 +274,7 @@ mod tests {
             )
             .expect("store identity");
         MembershipRepository::new(store)
-            .add_member(&namespace_id, &node_identity_pk, GroupMemberRole::Admin)
+            .add_member(&namespace_id, &node_account, GroupMemberRole::Admin)
             .expect("add member");
     }
 
@@ -308,8 +312,11 @@ mod tests {
             target_application_id: ApplicationId::from([0xBB; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: node_sk.public_key(),
-            owner_identity: node_sk.public_key(),
+            // Never resolved: this namespace is the one the walk must SKIP for
+            // having no identity and no membership, so a bare account id says
+            // what it is without implying a principal exists behind it.
+            admin_identity: calimero_primitives::identity::AccountId::from([0x33; 32]),
+            owner_identity: calimero_primitives::identity::AccountId::from([0x33; 32]),
             migration: None,
             auto_join: true,
         };

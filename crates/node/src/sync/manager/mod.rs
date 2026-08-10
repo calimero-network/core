@@ -4200,7 +4200,7 @@ mod pending_upgrade_tests {
     use calimero_governance_store::{register_context_in_group, MetaRepository};
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, UpgradePolicy};
-    use calimero_primitives::identity::PublicKey;
+
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{
         ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
@@ -4221,7 +4221,9 @@ mod pending_upgrade_tests {
         migration: Option<&str>,
     ) -> ContextGroupId {
         let group_id = ContextGroupId::from([0x42; 32]);
-        let admin = PublicKey::from([0x07; 32]);
+        // Never resolved here — this fixture drives the upgrade/migration path,
+        // which reads app keys rather than principals.
+        let admin = calimero_primitives::identity::AccountId::from([0x07; 32]);
         let meta = GroupMetaValue {
             app_key: [0x11; 32],
             target_application_id: target,

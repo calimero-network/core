@@ -3,7 +3,6 @@
 
 use std::sync::Mutex;
 
-use calimero_account::AccountId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::events::{
