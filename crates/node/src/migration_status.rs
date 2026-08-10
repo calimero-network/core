@@ -347,11 +347,12 @@ fn parse_major_version(version: &str) -> Option<u32> {
         .and_then(|major| major.trim().parse::<u32>().ok())
 }
 
-/// Resolve a single context's LOADED reader version: the major version of the
-/// `ApplicationMeta` its `ContextMeta.application` points at. This is the schema
-/// the node can actually read *right now* (the binary it has swapped to), NOT
-/// the replicated migration target. `None` when the context/application row is
-/// missing or its version string does not parse.
+/// Resolve a single context's LOADED reader version: the ABI state version of
+/// the `ApplicationMeta` its `ContextMeta.application` points at. This is the
+/// schema the node can actually read right now, NOT the replicated migration
+/// target and NOT the bundle semver — a 10.1.3 to 10.2.0 release may or may
+/// not move the state version, and only the state version gates readability.
+/// `None` when the context or application row is missing.
 fn loaded_context_version(
     datastore: &Store,
     context_id: &calimero_primitives::context::ContextId,
@@ -362,7 +363,7 @@ fn loaded_context_version(
         .ok()
         .flatten()?;
     let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
-    parse_major_version(&app_meta.version)
+    Some(app_meta.state_version)
 }
 
 /// Every group in a namespace's tree: the namespace-root group plus every
@@ -1286,14 +1287,22 @@ mod tests {
     }
 
     /// Register a context under `ns` whose locally-loaded `ApplicationMeta`
-    /// declares `version`. This is the binary the node has actually swapped to
-    /// — the value the facts must report, distinct from the migration target.
-    fn install_loaded_context(store: &Store, ns: [u8; 32], ctx: [u8; 32], version: &str) {
+    /// declares `version` (the bundle semver) and `state_version` (the ABI
+    /// state version) — the value the facts must report is `state_version`,
+    /// distinct from both the semver and the migration target.
+    fn install_loaded_context(
+        store: &Store,
+        ns: [u8; 32],
+        ctx: [u8; 32],
+        version: &str,
+        state_version: u32,
+    ) {
         install_loaded_context_in_group(
             store,
             &calimero_context_config::types::ContextGroupId::from(ns),
             ctx,
             version,
+            state_version,
         );
     }
 
@@ -1305,6 +1314,7 @@ mod tests {
         group_id: &calimero_context_config::types::ContextGroupId,
         ctx: [u8; 32],
         version: &str,
+        state_version: u32,
     ) {
         use calimero_primitives::application::ApplicationId;
         use calimero_store::key::{
@@ -1326,7 +1336,7 @@ mod tests {
                 package: "loaded-test-pkg".to_owned().into_boxed_str(),
                 version: version.to_owned().into_boxed_str(),
                 signer_id: "loaded-test-signer".to_owned().into_boxed_str(),
-                state_version: 0,
+                state_version,
             },
         );
         let mut handle = store.handle();
@@ -1387,7 +1397,7 @@ mod tests {
             .unwrap();
 
         // ...but this node's loaded binary still reads v1.
-        install_loaded_context(&store, ns, [0xC1u8; 32], "1.0.0");
+        install_loaded_context(&store, ns, [0xC1u8; 32], "1.0.0", 1);
 
         let facts = compute_namespace_migration_facts(&store, ns);
         assert_eq!(
@@ -1433,13 +1443,37 @@ mod tests {
             .unwrap();
 
         // Loaded binary IS at v2.
-        install_loaded_context(&store, ns, [0xC2u8; 32], "2.0.0");
+        install_loaded_context(&store, ns, [0xC2u8; 32], "2.0.0", 2);
 
         let facts = compute_namespace_migration_facts(&store, ns);
         assert_eq!(facts.schema_version, 2, "loaded binary at v2 reports v2");
         assert_eq!(
             facts.residue_auto, 0,
             "a context at the target version contributes no residue_auto"
+        );
+    }
+
+    /// A realistic release pair: both semvers share major 10, but the state
+    /// version moved 1 -> 2. Reading the semver major makes a node that has NOT
+    /// swapped report 10 and satisfy a target of 10 — a false green over a real
+    /// migration. The loaded reader version must be the ABI state version.
+    #[test]
+    fn facts_report_abi_state_version_not_semver_major() {
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x91u8; 32];
+
+        // Semver 10.1.3, but ABI state version 1 — the loaded binary has NOT
+        // moved past state 1 even though its release major reads 10.
+        install_loaded_context(&store, ns, [0xE6u8; 32], "10.1.3", 1);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+
+        assert_eq!(
+            facts.schema_version, 1,
+            "must report the ABI state version, not the semver major (10)"
         );
     }
 
@@ -1491,7 +1525,7 @@ mod tests {
         let below = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = [0x79u8; 32];
         save_v2_target(&below, ns);
-        install_loaded_context(&below, ns, [0xD1u8; 32], "1.0.0");
+        install_loaded_context(&below, ns, [0xD1u8; 32], "1.0.0", 1);
         set_marker(&below, [0xD1u8; 32], MigrationFailureKind::CheckAborted);
         assert_eq!(
             compute_namespace_migration_facts(&below, ns).migration_failed,
@@ -1503,7 +1537,7 @@ mod tests {
         // NOT honored (self-healing — a recovered context never reports failed).
         let healed = Store::new(Arc::new(InMemoryDB::owned()));
         save_v2_target(&healed, ns);
-        install_loaded_context(&healed, ns, [0xD2u8; 32], "2.0.0");
+        install_loaded_context(&healed, ns, [0xD2u8; 32], "2.0.0", 2);
         set_marker(&healed, [0xD2u8; 32], MigrationFailureKind::CheckAborted);
         assert_eq!(
             compute_namespace_migration_facts(&healed, ns).migration_failed,
@@ -1635,7 +1669,7 @@ mod tests {
             .nest(&ContextGroupId::from(ns), &subgroup)
             .unwrap();
         let ctx = [0xE1u8; 32];
-        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0", 1);
 
         // The node stranded at v1 (NoMigrationPath) — the marker is persisted on
         // the subgroup context.
@@ -1712,7 +1746,7 @@ mod tests {
             .nest(&ContextGroupId::from(ns), &subgroup)
             .unwrap();
         let ctx = [0xE2u8; 32];
-        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0", 1);
         store
             .handle()
             .put(
@@ -1761,7 +1795,7 @@ mod tests {
             .nest(&ContextGroupId::from(ns), &subgroup)
             .unwrap();
         let ctx = [0xE4u8; 32];
-        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0", 1);
         store
             .handle()
             .put(
@@ -1799,7 +1833,7 @@ mod tests {
             .nest(&ContextGroupId::from(ns), &subgroup)
             .unwrap();
         let ctx = [0xE5u8; 32];
-        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0", 1);
         store
             .handle()
             .put(
@@ -1865,7 +1899,7 @@ mod tests {
             .nest(&ContextGroupId::from(ns), &subgroup)
             .unwrap();
         let ctx = [0xE3u8; 32];
-        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0");
+        install_loaded_context_in_group(&store, &subgroup, ctx, "1.0.0", 1);
         store
             .handle()
             .put(

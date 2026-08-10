@@ -158,7 +158,13 @@ fn provision_group(
 /// `new_app_key = app_meta.bytecode.blob_id()` for the target — so
 /// driving the test's target app_key through this field is what makes
 /// the apply arm rewrite descendants to `APP_KEY_V2`.
-fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32], version: &str) {
+fn install_application(
+    store: &Store,
+    app_id: ApplicationId,
+    app_key: [u8; 32],
+    version: &str,
+    state_version: u32,
+) {
     let bytecode_blob = key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(app_key));
     // `compiled` is unused on the cascade path (cascade-time blob
     // announce only references `bytecode`), so reusing `bytecode_blob`
@@ -173,7 +179,7 @@ fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32], 
             package: "cascade-test-pkg".to_owned().into_boxed_str(),
             version: version.to_owned().into_boxed_str(),
             signer_id: "cascade-test-signer".to_owned().into_boxed_str(),
-            state_version: 0,
+            state_version,
         },
     );
     let mut handle = store.handle();
@@ -260,10 +266,17 @@ fn provision_namespace(
         .nest(&ns, &g2)
         .expect("nest g2");
 
-    install_application(store, app_id_v1(), blobs.v1, "0.1.0");
-    install_application(store, app_id_v2(), target_v2_key, "0.2.0");
+    // `target_v2_key` is one of the two ABI state versions blobs.v2 embeds:
+    // 1 for the code-only pair, 2 for the migration-declaring release.
+    let target_v2_sv = if target_v2_key == blobs.v2_migrating {
+        2
+    } else {
+        1
+    };
+    install_application(store, app_id_v1(), blobs.v1, "0.1.0", 1);
+    install_application(store, app_id_v2(), target_v2_key, "0.2.0", target_v2_sv);
     if g2_on_other {
-        install_application(store, app_id_other(), blobs.other, "0.1.0-other");
+        install_application(store, app_id_other(), blobs.other, "0.1.0-other", 1);
     }
 
     let ctx_ns = ContextId::from([0xC0; 32]);
@@ -821,7 +834,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
     let app_id = app_id_v1();
     // The shared row holds the LATEST release (v3) — bundle ids are
     // version-stable, so the row is where a same-id upgrade targets.
-    install_application(&node.store, app_id, blobs.v3, "0.3.0");
+    install_application(&node.store, app_id, blobs.v3, "0.3.0", 3);
 
     let gid = ContextGroupId::from([0x71; 32]);
     provision_group(
@@ -899,7 +912,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     let blobs = seed_ladder_bundles(&node).await;
 
     let app_id = app_id_v1();
-    install_application(&node.store, app_id, blobs.v3, "0.3.0");
+    install_application(&node.store, app_id, blobs.v3, "0.3.0", 3);
 
     let gid = ContextGroupId::from([0x73; 32]);
     provision_group(
