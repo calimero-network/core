@@ -153,7 +153,7 @@ mod tests {
         let event = GroupMembershipEvent {
             group_id: id,
             payload: MembershipChangePayload::MemberJoined(MembershipChange {
-                member: PublicKey::from([9u8; 32]),
+                member: calimero_account::AccountId::from([9u8; 32]),
                 role: None,
             }),
         };

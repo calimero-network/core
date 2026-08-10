@@ -115,14 +115,6 @@ const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_CONFIRMATION_DOMAIN,
 ];
 
-/// Hash `domain ‖ parts` — the one hashing helper, so every content address and
-/// signing preimage in this crate is domain-separated the same way.
-///
-/// The domain is length-prefixed rather than merely concatenated: with a bare
-/// concatenation, a shorter domain whose bytes are a prefix of a longer one
-/// could be made to produce the same digest by shifting bytes between the
-/// domain and the body.
-
 /// Derive the genesis nonce for `namespace_id` from the node's account root
 /// secret.
 ///

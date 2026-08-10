@@ -9166,7 +9166,6 @@ mod apply_auth_at_cut {
 mod rotation_gate_alignment {
     use super::*;
     use crate::group_governance_publisher::ensure_rotation_is_publishable;
-    use crate::test_fixtures::bootstrap_namespace_with_admin;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -9481,7 +9480,6 @@ mod undecidable_authority_parks {
 mod self_leave_rotation {
     use super::*;
     use crate::pending_rotation::group_rotates_on_departure;
-    use crate::test_fixtures::bootstrap_namespace_with_admin;
     use crate::PendingRotationRepository;
     use calimero_context_config::VisibilityMode;
     use calimero_governance_types::{GroupOp, SignedGroupOp};

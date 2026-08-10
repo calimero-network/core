@@ -394,6 +394,7 @@ mod tests {
         SignedGroupOpenInvitation {
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: SignerId::from(*sk.public_key()),
+                inviter_account: calimero_account::AccountId::from([0x44; 32]),
                 group_id: ContextGroupId::from(id.to_bytes()),
                 expiration_timestamp: 1_900_000_000,
                 invitation_nonce: [0x33; 32],
@@ -492,7 +493,7 @@ mod tests {
             Vec::new(),
             0,
             super::super::NamespaceOp::Root(super::super::RootOp::AdminChanged {
-                new_admin: sk.public_key(),
+                new_admin: calimero_account::AccountId::from([0x45; 32]),
             }),
         )
         .expect("sign");
