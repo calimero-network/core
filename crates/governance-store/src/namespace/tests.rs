@@ -6794,3 +6794,212 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     assert_eq!(live[0].device, calimero_account::DeviceId::from(device));
     assert_eq!(live[0].account, account_id);
 }
+
+/// A TEE fleet replica is bound in the same apply as its admission.
+///
+/// The whole reason the cleartext form exists. Under the encrypted `GroupOp` the
+/// admission could not carry a credential — it would be sealed from the peers
+/// who must verify it — so an attested replica arrived as a member with no
+/// account, writing as a stand-in.
+#[test]
+fn a_tee_admission_binds_the_replicas_device() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let namespace_id = [0xE9u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let (verifier_sk, verifier_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
+
+    // The admission policy is read from the op log, so it has to be applied as a
+    // real op rather than seeded as a row.
+    let group_key = [0x9Au8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .expect("store the group key");
+
+    let replica_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let replica = replica_sk.public_key();
+    let account = crate::test_fixtures::real_join_account(&replica);
+    let account_id = account.cert.account;
+
+    // Authored by the VERIFIER, not the replica — a replica cannot admit itself.
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let policy_op = GroupKeyring::encrypt_op(
+        &group_key,
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .expect("encrypt the policy op");
+    let head = gov.read_head_record().expect("read head");
+    let policy_ns_op = SignedNamespaceOp::sign(
+        &verifier_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Group {
+            group_id: namespace_id.into(),
+            key_id: key_id.into(),
+            encrypted: policy_op,
+            key_rotation: None,
+        },
+    )
+    .expect("verifier signs the policy op");
+    gov.apply_signed_op(&policy_ns_op)
+        .expect("the policy op applies");
+
+    let head = gov.read_head_record().expect("read head");
+    let admit = SignedNamespaceOp::sign(
+        &verifier_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
+            group_id: ns_gid,
+            member: replica,
+            quote_hash: [0x11; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: String::new(),
+            rtmr2: String::new(),
+            rtmr3: String::new(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+            account,
+        }),
+    )
+    .expect("verifier signs the admission");
+    gov.apply_signed_op(&admit).expect("the admission applies");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &replica)
+            .expect("membership"),
+        "the replica is admitted"
+    );
+    let binding = crate::AccountBindingRepository::new(&store)
+        .binding_for_sign_pk(&ns_gid, &replica)
+        .expect("read bindings")
+        .expect("admission binds the replica's device in the same apply");
+    assert_eq!(binding.account, account_id);
+    assert_eq!(
+        crate::member_account_for_device_key(&store, &ns_gid, &replica).expect("resolve"),
+        Some(account_id),
+        "and the binding resolves, so the replica receives scope keys addressed \
+         to its account rather than falling back to a stand-in"
+    );
+    let _ = verifier_pk;
+}
+
+/// A credential that is not the attested key's binds nothing.
+///
+/// The announcement is gossip, so a verifier could be handed a credential lifted
+/// from another replica's announce. The apply path refuses it for the same
+/// reason every other join does — and the membership still stands.
+#[test]
+fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let namespace_id = [0xEAu8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let (verifier_sk, _verifier_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
+    // The admission policy is read from the op log, so it has to be applied as a
+    // real op rather than seeded as a row.
+    let group_key = [0x9Au8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .expect("store the group key");
+
+    let replica = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let stolen = crate::test_fixtures::real_join_account(&victim);
+    let victim_account = stolen.cert.account;
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let policy_op = GroupKeyring::encrypt_op(
+        &group_key,
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .expect("encrypt the policy op");
+    let head = gov.read_head_record().expect("read head");
+    let policy_ns_op = SignedNamespaceOp::sign(
+        &verifier_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Group {
+            group_id: namespace_id.into(),
+            key_id: key_id.into(),
+            encrypted: policy_op,
+            key_rotation: None,
+        },
+    )
+    .expect("verifier signs the policy op");
+    gov.apply_signed_op(&policy_ns_op)
+        .expect("the policy op applies");
+
+    let head = gov.read_head_record().expect("read head");
+    let admit = SignedNamespaceOp::sign(
+        &verifier_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
+            group_id: ns_gid,
+            member: replica,
+            quote_hash: [0x11; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: String::new(),
+            rtmr2: String::new(),
+            rtmr3: String::new(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+            account: stolen,
+        }),
+    )
+    .expect("verifier signs the admission");
+    gov.apply_signed_op(&admit)
+        .expect("a refused credential must not orphan the admission");
+
+    let bindings = crate::AccountBindingRepository::new(&store);
+    assert!(
+        bindings
+            .binding_for_sign_pk(&ns_gid, &victim)
+            .expect("read bindings")
+            .is_none(),
+        "a lifted credential must not graft the victim's account into this namespace"
+    );
+    assert!(
+        bindings
+            .endorsers_of(&ns_gid, victim_account)
+            .expect("read endorsers")
+            .is_empty(),
+        "nor make the replica an endorser of it"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&ns_gid, &replica)
+            .expect("membership"),
+        "the admission itself still stands"
+    );
+}

@@ -700,6 +700,18 @@ impl Message for SetTeeAdmissionPolicyRequest {
 pub struct AdmitTeeNodeRequest {
     pub group_id: ContextGroupId,
     pub member: PublicKey,
+    /// The attested replica's account credential, already checked against the
+    /// key the quote binds to by the announcement receiver.
+    ///
+    /// `Some` on the **fleet** path, where an outsider is joining the namespace
+    /// and its device must be bound in the same apply — that admission travels
+    /// as a cleartext `RootOp` so peers can verify the credential.
+    ///
+    /// `None` on the **subgroup** path, where the node is already a namespace
+    /// member and therefore already bound: bindings are namespace-keyed, so
+    /// admitting it into a subgroup binds nothing new. That admission stays on
+    /// the encrypted `GroupOp`, which is correct for a member-to-subgroup move.
+    pub account: Option<Box<crate::local_governance::JoinAccountCredential>>,
     pub quote_hash: [u8; 32],
     pub mrtd: String,
     pub rtmr0: String,

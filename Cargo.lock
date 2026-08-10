@@ -1519,6 +1519,7 @@ dependencies = [
  "calimero-network",
  "calimero-network-primitives",
  "calimero-node-primitives",
+ "calimero-op-adapter",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",

@@ -200,6 +200,9 @@ async fn admit_member_into_subgroup(
     }
 
     let req = AdmitTeeNodeRequest {
+        // Already a namespace member, so already bound — bindings are
+        // namespace-keyed and a subgroup admission binds nothing new.
+        account: None,
         group_id: *subgroup_gid,
         member: *member,
         quote_hash: record.quote_hash,

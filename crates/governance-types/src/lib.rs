@@ -871,6 +871,66 @@ pub enum RootOp {
     /// consumers pinning this crate (e.g. mero-tee) must reset/coordinate a
     /// core-rev bump.
     NamespaceCreated { founder: PublicKey },
+    /// A hardware-attested fleet replica admitted itself, in the clear.
+    ///
+    /// The cleartext counterpart of
+    /// [`GroupOp::MemberJoinedViaTeeAttestation`], and the reason it exists:
+    /// that one is an **encrypted** group op, so the admitted node cannot read
+    /// its own membership until a key reaches it, and the credential it would
+    /// need to carry would be sealed away from the very peers who have to
+    /// verify it. A TEE replica was therefore the one joiner left arriving
+    /// without an account — a member writing as a stand-in, with every
+    /// account-keyed grant made to it silently failing to match.
+    ///
+    /// Publishing it in the clear costs nothing: the measurements are not
+    /// secret (an admission policy is a public allow-list of them), and the
+    /// quote is verified by the admitting node before this op is ever signed.
+    ///
+    /// **Authored by the VERIFIER, not the joiner** — unlike the other three
+    /// joins. A replica cannot admit itself: some existing member has to check
+    /// the quote against the namespace's policy first. The credential therefore
+    /// travels to that verifier on the announcement, and the verifier is
+    /// responsible for having checked that it belongs to the attested key
+    /// before putting it here. `member` is that same attested key: the quote's
+    /// `report_data` binds to it, which is what stops a captured quote being
+    /// replayed for a different identity.
+    ///
+    /// **Wire note:** appended at the END of `RootOp` so existing borsh
+    /// discriminants do not renumber.
+    MemberJoinedViaTeeAttestation {
+        /// The group being joined — the namespace root for a fleet replica, or
+        /// a subgroup for the TEE subgroup-admission path. Carried explicitly
+        /// because a `RootOp` is namespace-scoped, whereas the encrypted
+        /// `GroupOp` form took its group from the envelope around it.
+        group_id: ContextGroupId,
+        /// The attested replica's namespace identity — the key the quote's
+        /// `report_data` is bound to.
+        member: PublicKey,
+        /// SHA-256 of the verified quote, recorded so the admission is
+        /// auditable against the evidence that produced it.
+        quote_hash: [u8; 32],
+        /// Measurement of the TD's initial contents.
+        mrtd: String,
+        /// Runtime measurement register 0.
+        rtmr0: String,
+        /// Runtime measurement register 1.
+        rtmr1: String,
+        /// Runtime measurement register 2.
+        rtmr2: String,
+        /// Runtime measurement register 3.
+        rtmr3: String,
+        /// The platform's TCB status at verification time.
+        tcb_status: String,
+        /// Role granted on admission — `ReadOnlyTee` for a fleet replica.
+        role: GroupMemberRole,
+        /// The replica's self-certifying account root and the root-signed grant
+        /// for the device it is joining with.
+        ///
+        /// Required and boxed; see [`JoinAccountCredential`] for why this rides
+        /// the join op, why it carries no endorsement, and why it is not
+        /// optional.
+        account: Box<JoinAccountCredential>,
+    },
 }
 
 impl NamespaceOp {
@@ -892,6 +952,9 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
             NamespaceOp::Root(RootOp::NamespaceCreated { .. }) => "namespace_created",
+            NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
+                "member_joined_via_tee_root"
+            }
             NamespaceOp::Group { .. } => "group_op",
         }
     }
@@ -1123,7 +1186,14 @@ pub struct SignedNamespaceOp {
 /// `ephemeral_pk` field is gone). Both `RootOp::KeyDelivery` and the rotation on
 /// `NamespaceOp::Group` embed an envelope, so every namespace op's layout and id
 /// changes — another re-bootstrap.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 5;
+/// v6: `RootOp` gained `MemberJoinedViaTeeAttestation`, the cleartext form of
+/// the TEE fleet admission. The encrypted `GroupOp` of the same name could not
+/// carry a joiner's credential — it is sealed from the peers who must verify
+/// it — so an attested replica was the last joiner arriving without an account.
+/// Appending a variant does not renumber the existing ones, but a `RootOp`
+/// addition is still a borsh schema change; consumers pinning this crate (e.g.
+/// mero-tee) coordinate on the core rev.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 6;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";

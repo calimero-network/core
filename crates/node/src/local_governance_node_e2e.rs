@@ -264,6 +264,35 @@ fn mock_quote_bytes(nonce: &[u8; 32], pk_hash: &[u8; 32]) -> Vec<u8> {
     quote_bytes
 }
 
+/// A credential that VERIFIES for `sign_pk`, as a real replica's would.
+///
+/// The announcement receiver checks the credential against the key the QUOTE
+/// binds to before admitting, so a filler signature here would exercise the
+/// reject path and the admission these tests assert on would never happen.
+fn announce_credential(
+    sign_pk: &PublicKey,
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let cert = calimero_account::sign_device_cert(
+        &root_sk,
+        genesis.account_id(),
+        calimero_account::DeviceId::from([0x3E; 32]),
+        sign_pk,
+        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        0,
+        0,
+    )
+    .expect("sign the device cert");
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            cert,
+        },
+    )
+}
+
 /// Borsh-encode a `TeeAttestationAnnounce` broadcast and wrap it in a
 /// `NetworkEvent::Message` on `topic`, exactly as the gossipsub layer would
 /// hand it to the node actor.
@@ -279,6 +308,7 @@ fn announce_network_event(
         public_key,
         nonce,
         node_type: SpecializedNodeType::ReadOnly,
+        account: announce_credential(&public_key),
     };
     let data = borsh::to_vec(&payload).expect("borsh encode TeeAttestationAnnounce");
 

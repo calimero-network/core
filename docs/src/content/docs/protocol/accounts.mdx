@@ -120,7 +120,7 @@ Endorsers are stored as a **grow-only set**, never a single field. Two links for
 
 ## Enrolling at join — the default path
 
-A member and the device it joined with become known **together**, in one operation, because the three cleartext join operations (`MemberJoined`, `MemberJoinedAt`, `MemberJoinedOpen`) carry the joiner's credential as a required field:
+A member and the device it joined with become known **together**, in one operation, because every cleartext join operation carries the joiner's credential as a required field — `MemberJoined` and `MemberJoinedAt` (invitation), `MemberJoinedOpen` (open-subgroup self-join), and `MemberJoinedViaTeeAttestation` (a hardware-attested [fleet replica](/protocol/tee-attestation/)):
 
 ```
   JoinAccountCredential { genesis, chain, cert }
@@ -149,6 +149,12 @@ Everything a peer needs to verify the account and the device, from the operation
 ### Why this is possible at all
 
 Nothing in building the credential publishes or encrypts. `ensure_enrolled` mints the device row **locally** and returns the genesis derived from the node's account root; the certificate is signed by that root. The whole credential therefore exists *before* the node holds any scope key — which is exactly what lets it ride a cleartext join operation, and why enrolment no longer waits on key delivery.
+
+### The one join somebody else publishes
+
+A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier on the attestation announcement, and the verifier checks it against the key the quote binds to before admitting.
+
+That is why the apply path does not assert `op.signer == member` for this one op, the way it does for the other three. The verifier-membership gate stands in its place.
 
 ### Why no endorsement travels on the wire
 
