@@ -9169,8 +9169,8 @@ mod rotation_gate_alignment {
         let store = test_store();
         let ns_id = [0xF1u8; 32];
         let ns_gid = ContextGroupId::from(ns_id);
-        let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
-        let admin = AccountId::from(*admin_pk);
+        let ((_admin_sk, admin_pk), admin) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
         let sub_gid = ContextGroupId::from([0xF2u8; 32]);
         MetaRepository::new(&store)
@@ -9491,8 +9491,8 @@ mod self_leave_rotation {
         let store = test_store();
         let ns_id = [0xA1u8; 32];
         let ns_gid = ContextGroupId::from(ns_id);
-        let (_admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
-        let admin = AccountId::from(*admin);
+        let ((_admin_sk, _admin_pk), admin) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
@@ -9749,7 +9749,8 @@ mod self_leave_rotation_crypto {
         let store = test_store();
         let ns_id = [0xB1u8; 32];
         let ns_gid = ContextGroupId::from(ns_id);
-        let (admin_sk, admin) = bootstrap_namespace_with_admin(&store, ns_id);
+        let ((admin_sk, admin_pk), admin) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
         let stayer_sk = PrivateKey::random(&mut OsRng);
         let stayer = stayer_sk.public_key();
@@ -9795,7 +9796,7 @@ mod self_leave_rotation_crypto {
              their own group"
         );
         assert!(
-            recipients.contains(&admin),
+            recipients.contains(&admin_pk),
             "the rotating admin must also hold the new key"
         );
 
@@ -9806,7 +9807,7 @@ mod self_leave_rotation_crypto {
                 GroupKeyring::unwrap_for_recipient(
                     &leaver_sk,
                     &ns_gid.to_bytes(),
-                    Some(&admin),
+                    Some(&admin_pk),
                     envelope,
                 )
                 .is_err(),
@@ -9823,7 +9824,7 @@ mod self_leave_rotation_crypto {
         let unwrapped = GroupKeyring::unwrap_for_recipient(
             &stayer_sk,
             &ns_gid.to_bytes(),
-            Some(&admin),
+            Some(&admin_pk),
             stayer_envelope,
         )
         .expect("a remaining member must be able to unwrap the new key");
