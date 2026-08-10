@@ -1992,6 +1992,21 @@ impl GroupKeyEntry {
         id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
         id
     }
+
+    /// Is this row actually a group-key row?
+    ///
+    /// A typed iterator over [`Column::Group`] keeps yielding rows once it walks
+    /// past this family, and it decodes each one as whatever type the caller
+    /// asked for. Several neighbouring families are also 65 bytes wide and also
+    /// carry the group id in bytes 1..33 — the device binding (`0x41`) and the
+    /// account endorser (`0x46`), both of which sort AFTER `0x3A` — so
+    /// [`Self::group_id`] answers plausibly for a row that is not a key at all.
+    /// Any scan that seeks into this family must stop on this predicate rather
+    /// than on the group id.
+    #[must_use]
+    pub fn is_group_key_row(&self) -> bool {
+        AsRef::<[_; 65]>::as_ref(&self.0)[0] == GROUP_KEY_PREFIX
+    }
 }
 
 impl AsKeyParts for GroupKeyEntry {

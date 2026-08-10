@@ -2217,7 +2217,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::account_for(&requester),
+                &crate::test_support::enrol(&store, &group_id, &requester),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");

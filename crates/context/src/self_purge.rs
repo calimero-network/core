@@ -1571,7 +1571,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &ns_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &ns_id, &self_pk),
                 GroupMemberRole::Admin,
                 Some([0xAA; 32]),
                 Some([0xBB; 32]),
@@ -1634,7 +1634,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &ns_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &ns_id, &self_pk),
                 GroupMemberRole::Admin,
                 Some([0xAA; 32]),
                 Some([0xBB; 32]),
@@ -1651,7 +1651,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &sub_id, &self_pk),
                 GroupMemberRole::ReadOnlyTee,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -1791,7 +1791,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &sub_id, &self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -1977,7 +1977,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &sub_id, &self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -2223,7 +2223,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &sub_id, &self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -2393,7 +2393,7 @@ mod tests {
             MembershipRepository::new(&store)
                 .add_member_with_keys(
                     &sub,
-                    &crate::test_support::account_for(&self_pk),
+                    &crate::test_support::enrol(&store, &sub, &self_pk),
                     GroupMemberRole::Member,
                     Some([0xCC; 32]),
                     Some([0xDD; 32]),
@@ -2533,7 +2533,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &crate::test_support::account_for(&self_pk),
+                &crate::test_support::enrol(&store, &sub_id, &self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -2885,7 +2885,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &ns_gid,
-                &crate::test_support::account_for(&owner_pk),
+                &crate::test_support::enrol(&store, &ns_gid, &owner_pk),
                 GroupMemberRole::Admin,
             )
             .expect("add owner admin");

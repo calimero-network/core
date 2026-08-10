@@ -839,7 +839,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     MembershipRepository::new(&store)
         .add_member(
             &ns,
-            &calimero_context::test_support::account_for(&admin),
+            &calimero_context::test_support::enrol(&store, &ns, &admin),
             GroupMemberRole::Admin,
         )
         .unwrap();

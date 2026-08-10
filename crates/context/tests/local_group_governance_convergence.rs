@@ -244,7 +244,7 @@ fn two_nodes_converge_on_target_application_and_migration() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -326,7 +326,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -408,7 +408,7 @@ fn member_joined_at_rejects_expired_invitation() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -469,7 +469,7 @@ fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -532,7 +532,7 @@ fn member_joined_at_accepts_in_window_invitation() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -597,7 +597,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -655,7 +655,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -716,7 +716,7 @@ fn member_joined_at_ignores_zero_expiration() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -971,14 +971,14 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&creator_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &creator_pk),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -1062,7 +1062,7 @@ fn op_log_records_applied_ops_and_head_advances() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1130,7 +1130,7 @@ fn duplicate_op_is_idempotent() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1171,7 +1171,7 @@ fn offline_node_replays_missed_ops_from_log() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -1263,7 +1263,7 @@ async fn dag_applies_ops_in_causal_order() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1348,7 +1348,7 @@ async fn dag_concurrent_ops_create_two_heads() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1440,7 +1440,7 @@ async fn dag_duplicate_delta_is_idempotent() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1482,7 +1482,7 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1554,7 +1554,7 @@ fn rejects_op_with_too_many_parents() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1604,7 +1604,7 @@ fn dag_heads_are_capped_at_max() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
@@ -1680,14 +1680,14 @@ fn concurrent_independent_member_adds_converge() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_a_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_a_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_c_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_c_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
@@ -1853,14 +1853,14 @@ fn cascade_removal_on_member_kick() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&member_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &member_pk),
             GroupMemberRole::Member,
         )
         .unwrap();
@@ -1948,14 +1948,14 @@ fn cascade_removal_deterministic_across_nodes() {
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&admin_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
                 GroupMemberRole::Admin,
             )
             .unwrap();
         MembershipRepository::new(store)
             .add_member(
                 &gid,
-                &calimero_context::test_support::account_for(&member_pk),
+                &calimero_context::test_support::enrol(&store, &gid, &member_pk),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -2081,7 +2081,7 @@ fn group_member_without_keys_has_none_keys() {
     calimero_governance_store::MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&remote_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &remote_pk),
             GroupMemberRole::Member,
         )
         .unwrap();
@@ -2132,7 +2132,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &calimero_context::test_support::account_for(&admin_pk),
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
             GroupMemberRole::Admin,
         )
         .unwrap();

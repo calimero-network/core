@@ -242,7 +242,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id_with_membership,
-                &crate::test_support::account_for(&node_identity_pk),
+                &crate::test_support::enrol(&store, &group_id_with_membership, &node_identity_pk),
                 calimero_primitives::context::GroupMemberRole::Admin,
             )
             .expect("add node identity to first namespace group");

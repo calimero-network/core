@@ -408,7 +408,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::account_for(&signing_pub),
+                &crate::test_support::enrol(&store, &group_id, &signing_pub),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
@@ -472,6 +472,10 @@ mod tests {
         let group_id = ContextGroupId::from([0xAA; 32]);
         let context_id = ContextId::from([0xBB; 32]);
         let identity = PublicKey::from([0x44; 32]);
+        // Bound but never added as a member. The binding matters: an unbound key
+        // is refused one step earlier, for not resolving to any principal, and
+        // this test is about the direct-admin gate rather than that one.
+        let _ = crate::test_support::enrol(&store, &group_id, &identity);
 
         // Not added as a member at all — not a direct admin.
         let err = build_ownership_proof(
@@ -500,7 +504,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::account_for(&identity),
+                &crate::test_support::enrol(&store, &group_id, &identity),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
@@ -579,7 +583,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &root,
-                &crate::test_support::account_for(&signing_pub),
+                &crate::test_support::enrol(&store, &root, &signing_pub),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
@@ -671,7 +675,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::account_for(&node_identity),
+                &crate::test_support::enrol(&store, &group_id, &node_identity),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
@@ -728,7 +732,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::account_for(&signing_pub),
+                &crate::test_support::enrol(&store, &group_id, &signing_pub),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
@@ -775,6 +779,8 @@ mod tests {
         let store = test_store();
         let group_id = ContextGroupId::from([0xAA; 32]);
         let identity = PublicKey::from([0x44; 32]);
+        // Bound, but not a member — see `errors_when_node_is_not_direct_admin`.
+        let _ = crate::test_support::enrol(&store, &group_id, &identity);
 
         // Identity is not a member at all — not a direct admin.
         let err = build_namespace_ownership_proof(
@@ -807,10 +813,14 @@ mod tests {
         // the `is_direct_group_admin` gate passes for `child` — the only
         // thing standing between the caller and a namespace proof is the
         // namespace-root check.
+        // Enrolled at the ROOT, not the child: bindings live at the namespace
+        // anchor and every reader resolves up to it, so a row written against a
+        // subgroup goes invisible the moment that subgroup is nested — which is
+        // exactly what this test does two statements later.
         MembershipRepository::new(&store)
             .add_member(
                 &child,
-                &crate::test_support::account_for(&signing_pub),
+                &crate::test_support::enrol(&store, &root, &signing_pub),
                 GroupMemberRole::Admin,
             )
             .expect("add admin at child");

@@ -41,9 +41,14 @@ pub fn collect_migration_cohort(
     // membership answer (accounts) is expanded to the devices that speak for
     // them — with one device per member this is the same set it always was, and
     // with two it correctly expects both replicas to report.
+    // Resolved to the namespace ANCHOR before reading bindings. `namespace_id` is
+    // whatever group the caller rooted this walk at, and a subgroup holds no
+    // bindings of its own — reading them there returns nothing and the cohort
+    // comes back empty, which reads as "every member has migrated".
+    let anchor = NamespaceRepository::new(store).resolve(namespace_id)?;
     let expand = |accounts: std::collections::BTreeSet<AccountId>| -> eyre::Result<Vec<PublicKey>> {
         let bindings = calimero_governance_store::AccountBindingRepository::new(store)
-            .live_bindings(namespace_id)?;
+            .live_bindings(&anchor)?;
         Ok(bindings
             .iter()
             .filter(|binding| accounts.contains(&binding.account))
@@ -287,7 +292,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &parent,
-                &crate::test_support::account_for(&inherited),
+                &crate::test_support::enrol(&store, &parent, &inherited),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -302,7 +307,10 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &child,
-                &crate::test_support::account_for(&direct),
+                // Enrolled at the PARENT: bindings live at the namespace anchor
+                // and readers resolve up to it, so a row against a nested child
+                // would be invisible.
+                &crate::test_support::enrol(&store, &parent, &direct),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -349,12 +357,18 @@ mod tests {
         let admin = PublicKey::from([0xAD; 32]);
         let member = PublicKey::from([0x11; 32]);
 
+        // The admin is enrolled too: the gate resolves its KEY, and a meta that
+        // merely names an account nobody is bound to leaves it unresolvable.
+        let admin_account = crate::test_support::enrol(&store, &ns, &admin);
         MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns, &admin_account, GroupMemberRole::Admin)
+            .unwrap();
         // `member` is a plain (non-admin) member of the namespace.
         MembershipRepository::new(&store)
             .add_member(
                 &ns,
-                &crate::test_support::account_for(&member),
+                &crate::test_support::enrol(&store, &ns, &member),
                 GroupMemberRole::Member,
             )
             .unwrap();

@@ -2069,7 +2069,7 @@ mod tests {
     /// `MemberJoinedOpen` inheritance proof.
     fn member_joined(group: ContextGroupId, member: PublicKey) -> RootOp {
         RootOp::MemberJoined {
-            member: crate::test_support::account_for(&member),
+            member: legacy_account_id(&member),
             signed_invitation: SignedGroupOpenInvitation {
                 invitation: GroupInvitationFromAdmin {
                     inviter_identity: [0xA1; 32].into(),
@@ -2111,7 +2111,10 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoinedOpen {
-                    member: crate::test_support::account_for(&member),
+                    // The account the credential certifies. The decode pairs the
+                    // two, and a member naming anything else folds as a Noop —
+                    // it cannot tell whose device it is looking at.
+                    member: account.cert.account,
                     group_id: group.into(),
                     account: account.clone(),
                 },
@@ -2166,7 +2169,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoined {
-                    member: crate::test_support::account_for(&member),
+                    member: account.cert.account,
                     signed_invitation,
                     account: account.clone(),
                 },
@@ -2185,7 +2188,7 @@ mod tests {
             op.payload,
             OpPayload::MemberJoinedWithDevice {
                 group,
-                member: legacy_account_id(&member),
+                member: account.cert.account,
                 role: GroupMemberRole::Admin,
                 genesis: account.genesis,
                 chain: account.chain.clone(),
@@ -2203,7 +2206,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::AdminChanged {
-                    new_admin: crate::test_support::account_for(&signer),
+                    new_admin: legacy_account_id(&signer),
                 },
             ),
             None,
@@ -2270,7 +2273,8 @@ mod tests {
         assert_eq!(
             op.author(),
             legacy_account_id(&signer),
-            "author is the rotation signer"
+            "author is the rotation signer, and a rotation entry names a KEY — so \
+             the adapter derives the author rather than resolving a binding"
         );
         assert_eq!(op.hlc, hlc(5));
         assert_eq!(
@@ -2467,7 +2471,7 @@ mod tests {
         let add = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberAdded {
-                member: crate::test_support::account_for(&member),
+                member: legacy_account_id(&member),
                 role: GroupMemberRole::Admin,
             }),
             [0xAB; 32],
@@ -2491,7 +2495,7 @@ mod tests {
         let remove = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberRemoved {
-                member: crate::test_support::account_for(&member),
+                member: legacy_account_id(&member),
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             }),
@@ -2537,7 +2541,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::AdminChanged {
-                    new_admin: crate::test_support::account_for(&signer),
+                    new_admin: legacy_account_id(&signer),
                 },
             ),
             None,

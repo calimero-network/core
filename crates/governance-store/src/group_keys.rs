@@ -326,7 +326,13 @@ impl<'a> GroupKeyring<'a> {
             // `GroupKeyEntry` keys are ordered `(prefix, group_id, key_id)`, so
             // the first key at/after the seek that still belongs to this group
             // means the keyring is non-empty.
-            if key.group_id() == gid {
+            //
+            // The family check is not redundant with the group check: the
+            // iterator walks the whole column, and the account families that sort
+            // after this one are the same width with the group id in the same
+            // place — so a group with bound devices and NO key would answer
+            // "holds a key" on the group id alone.
+            if key.is_group_key_row() && key.group_id() == gid {
                 return Ok(true);
             }
         }
@@ -1347,6 +1353,31 @@ mod delete_tests {
 
         // Idempotent: deleting again is a no-op.
         ring.delete_all_for_group().unwrap();
+    }
+
+    #[test]
+    /// A keyless group with bound devices must still report holding no key.
+    ///
+    /// The device-binding and account-endorser families sort immediately after
+    /// the group-key family, are the same width, and carry the group id in the
+    /// same bytes — so a scan that stopped on the group id alone answered "yes"
+    /// for a group whose keyring is empty. Every member has a binding now, which
+    /// makes that the common case rather than an exotic one.
+    #[test]
+    fn holds_any_key_is_false_for_a_keyless_group_with_bound_devices() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x42u8; 32]);
+        let _ = crate::test_fixtures::enrol_member(
+            &store,
+            &gid,
+            &PrivateKey::from([0x77u8; 32]).public_key(),
+        );
+        assert!(
+            !GroupKeyring::new(&store, gid)
+                .holds_any_key()
+                .expect("scan the keyring"),
+            "a binding is not a key"
+        );
     }
 
     #[test]
