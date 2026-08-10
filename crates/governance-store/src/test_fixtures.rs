@@ -96,7 +96,11 @@ pub(super) fn join_account_for(
 /// refused at `apply_link` by design.
 pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredential> {
     let (root_sk, genesis) = test_account_root();
-    join_account_for(&root_sk, genesis, sign_pk, [0x3E; 32], 0)
+    // The device id is derived from the signing key, NOT fixed. A constant here
+    // made every credential claim the SAME device, so the second enrolment in
+    // any store was refused as an `AccountReassignment` — one device cannot
+    // speak for two accounts. That looked like a flip bug and was a fixture bug.
+    join_account_for(&root_sk, genesis, sign_pk, *sign_pk.as_ref(), 0)
 }
 
 pub(super) fn test_store() -> Store {

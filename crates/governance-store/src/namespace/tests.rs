@@ -20,9 +20,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    bootstrap_namespace_with_admin, enrol_member, founder_account_for, namespace_genesis_for,
-    namespace_genesis_naming, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
+    founder_account_for, namespace_genesis_for, namespace_genesis_naming, nest_for_test,
+    sample_meta_with_admin, test_group_id, test_meta, test_store,
 };
 use super::super::*;
 
@@ -4468,8 +4468,8 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     let store = test_store();
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
-    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    let ((admin_sk, admin_pk), admin_account) =
+        bootstrap_namespace_with_admin_account(&store, ns_id);
 
     // Build: namespace → A → B (two-level subtree).
     let a_id = [0xAAu8; 32];
@@ -4554,8 +4554,8 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     let store = test_store();
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
-    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    let ((admin_sk, admin_pk), admin_account) =
+        bootstrap_namespace_with_admin_account(&store, ns_id);
 
     // Build: namespace → A → B (the subtree the signer legitimately owns),
     // plus an unrelated sibling X directly under the namespace root that the
@@ -7132,8 +7132,8 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
     let subgroup_id = [0xF2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let sub_gid = ContextGroupId::from(subgroup_id);
-    let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
-    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    let ((_admin_sk, admin_pk), admin_account) =
+        bootstrap_namespace_with_admin_account(&store, namespace_id);
 
     nest_for_test(&store, &ns_gid, &sub_gid);
     MetaRepository::new(&store)
