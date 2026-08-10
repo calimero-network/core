@@ -5996,47 +5996,45 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
+    // The device this member speaks through. The cert certifies MEMBER_SK's own
+    // key — a cert for some other key would bind that key, not this one, and
+    // every request below is made as `member_sk`.
+    let kem_secret = X25519SecretKey::from([0x54u8; 32]);
+    let genesis = AccountGenesis::new(member_sk.public_key(), [0x54u8; 16]);
+    let account = genesis.account_id();
+    let device = DeviceId::mint(account, [0x54u8; 16]);
     MembershipRepository::new(&store)
-        .add_member(
-            &ns_gid,
-            &AccountId::from(*member_sk.public_key()),
-            GroupMemberRole::Member,
-        )
+        .add_member(&ns_gid, &account, GroupMemberRole::Member)
         .unwrap();
     let group_key = [0x6Eu8; 32];
     GroupKeyring::new(&store, ns_gid)
         .store_key(&group_key)
         .unwrap();
 
-    // No account yet: the bootstrap case must keep working, member-addressed.
+    // Before the binding exists this key resolves to no account, and a key that
+    // names no account is served nothing — the same refusal a non-member gets,
+    // reached one step earlier.
     let (bytes, _) = build_group_key_delivery(
         &store,
         namespace_id.into(),
         namespace_id,
         crate::KeyRequester {
             identity: member_sk.public_key(),
-            device: None,
+            device: Some(device),
         },
         None,
     )
     .unwrap();
-    let envelope: KeyEnvelope = borsh::from_slice(&bytes).unwrap();
-    assert_eq!(
-        envelope.recipient.member_identity(),
-        Some(member_sk.public_key()),
-        "a member with no account must still be served by identity, or a keyless          joiner could never get started"
+    assert!(
+        bytes.is_empty(),
+        "a key bound to no account here speaks for nobody and must be served nothing"
     );
 
-    // Enroll a device for an account rooted at that member key.
-    let kem_secret = X25519SecretKey::from([0x54u8; 32]);
-    let genesis = AccountGenesis::new(member_sk.public_key(), [0x54u8; 16]);
-    let account = genesis.account_id();
-    let device = DeviceId::mint(account, [0x54u8; 16]);
     let cert = sign_device_cert(
         &member_sk,
         account,
         device,
-        &PrivateKey::from([0x55u8; 32]).public_key(),
+        &member_sk.public_key(),
         &KemPublicKey::from(*kem_secret.public_key().as_bytes()),
         0,
         0,
@@ -6047,16 +6045,16 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     // member→account direction is read from those rows — so the fixture records
     // it too, or this would test a state production never reaches.
     bindings
-        .record_endorser(&ns_gid, account, &AccountId::from(*member_sk.public_key()))
+        .record_endorser(&ns_gid, account, &account)
         .unwrap();
     let _ = bindings
         .apply_link(&ns_gid, &genesis, &[], &cert)
         .unwrap()
         .expect("admitted");
 
-    // Now that an account is known, the identity form is gone: asking without a
-    // device gets nothing. This is the leak being closed — a revoked device would
-    // otherwise just omit its id and be served as its member.
+    // With the account known, asking without a device gets nothing. This is the
+    // leak being closed — a revoked device would otherwise just omit its id and
+    // be served as its member.
     let (bytes, _) = build_group_key_delivery(
         &store,
         namespace_id.into(),
@@ -6070,7 +6068,8 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     .unwrap();
     assert!(
         bytes.is_empty(),
-        "once the group knows an account for a member, identity addressing must not          be available as a fallback"
+        "once the group knows an account for a member, identity addressing must \
+         not be available as a fallback"
     );
 
     // Asking as the live device is served, device-addressed, and opens.
@@ -6123,7 +6122,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     bindings.apply_revocation(&ns_gid, device).unwrap();
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&ns_gid, &AccountId::from(*member_sk.public_key()))
+            .is_member(&ns_gid, &account)
             .unwrap(),
         "the member must still be a member, or this test proves nothing"
     );
