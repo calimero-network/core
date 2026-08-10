@@ -5777,9 +5777,14 @@ fn apply_member_joined(
         vec![],
         nonce,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: AccountId::from(*member_sk.public_key()),
+            // The member and the credential beside it have to name the SAME
+            // account: the apply verifies the credential certifies the signer
+            // and speaks for the declared member. A synthetic member beside an
+            // unrelated credential is refused before the op reaches whatever
+            // the test meant to exercise.
+            member: crate::test_fixtures::account_for(&member_sk.public_key()),
             signed_invitation,
-            account: crate::test_fixtures::test_join_account(),
+            account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
         }),
     )
     .unwrap();
@@ -5803,7 +5808,7 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member = AccountId::from(*member_pk);
+    let member = crate::test_fixtures::account_for(&member_pk);
     MembershipRepository::new(&store)
         .add_member(&subgroup, &member, GroupMemberRole::Member)
         .unwrap();
@@ -5913,7 +5918,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member = AccountId::from(*member_pk);
+    let member = crate::test_fixtures::account_for(&member_pk);
 
     // Join with invitation A.
     let invite_a = signed_invitation_for(&admin_sk, subgroup, [0xA1; 32]);
@@ -5990,7 +5995,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
         vec![],
         1,
         GroupOp::MemberLeft {
-            member: AccountId::from(*bob_sk.public_key()),
+            member: crate::test_fixtures::account_for(&bob_sk.public_key()),
             expected_group_state_hash: [0u8; 32],
             expected_context_state_hashes: Vec::new(),
         },
@@ -6002,7 +6007,10 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     apply_member_joined(&store, ns_id, &carol_sk, shared, 1)
         .expect("the shared invitation must still admit an identity that never used it");
     assert!(MembershipRepository::new(&store)
-        .has_direct_member(&subgroup, &AccountId::from(*carol_sk.public_key()))
+        .has_direct_member(
+            &subgroup,
+            &crate::test_fixtures::account_for(&carol_sk.public_key())
+        )
         .unwrap());
 }
 
@@ -6144,7 +6152,7 @@ fn member_joined_invite_emits_membership_op_event() {
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_account = AccountId::from(*member_pk);
+    let member_account = crate::test_fixtures::account_for(&member_pk);
 
     let mut rx = crate::op_events::subscribe();
     let invite = signed_invitation_for(&admin_sk, subgroup, [0xC1; 32]);

@@ -95,12 +95,24 @@ pub(super) fn join_account_for(
 /// what happens when a credential is admitted, since the filler fixture is
 /// refused at `apply_link` by design.
 pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredential> {
-    let (root_sk, genesis) = test_account_root();
+    // The account root is derived from the signing key, NOT random, so the same
+    // key always yields the same account. Tests name a member once and then use
+    // it across several ops — a rejoin, a removal, a later assertion — and a
+    // random root would make each of those a DIFFERENT principal. It also lets
+    // [`account_for`] answer "which account will this key speak for" anywhere,
+    // including before anything has been applied.
+    let root_sk = PrivateKey::from(*(*sign_pk));
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
     // The device id is derived from the signing key, NOT fixed. A constant here
     // made every credential claim the SAME device, so the second enrolment in
     // any store was refused as an `AccountReassignment` — one device cannot
     // speak for two accounts. That looked like a flip bug and was a fixture bug.
     join_account_for(&root_sk, genesis, sign_pk, *sign_pk.as_ref(), 0)
+}
+
+/// The account [`real_join_account`] certifies for this signing key.
+pub(super) fn account_for(sign_pk: &PublicKey) -> AccountId {
+    real_join_account(sign_pk).cert.account
 }
 
 pub(super) fn test_store() -> Store {
