@@ -5644,16 +5644,22 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
-    let joiner_account = AccountId::from(*joiner_pk);
+    let joiner_account = crate::test_fixtures::account_for(&joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
-    let responder_account = AccountId::from(*responder_pk);
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
 
     // ---- Responder store: holds the key, knows the joiner is a member. ----
+    // Both identities are enrolled HERE, because this is the store that has to
+    // resolve a key to the account its membership rows are keyed by. The
+    // credentials are derived from the signing keys, so the accounts match the
+    // ones named above without either store having to learn them.
     let responder_store = test_store();
+    let _ = enrol_member(&responder_store, &ns_gid, &joiner_pk);
+    let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&responder_store)
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -5773,16 +5779,20 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
-    let joiner_account = AccountId::from(*joiner_pk);
+    let joiner_account = crate::test_fixtures::account_for(&joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
-    let responder_account = AccountId::from(*responder_pk);
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
 
     // ---- Responder store: holds the key, knows the joiner is a TEE member. ----
+    // Enrolled here for the same reason as the cross-store case above: this is
+    // the store that resolves a requester key to an account.
     let responder_store = test_store();
+    let _ = enrol_member(&responder_store, &ns_gid, &joiner_pk);
+    let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&responder_store)
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
         .unwrap();
@@ -6480,7 +6490,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let _owner = owner_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner = joiner_sk.public_key();
-    let joiner_account = AccountId::from(*joiner);
+    let joiner_account = crate::test_fixtures::account_for(&joiner);
 
     let namespace_id = [0xE5u8; 32];
     let subgroup_id = [0xE6u8; 32];
@@ -6526,7 +6536,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: joiner_account,
             group_id: subgroup_id.into(),
-            account: crate::test_fixtures::test_join_account(),
+            account: crate::test_fixtures::real_join_account(&joiner),
         }),
     )
     .expect("joiner signs MemberJoinedOpen");
@@ -6795,7 +6805,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
     let subgroup_id = [0xD2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
-    let joiner_account = AccountId::from(*joiner_sk.public_key());
+    let joiner_account = crate::test_fixtures::account_for(&joiner_sk.public_key());
     let joiner = joiner_sk.public_key();
     namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
 

@@ -765,7 +765,14 @@ impl<'a> GroupKeyring<'a> {
         };
 
         let Some(claimed) = requester.device else {
-            return Ok(None);
+            // A requester that names no device still gets its key, wrapped to the
+            // signing key it asked with. `device` is optional on the wire, so a
+            // peer that omits it is not making an unauthorized request — it has
+            // already passed the membership gate above. Refusing here would take
+            // a member's key away for naming one thing less, and there is no
+            // second address to try: an ECDH wrap has to be addressed to
+            // something, and without a device the requester's own key is it.
+            return Ok(Some(KeyRecipient::Member(requester.identity)));
         };
         let bindings = AccountBindingRepository::new(self.store);
         for binding in bindings.live_bindings(&namespace)? {
