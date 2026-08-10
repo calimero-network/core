@@ -71,9 +71,23 @@ pub async fn handler(
             },
         };
 
-        if let Err(err) = MembershipRepository::new(&state.store).require_admin_or_capability(
+        let requester_account = match calimero_governance_store::member_account_in_namespace(
+            &state.store,
             &namespace_id,
             &requester,
+        ) {
+            Ok(Some(account)) => account,
+            Ok(None) => {
+                return parse_api_error(eyre::eyre!(
+                    "the requesting identity is bound to no account in this namespace"
+                ))
+                .into_response()
+            }
+            Err(err) => return parse_api_error(err).into_response(),
+        };
+        if let Err(err) = MembershipRepository::new(&state.store).require_admin_or_capability(
+            &namespace_id,
+            &requester_account,
             calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
             "create namespace invitation",
         ) {

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{MembershipRepository, MetaRepository, NamespaceError};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -78,6 +79,15 @@ impl<'a> NamespaceRepository<'a> {
 
     /// Returns `true` if the member has a read-only role (`ReadOnly` or
     /// `ReadOnlyTee`) in the group that owns this context.
+    /// `identity` is a signing key, because every caller is holding one off a
+    /// delta it just authenticated. The role it carries belongs to the ACCOUNT
+    /// that key speaks for, so the key is resolved here rather than at each of
+    /// the seven call sites.
+    ///
+    /// A key that resolves to nothing is reported as not read-only. That is not
+    /// a fail-open: this is a negative gate consulted alongside a positive
+    /// membership check, and an unresolvable author fails that one, so the
+    /// combined verdict is still a refusal.
     pub fn is_read_only_for_context(
         &self,
         context_id: &ContextId,
@@ -86,7 +96,11 @@ impl<'a> NamespaceRepository<'a> {
         let Some(group_id) = get_group_for_context(self.store, context_id)? else {
             return Ok(false);
         };
-        match MembershipRepository::new(self.store).role_of(&group_id, identity)? {
+        let Some(identity) = crate::member_account_in_namespace(self.store, &group_id, identity)?
+        else {
+            return Ok(false);
+        };
+        match MembershipRepository::new(self.store).role_of(&group_id, &identity)? {
             Some(
                 calimero_primitives::context::GroupMemberRole::ReadOnly
                 | calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
@@ -108,11 +122,21 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(true);
         };
 
-        if MembershipRepository::new(self.store).is_admin(&group_id, executor)? {
+        // Authority belongs to the account, so the executor's key is resolved
+        // before any of the three lookups below. A key bound to no account here
+        // is refused outright — it holds no grant under any principal this
+        // group knows, and inventing a key-derived one would only manufacture a
+        // principal that matches nothing.
+        let Some(executor) = crate::member_account_in_namespace(self.store, &group_id, executor)?
+        else {
+            return Ok(false);
+        };
+
+        if MembershipRepository::new(self.store).is_admin(&group_id, &executor)? {
             return Ok(true);
         }
 
-        if let Some(role) = MembershipRepository::new(self.store).role_of(&group_id, executor)? {
+        if let Some(role) = MembershipRepository::new(self.store).role_of(&group_id, &executor)? {
             return Ok(matches!(
                 role,
                 calimero_primitives::context::GroupMemberRole::Admin
@@ -120,7 +144,7 @@ impl<'a> NamespaceRepository<'a> {
             ));
         }
 
-        match MembershipRepository::new(self.store).check_path(&group_id, executor)? {
+        match MembershipRepository::new(self.store).check_path(&group_id, &executor)? {
             super::super::membership::MembershipPath::Direct => Ok(true),
             super::super::membership::MembershipPath::Inherited { .. } => Ok(true),
             super::super::membership::MembershipPath::None => Ok(false),
@@ -239,7 +263,7 @@ impl<'a> NamespaceRepository<'a> {
     pub fn collect_visible_descendants(
         &self,
         group_id: &ContextGroupId,
-        viewer: &PublicKey,
+        viewer: &AccountId,
     ) -> EyreResult<Vec<ContextGroupId>> {
         let mut descendants = Vec::new();
         let mut visited = HashSet::new();
@@ -282,8 +306,23 @@ impl<'a> NamespaceRepository<'a> {
             GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
         };
 
+        // The invitation names the inviter twice: by key, because the joiner
+        // verifies a signature, and by account, because the joiner seeds
+        // governance rows from it before it can resolve anything itself.
+        // Visibility is decided per account too.
+        let inviter_account = crate::member_account_in_namespace(
+            self.store,
+            root_group_id,
+            &inviter_sk.public_key(),
+        )?
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "cannot issue invitations: the inviter's identity is bound to no account in \
+                 namespace {root_group_id:?}"
+            )
+        })?;
         let mut groups = vec![*root_group_id];
-        groups.extend(self.collect_visible_descendants(root_group_id, &inviter_sk.public_key())?);
+        groups.extend(self.collect_visible_descendants(root_group_id, &inviter_account)?);
 
         let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
         let now_secs = std::time::SystemTime::now()
@@ -300,6 +339,7 @@ impl<'a> NamespaceRepository<'a> {
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
+                inviter_account,
                 group_id: gid,
                 expiration_timestamp: expiration,
                 invitation_nonce,
@@ -347,7 +387,7 @@ impl<'a> NamespaceRepository<'a> {
     pub fn recursive_remove_member(
         &self,
         root_group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<Vec<ContextGroupId>> {
         let mut groups = vec![*root_group_id];
         groups.extend(self.collect_descendants(root_group_id)?);

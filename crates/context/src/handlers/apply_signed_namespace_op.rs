@@ -163,23 +163,18 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // history is fully readable.
                         if fed && decoded {
                             if let Some((group, member)) = membership {
-                                // `member` came off the op payload, so it is an
-                                // account; the live repository is keyed by member
-                                // key. Recover the key from the live rows rather
-                                // than caching a reverse map — an account is a
-                                // one-way hash, and a cache built while decoding
-                                // ops would be empty after a projection rebuild
-                                // from the persisted (account-only) op log.
-                                let live = crate::scope_projection::ScopeProjections::
-                                    member_key_for_account(&compare_store, &group, member)
-                                    .and_then(|pk| {
-                                        calimero_governance_store::MembershipRepository::new(
-                                            &compare_store,
-                                        )
-                                        .role_of(&group, &pk)
-                                        .ok()
-                                        .flatten()
-                                    });
+                                // Both sides now name the same principal: `member`
+                                // comes off the op payload as an account, and the
+                                // live rows are keyed by account. This used to
+                                // invert the account back into a member key by
+                                // scanning the live rows, because the two planes
+                                // disagreed about what a member IS.
+                                let live = calimero_governance_store::MembershipRepository::new(
+                                    &compare_store,
+                                )
+                                .role_of(&group, &member)
+                                .ok()
+                                .flatten();
                                 if live.is_some() && projected != live {
                                     tracing::warn!(
                                         marker = "unified_projection_divergence",

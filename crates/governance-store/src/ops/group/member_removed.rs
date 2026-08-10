@@ -7,6 +7,7 @@ use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
     MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
 };
+use calimero_account::AccountId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
@@ -14,7 +15,7 @@ use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    member: &PublicKey,
+    member: &AccountId,
     expected_group_state_hash: &[u8; 32],
     expected_context_state_hashes: &[(ContextId, [u8; 32])],
 ) -> EyreResult<()> {

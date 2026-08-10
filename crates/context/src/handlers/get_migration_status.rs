@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use actix::{ActorResponse, Handler, Message};
+use calimero_account::AccountId;
 use calimero_context_client::group::{
     compute_migration_status_rollup, GetMigrationStatusRequest, MigrationStatus,
 };
@@ -35,6 +36,21 @@ pub fn collect_migration_cohort(
     // `membership-enum` plane. `None` (empty/unfed namespace or store fault) falls
     // back to the live `list ∪ enumerate_inherited` union below; that live fallback
     // retires in #29b.
+    // The cohort is a set of REPLICAS, not of people: each entry is matched
+    // against a migration heartbeat, which a node emits per device. So the
+    // membership answer (accounts) is expanded to the devices that speak for
+    // them — with one device per member this is the same set it always was, and
+    // with two it correctly expects both replicas to report.
+    let expand = |accounts: std::collections::BTreeSet<AccountId>| -> eyre::Result<Vec<PublicKey>> {
+        let bindings = calimero_governance_store::AccountBindingRepository::new(store)
+            .live_bindings(namespace_id)?;
+        Ok(bindings
+            .iter()
+            .filter(|binding| accounts.contains(&binding.account))
+            .map(|binding| binding.sign_pk)
+            .collect())
+    };
+
     if let Some(projected) =
         crate::scope_projection::ScopeProjections::member_identities_subtree_ephemeral(
             store,
@@ -42,13 +58,13 @@ pub fn collect_migration_cohort(
             &groups,
         )
     {
-        return Ok(projected.into_iter().collect());
+        return expand(projected);
     }
 
     let membership = MembershipRepository::new(store);
     // BTreeSet both dedups across the subtree (a member can appear directly in
     // one group and inherited in another) and yields a deterministic order.
-    let mut cohort: BTreeSet<PublicKey> = BTreeSet::new();
+    let mut cohort: BTreeSet<AccountId> = BTreeSet::new();
     for gid in &groups {
         for (pk, _role) in membership.list(gid, 0, usize::MAX)? {
             let _ = cohort.insert(pk);
@@ -57,7 +73,7 @@ pub fn collect_migration_cohort(
             let _ = cohort.insert(pk);
         }
     }
-    Ok(cohort.into_iter().collect())
+    expand(cohort)
 }
 
 /// Admin-gate the `get_migration_status` read.
@@ -72,7 +88,8 @@ pub fn authorize_migration_status(
     namespace_id: &ContextGroupId,
     node_identity: &PublicKey,
 ) -> eyre::Result<()> {
-    MembershipRepository::new(store).require_admin(namespace_id, node_identity)
+    let node_account = crate::member_account::require(store, namespace_id, node_identity)?;
+    MembershipRepository::new(store).require_admin(namespace_id, &node_account)
 }
 
 impl Handler<GetMigrationStatusRequest> for ContextManager {

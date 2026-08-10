@@ -6,6 +6,7 @@ use crate::{
     get_group_for_context, CapabilitiesRepository, ContextRegistrationError, MembershipError,
     MembershipRepository,
 };
+use calimero_account::AccountId;
 use calimero_governance_types::ContextCapabilityBits;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -14,7 +15,7 @@ use eyre::{bail, Result as EyreResult};
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     context_id: &ContextId,
-    member: &PublicKey,
+    member: &AccountId,
     capability: &ContextCapabilityBits,
 ) -> EyreResult<()> {
     let signer = ctx.signer();

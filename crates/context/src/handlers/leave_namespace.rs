@@ -30,6 +30,7 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
+use calimero_account::AccountId;
 use calimero_context_client::group::{LeaveNamespaceRequest, LeaveNamespaceResponse};
 use tracing::info;
 
@@ -73,8 +74,17 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         }
 
         // Direct-row check at the root. Apply re-validates everything.
-        match MembershipRepository::new(&self.datastore).role_of(&namespace_id, &member_public_key)
-        {
+        // The leaver signs with its identity key; the row it is leaving names
+        // the account that key acts as.
+        let member_account = match crate::member_account::require(
+            &self.datastore,
+            &namespace_id,
+            &member_public_key,
+        ) {
+            Ok(account) => account,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        match MembershipRepository::new(&self.datastore).role_of(&namespace_id, &member_account) {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
@@ -94,7 +104,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         // divergence. See `compute_group_state_hash_after_remove` and
         // `snapshot_context_state_hashes`.
         let expected_group_state_hash = match MetaRepository::new(&self.datastore)
-            .compute_state_hash_after_remove(&namespace_id, &member_public_key)
+            .compute_state_hash_after_remove(&namespace_id, &member_account)
         {
             Ok(h) => h,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -109,7 +119,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let op = calimero_context_client::local_governance::GroupOp::MemberLeft {
-                    member: member_public_key,
+                    member: member_account,
                     expected_group_state_hash,
                     expected_context_state_hashes,
                 };

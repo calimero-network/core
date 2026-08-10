@@ -833,6 +833,19 @@ pub struct SignedRevealPayload {
 pub struct GroupInvitationFromAdmin {
     /// The identity of the inviter (group admin public key).
     pub inviter_identity: SignerId,
+    /// The account [`Self::inviter_identity`] acts as.
+    ///
+    /// The joiner needs it before it has synced anything: it seeds the group's
+    /// local meta so the creator shows up as admin immediately, and governance
+    /// rows name accounts. It cannot derive this itself — an account is a hash of
+    /// a root the joiner has never seen, and the inviter is bound in a namespace
+    /// the joiner has not joined yet.
+    ///
+    /// Covered by the inviter's signature, so it is exactly as trustworthy as the
+    /// role and expiry beside it. A wrong value seeds a wrong admin locally and
+    /// then self-heals: `NamespaceCreated` genesis is authoritative and overwrites
+    /// it on arrival.
+    pub inviter_account: calimero_account::AccountId,
     /// The group being invited to.
     pub group_id: ContextGroupId,
     /// Unix timestamp (seconds) at which the invitation expires.

@@ -5,7 +5,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey};
+use calimero_primitives::identity::{AccountId, ClientKey, ContextUser, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -1588,7 +1588,9 @@ pub struct GroupMemberApiInput {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveGroupMembersApiRequest {
-    pub members: Vec<PublicKey>,
+    /// The members to remove, named by ACCOUNT — the principal the membership
+    /// rows are keyed by. `GET .../members` returns these same ids.
+    pub members: Vec<AccountId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }
@@ -1616,7 +1618,9 @@ pub struct ListGroupMembersApiResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberApiEntry {
-    pub identity: PublicKey,
+    /// The member's ACCOUNT. Renders as 64 hex characters, not the bs58 a key
+    /// renders as — a member is a person here, and a person may hold several keys.
+    pub identity: AccountId,
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

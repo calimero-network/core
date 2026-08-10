@@ -16,6 +16,7 @@ use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
     SignedAck, SignedMigrationHeartbeat, SignedNamespaceOp, SignedReadinessBeacon,
 };
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_network_primitives::client::is_no_peers_subscribed_error;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
@@ -151,7 +152,7 @@ pub enum GovernanceBroadcastError {
 ///    The domain prefix is what stops an attacker from substituting a
 ///    signature taken over the same 32-byte hash on a different
 ///    protocol surface.
-/// 3. `ack.signer_pubkey` is a current member of `namespace_id` at
+/// 3. `ack.signer_pubkey` speaks for a current member of `namespace_id` at
 ///    this node's local DAG view — non-members cannot ack.
 pub fn verify_ack(
     store: &Store,
@@ -165,9 +166,33 @@ pub fn verify_ack(
     if ack.verify_signature().is_err() {
         return false;
     }
+    signer_is_namespace_member(store, namespace_id, &ack.signer_pubkey)
+}
+
+/// Whether `signer` is a device of some current member of `namespace_id`.
+///
+/// The three gossip verifiers below all authenticate a **device** signature
+/// and then have to ask a question about a **person**, so each one resolves
+/// the key to the account it speaks for before consulting the member set.
+///
+/// Every failure — an unbound or revoked key, a store error, a non-member
+/// account — collapses to `false`. That is the right default here for the same
+/// reason it is everywhere else on this plane: an unresolvable key must not be
+/// promoted to a key-derived stand-in, which would match no grant while looking
+/// like it had. For these callers "fail closed" costs only a dropped best-effort
+/// gossip message, which sync recovers from.
+fn signer_is_namespace_member(
+    store: &Store,
+    namespace_id: NamespaceId,
+    signer: &PublicKey,
+) -> bool {
+    let group_id = ContextGroupId::from(namespace_id.to_bytes());
+    let Ok(Some(account)) = crate::member_account_in_namespace(store, &group_id, signer) else {
+        return false;
+    };
     MembershipRepository::new(store)
-        .namespace_pubkeys(namespace_id)
-        .map(|members| members.contains(&ack.signer_pubkey))
+        .namespace_accounts(namespace_id)
+        .map(|members| members.contains(&account))
         .unwrap_or(false)
 }
 
@@ -182,8 +207,8 @@ pub fn verify_ack(
 /// field-substitution replays (proven by the `signed_readiness_beacon_*`
 /// tamper tests in that module).
 ///
-/// The membership check uses [`namespace_member_pubkeys`], which
-/// includes the meta admin even when the admin has no member row —
+/// The membership check uses [`MembershipRepository::namespace_accounts`],
+/// which includes the meta admin even when the admin has no member row —
 /// matching `verify_ack`'s behaviour and ensuring legitimate beacons
 /// from the namespace creator are not silently dropped.
 ///
@@ -195,10 +220,7 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
     if beacon.verify_signature().is_err() {
         return false;
     }
-    MembershipRepository::new(store)
-        .namespace_pubkeys(beacon.namespace_id)
-        .map(|members| members.contains(&beacon.peer_pubkey))
-        .unwrap_or(false)
+    signer_is_namespace_member(store, beacon.namespace_id, &beacon.peer_pubkey)
 }
 
 /// Whether a beacon whose signer is not (yet) a known member carries an
@@ -251,10 +273,27 @@ pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) 
     {
         return false;
     }
+    // The consumed-invitation row is account-keyed, so answering "has this
+    // peer already redeemed it" needs the account its key speaks for. Unlike
+    // every other caller on this plane, an unresolved key here is ORDINARY
+    // rather than an anomaly: this function exists for a peer whose join op
+    // this receiver has not applied yet, and that same op carries the device
+    // binding — so neither exists locally at the moment the beacon arrives.
+    //
+    // Treating unresolvable as "not consumed" is the accurate answer, not a
+    // fallback: no consumption row can exist for a principal this node cannot
+    // name. It is also not a grant — a true verdict unlocks only a
+    // debounce-limited governance pull, and membership still arrives solely
+    // via a verified join op on the normal apply path.
+    let Ok(Some(account)) =
+        crate::member_account_in_namespace(store, &inv.invitation.group_id, &beacon.peer_pubkey)
+    else {
+        return true;
+    };
     !ReentryRepository::new(store)
         .is_invitation_consumed(
             &inv.invitation.group_id,
-            &beacon.peer_pubkey,
+            &account,
             inv.invitation.invitation_nonce,
         )
         .unwrap_or(true)
@@ -269,8 +308,8 @@ pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) 
 /// payload and rejects field-substitution replays such as zeroing
 /// `residue_identity` to fake completion), and the `peer_pubkey` must be a
 /// member of the heartbeat's namespace cohort. The membership check reuses
-/// [`namespace_pubkeys`], which includes the meta admin even when the admin
-/// has no member row.
+/// [`MembershipRepository::namespace_accounts`], which includes the meta admin
+/// even when the admin has no member row.
 ///
 /// Returns `false` on any failure (signature, membership, store error) so
 /// the receiver can drop an unsigned / non-member heartbeat without it ever
@@ -280,10 +319,7 @@ pub fn verify_migration_heartbeat(store: &Store, heartbeat: &SignedMigrationHear
     if heartbeat.verify_signature().is_err() {
         return false;
     }
-    MembershipRepository::new(store)
-        .namespace_pubkeys(heartbeat.namespace_id)
-        .map(|members| members.contains(&heartbeat.peer_pubkey))
-        .unwrap_or(false)
+    signer_is_namespace_member(store, heartbeat.namespace_id, &heartbeat.peer_pubkey)
 }
 
 /// Sign an ack for `op_hash` using `signer_sk`.

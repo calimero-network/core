@@ -12,10 +12,10 @@
 
 use super::context::GroupApplyCtx;
 use crate::PendingRotationRepository;
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 use eyre::Result as EyreResult;
 
-pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, departed: &PublicKey) -> EyreResult<()> {
+pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, departed: &AccountId) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
@@ -40,7 +40,7 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, departed: &PublicKey) -> EyreRe
     tracing::info!(
         target: "calimero::governance::rotation",
         group_id = %hex::encode(group_id.to_bytes()),
-        departed = %departed,
+        ?departed,
         "group key rotated after member departure; pending rotation discharged"
     );
 

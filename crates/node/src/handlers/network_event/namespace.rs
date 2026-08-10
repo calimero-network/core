@@ -288,8 +288,12 @@ impl NamespaceDeltaApply {
     ) -> Option<crate::peer_identity_cache::ObservedMembership> {
         let root_group = ContextGroupId::from(namespace_id);
         let store = self.context_client.datastore_handle().into_inner();
+        // The signer presents a key; the role belongs to the account it acts as.
+        let account =
+            calimero_governance_store::member_account_in_namespace(&store, &root_group, signer)
+                .ok()??;
         let role = MembershipRepository::new(&store)
-            .role_of(&root_group, signer)
+            .role_of(&root_group, &account)
             .ok()??;
         Some(crate::peer_identity_cache::ObservedMembership {
             group_id: root_group,

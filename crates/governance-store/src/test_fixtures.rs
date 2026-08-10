@@ -8,6 +8,7 @@
 use super::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, JoinAccountCredential};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -244,7 +245,7 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
     fn is_last_admin_at_cut(
         &self,
         _group: &ContextGroupId,
-        _member: &PublicKey,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         Some(false)
@@ -253,7 +254,7 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
     fn membership_path_at_cut(
         &self,
         _group: &ContextGroupId,
-        _member: &PublicKey,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         None
@@ -298,7 +299,7 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
     fn is_last_admin_at_cut(
         &self,
         _group: &ContextGroupId,
-        _member: &PublicKey,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None
@@ -307,7 +308,7 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
     fn membership_path_at_cut(
         &self,
         _group: &ContextGroupId,
-        _member: &PublicKey,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         None

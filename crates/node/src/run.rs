@@ -293,8 +293,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     );
     // Drop removed members from the cache promptly on `MemberRemoved`,
     // rather than waiting for their entries to age out via TTL.
-    let peer_identity_invalidation =
-        crate::peer_identity_persist::spawn_invalidation_task(node_state.clone());
+    let peer_identity_invalidation = crate::peer_identity_persist::spawn_invalidation_task(
+        node_state.clone(),
+        datastore.clone(),
+    );
 
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the

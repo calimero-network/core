@@ -1,4 +1,6 @@
 use crate::{MembershipRepository, NamespaceRepository, ReentryRepository};
+use calimero_account::AccountId;
+use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
@@ -28,14 +30,15 @@ impl<'a> NamespaceMembershipService<'a> {
     pub fn apply_member_joined(
         &self,
         signer: &PublicKey,
-        member: &PublicKey,
+        member: &AccountId,
         signed_invitation: &SignedGroupOpenInvitation,
         joined_at: Option<u64>,
+        account: &JoinAccountCredential,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
 
-        self.verify_member_join_signature(signer, member, signed_invitation)?;
+        self.verify_member_join_signature(signer, member, signed_invitation, account)?;
 
         // Deterministic expiry gate: reject when the joiner's signed
         // claimed join time is past expiry, comparing the op's own field
@@ -105,10 +108,19 @@ impl<'a> NamespaceMembershipService<'a> {
         reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
         let role = role_from_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin
-            && !MembershipRepository::new(self.store).is_admin(&group_id, &inviter_pk)?
-        {
-            bail!("only admins can invite new admins");
+        if role == GroupMemberRole::Admin {
+            // Same key→account resolution as `require_inviter_permission`, and
+            // the same refusal when the inviter names no account here.
+            let inviter = crate::member_account_in_namespace(self.store, &group_id, &inviter_pk)?;
+            let is_admin = match inviter {
+                Some(inviter) => {
+                    MembershipRepository::new(self.store).is_admin(&group_id, &inviter)?
+                }
+                None => false,
+            };
+            if !is_admin {
+                bail!("only admins can invite new admins");
+            }
         }
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
@@ -180,17 +192,26 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// The joiner must prove it owns the account the op admits, and the
+    /// invitation must be genuinely the inviter's.
+    ///
+    /// The ownership half used to be `signer == member`, which worked only
+    /// while `member` was a signing key. An account is a hash, so nothing signs
+    /// as one; the proof now runs through the credential the op carries — see
+    /// [`join_op_proves_ownership`](crate::ops::namespace::member_joined_open::join_op_proves_ownership)
+    /// for why both of its halves are needed.
     fn verify_member_join_signature(
         &self,
         signer: &PublicKey,
-        member: &PublicKey,
+        member: &AccountId,
         signed_invitation: &SignedGroupOpenInvitation,
+        account: &JoinAccountCredential,
     ) -> EyreResult<()> {
-        if *signer != *member {
+        if !crate::ops::namespace::member_joined_open::join_op_proves_ownership(
+            signer, member, account,
+        ) {
             bail!(
-                "MemberJoined signer ({}) does not match member ({})",
-                signer,
-                member
+                "MemberJoined signer ({signer}) does not hold a credential for member ({member:?})"
             );
         }
         self.verify_inviter_signature(signed_invitation)
@@ -231,16 +252,28 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// The inviter named on an invitation must hold `CAN_INVITE_MEMBERS`.
+    ///
+    /// An invitation names the inviter by KEY (it is signed with it), while the
+    /// capability is granted to an account, so the key is resolved first. An
+    /// inviter this namespace has no binding for holds no capability under any
+    /// principal it knows, and is refused with the same message — the grant it
+    /// would need does not exist rather than merely not matching.
     fn require_inviter_permission(
         &self,
         group_id: &ContextGroupId,
         inviter_pk: &PublicKey,
     ) -> EyreResult<()> {
-        if !MembershipRepository::new(self.store).is_admin_or_has_capability(
-            group_id,
-            inviter_pk,
-            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
-        )? {
+        let inviter = crate::member_account_in_namespace(self.store, group_id, inviter_pk)?;
+        let permitted = match inviter {
+            Some(inviter) => MembershipRepository::new(self.store).is_admin_or_has_capability(
+                group_id,
+                &inviter,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+            )?,
+            None => false,
+        };
+        if !permitted {
             bail!(
                 "invitation inviter {} lacks permission for group {:?}",
                 inviter_pk,

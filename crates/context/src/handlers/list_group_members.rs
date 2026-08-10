@@ -1,4 +1,5 @@
 use actix::{ActorResponse, Handler, Message};
+use calimero_account::AccountId;
 use calimero_context_client::group::{
     GroupMemberEntry, ListGroupMembersRequest, ListGroupMembersResponse,
 };
@@ -36,8 +37,12 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                 Some((proj, _ns, heads)) => {
                     proj.member_now_checked_with(&self.datastore, &group_id, &node_identity, heads)?
                 }
-                None => MembershipRepository::new(&self.datastore)
-                    .is_member(&group_id, &node_identity)?,
+                None => {
+                    let node_account =
+                        crate::member_account::require(&self.datastore, &group_id, &node_identity)?;
+                    MembershipRepository::new(&self.datastore)
+                        .is_member(&group_id, &node_account)?
+                }
             };
             if !is_member {
                 // Typed so the admin API surfaces this precondition as a 403,

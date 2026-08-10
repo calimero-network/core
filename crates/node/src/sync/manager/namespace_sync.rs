@@ -539,17 +539,36 @@ impl SyncManager {
         // perfectly ordinary re-sync or a retried join round — and since a
         // successful join consumes the invitation, gating them would reject every
         // repeat request they ever make with their own invitation.
-        let already_member = MembershipRepository::new(&store)
-            .has_direct_member(&group_id, &joiner_public_key)
-            .unwrap_or(false);
-        let admission = if already_member {
-            Ok(())
-        } else {
-            ReentryRepository::new(&store).require_invitation_admits(
+        // The joiner is named by key on the wire; the row names its account.
+        // A key with no binding here holds no row, which is what `false` says.
+        let joiner_account = calimero_governance_store::member_account_in_namespace(
+            &store,
+            &group_id,
+            &joiner_public_key,
+        )
+        .ok()
+        .flatten();
+        let already_member = joiner_account.is_some_and(|account| {
+            MembershipRepository::new(&store)
+                .has_direct_member(&group_id, &account)
+                .unwrap_or(false)
+        });
+        let admission = match (already_member, joiner_account) {
+            (true, _) => Ok(()),
+            (false, Some(account)) => ReentryRepository::new(&store).require_invitation_admits(
                 &group_id,
-                &joiner_public_key,
+                &account,
                 invitation.invitation.invitation_nonce,
-            )
+            ),
+            // The join request carries a key and an invitation, not a
+            // credential, so a first-time joiner names an account this responder
+            // cannot yet resolve. Both rows the gate reads — the re-entry block
+            // and the consumed-invitation marker — are keyed by that account, so
+            // neither can exist for a principal we cannot name, and admitting is
+            // the accurate answer rather than a lenient one. The authoritative
+            // gate is the apply of the joiner's own `MemberJoinedAt`, which
+            // carries the credential and re-runs this check against it.
+            (false, None) => Ok(()),
         };
         if let Err(err) = admission {
             warn!(
@@ -606,15 +625,30 @@ impl SyncManager {
             None => Vec::new(),
         };
 
-        // Pre-register the joiner as a group member and write ContextIdentity
-        // entries so that when the joiner opens a sync stream, this node's
-        // membership check (has_member) passes immediately.
-        if let Err(e) = MembershipRepository::new(&store).add_member(
-            &group_id,
-            &joiner_public_key,
-            calimero_primitives::context::GroupMemberRole::Member,
-        ) {
-            warn!(%e, "failed to pre-register joiner as group member");
+        // Pre-register the joiner as a group member so that when it opens a sync
+        // stream, this node's membership check passes immediately.
+        //
+        // Only possible for a joiner whose account we can already name — a
+        // re-join, typically. A first-time joiner presents a key and an
+        // invitation but no credential, and the membership row names an account,
+        // so there is nothing to write the row under. That costs the
+        // optimisation, not the join: the joiner's own `MemberJoinedAt` carries
+        // the credential and writes the row when it applies, and until then
+        // `has_member`'s key-keyed `ContextIdentity` arm still answers.
+        match joiner_account {
+            Some(account) => {
+                if let Err(e) = MembershipRepository::new(&store).add_member(
+                    &group_id,
+                    &account,
+                    calimero_primitives::context::GroupMemberRole::Member,
+                ) {
+                    warn!(%e, "failed to pre-register joiner as group member");
+                }
+            }
+            None => debug!(
+                %joiner_public_key,
+                "joiner names no account here yet; leaving its member row to its own join op"
+            ),
         }
 
         let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
@@ -738,7 +772,18 @@ impl SyncManager {
         // Open-chain inheritance walk. `MembershipPath::Inherited`
         // implies every intermediate ancestor was Open (see
         // `membership.rs:267`), so this is the proof of authorisation.
-        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_public_key)? {
+        let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
+            &store,
+            &subgroup_gid,
+            &joiner_public_key,
+        )?
+        else {
+            // A key bound to no account reaches the subgroup by no path.
+            return Err(eyre::eyre!(
+                "joiner identity is bound to no account in this namespace"
+            ));
+        };
+        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_account)? {
             MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
             MembershipPath::None => {
                 let msg = StreamMessage::Message {

@@ -53,9 +53,11 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .load(&group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
+            let requester_account =
+                crate::member_account::require(&datastore, &group_id, &requester)?;
             MembershipRepository::new(&datastore).require_admin_or_capability(
                 &group_id,
-                &requester,
+                &requester_account,
                 MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
                 "create group invitation",
             )?;
@@ -81,6 +83,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
+                inviter_account: requester_account,
                 group_id,
                 expiration_timestamp,
                 invitation_nonce,

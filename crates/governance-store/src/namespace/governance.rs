@@ -72,10 +72,19 @@ pub(crate) fn classify_report_readiness(
     report: &DeliveryReport,
     known_subscribers: usize,
 ) -> PublishReadiness {
+    // Acks are signed, so `acked_by` holds keys; authority is held by accounts.
+    // A key that resolves to nothing carries no authority, which is what
+    // `unwrap_or(false)` already meant for an unknown signer.
+    let group_id = ContextGroupId::from(namespace_id.to_bytes());
     let authoritative_ack = report.acked_by.iter().any(|pk| {
-        MembershipRepository::new(store)
-            .is_authoritative_namespace_identity(namespace_id, pk)
-            .unwrap_or(false)
+        crate::member_account_in_namespace(store, &group_id, pk)
+            .ok()
+            .flatten()
+            .is_some_and(|account| {
+                MembershipRepository::new(store)
+                    .is_authoritative_namespace_identity(namespace_id, &account)
+                    .unwrap_or(false)
+            })
     });
     classify_publish_readiness(authoritative_ack, report.acked_by.len(), known_subscribers)
 }
@@ -972,16 +981,31 @@ impl<'a> NamespaceGovernance<'a> {
         // `Member`, NOT `Admin`. Founding authority is established by genesis, not
         // here. If genesis (or another path) has already recorded a richer role
         // for this identity, leave it untouched.
-        let member_existed = MembershipRepository::new(self.store)
-            .role_of(&gid, founder)?
-            .is_some();
-        if !member_existed {
-            MembershipRepository::new(self.store).add_member(
-                &gid,
-                founder,
-                GroupMemberRole::Member,
-            )?;
-        }
+        // `founder` here is the deliverer's own signing key, and the row names
+        // the account it speaks for. A node with no binding in this namespace
+        // yet cannot bootstrap a row: it has nothing to name it by. That is not
+        // a regression — the bootstrap exists so an already-admitted deliverer
+        // passes the replay membership check, and admission is what writes the
+        // binding.
+        let founder_account = crate::member_account_in_namespace(self.store, &gid, founder)?;
+        let member_existed = match founder_account {
+            Some(founder_account) => {
+                let existed = MembershipRepository::new(self.store)
+                    .role_of(&gid, &founder_account)?
+                    .is_some();
+                if !existed {
+                    MembershipRepository::new(self.store).add_member(
+                        &gid,
+                        &founder_account,
+                        GroupMemberRole::Member,
+                    )?;
+                }
+                existed
+            }
+            // Nothing to seed and nothing missing: report it as present so the
+            // log below does not claim a repair that did not happen.
+            None => true,
+        };
 
         // Seed the root's default capabilities so members added before the
         // separate `DefaultCapabilitiesSet` gossip arrives still inherit
@@ -1063,9 +1087,18 @@ impl<'a> NamespaceGovernance<'a> {
             NamespaceRepository::new(self.store).resolve(&group_gid),
             Ok(ns) if ns.to_bytes() == self.namespace_id.to_bytes()
         );
-        if !group_in_namespace
-            || !MembershipRepository::new(self.store).is_member(&group_gid, &requester.identity)?
-        {
+        // The requester names itself by key; membership is recorded against the
+        // account that key speaks for. A key bound to no account here is served
+        // nothing — exactly as a non-member is.
+        let requester_account =
+            crate::member_account_in_namespace(self.store, &group_gid, &requester.identity)?;
+        let is_member = match requester_account {
+            Some(account) => {
+                MembershipRepository::new(self.store).is_member(&group_gid, &account)?
+            }
+            None => false,
+        };
+        if !group_in_namespace || !is_member {
             return Ok((Vec::new(), requester.identity));
         }
 

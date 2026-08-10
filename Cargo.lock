@@ -1348,6 +1348,7 @@ version = "0.0.0"
 dependencies = [
  "borsh",
  "bs58",
+ "calimero-account",
  "ed25519-dalek",
  "serde",
  "serde_json",
@@ -1853,6 +1854,7 @@ name = "calimero-store"
 version = "0.0.0"
 dependencies = [
  "borsh",
+ "calimero-account",
  "calimero-primitives",
  "calimero-storage",
  "camino",
@@ -6278,6 +6280,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
+ "calimero-account",
  "calimero-build-utils",
  "calimero-client",
  "calimero-config",

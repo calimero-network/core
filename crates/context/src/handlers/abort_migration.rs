@@ -151,8 +151,10 @@ impl Handler<AbortMigrationRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&namespace_id) else {
                 bail!("node has no group identity configured");
             };
+            let node_account =
+                crate::member_account::require(&self.datastore, &namespace_id, &node_identity)?;
             MembershipRepository::new(&self.datastore)
-                .require_admin(&namespace_id, &node_identity)?;
+                .require_admin(&namespace_id, &node_account)?;
             abort_group_migration(&self.datastore, &namespace_id)
         })();
         ActorResponse::reply(result)

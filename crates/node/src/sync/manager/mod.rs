@@ -916,14 +916,17 @@ impl SyncManager {
     /// missing context→group mapping, which makes the context-keyed
     /// lookup return an empty set even though the group's anchors are
     /// well-defined on the local node.
+    /// The anchor set answers "who is authoritative here", which the governance
+    /// rows record against ACCOUNTS. Peer selection, though, matches on the
+    /// signing key a peer presents, so each anchor account is expanded to the
+    /// devices that speak for it: an anchor with two machines should be
+    /// preferred at both, and matching on the account alone would match neither.
     fn anchor_identities_for_group(
         &self,
         group_id: &calimero_context_config::types::ContextGroupId,
     ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
         let store = self.context_client.datastore_handle().into_inner();
-        MembershipRepository::new(&store)
-            .trusted_anchors(group_id)
-            .unwrap_or_default()
+        crate::sync::anchor_device_keys(&store, group_id)
     }
 
     /// Resolve the cached member peers for the group that owns
@@ -3284,7 +3287,18 @@ impl SyncManager {
         group_id: calimero_context_config::types::ContextGroupId,
         their_identity: &PublicKey,
     ) -> eyre::Result<bool> {
-        let live = MembershipRepository::new(store).is_member(&group_id, their_identity)?;
+        // The peer presents a signing key; membership names the account it acts
+        // as. A key bound to no account here is not a member — the same verdict,
+        // reached without inventing a principal for it.
+        let Some(their_account) = calimero_governance_store::member_account_in_namespace(
+            store,
+            &group_id,
+            their_identity,
+        )?
+        else {
+            return Ok(false);
+        };
+        let live = MembershipRepository::new(store).is_member(&group_id, &their_account)?;
         let Some(heads) =
             calimero_context::scope_projection::ScopeProjections::namespace_current_heads(
                 store, group_id,
@@ -3339,9 +3353,26 @@ impl SyncManager {
             self.peer_is_group_member(store, group_id, &their_identity)
         };
 
+        // `has_member`'s account-keyed arm needs the account the peer's key acts
+        // as; this crate can resolve it, `calimero-context-client` cannot.
+        let their_account = {
+            let store = self.context_client.datastore();
+            calimero_governance_store::get_group_for_context(store, &context_id)
+                .ok()
+                .flatten()
+                .and_then(|gid| {
+                    calimero_governance_store::member_account_in_namespace(
+                        store,
+                        &gid,
+                        &their_identity,
+                    )
+                    .ok()
+                    .flatten()
+                })
+        };
         if !self
             .context_client
-            .has_member(&context_id, &their_identity)?
+            .has_member(&context_id, &their_identity, their_account)?
             && !is_inherited_member()?
         {
             _updated = Some(
@@ -3352,7 +3383,7 @@ impl SyncManager {
 
             if !self
                 .context_client
-                .has_member(&context_id, &their_identity)?
+                .has_member(&context_id, &their_identity, their_account)?
                 && !is_inherited_member()?
             {
                 // The peer may have just published MemberAdded for themselves
@@ -3372,7 +3403,7 @@ impl SyncManager {
 
                 if !self
                     .context_client
-                    .has_member(&context_id, &their_identity)?
+                    .has_member(&context_id, &their_identity, their_account)?
                     && !is_inherited_member()?
                 {
                     // Catch-up didn't resolve it (peer returned nothing, peer

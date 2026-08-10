@@ -36,7 +36,10 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
         // Validate
         let result = (|| {
-            MembershipRepository::new(&self.datastore).require_admin(&group_id, &requester)?;
+            let requester_account =
+                crate::member_account::require(&self.datastore, &group_id, &requester)?;
+            MembershipRepository::new(&self.datastore)
+                .require_admin(&group_id, &requester_account)?;
 
             let upgrade = UpgradesRepository::new(&self.datastore)
                 .load(&group_id)?

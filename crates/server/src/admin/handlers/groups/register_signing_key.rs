@@ -44,9 +44,24 @@ pub async fn handler(
     let private_key = PrivateKey::from(private_key_bytes);
     let public_key = private_key.public_key();
 
-    // Verify the identity is a member of this group
+    // Verify the identity is a member of this group. The row names the account
+    // the key acts as; a key bound to none holds no row, which reads the same as
+    // "not a member" below.
     let handle = state.store.handle();
-    let member_key = GroupMember::new(group_id.to_bytes(), public_key);
+    let Some(account) = calimero_governance_store::member_account_in_namespace(
+        &state.store,
+        &group_id,
+        &public_key,
+    )
+    .ok()
+    .flatten() else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Identity is not a member of this group".into(),
+        }
+        .into_response();
+    };
+    let member_key = GroupMember::new(group_id.to_bytes(), account);
     match handle.has(&member_key) {
         Ok(true) => {}
         Ok(false) => {

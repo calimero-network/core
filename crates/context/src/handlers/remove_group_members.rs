@@ -1,3 +1,4 @@
+use calimero_account::AccountId;
 use calimero_governance_store::MembershipRepository;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
 
         if let Err(err) = (|| -> eyre::Result<()> {
             let admin_count = MembershipRepository::new(&self.datastore).count_admins(&group_id)?;
-            let mut unique_admins_being_removed: BTreeSet<PublicKey> = BTreeSet::new();
+            let mut unique_admins_being_removed: BTreeSet<AccountId> = BTreeSet::new();
             for id in &members {
                 let role = MembershipRepository::new(&self.datastore).role_of(&group_id, id)?;
                 if role == Some(GroupMemberRole::Admin) {
@@ -79,8 +80,14 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                 );
 
                 // Unsubscribe if this node's identity was removed
-                if let Some(self_pk) = self_identity {
-                    if members.contains(&self_pk) {
+                if let Some(self_account) = self_identity.and_then(|self_pk| {
+                    calimero_governance_store::member_account_in_namespace(
+                        &datastore, &group_id, &self_pk,
+                    )
+                    .ok()
+                    .flatten()
+                }) {
+                    if members.contains(&self_account) {
                         let _ = node_client.unsubscribe_namespace(group_id.to_bytes()).await;
                     }
                 }

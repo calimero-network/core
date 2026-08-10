@@ -3,6 +3,7 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::NamespaceMembershipService;
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::SignedGroupOpenInvitation;
@@ -12,13 +13,13 @@ use eyre::Result as EyreResult;
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
-    member: &PublicKey,
+    member: &AccountId,
     signed_invitation: &SignedGroupOpenInvitation,
     joined_at: Option<u64>,
     account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     let events = NamespaceMembershipService::new(ctx.store(), ctx.namespace_id())
-        .apply_member_joined(&op.signer, member, signed_invitation, joined_at)?;
+        .apply_member_joined(&op.signer, member, signed_invitation, joined_at, account)?;
     for event in events {
         ctx.queue_event(event);
     }

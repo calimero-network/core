@@ -125,6 +125,20 @@ pub(crate) fn parse_context_id(s: &str) -> Result<ContextId, ApiError> {
     Ok(ContextId::from(arr))
 }
 
+/// Parse a member ACCOUNT from a path segment.
+///
+/// Accounts render as 64 hex characters (see `AccountId`'s `Display`), which is
+/// deliberately not the bs58 a *key* renders as: the two are both 32 bytes, so a
+/// shared encoding would let one be pasted where the other belongs and nothing
+/// downstream would object.
+fn parse_account(s: &str) -> Result<calimero_account::AccountId, ApiError> {
+    s.parse::<calimero_account::AccountId>()
+        .map_err(|_| ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid account format: expected 64 hex characters (32 bytes)".into(),
+        })
+}
+
 fn parse_identity(s: &str) -> Result<PublicKey, ApiError> {
     if let Ok(identity) = s.parse::<PublicKey>() {
         return Ok(identity);

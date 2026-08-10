@@ -1,3 +1,4 @@
+use calimero_account::AccountId;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
     ReentryRepository, SigningKeysRepository,
@@ -89,9 +90,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let _ = SigningKeysRepository::new(&datastore).store_key(&group_id, &joiner_identity, &sk_bytes, );
 
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
-                    let admin_identity = calimero_primitives::identity::PublicKey::from(
-                        invitation.invitation.inviter_identity.to_bytes(),
-                    );
+                    let inviter_account = invitation.invitation.inviter_account;
                     // The invitation carries the application id so joiners
                     // pre-populate `GroupMetaValue` with the real value:
                     // `target_application_id` is part of
@@ -135,8 +134,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         }
                     });
                     let meta = calimero_store::key::GroupMetaValue {
-                        admin_identity,
-                        owner_identity: admin_identity,
+                        // From the SIGNED invitation: the joiner has synced nothing
+                        // yet, so it cannot resolve the inviter's key to an account
+                        // itself. Genesis overwrites this on arrival.
+                        admin_identity: inviter_account,
+                        owner_identity: inviter_account,
                         target_application_id,
                         app_key,
                         upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
@@ -151,8 +153,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // Direct-row check: see joiner-side guard below for
                     // why inheritance-aware `check_group_membership`
                     // would be unsafe here.
-                    if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &admin_identity, )? {
-                        MembershipRepository::new(&datastore).add_member(&group_id, &admin_identity, calimero_primitives::context::GroupMemberRole::Admin, )?;
+                    if !MembershipRepository::new(&datastore)
+                        .has_direct_member(&group_id, &inviter_account)?
+                    {
+                        MembershipRepository::new(&datastore).add_member(
+                            &group_id,
+                            &inviter_account,
+                            calimero_primitives::context::GroupMemberRole::Admin,
+                        )?;
                     }
                 }
 
@@ -313,7 +321,19 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // membership from a parent namespace, leaving them
                 // without the direct row that subsequent direct lookups
                 // (removal, capability writes, list_group_members) need.
-                if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &joiner_identity)? {
+                // The joiner's own account, taken from the credential it is about
+                // to publish — the binding does not exist locally until that op
+                // applies, so it cannot be looked up.
+                let joiner_account = crate::join_credential::build(
+                    &datastore,
+                    &namespace_id.into(),
+                    &joiner_identity,
+                )?
+                .cert
+                .account;
+                if !MembershipRepository::new(&datastore)
+                    .has_direct_member(&group_id, &joiner_account)?
+                {
                     // Do not materialize a local row for an identity that may not
                     // re-enter this group. This is the last writer of a direct row
                     // that isn't already gated, and the apply path leans on that:
@@ -331,10 +351,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // op they were about to publish.
                     ReentryRepository::new(&datastore).require_invitation_admits(
                         &group_id,
-                        &joiner_identity,
+                        &joiner_account,
                         invitation.invitation.invitation_nonce,
                     )?;
-                    MembershipRepository::new(&datastore).add_member(&group_id, &joiner_identity, role)?;
+                    MembershipRepository::new(&datastore)
+                        .add_member(&group_id, &joiner_account, role)?;
                 } else {
                     info!(
                         ?group_id,
@@ -378,7 +399,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // `AccountDeviceLinked` left open.
                 let join_account = crate::join_credential::build(&datastore, &namespace_id.into(), &joiner_identity)?;
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-                    member: joiner_identity,
+                    member: join_account.cert.account,
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,

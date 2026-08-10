@@ -64,6 +64,7 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PublicKey;
@@ -249,7 +250,7 @@ async fn run(store: Store, node_client: NodeClient) {
 ///
 /// Returns `Some((group_id, member))` iff the listener should dispatch
 /// a purge for this event; `None` otherwise.
-pub(crate) fn dispatch_target(event: &OpEvent) -> Option<([u8; 32], PublicKey)> {
+pub(crate) fn dispatch_target(event: &OpEvent) -> Option<([u8; 32], AccountId)> {
     match event {
         OpEvent::TeeMemberRemoved { group_id, member } => Some((*group_id, *member)),
         _ => None,
@@ -281,7 +282,7 @@ pub(crate) enum PurgeAction {
 pub(crate) fn decide_purge_action(
     store: &Store,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) -> PurgeAction {
     let gid = ContextGroupId::from(group_id);
 
@@ -330,7 +331,25 @@ pub(crate) fn decide_purge_action(
         }
     };
 
-    if member != self_pk {
+    // The event names an account; `self_pk` is this node's signing key. Resolve
+    // before comparing — the removal is about a PERSON, and this node is one of
+    // their devices.
+    let self_account =
+        match calimero_governance_store::member_account_in_namespace(store, &ns_id, &self_pk) {
+            Ok(Some(account)) => account,
+            // No binding means this node speaks for nobody here, so the removal is
+            // certainly not about it.
+            Ok(None) => return PurgeAction::None,
+            Err(e) => {
+                warn!(
+                    group_id = %hex::encode(group_id),
+                    error = ?e,
+                    "self-purge: failed to resolve this node's account"
+                );
+                return PurgeAction::None;
+            }
+        };
+    if member != self_account {
         // Event is about a different member in our namespace. We stay.
         return PurgeAction::None;
     }
@@ -926,7 +945,15 @@ pub(crate) fn namespace_needs_reconcile(
     // non-TEE removal descendant rows can still survive as residue. Either way
     // consulting descendants here would misread residue as re-admission and
     // abandon the purge, so we look at the root row ONLY.
-    if membership.role_of(&ns_id, &self_pk)?.is_some() {
+    let self_account =
+        calimero_governance_store::member_account_in_namespace(store, &ns_id, &self_pk)?;
+    if self_account.is_some_and(|account| {
+        membership
+            .role_of(&ns_id, &account)
+            .ok()
+            .flatten()
+            .is_some()
+    }) {
         // Re-admitted at the namespace root → live member again.
         return Ok(false);
     }
@@ -939,7 +966,7 @@ async fn handle_member_removed(
     store: &Store,
     node_client: &NodeClient,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) {
     match decide_purge_action(store, group_id, member) {
         PurgeAction::None => {}

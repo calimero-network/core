@@ -1170,7 +1170,8 @@ fn validate_upgrade(
         .ok_or_else(|| eyre::eyre!("group not found"))?;
 
     // 2. Requester must be admin
-    MembershipRepository::new(datastore).require_admin(group_id, requester)?;
+    let requester_account = crate::member_account::require(datastore, group_id, requester)?;
+    MembershipRepository::new(datastore).require_admin(group_id, &requester_account)?;
 
     // 3. Verify node holds the key (skip if raw key was provided)
     if !has_raw_signing_key {
@@ -1520,8 +1521,13 @@ fn dispatch_cascade(
         Err(err) => return ActorResponse::reply(Err(err)),
     };
 
+    let requester_account =
+        match crate::member_account::require(&actor.datastore, &group_id, &requester) {
+            Ok(account) => account,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
     if let Err(err) =
-        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester)
+        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester_account)
     {
         return ActorResponse::reply(Err(err));
     }

@@ -44,7 +44,8 @@ pub enum MembershipChangePayload {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MembershipChange {
-    pub member: PublicKey,
+    /// The member's ACCOUNT — the principal the governance rows name.
+    pub member: crate::identity::AccountId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<GroupMemberRole>,
 }
@@ -230,7 +231,7 @@ mod tests {
         let event = NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: Hash::from([0x07; 32]),
             payload: MembershipChangePayload::MemberJoined(MembershipChange {
-                member: PublicKey::from([0x09; 32]),
+                member: crate::identity::AccountId::from([0x09; 32]),
                 role: Some(GroupMemberRole::Member),
             }),
         });
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn group_membership_omits_role_when_absent() {
         let v = serde_json::to_value(MembershipChangePayload::MemberRemoved(MembershipChange {
-            member: PublicKey::from([0x0A; 32]),
+            member: crate::identity::AccountId::from([0x0A; 32]),
             role: None,
         }))
         .expect("serialize");
@@ -261,7 +262,7 @@ mod tests {
         let group = NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: Hash::from([0x11; 32]),
             payload: MembershipChangePayload::MemberAdded(MembershipChange {
-                member: PublicKey::from([0x12; 32]),
+                member: crate::identity::AccountId::from([0x12; 32]),
                 role: Some(GroupMemberRole::Admin),
             }),
         });

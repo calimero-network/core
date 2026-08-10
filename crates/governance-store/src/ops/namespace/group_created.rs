@@ -107,9 +107,22 @@ pub(crate) fn apply(
         // (from_app_key == descendant.app_key) would silently skip every
         // remote-created subgroup the originator added. Zero-init here
         // was the source of #2358-class cascade-skip bugs.
+        // The creator becomes the subgroup's founding admin and owner, and
+        // both are recorded as accounts. Resolving here rather than storing a
+        // key-derived stand-in is what makes the pins comparable to the
+        // membership rows every later gate reads; a creator this namespace has
+        // no binding for cannot found a group, because nothing it later signs
+        // would match the admin it was pinned as.
+        let Some(creator) = crate::member_account_in_namespace(store, &parent_gid, &op.signer)?
+        else {
+            bail!(crate::MembershipError::NotMember {
+                group_id: hex::encode(parent_gid.to_bytes()),
+                identity: format!("{}", op.signer),
+            });
+        };
         let meta = calimero_store::key::GroupMetaValue {
-            admin_identity: op.signer,
-            owner_identity: op.signer,
+            admin_identity: creator,
+            owner_identity: creator,
             target_application_id: parent_meta.target_application_id,
             app_key: parent_meta.app_key,
             upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
@@ -138,7 +151,14 @@ pub(crate) fn apply(
         handle.put(&GroupParentRef::new(group_id), &parent_id)?;
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
-    MembershipRepository::new(store).add_member(&gid, &op.signer, GroupMemberRole::Admin)?;
+    // The creator's Admin row names the same account the meta pins above.
+    let Some(creator) = crate::member_account_in_namespace(store, &parent_gid, &op.signer)? else {
+        bail!(crate::MembershipError::NotMember {
+            group_id: hex::encode(parent_gid.to_bytes()),
+            identity: format!("{}", op.signer),
+        });
+    };
+    MembershipRepository::new(store).add_member(&gid, &creator, GroupMemberRole::Admin)?;
 
     // Born-Open atomic create (#2771): write the subgroup's visibility key
     // from `restricted` using the SAME mechanism `SubgroupVisibilitySet`

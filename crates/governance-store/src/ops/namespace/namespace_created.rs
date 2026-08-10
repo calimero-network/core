@@ -76,6 +76,7 @@ use crate::{
     placeholder_admin_identity, ApplyError, CapabilitiesRepository, MembershipRepository,
     MetaRepository, NamespaceCreatedRejection,
 };
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
@@ -85,7 +86,8 @@ use eyre::{bail, Result as EyreResult};
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &calimero_context_client::local_governance::SignedNamespaceOp,
-    founder: PublicKey,
+    founder: AccountId,
+    account: &calimero_context_client::local_governance::JoinAccountCredential,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -315,11 +317,18 @@ pub(crate) fn apply(
     // forged genesis would target a different (attacker-derived) namespace id
     // and could never collide with the legitimate one. See the #2474
     // root-of-trust follow-up.
-    if op.signer != founder {
+    // `founder` names an account and a signature names a key, so the two halves
+    // of "the signer IS the founder" come from the credential: it must certify
+    // this founder's account, and it must certify the key that signed the op.
+    // This is the same predicate the join ops use — see `join_op_proves_ownership`
+    // for why either half alone admits a forgery.
+    if !crate::ops::namespace::member_joined_open::join_op_proves_ownership(
+        &op.signer, &founder, account,
+    ) {
         bail!(ApplyError::NamespaceCreatedRejected(
             NamespaceCreatedRejection::SignerNotFounder {
                 signer: format!("{}", op.signer),
-                founder: format!("{founder}"),
+                founder: format!("{founder:?}"),
             }
         ));
     }
@@ -379,6 +388,35 @@ pub(crate) fn apply(
     // test `namespace_created_genesis_upgrades_seeded_member_founder_to_admin`
     // (Member → Admin upgrade on this establish path).
     MembershipRepository::new(store).add_member(&ns_gid, &founder, GroupMemberRole::Admin)?;
+
+    // ---- Bind the founder's device, in the same apply as its membership. ----
+    // The founder is the one member no join op ever admits, so this is the only
+    // place its binding can be written. Without it the namespace's own admin is
+    // the single principal whose signing key resolves to no account, and every
+    // gate it later signs refuses it.
+    //
+    // The endorser row names the founder itself. That is not circular: an
+    // endorser must be a member, and the Admin row written immediately above is
+    // exactly that. Genesis authority is what vouches here, and genesis has no
+    // earlier member to defer to.
+    let bindings = crate::AccountBindingRepository::new(store);
+    let outcome = bindings.apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)?;
+    if !outcome
+        .as_ref()
+        .err()
+        .is_some_and(crate::BindingRejected::is_permanent)
+    {
+        bindings.record_endorser(&ns_gid, account.cert.account, &founder)?;
+    }
+    if let Err(rejected) = outcome {
+        tracing::warn!(
+            namespace_id = %hex::encode(namespace_id.as_bytes()),
+            ?founder,
+            ?rejected,
+            "namespace genesis: the founder's device credential was refused; the \
+             namespace is established but its founder has no binding"
+        );
+    }
 
     // ---- Default caps: CAN_JOIN_OPEN_SUBGROUPS. ----
     // Mirrors the bootstrap seed and the owner-side `store_group_meta`

@@ -133,7 +133,15 @@ impl<'a> NamespaceRetryService<'a> {
 
         let mut out = std::collections::BTreeSet::new();
         for gid in groups {
-            if !MembershipRepository::new(self.store).has_direct_member(&gid, &my_identity)? {
+            // `my_identity` is this node's signing key; the row names its
+            // account. An unresolved key holds no row anywhere, so skipping is
+            // the same answer reached one step earlier.
+            let Some(my_account) =
+                crate::member_account_in_namespace(self.store, &gid, &my_identity)?
+            else {
+                continue;
+            };
+            if !MembershipRepository::new(self.store).has_direct_member(&gid, &my_account)? {
                 continue;
             }
             // `has_namespace_key` is already known false here; only the group's

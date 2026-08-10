@@ -109,7 +109,15 @@ pub(crate) fn apply_device_linked(
         .err()
         .is_some_and(BindingRejected::is_permanent);
     if !credential_can_never_succeed {
-        bindings.record_endorser(&group_id, cert.account, &endorsement.member)?;
+        // The endorsement names the SIGNING KEY that made it — a signature can
+        // name nothing else — but the row records the account that key speaks
+        // for, because that is what a membership check consults. `endorser_is_member`
+        // above already refused an unresolvable key, so this resolves.
+        if let Some(endorser) =
+            crate::member_account_in_namespace(ctx.store(), &group_id, &endorsement.member)?
+        {
+            bindings.record_endorser(&group_id, cert.account, &endorser)?;
+        }
     }
 
     match outcome {
@@ -272,11 +280,21 @@ fn endorser_is_member(
     ctx: &GroupApplyCtx<'_>,
     endorser: &calimero_primitives::identity::PublicKey,
 ) -> EyreResult<bool> {
+    // The endorsement names a member KEY, but membership is recorded against
+    // the account it speaks for, so resolve before asking either plane. An
+    // endorser whose key is bound to no account here vouches for nobody — the
+    // same refusal an unknown key gets, reached one step earlier.
+    let endorser_key = *endorser;
+    let Some(endorser) = crate::member_account_in_namespace(ctx.store(), ctx.group_id(), endorser)?
+    else {
+        return Ok(false);
+    };
+    let endorser = &endorser;
     let projected = ctx.projection_membership_path(endorser);
     let path = match projected {
         Some(projected) => projected,
         None => {
-            ctx.ensure_live_fallback_is_sound(endorser)?;
+            ctx.ensure_live_fallback_is_sound(&endorser_key)?;
             match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), endorser)? {
                 MembershipPath::None => AtCutMembershipPath::None,
                 MembershipPath::Direct => AtCutMembershipPath::Direct,

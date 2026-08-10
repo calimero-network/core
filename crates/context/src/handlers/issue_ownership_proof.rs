@@ -135,7 +135,8 @@ pub(crate) fn build_ownership_proof(
 ) -> eyre::Result<OwnershipProofBuildOutput> {
     validate_proof_fields(audience, subject, nonce)?;
 
-    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
+    let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
+    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
         bail!("node is not a direct admin of this group");
     }
 
@@ -233,7 +234,8 @@ pub(crate) fn build_namespace_ownership_proof(
 ) -> eyre::Result<OwnershipProofBuildOutput> {
     validate_proof_fields(audience, subject, nonce)?;
 
-    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
+    let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
+    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
         bail!("node is not a direct admin of this group");
     }
 

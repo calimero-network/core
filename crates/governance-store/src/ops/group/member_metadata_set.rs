@@ -4,6 +4,7 @@
 use super::super::super::now_millis;
 use super::context::GroupApplyCtx;
 use crate::{MembershipError, MembershipRepository, MetadataRepository};
+use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::{bail, Result as EyreResult};
@@ -11,7 +12,7 @@ use std::collections::BTreeMap;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    member: &PublicKey,
+    member: &AccountId,
     name: &Option<String>,
     data: &BTreeMap<String, String>,
 ) -> EyreResult<()> {
@@ -22,8 +23,8 @@ pub(crate) fn apply(
     // A member may always set *their own* metadata — but only if they
     // actually are a member of this group; otherwise this is gated like
     // the other metadata ops (admin or CAN_MANAGE_METADATA).
-    if signer == member {
-        if !MembershipRepository::new(store).is_member(group_id, signer)? {
+    if ctx.signer_is(member)? {
+        if !MembershipRepository::new(store).is_member(group_id, member)? {
             bail!(MembershipError::NotMember {
                 group_id: hex::encode(group_id.to_bytes()),
                 identity: format!("{signer:?}"),

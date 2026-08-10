@@ -36,6 +36,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::JoinContextRequest;
 use calimero_context_config::types::ContextGroupId;
@@ -371,8 +372,9 @@ async fn handle_subgroup_opened(
     if !should_follow_on_subgroup_open(store, group_id) {
         return;
     }
-    // `should_follow_on_subgroup_open` already confirmed a namespace identity.
-    let Some(self_pk) = self_pk_for_group(store, &ContextGroupId::from(group_id)) else {
+    // `should_follow_on_subgroup_open` already confirmed a namespace identity
+    // that resolves to an account.
+    let Some(self_account) = self_account_for_group(store, &ContextGroupId::from(group_id)) else {
         return;
     };
     info!(
@@ -383,7 +385,7 @@ async fn handle_subgroup_opened(
     // and (idempotently) join each. `join_context` is inheritance-aware, so a
     // non-inherited member is refused there and an already-joined context is a
     // no-op.
-    handle_auto_follow_enabled(store, context_client, limiter, group_id, self_pk).await;
+    handle_auto_follow_enabled(store, context_client, limiter, group_id, self_account).await;
 }
 
 /// Whether a `SubgroupVisibilityChanged { open: true }` on `group_id` should
@@ -398,8 +400,8 @@ async fn handle_subgroup_opened(
 /// unit-testable without a live `ContextClient`/rate-limiter/broadcast bus.
 pub(crate) fn should_follow_on_subgroup_open(store: &Store, group_id: [u8; 32]) -> bool {
     let gid = ContextGroupId::from(group_id);
-    match self_pk_for_group(store, &gid) {
-        Some(self_pk) => should_auto_follow_contexts(store, &gid, &self_pk),
+    match self_account_for_group(store, &gid) {
+        Some(self_account) => should_auto_follow_contexts(store, &gid, &self_account),
         None => false,
     }
 }
@@ -430,7 +432,15 @@ pub(crate) fn decide_on_context_registered(
     let Some(self_pk) = self_pk_for_group(store, &gid) else {
         return ContextRegisteredDecision::NotMember;
     };
-    if !should_auto_follow_contexts(store, &gid, &self_pk) {
+    // Two different questions about the same node: the auto-follow FLAG lives on
+    // the member row, which names an account, while the left-marker is a
+    // per-context stamp written under the identity that actually left. Asking
+    // each in its own space is the point — collapsing them onto one id would
+    // make a second device inherit the first one's "I left this context".
+    let Some(self_account) = self_account_for_group(store, &gid) else {
+        return ContextRegisteredDecision::NotMember;
+    };
+    if !should_auto_follow_contexts(store, &gid, &self_account) {
         return ContextRegisteredDecision::NotAutoFollowing;
     }
     if has_left_context(store, context_id, &self_pk) {
@@ -519,13 +529,13 @@ pub(crate) enum AutoFollowEnabledDecision {
 pub(crate) fn decide_on_auto_follow_enabled(
     store: &Store,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) -> AutoFollowEnabledDecision {
     let gid = ContextGroupId::from(group_id);
-    let Some(self_pk) = self_pk_for_group(store, &gid) else {
+    let Some(self_account) = self_account_for_group(store, &gid) else {
         return AutoFollowEnabledDecision::NotMember;
     };
-    if self_pk != member {
+    if self_account != member {
         return AutoFollowEnabledDecision::NotForSelf;
     }
     let contexts =
@@ -555,7 +565,7 @@ async fn handle_auto_follow_enabled(
     context_client: &ContextClient,
     limiter: &Arc<RateLimiter>,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) {
     let (contexts, truncated) = match decide_on_auto_follow_enabled(store, group_id, member) {
         AutoFollowEnabledDecision::NotMember
@@ -605,6 +615,16 @@ async fn handle_auto_follow_enabled(
     }
 }
 
+/// This node's ACCOUNT in the namespace containing `group_id`, or `None` when
+/// its identity is bound to none — which means it is not a member, so
+/// auto-follow does not apply, the same conclusion a missing identity reaches.
+fn self_account_for_group(store: &Store, group_id: &ContextGroupId) -> Option<AccountId> {
+    let self_pk = self_pk_for_group(store, group_id)?;
+    calimero_governance_store::member_account_in_namespace(store, group_id, &self_pk)
+        .ok()
+        .flatten()
+}
+
 /// Return this node's public key for the namespace containing `group_id`,
 /// or `None` if this node has no identity for that namespace (meaning
 /// we're not a member, so auto-follow doesn't apply).
@@ -634,7 +654,7 @@ fn self_pk_for_group(store: &Store, group_id: &ContextGroupId) -> Option<PublicK
 fn should_auto_follow_contexts(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) -> bool {
     let repo = MembershipRepository::new(store);
     match repo.member_value(group_id, member) {

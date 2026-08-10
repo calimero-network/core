@@ -10,6 +10,7 @@ publish = true
 
 [dependencies]
 bs58.workspace = true
+calimero-account.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
 serde = { workspace = true, features = ["derive"] }

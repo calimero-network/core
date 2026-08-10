@@ -2,6 +2,7 @@ use crate::{
     CapabilitiesRepository, GroupKeyring, KeyRecipient, MetaRepository, NamespaceRepository,
     PermissionChecker,
 };
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -33,7 +34,7 @@ enum RotationPlan<'a> {
     None,
     /// Rotate, and wrap for nobody belonging to this member — a removal or a
     /// post-leave rotation.
-    ExcludingMember(&'a PublicKey),
+    ExcludingMember(&'a AccountId),
     /// Rotate and wrap for everyone still entitled, excluding nobody by name.
     ///
     /// For a device revocation, where the exclusion has already happened: the
@@ -50,7 +51,7 @@ impl RotationPlan<'_> {
     }
 
     /// Whether `member`'s recipients belong in the rotation.
-    fn keeps(self, member: PublicKey) -> bool {
+    fn keeps(self, member: AccountId) -> bool {
         match self {
             Self::None | Self::AllEntitled => true,
             Self::ExcludingMember(excluded) => member != *excluded,
@@ -121,7 +122,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         &self,
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
-        removed_member: &PublicKey,
+        removed_member: &AccountId,
     ) -> EyreResult<Option<DeliveryReport>> {
         // Before ANY mutation: refuse a removal whose rotation peers would reject.
         self.ensure_rotation_is_publishable()?;
@@ -170,7 +171,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         &self,
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
-        departed: &PublicKey,
+        departed: &AccountId,
     ) -> EyreResult<Option<DeliveryReport>> {
         // Same fail-closed gate as a removal: never mint a key peers would reject.
         self.ensure_rotation_is_publishable()?;
@@ -414,10 +415,9 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // exclusion is visible: the removed member must not receive the
                 // key they are being rotated out of.
                 // Filtering by `member` — not by recipient — is what makes the
-                // removed member's *devices* go with them. A device-addressed
-                // recipient carries no member key of its own, so dropping only
-                // the identity-addressed entry would leave their devices holding
-                // the fresh key.
+                // removed member's *devices* go with them. `member` is the
+                // account each device speaks for, so excluding it drops every
+                // device that person holds in one comparison.
                 let recipients: Vec<KeyRecipient> = keyring
                     .current_key_recipients()?
                     .into_iter()

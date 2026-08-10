@@ -3,6 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{
     ContextId as PrimitiveContextId, GroupMemberRole, UpgradePolicy,
@@ -119,11 +120,17 @@ impl Debug for GroupMeta {
 pub struct GroupMember(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
 impl GroupMember {
+    /// Keyed by the member's **account**, not its signing key.
+    ///
+    /// A membership row answers "may this PERSON act here", so one grant has to
+    /// cover every device they hold. Both ids are 32 bytes, so the row layout is
+    /// unchanged and confusing the two would still compile — which is exactly
+    /// why the type says which one this is.
     #[must_use]
-    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], account: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_MEMBER_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*identity))))
+            .concat(GenericArray::from(*account.as_bytes()))))
     }
 
     #[must_use]
@@ -134,10 +141,10 @@ impl GroupMember {
     }
 
     #[must_use]
-    pub fn identity(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -165,7 +172,7 @@ impl Debug for GroupMember {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupMember")
             .field("group_id", &self.group_id())
-            .field("identity", &self.identity())
+            .field("account", &self.account())
             .finish()
     }
 }
@@ -507,17 +514,21 @@ pub struct GroupSigningKeyValue {
 // Group permission key types
 // ---------------------------------------------------------------------------
 
-/// Key for per-member capability bitfield: prefix + group_id + member_pk.
+/// Key for per-member capability bitfield: prefix + group_id + member account.
+///
+/// A capability is a grant to a person, so it is keyed the same way the
+/// membership row it qualifies is — by [`AccountId`], covering every device
+/// that account holds.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberCapability(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
 impl GroupMemberCapability {
     #[must_use]
-    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], account: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_MEMBER_CAPABILITY_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*identity))))
+            .concat(GenericArray::from(*account.as_bytes()))))
     }
 
     #[must_use]
@@ -528,10 +539,10 @@ impl GroupMemberCapability {
     }
 
     #[must_use]
-    pub fn identity(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -559,7 +570,7 @@ impl Debug for GroupMemberCapability {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupMemberCapability")
             .field("group_id", &self.group_id())
-            .field("identity", &self.identity())
+            .field("account", &self.account())
             .finish()
     }
 }
@@ -752,17 +763,20 @@ pub const GROUP_MEMBER_METADATA_PREFIX: u8 = 0x2D;
 
 /// Stores the [`MetadataRecord`](calimero_primitives::metadata::MetadataRecord)
 /// for a group member, scoped to a specific group.
-/// Key: prefix (1 byte) + group_id (32 bytes) + member_pk (32 bytes) → `MetadataRecord`
+/// Key: prefix (1 byte) + group_id (32 bytes) + member account (32 bytes) → `MetadataRecord`
+///
+/// Member metadata describes the person, so it follows the membership row's
+/// keying: one record per [`AccountId`], not one per device.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberMetadata(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
 impl GroupMemberMetadata {
     #[must_use]
-    pub fn new(group_id: [u8; 32], member: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], member: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_MEMBER_METADATA_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*member))))
+            .concat(GenericArray::from(*member.as_bytes()))))
     }
 
     #[must_use]
@@ -773,10 +787,10 @@ impl GroupMemberMetadata {
     }
 
     #[must_use]
-    pub fn member(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn member(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -995,8 +1009,12 @@ impl Debug for GroupOpHead {
 }
 
 /// Tracks which context memberships were granted through a group join.
-/// Key: prefix + group_id + member_pk + context_id → context_identity bytes [u8; 32]
+/// Key: prefix + group_id + member account + context_id → context_identity bytes [u8; 32]
 /// Used for cascade removal when a member is kicked from the group.
+///
+/// Keyed by [`AccountId`] because the cascade is driven by a membership
+/// removal, which names an account; the *value* stays a context identity key,
+/// since that is the per-device stamp the context itself was joined under.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberContext(
@@ -1010,14 +1028,10 @@ pub struct GroupMemberContext(
 
 impl GroupMemberContext {
     #[must_use]
-    pub fn new(
-        group_id: [u8; 32],
-        member: PrimitivePublicKey,
-        context_id: PrimitiveContextId,
-    ) -> Self {
+    pub fn new(group_id: [u8; 32], member: AccountId, context_id: PrimitiveContextId) -> Self {
         Self(Key(GenericArray::from([GROUP_MEMBER_CONTEXT_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*member))
+            .concat(GenericArray::from(*member.as_bytes()))
             .concat(GenericArray::from(*context_id))))
     }
 
@@ -1029,10 +1043,10 @@ impl GroupMemberContext {
     }
 
     #[must_use]
-    pub fn member(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
-        pk.into()
+    pub fn member(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        AccountId::from(id)
     }
 
     #[must_use]
@@ -1079,8 +1093,11 @@ impl Debug for GroupMemberContext {
 }
 
 /// Per-context per-member capability bitfield.
-/// Key: prefix(1) + group_id(32) + context_id(32) + member_pk(32) = 97 bytes
+/// Key: prefix(1) + group_id(32) + context_id(32) + member account(32) = 97 bytes
 /// Value: u8 (capability bitfield)
+///
+/// Account-keyed for the same reason as [`GroupMemberCapability`]: a grant is
+/// made to a person and must hold for every device they act from.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupContextMemberCap(
@@ -1094,15 +1111,11 @@ pub struct GroupContextMemberCap(
 
 impl GroupContextMemberCap {
     #[must_use]
-    pub fn new(
-        group_id: [u8; 32],
-        context_id: PrimitiveContextId,
-        member: PrimitivePublicKey,
-    ) -> Self {
+    pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId, member: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_CONTEXT_MEMBER_CAP_PREFIX])
             .concat(GenericArray::from(group_id))
             .concat(GenericArray::from(*context_id))
-            .concat(GenericArray::from(*member))))
+            .concat(GenericArray::from(*member.as_bytes()))))
     }
 
     #[must_use]
@@ -1120,10 +1133,10 @@ impl GroupContextMemberCap {
     }
 
     #[must_use]
-    pub fn member(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
-        pk.into()
+    pub fn member(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        AccountId::from(id)
     }
 }
 
@@ -1179,17 +1192,20 @@ pub struct GroupMetaValue {
     pub target_application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
-    pub admin_identity: PrimitivePublicKey,
+    /// The founding admin, named by **account**. Both this and
+    /// `owner_identity` are principals — they answer "who may act" — so they
+    /// key the same way every other governance gate does.
+    pub admin_identity: AccountId,
     /// Single-instance Owner of this group. Distinct from the legacy
     /// `admin_identity` (which is now a fallback creator-admin marker for
     /// pre-existing groups). The Owner has exclusive privileges no other
     /// admin can perform: `TransferOwnership`, `DeleteGroup`/
     /// `DeleteNamespace`, and immunity from involuntary `MemberRemoved`.
     ///
-    /// Set to the signer of `CreateGroupRequest` on group creation. New
-    /// groups have `owner_identity == admin_identity` initially.
+    /// Set to the account of the signer of `CreateGroupRequest` on group
+    /// creation. New groups have `owner_identity == admin_identity` initially.
     /// Transferable via `GroupOp::TransferOwnership { new_owner }`.
-    pub owner_identity: PrimitivePublicKey,
+    pub owner_identity: AccountId,
     pub migration: Option<Vec<u8>>,
     /// When true, joining members auto-subscribe to all visible contexts.
     pub auto_join: bool,
@@ -2007,13 +2023,17 @@ impl Debug for GroupKeyEntry {
     }
 }
 
-/// Per-group deny-list entry. Presence of the key marks `identity` as
+/// Per-group deny-list entry. Presence of the key marks `account` as
 /// currently denied for `group_id` — the receive-side network filter drops
 /// state deltas they sign before the cross-DAG check runs. Cleared on
-/// `MemberAdded` for the same `(group_id, identity)` pair so re-adding a
+/// `MemberAdded` for the same `(group_id, account)` pair so re-adding a
 /// previously-removed member transparently re-allows their traffic.
 ///
-/// Key layout: `prefix(1) + group_id(32) + identity(32)` = 65 bytes —
+/// Denial is the negative of membership, so it is keyed the same way: by
+/// [`AccountId`], which silences every device the denied person holds rather
+/// than only the one whose key happened to author the removal.
+///
+/// Key layout: `prefix(1) + group_id(32) + account(32)` = 65 bytes —
 /// same shape as `GroupMember` so prefix scans over `(group_id, *)` work
 /// the same way.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -2022,10 +2042,10 @@ pub struct GroupDeniedMember(Key<(GroupPrefix, GroupIdComponent, GroupIdComponen
 
 impl GroupDeniedMember {
     #[must_use]
-    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], account: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_DENIED_MEMBER_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*identity))))
+            .concat(GenericArray::from(*account.as_bytes()))))
     }
 
     #[must_use]
@@ -2036,10 +2056,10 @@ impl GroupDeniedMember {
     }
 
     #[must_use]
-    pub fn identity(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -2067,7 +2087,7 @@ impl Debug for GroupDeniedMember {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupDeniedMember")
             .field("group_id", &self.group_id())
-            .field("identity", &self.identity())
+            .field("account", &self.account())
             .finish()
     }
 }
@@ -2341,11 +2361,11 @@ pub struct GroupAccountEndorser(
 
 impl GroupAccountEndorser {
     #[must_use]
-    pub fn new(group_id: [u8; 32], account_id: [u8; 32], member: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], account_id: [u8; 32], member: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_ACCOUNT_ENDORSER_PREFIX])
             .concat(GenericArray::from(group_id))
             .concat(GenericArray::from(account_id))
-            .concat(GenericArray::from(*member))))
+            .concat(GenericArray::from(*member.as_bytes()))))
     }
 
     #[must_use]
@@ -2363,10 +2383,10 @@ impl GroupAccountEndorser {
     }
 
     #[must_use]
-    pub fn member(&self) -> PrimitivePublicKey {
+    pub fn member(&self) -> AccountId {
         let mut id = [0; 32];
         id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
-        PrimitivePublicKey::from(id)
+        AccountId::from(id)
     }
 }
 
@@ -2584,10 +2604,10 @@ impl Debug for NodeDeviceIdentityValue {
 }
 
 /// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).
-/// Presence marks `identity`, keyed to the namespace root, as inherited-denied:
+/// Presence marks `account`, keyed to the namespace root, as inherited-denied:
 /// the receive filter drops their deltas to any descendant subgroup they reached
 /// only by inheritance. Same 65-byte layout as `GroupDeniedMember`
-/// (`prefix(1) + group_id(32) + identity(32)`) so `(group_id, *)` prefix scans work
+/// (`prefix(1) + group_id(32) + account(32)`) so `(group_id, *)` prefix scans work
 /// identically, but a distinct column so the two deny views never collide.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
@@ -2595,12 +2615,12 @@ pub struct GroupInheritedDeniedMember(Key<(GroupPrefix, GroupIdComponent, GroupI
 
 impl GroupInheritedDeniedMember {
     #[must_use]
-    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], account: AccountId) -> Self {
         Self(Key(GenericArray::from([
             GROUP_INHERITED_DENIED_MEMBER_PREFIX,
         ])
         .concat(GenericArray::from(group_id))
-        .concat(GenericArray::from(*identity))))
+        .concat(GenericArray::from(*account.as_bytes()))))
     }
 
     #[must_use]
@@ -2611,10 +2631,10 @@ impl GroupInheritedDeniedMember {
     }
 
     #[must_use]
-    pub fn identity(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -2642,7 +2662,7 @@ impl Debug for GroupInheritedDeniedMember {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupInheritedDeniedMember")
             .field("group_id", &self.group_id())
-            .field("identity", &self.identity())
+            .field("account", &self.account())
             .finish()
     }
 }
@@ -2668,18 +2688,21 @@ pub struct GroupReentryBlockValue {
     pub reason: GroupExitReason,
 }
 
-/// Blocks an identity from re-entering a group after they exited it.
-/// Key layout: `prefix(1) + group_id(32) + identity(32)` = 65 bytes.
+/// Blocks an account from re-entering a group after they exited it.
+/// Key layout: `prefix(1) + group_id(32) + account(32)` = 65 bytes.
+///
+/// Account-keyed so someone who left cannot walk back in from a second
+/// device — the block follows the person, not the key that signed the exit.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupReentryBlock(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
 impl GroupReentryBlock {
     #[must_use]
-    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], account: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_REENTRY_BLOCK_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*identity))))
+            .concat(GenericArray::from(*account.as_bytes()))))
     }
 
     #[must_use]
@@ -2690,10 +2713,10 @@ impl GroupReentryBlock {
     }
 
     #[must_use]
-    pub fn identity(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -2721,14 +2744,16 @@ impl Debug for GroupReentryBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupReentryBlock")
             .field("group_id", &self.group_id())
-            .field("identity", &self.identity())
+            .field("account", &self.account())
             .finish()
     }
 }
 
-/// Records that `identity` has already used the invitation identified by
+/// Records that `account` has already used the invitation identified by
 /// `invitation_nonce` to join `group_id`.
-/// Key layout: `prefix(1) + group_id(32) + identity(32) + nonce(32)` = 97 bytes.
+/// Key layout: `prefix(1) + group_id(32) + account(32) + nonce(32)` = 97 bytes.
+///
+/// Account-keyed so one invitation cannot be redeemed once per device.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupConsumedInvitation(
@@ -2742,14 +2767,10 @@ pub struct GroupConsumedInvitation(
 
 impl GroupConsumedInvitation {
     #[must_use]
-    pub fn new(
-        group_id: [u8; 32],
-        identity: PrimitivePublicKey,
-        invitation_nonce: [u8; 32],
-    ) -> Self {
+    pub fn new(group_id: [u8; 32], account: AccountId, invitation_nonce: [u8; 32]) -> Self {
         Self(Key(GenericArray::from([GROUP_CONSUMED_INVITATION_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*identity))
+            .concat(GenericArray::from(*account.as_bytes()))
             .concat(GenericArray::from(invitation_nonce))))
     }
 
@@ -2761,10 +2782,10 @@ impl GroupConsumedInvitation {
     }
 
     #[must_use]
-    pub fn identity(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
-        pk.into()
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        AccountId::from(id)
     }
 
     #[must_use]
@@ -2804,7 +2825,7 @@ impl Debug for GroupConsumedInvitation {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupConsumedInvitation")
             .field("group_id", &self.group_id())
-            .field("identity", &self.identity())
+            .field("account", &self.account())
             .field("invitation_nonce", &self.invitation_nonce())
             .finish()
     }
@@ -2828,10 +2849,10 @@ pub struct GroupPendingKeyRotation(Key<(GroupPrefix, GroupIdComponent, GroupIdCo
 
 impl GroupPendingKeyRotation {
     #[must_use]
-    pub fn new(group_id: [u8; 32], departed: PrimitivePublicKey) -> Self {
+    pub fn new(group_id: [u8; 32], departed: AccountId) -> Self {
         Self(Key(GenericArray::from([GROUP_PENDING_KEY_ROTATION_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*departed))))
+            .concat(GenericArray::from(*departed.as_bytes()))))
     }
 
     #[must_use]
@@ -2842,10 +2863,10 @@ impl GroupPendingKeyRotation {
     }
 
     #[must_use]
-    pub fn departed(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
+    pub fn departed(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        AccountId::from(id)
     }
 }
 
@@ -2973,10 +2994,10 @@ mod tests {
     #[test]
     fn group_member_roundtrip() {
         let gid = [0xCD; 32];
-        let pk = PrimitivePublicKey::from([0xEF; 32]);
-        let key = GroupMember::new(gid, pk);
+        let account = AccountId::from([0xEF; 32]);
+        let key = GroupMember::new(gid, account);
         assert_eq!(key.group_id(), gid);
-        assert_eq!(key.identity(), pk);
+        assert_eq!(key.account(), account);
         assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_PREFIX);
         assert_eq!(key.as_key().as_bytes().len(), 65);
     }
@@ -2989,7 +3010,7 @@ mod tests {
         // own [1..33]/[33..65]/[65..97] slice, so the two shapes can't alias.
         let gid = [0x10; 32];
         let context_id = PrimitiveContextId::from([0x20; 32]);
-        let member = PrimitivePublicKey::from([0x30; 32]);
+        let member = AccountId::from([0x30; 32]);
         let key = GroupContextMemberCap::new(gid, context_id, member);
 
         assert_eq!(key.group_id(), gid);
@@ -3221,10 +3242,10 @@ mod tests {
     #[test]
     fn group_member_metadata_roundtrip() {
         let gid = [0xDA; 32];
-        let pk = PrimitivePublicKey::from([0xDB; 32]);
-        let key = GroupMemberMetadata::new(gid, pk);
+        let account = AccountId::from([0xDB; 32]);
+        let key = GroupMemberMetadata::new(gid, account);
         assert_eq!(key.group_id(), gid);
-        assert_eq!(key.member(), pk);
+        assert_eq!(key.member(), account);
         assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_METADATA_PREFIX);
         assert_eq!(key.as_key().as_bytes().len(), 65);
     }
@@ -3282,6 +3303,7 @@ mod tests {
     #[cfg(feature = "borsh")]
     mod value_roundtrips {
         use borsh::{from_slice, to_vec};
+        use calimero_account::AccountId;
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -3298,8 +3320,8 @@ mod tests {
                 target_application_id: ApplicationId::from([0xBB; 32]),
                 upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
-                admin_identity: PrimitivePublicKey::from([0xCC; 32]),
-                owner_identity: PrimitivePublicKey::from([0xCC; 32]),
+                admin_identity: AccountId::from([0xCC; 32]),
+                owner_identity: AccountId::from([0xCC; 32]),
                 migration: None,
                 auto_join: true,
             };
@@ -3324,8 +3346,8 @@ mod tests {
                 target_application_id: ApplicationId::from([0x22; 32]),
                 upgrade_policy: policy,
                 created_at: 1_700_000_000,
-                admin_identity: PrimitivePublicKey::from([0x33; 32]),
-                owner_identity: PrimitivePublicKey::from([0x33; 32]),
+                admin_identity: AccountId::from([0x33; 32]),
+                owner_identity: AccountId::from([0x33; 32]),
                 migration: None,
                 auto_join: true,
             };

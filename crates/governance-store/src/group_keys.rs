@@ -1,5 +1,7 @@
-use crate::{AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository};
-use calimero_account::{DeviceId, KemPublicKey};
+use crate::{
+    AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository, NamespaceRepository,
+};
+use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation,
 };
@@ -68,8 +70,11 @@ pub struct KeyRequester {
 /// holding the fresh key — the exact failure the exclusion exists to prevent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EntitledRecipient {
-    /// The group member this delivery is on behalf of.
-    pub member: PublicKey,
+    /// The group member this delivery is on behalf of, named by account —
+    /// the same principal the membership row is keyed by, so a caller
+    /// excluding someone (a rotation dropping the departed) excludes every
+    /// device they hold rather than only the one that happened to be listed.
+    pub member: AccountId,
     /// Where the key actually goes.
     pub recipient: KeyRecipient,
 }
@@ -667,58 +672,44 @@ impl<'a> GroupKeyring<'a> {
     /// in this system is answered from folded state, not from a side effect of
     /// wrapping.
     ///
-    /// Resolution is **per member, device-first**:
+    /// Resolution is **per member, device-first**: a member row names an
+    /// account, and that account is addressed only through its live devices.
     ///
-    /// - A member this group knows an account for is addressed only through that
-    ///   account's live devices. Once accounts are in play for someone, falling
-    ///   back to their identity key would hand the key straight back to a device
-    ///   that was just revoked — the revoked device is still running on a node
-    ///   that holds the member key. So a member whose every device has been
-    ///   revoked or superseded receives **nothing** until they enroll a new one,
-    ///   which is the correct outcome and not an oversight.
-    /// - A member with no account here at all is addressed by identity. That is
-    ///   the bootstrap case, and the only one: an account cannot exist for
-    ///   someone who has never held the key long enough to publish a link.
+    /// A member whose every device has been revoked or superseded receives
+    /// **nothing** until they enroll a new one. That is the correct outcome and
+    /// not an oversight — the revoked device is still running on a node that
+    /// holds the member key, so any fallback to identity addressing would hand
+    /// the fresh key straight back to it.
     ///
-    /// The member→account direction is re-derived on every call from the endorser
-    /// rows, never cached. It cannot be read off the account row's root key: since
-    /// the account root became a dedicated offline key it is a member nowhere, so
-    /// matching on it matches nothing and every member falls back to identity
-    /// addressing — handing the scope key straight to a node running a revoked
-    /// device. And it cannot be cached either: `AccountId` is a one-way hash, so a
-    /// reverse map could only be populated while decoding ops, and would come back
-    /// empty after a projection rebuild with exactly the same silent result.
+    /// **Devices are resolved at the NAMESPACE, not at `self.group_id`.**
+    /// Binding rows are written where the credential arrived, which is the
+    /// namespace a member joined; a subgroup holds none of its own. Scanning
+    /// the subgroup would find no devices for anyone and deliver nothing to a
+    /// group whose members are all perfectly entitled. This is the same
+    /// namespace-vs-decision-group distinction
+    /// [`member_account_in_namespace`](crate::member_account_in_namespace)
+    /// exists for.
     ///
     /// # Errors
     /// Propagates the membership or account-row scan failure.
     pub fn current_key_recipients(&self) -> EyreResult<Vec<EntitledRecipient>> {
         let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
-        let bindings = AccountBindingRepository::new(self.store);
-        let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
+        let namespace = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         // One scan for the whole fan-out. Asking per account inside the member
-        // loop rescanned the binding column once per (member, account) pair.
-        let devices = bindings.live_devices_by_account(&self.group_id)?;
+        // loop rescanned the binding column once per member.
+        let devices =
+            AccountBindingRepository::new(self.store).live_devices_by_account(&namespace)?;
 
         let mut out = Vec::with_capacity(members.len());
         for (member, _) in members {
-            let member_accounts = accounts.get(&member).map(Vec::as_slice).unwrap_or(&[]);
-            if member_accounts.is_empty() {
+            for binding in devices.get(&member).map(Vec::as_slice).unwrap_or(&[]) {
                 out.push(EntitledRecipient {
                     member,
-                    recipient: KeyRecipient::Member(member),
+                    recipient: KeyRecipient::Device {
+                        device: binding.device,
+                        kem_pk: X25519PublicKey::from(binding.kem_pk),
+                    },
                 });
-                continue;
-            }
-            for account in member_accounts {
-                for binding in devices.get(account).map(Vec::as_slice).unwrap_or(&[]) {
-                    out.push(EntitledRecipient {
-                        member,
-                        recipient: KeyRecipient::Device {
-                            device: binding.device,
-                            kem_pk: X25519PublicKey::from(binding.kem_pk),
-                        },
-                    });
-                }
             }
         }
         Ok(out)
@@ -751,8 +742,10 @@ impl<'a> GroupKeyring<'a> {
     ///   publish the link on their behalf. If they could re-key themselves,
     ///   revocation would mean nothing.
     ///
-    /// A member with no account here is addressed by identity — the bootstrap
-    /// case, and the reason a keyless joiner can still get started.
+    /// A requester whose key names no account here is served nothing. Since
+    /// every member is bound by the op that admits it — a join for a joiner, the
+    /// genesis for a founder — an unresolvable requester is not a member, and
+    /// the caller has already refused it on that basis.
     ///
     /// # Errors
     /// Propagates the account-row scan failure.
@@ -760,25 +753,27 @@ impl<'a> GroupKeyring<'a> {
         &self,
         requester: &KeyRequester,
     ) -> EyreResult<Option<KeyRecipient>> {
-        let bindings = AccountBindingRepository::new(self.store);
-        let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
-        let Some(member_accounts) = accounts.get(&requester.identity) else {
-            return Ok(Some(KeyRecipient::Member(requester.identity)));
+        // Resolved at the NAMESPACE, for the same reason
+        // [`current_key_recipients`](Self::current_key_recipients) resolves
+        // devices there: bindings are written where the credential arrived, and
+        // a subgroup holds none of its own.
+        let namespace = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let Some(account) =
+            crate::member_account_in_namespace(self.store, &self.group_id, &requester.identity)?
+        else {
+            return Ok(None);
         };
 
         let Some(claimed) = requester.device else {
             return Ok(None);
         };
-        // One scan, then a lookup per account — rather than a scan per account.
-        let devices = bindings.live_devices_by_account(&self.group_id)?;
-        for account in member_accounts {
-            for binding in devices.get(account).map(Vec::as_slice).unwrap_or(&[]) {
-                if binding.device == claimed {
-                    return Ok(Some(KeyRecipient::Device {
-                        device: binding.device,
-                        kem_pk: X25519PublicKey::from(binding.kem_pk),
-                    }));
-                }
+        let bindings = AccountBindingRepository::new(self.store);
+        for binding in bindings.live_bindings(&namespace)? {
+            if binding.account == account && binding.device == claimed {
+                return Ok(Some(KeyRecipient::Device {
+                    device: binding.device,
+                    kem_pk: X25519PublicKey::from(binding.kem_pk),
+                }));
             }
         }
         Ok(None)

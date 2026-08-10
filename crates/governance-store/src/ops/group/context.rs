@@ -19,6 +19,7 @@ use crate::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
     PermissionChecker,
 };
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -102,6 +103,27 @@ impl<'a> GroupApplyCtx<'a> {
         self.signer
     }
 
+    /// The account the op's signer speaks for, or `None` if the key is bound
+    /// to none here.
+    ///
+    /// Handlers that ask a "did the signer act on their own behalf" question —
+    /// a self-leave, a self-metadata edit, a self auto-follow flip — compare
+    /// this against the account the op names. The comparison cannot be made on
+    /// the key: an account is a hash and nothing signs as one.
+    ///
+    /// `None` is always a refusal, never a fallback. A key bound to no account
+    /// here is not the member it claims to be, so it cannot act as them.
+    pub(crate) fn signer_account(&self) -> EyreResult<Option<AccountId>> {
+        crate::member_account_in_namespace(self.store, self.group_id, self.signer)
+    }
+
+    /// Whether the op's signer is acting on their own behalf — the shared
+    /// self-check behind every "admin or self" gate. See
+    /// [`signer_account`](Self::signer_account) for why `None` refuses.
+    pub(crate) fn signer_is(&self, member: &AccountId) -> EyreResult<bool> {
+        Ok(self.signer_account()?.as_ref() == Some(member))
+    }
+
     pub(crate) fn permissions(&self) -> &PermissionChecker<'a> {
         &self.permissions
     }
@@ -139,7 +161,7 @@ impl<'a> GroupApplyCtx<'a> {
     /// apply the projection would have decided on its own.
     pub(crate) fn projection_membership_path(
         &self,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         self.authorizer
             .membership_path_at_cut(self.group_id, member, self.parents)

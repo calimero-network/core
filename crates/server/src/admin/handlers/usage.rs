@@ -59,7 +59,17 @@ pub fn collect_usage(store: &Store) -> EyreResult<Vec<NamespaceUsage>> {
         else {
             continue;
         };
-        if !MembershipRepository::new(store).is_member(&group_id, &node_identity)? {
+        // Membership names the account this node's identity acts as; an
+        // unbound identity is not a member of anything here.
+        let Some(node_account) = calimero_governance_store::member_account_in_namespace(
+            store,
+            &group_id,
+            &node_identity,
+        )?
+        else {
+            continue;
+        };
+        if !MembershipRepository::new(store).is_member(&group_id, &node_account)? {
             continue;
         }
 

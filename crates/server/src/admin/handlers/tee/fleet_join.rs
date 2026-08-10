@@ -311,35 +311,52 @@ pub async fn handler(
                 // in the group auto-joins via the core auto-follow handler;
                 // no sidecar polling needed.
                 let our_sk_typed = calimero_primitives::identity::PrivateKey::from(our_sk);
-                match calimero_governance_store::sign_apply_and_publish(
+                // The op names the account this replica acts as; admission wrote
+                // its binding, so it resolves by the time we get here.
+                let our_account = calimero_governance_store::member_account_in_namespace(
                     &state.store,
-                    &state.node_client,
-                    state.ctx_client.ack_router(),
                     &group_id,
-                    &our_sk_typed,
-                    calimero_context_client::local_governance::GroupOp::MemberSetAutoFollow {
-                        target: our_public_key,
-                        auto_follow_contexts: true,
-                        auto_follow_subgroups: true,
-                    },
+                    &our_public_key,
                 )
-                .await
-                {
-                    Ok(report) => {
-                        report.observe("fleet_join", "MemberSetAutoFollow");
-                        info!(
-                            group_id = %req.group_id,
-                            "fleet-join: auto-follow enabled for self"
-                        );
-                        auto_follow_enabled = true;
-                    }
-                    Err(err) => warn!(
-                        group_id = %req.group_id,
-                        ?err,
-                        "fleet-join: failed to enable auto-follow — admission succeeded but \
-                         subsequent contexts will NOT auto-join until the op is retried. \
-                         Operators can re-trigger fleet-join or publish MemberSetAutoFollow."
+                .ok()
+                .flatten();
+                match our_account {
+                    None => warn!(
+                        %our_public_key,
+                        "fleet-join: this replica's key is bound to no account; skipping \
+                         auto-follow self-enable. Admission succeeded, but subsequent \
+                         contexts will not auto-join."
                     ),
+                    Some(our_account) => match calimero_governance_store::sign_apply_and_publish(
+                        &state.store,
+                        &state.node_client,
+                        state.ctx_client.ack_router(),
+                        &group_id,
+                        &our_sk_typed,
+                        calimero_context_client::local_governance::GroupOp::MemberSetAutoFollow {
+                            target: our_account,
+                            auto_follow_contexts: true,
+                            auto_follow_subgroups: true,
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => {
+                            report.observe("fleet_join", "MemberSetAutoFollow");
+                            info!(
+                                group_id = %req.group_id,
+                                "fleet-join: auto-follow enabled for self"
+                            );
+                            auto_follow_enabled = true;
+                        }
+                        Err(err) => warn!(
+                            group_id = %req.group_id,
+                            ?err,
+                            "fleet-join: failed to enable auto-follow — admission succeeded but \
+                             subsequent contexts will NOT auto-join until the op is retried. \
+                             Operators can re-trigger fleet-join or publish MemberSetAutoFollow."
+                        ),
+                    },
                 }
 
                 break;

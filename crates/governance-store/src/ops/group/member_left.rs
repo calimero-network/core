@@ -9,6 +9,7 @@ use crate::{
     MembershipRepository, MetaRepository, NamespaceRepository, PendingRotationRepository,
     ReentryRepository,
 };
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -17,7 +18,7 @@ use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    member: &PublicKey,
+    member: &AccountId,
     expected_group_state_hash: &[u8; 32],
     expected_context_state_hashes: &[(ContextId, [u8; 32])],
 ) -> EyreResult<()> {
@@ -25,10 +26,18 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    // Self-leave: signer must equal the member being removed.
-    // No capability check beyond self-equality — any member can
-    // leave themselves without admin involvement.
-    if signer != member {
+    // Self-leave: the signer must BE the member being removed. No capability
+    // check beyond that — anyone can leave without admin involvement.
+    //
+    // `member` is an account and a signature names a key, so self-equality is
+    // asked of the account the signing key speaks for. Unlike a join op, this
+    // one is an encrypted `GroupOp` and carries no credential to resolve
+    // against, so the binding rows answer it — which is sound here precisely
+    // because a member who can leave necessarily joined, and joining is what
+    // wrote the binding. A key bound to nothing is refused: it is not the
+    // member, so it may not leave on their behalf.
+    let signer_account = crate::member_account_in_namespace(store, group_id, signer)?;
+    if signer_account.as_ref() != Some(member) {
         bail!(MembershipError::SelfLeaveOnly);
     }
 

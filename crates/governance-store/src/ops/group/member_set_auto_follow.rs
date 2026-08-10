@@ -3,12 +3,13 @@
 
 use super::context::GroupApplyCtx;
 use crate::{MembershipError, MembershipRepository};
+use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    target: &PublicKey,
+    target: &AccountId,
     auto_follow_contexts: &bool,
     auto_follow_subgroups: &bool,
 ) -> EyreResult<()> {
@@ -19,7 +20,7 @@ pub(crate) fn apply(
     // Admin-or-self: admin can toggle flags for any member, a
     // member can toggle their own. Non-admin, non-self attempts
     // are rejected.
-    if !ctx.permissions().is_admin(signer)? && signer != target {
+    if !ctx.permissions().is_admin(signer)? && !ctx.signer_is(target)? {
         bail!(MembershipError::AutoFollowAuthFailed);
     }
     // Target must already be a group member.

@@ -56,6 +56,45 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 }
             };
 
+        // The creator's ACCOUNT — every governance row this handler writes names
+        // a principal, and a principal is an account.
+        //
+        // A namespace root has no bindings yet (nothing has been applied), so the
+        // founder's account comes from the credential this node mints for itself;
+        // the genesis op carries that same credential and the apply records the
+        // binding, which is what makes the founder resolvable to every peer
+        // afterwards. A subgroup is different: its creator is already a namespace
+        // member, so its account MUST come from the binding rows — deriving it
+        // locally instead would let a node whose root was replaced write rows its
+        // peers resolve to somebody else.
+        let founder_credential =
+            match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
+                Ok(credential) => credential,
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to mint this node's account credential: {err}"
+                    )))
+                }
+            };
+        let admin_account = if parent_group_id.is_some() {
+            match calimero_governance_store::member_account_in_namespace(
+                &self.datastore,
+                &namespace_id,
+                &admin_identity,
+            ) {
+                Ok(Some(account)) => account,
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "cannot create a subgroup: this node's identity is bound to no account \
+                         in namespace '{namespace_id:?}'"
+                    )))
+                }
+                Err(err) => return ActorResponse::reply(Err(err)),
+            }
+        } else {
+            founder_credential.cert.account
+        };
+
         let signing_key = Some(sk_bytes);
 
         // Subgroups inherit target_application_id from the parent (namespace root owns the app).
@@ -74,7 +113,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // (honored only at root level — see the capability's doc and
             // `execute_group_created`, which re-checks this on every peer).
             let is_namespace_admin = match MembershipRepository::new(&self.datastore)
-                .is_admin(&namespace_id, &admin_identity)
+                .is_admin(&namespace_id, &admin_account)
             {
                 Ok(v) => v,
                 Err(err) => return ActorResponse::reply(Err(err)),
@@ -167,8 +206,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
             target_application_id: effective_application_id,
             upgrade_policy: upgrade_policy.clone(),
             created_at: reservation_now,
-            admin_identity,
-            owner_identity: admin_identity,
+            admin_identity: admin_account,
+            owner_identity: admin_account,
             migration: None,
             auto_join: true,
         };
@@ -196,10 +235,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     target_application_id: effective_application_id,
                     upgrade_policy,
                     created_at: reservation_now,
-                    admin_identity,
+                    admin_identity: admin_account,
                     // Creator is the initial Owner. Transferable via
                     // `GroupOp::TransferOwnership`.
-                    owner_identity: admin_identity,
+                    owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
                 };
@@ -224,7 +263,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
                     MembershipRepository::new(&datastore).add_member(
                         &group_id,
-                        &admin_identity,
+                        &admin_account,
                         GroupMemberRole::Admin,
                     )?;
 
@@ -282,6 +321,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         rollback_local_group_rows(
                             &datastore,
                             &group_id,
+                            &admin_account,
                             &admin_identity,
                             group_key_id,
                             name_written,
@@ -356,7 +396,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     }
                 } else {
                     let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
-                        founder: admin_identity,
+                        founder: admin_account,
+                        account: founder_credential,
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -501,6 +542,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             rollback_local_group_rows(
                                 &datastore,
                                 &group_id,
+                                &admin_account,
                                 &admin_identity,
                                 Some(key_id),
                                 name_written,
@@ -559,6 +601,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 fn rollback_local_group_rows(
     datastore: &Store,
     group_id: &ContextGroupId,
+    admin_account: &calimero_account::AccountId,
     admin_identity: &PublicKey,
     group_key_id: Option<[u8; 32]>,
     has_name: bool,
@@ -566,7 +609,7 @@ fn rollback_local_group_rows(
     if let Err(re) = MetaRepository::new(datastore).delete(group_id) {
         warn!(?re, ?group_id, "rollback: failed to delete root meta");
     }
-    if let Err(re) = MembershipRepository::new(datastore).remove_member(group_id, admin_identity) {
+    if let Err(re) = MembershipRepository::new(datastore).remove_member(group_id, admin_account) {
         warn!(
             ?re,
             ?group_id,

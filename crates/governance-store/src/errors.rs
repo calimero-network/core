@@ -83,8 +83,8 @@ pub enum MembershipError {
     /// Stored value missing for an existing key. Indicates store
     /// corruption — distinct from "not found" (no key exists) and
     /// surfaced separately so callers can alert rather than retry.
-    #[error("member key exists but value is missing for {identity} in group {group_id}")]
-    MissingMemberValue { group_id: String, identity: String },
+    #[error("member row exists but value is missing for {account} in group {group_id}")]
+    MissingMemberValue { group_id: String, account: String },
 
     /// Member row doesn't exist for the requested
     /// `(group_id, identity)` pair. Distinct from `NotMember`
@@ -164,6 +164,19 @@ pub enum MembershipError {
         group_id: String,
         /// The namespace that group actually belongs to.
         resolved_ns: String,
+    },
+
+    /// A TEE admission carried a credential certifying a key other than the one
+    /// the quote attested.
+    ///
+    /// The membership it would write names an account, and the credential is
+    /// the only thing on the op that supplies one — so pairing a genuine quote
+    /// with somebody else's credential would admit the wrong principal on the
+    /// strength of an attestation that was never theirs.
+    #[error("TEE admission credential does not certify the attested key {member}")]
+    TeeCredentialNotTheAttestedKey {
+        /// The attested key the quote's `report_data` binds to.
+        member: String,
     },
 
     /// Cannot remove the owner of a group; the owner must

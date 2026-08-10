@@ -172,7 +172,17 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         // its own direct row, and skipping the write here would leave
         // the TEE without a per-node row that subsequent direct-membership
         // operations expect.
-        match MembershipRepository::new(&self.datastore).has_direct_member(&group_id, &member) {
+        // The request names the replica's KEY (the key delivery below is an ECDH
+        // wrap and can only be addressed to one); the membership row it is about
+        // to write names the account that key acts as.
+        let member_account =
+            match crate::member_account::require(&self.datastore, &group_id, &member) {
+                Ok(account) => account,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+        match MembershipRepository::new(&self.datastore)
+            .has_direct_member(&group_id, &member_account)
+        {
             Ok(true) => return ActorResponse::reply(Ok(())),
             Ok(false) => {}
             Err(e) => return ActorResponse::reply(Err(e)),
@@ -260,7 +270,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         &group_id,
                         &sk,
                         GroupOp::MemberJoinedViaTeeAttestation {
-                            member,
+                            // The encrypted form names an ACCOUNT: a subgroup
+                            // admission moves an existing namespace member
+                            // inward, so it is already bound and resolvable.
+                            member: member_account,
                             quote_hash,
                             mrtd,
                             rtmr0,

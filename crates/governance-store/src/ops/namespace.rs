@@ -20,7 +20,7 @@ mod group_created;
 mod group_deleted;
 mod group_reparented;
 mod member_joined;
-mod member_joined_open;
+pub(crate) mod member_joined_open;
 mod member_joined_via_tee;
 mod namespace_created;
 mod policy_updated;
@@ -126,7 +126,9 @@ pub(crate) fn dispatch_root_op(
         // Self-authorizing namespace genesis. SECURITY residual (#2932): a
         // self-consistent forged genesis on a BARE namespace is not blocked here
         // — see the SECURITY note in `namespace_created::apply`.
-        RootOp::NamespaceCreated { founder } => namespace_created::apply(ctx, op, *founder),
+        RootOp::NamespaceCreated { founder, account } => {
+            namespace_created::apply(ctx, op, *founder, account)
+        }
         // `KeyDelivery` has no state mutation of its own here: the actual
         // key-unwrap/store side effect is orchestrated by the outer
         // `apply_signed_op` match in `namespace/governance.rs`, which owns the

@@ -51,7 +51,7 @@ pub async fn handle_tee_attestation_announce(
     // Without it, anyone could replay another replica's credential and have the
     // verifier put it on an admission op signed with the verifier's own
     // authority.
-    if !calimero_op_adapter::join_credential_is_the_joiners(
+    if !calimero_op_adapter::join_credential_certifies(
         &public_key,
         &account.genesis,
         &account.chain,

@@ -3,11 +3,11 @@
 
 use super::context::GroupApplyCtx;
 use crate::{MembershipError, MembershipRepository, MetaRepository};
+use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
-pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &PublicKey) -> EyreResult<()> {
+pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &AccountId) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
@@ -17,7 +17,9 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &PublicKey) -> EyreR
         .load(group_id)?
         .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
 
-    if meta.owner_identity != *signer {
+    // Ownership names an account; the signer presents a key. Resolve, then
+    // compare — an unresolvable key owns nothing.
+    if ctx.signer_account()? != Some(meta.owner_identity) {
         bail!(MembershipError::OnlyOwnerCanTransfer(hex::encode(
             group_id.to_bytes()
         )));

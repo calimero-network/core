@@ -18,7 +18,9 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
     let meta = MetaRepository::new(store)
         .load(group_id)?
         .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
-    if meta.owner_identity != *signer {
+    // Ownership is recorded against an account, so the signing key is resolved
+    // before the comparison. An unresolvable key is not the owner.
+    if ctx.signer_account()? != Some(meta.owner_identity) {
         bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
             group_id.to_bytes()
         )));

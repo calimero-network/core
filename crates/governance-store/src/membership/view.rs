@@ -1,4 +1,5 @@
 use crate::{MembershipError, MembershipRepository, MetaRepository};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -16,15 +17,15 @@ impl<'a> GroupMembershipView<'a> {
         Self { store, group_id }
     }
 
-    pub fn is_admin(&self, member: &PublicKey) -> EyreResult<bool> {
+    pub fn is_admin(&self, member: &AccountId) -> EyreResult<bool> {
         MembershipRepository::new(self.store).is_admin(&self.group_id, member)
     }
 
-    pub fn role_of(&self, member: &PublicKey) -> EyreResult<Option<GroupMemberRole>> {
+    pub fn role_of(&self, member: &AccountId) -> EyreResult<Option<GroupMemberRole>> {
         MembershipRepository::new(self.store).role_of(&self.group_id, member)
     }
 
-    pub fn is_member(&self, member: &PublicKey) -> EyreResult<bool> {
+    pub fn is_member(&self, member: &AccountId) -> EyreResult<bool> {
         MembershipRepository::new(self.store).is_member(&self.group_id, member)
     }
 
@@ -32,7 +33,7 @@ impl<'a> GroupMembershipView<'a> {
     /// `excluded` is itself an admin: a non-admin can never be the last admin,
     /// so we return `false` for it rather than treating the genesis founder as
     /// the "other" admin.
-    pub fn has_another_admin(&self, excluded: &PublicKey) -> EyreResult<bool> {
+    pub fn has_another_admin(&self, excluded: &AccountId) -> EyreResult<bool> {
         if !self.is_admin(excluded)? {
             return Ok(false);
         }
@@ -49,11 +50,11 @@ impl<'a> GroupMembershipView<'a> {
             .is_some_and(|meta| meta.admin_identity != *excluded))
     }
 
-    pub fn list_members(&self) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
+    pub fn list_members(&self) -> EyreResult<Vec<(AccountId, GroupMemberRole)>> {
         MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)
     }
 
-    pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
+    pub fn require_admin(&self, identity: &AccountId) -> EyreResult<()> {
         if self.is_admin(identity)? {
             return Ok(());
         }

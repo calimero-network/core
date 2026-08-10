@@ -153,11 +153,12 @@ pub struct RemoveMembersCommand {
     pub group_id: String,
 
     #[clap(
-        name = "IDENTITIES",
+        name = "ACCOUNTS",
         required = true,
-        help = "Public keys of identities to remove (space-separated)"
+        help = "Accounts to remove, 64 hex characters each (space-separated). \
+                `meroctl group members list` prints them."
     )]
-    pub identities: Vec<PublicKey>,
+    pub identities: Vec<calimero_account::AccountId>,
 
     #[clap(
         long,
@@ -336,13 +337,13 @@ pub struct GetCapabilitiesCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the member")]
-    pub identity: PublicKey,
+    #[clap(name = "ACCOUNT", help = "Account of the member (64 hex characters)")]
+    pub identity: calimero_account::AccountId,
 }
 
 impl GetCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let identity_hex = hex::encode(self.identity.digest());
+        let identity_hex = self.identity.to_string();
 
         let client = environment.client()?;
         let response = client
@@ -365,13 +366,13 @@ pub struct CheckAccessCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the identity to check")]
-    pub identity: PublicKey,
+    #[clap(name = "ACCOUNT", help = "Account to check (64 hex characters)")]
+    pub identity: calimero_account::AccountId,
 }
 
 impl CheckAccessCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let identity_hex = hex::encode(self.identity.digest());
+        let identity_hex = self.identity.to_string();
 
         let client = environment.client()?;
 

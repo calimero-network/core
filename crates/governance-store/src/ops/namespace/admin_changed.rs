@@ -3,16 +3,16 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::{MembershipError, MembershipRepository, MetaRepository, NamespaceError};
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
-    new_admin: PublicKey,
+    new_admin: AccountId,
 ) -> EyreResult<()> {
     ctx.require_namespace_admin(&op.signer)?;
     let ns_gid = ContextGroupId::from(ctx.namespace_id().to_bytes());

@@ -1,4 +1,5 @@
 use crate::{MembershipRepository, NamespaceRepository};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -97,7 +98,7 @@ impl<'a> MetadataRepository<'a> {
     pub fn set_member(
         &self,
         group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         record: &MetadataRecord,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -111,7 +112,7 @@ impl<'a> MetadataRepository<'a> {
     pub fn member_metadata(
         &self,
         group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<Option<MetadataRecord>> {
         let handle = self.store.handle();
         handle
@@ -119,7 +120,7 @@ impl<'a> MetadataRepository<'a> {
             .map_err(Into::into)
     }
 
-    pub fn delete_member(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
+    pub fn delete_member(&self, group_id: &ContextGroupId, member: &AccountId) -> EyreResult<()> {
         let mut handle = self.store.handle();
         handle.delete(&GroupMemberMetadata::new(group_id.to_bytes(), *member))?;
         Ok(())
@@ -128,11 +129,11 @@ impl<'a> MetadataRepository<'a> {
     pub fn enumerate_members(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<Vec<(PublicKey, MetadataRecord)>> {
+    ) -> EyreResult<Vec<(AccountId, MetadataRecord)>> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupMemberMetadata::new(gid, PublicKey::from([0u8; 32])),
+            GroupMemberMetadata::new(gid, AccountId::from([0u8; 32])),
             GROUP_MEMBER_METADATA_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -151,7 +152,7 @@ impl<'a> MetadataRepository<'a> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupMemberMetadata::new(gid, PublicKey::from([0u8; 32])),
+            GroupMemberMetadata::new(gid, AccountId::from([0u8; 32])),
             GROUP_MEMBER_METADATA_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -198,7 +199,15 @@ impl<'a> MetadataRepository<'a> {
         {
             return Ok(None);
         }
-        if !MembershipRepository::new(self.store).is_member(group_id, node_identity)? {
+        // Summaries are only shown to members, and membership is account-keyed,
+        // so this node's identity key resolves first. No binding here means no
+        // membership, and the summary is withheld.
+        let Some(node_account) =
+            crate::member_account_in_namespace(self.store, group_id, node_identity)?
+        else {
+            return Ok(None);
+        };
+        if !MembershipRepository::new(self.store).is_member(group_id, &node_account)? {
             return Ok(None);
         }
 

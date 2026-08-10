@@ -163,7 +163,7 @@ id_newtype! {
 /// the signed bytes. Removing it changes every op's content hash (the op id),
 /// hence the version bump — and, because old-shape ops are rejected rather than
 /// migrated, a re-bootstrap of every node.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 10;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -283,7 +283,7 @@ pub enum GroupOp {
     Noop,
     /// Add a member with a role.
     MemberAdded {
-        member: PublicKey,
+        member: AccountId,
         role: GroupMemberRole,
     },
     /// Remove a member.
@@ -317,7 +317,7 @@ pub enum GroupOp {
     /// not a cut embedded here — every state delta carries its own
     /// `governance_position` against which `membership_status_at` walks.
     MemberRemoved {
-        member: PublicKey,
+        member: AccountId,
         expected_group_state_hash: [u8; 32],
         expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
     },
@@ -339,18 +339,18 @@ pub enum GroupOp {
     /// admin-signed `MemberRemoved` or anchor-sync reconcile. The
     /// signed hashes are a detection signal, not an adoption gate.
     MemberLeft {
-        member: PublicKey,
+        member: AccountId,
         expected_group_state_hash: [u8; 32],
         expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
     },
     /// Set a member’s role (same as upsert member with new role).
     MemberRoleSet {
-        member: PublicKey,
+        member: AccountId,
         role: GroupMemberRole,
     },
     /// Per-member capability bitmask (`GroupMemberCapability` store).
     MemberCapabilitySet {
-        member: PublicKey,
+        member: AccountId,
         capabilities: MemberCapabilities,
     },
     /// Default capability bitmask for new members.
@@ -391,7 +391,7 @@ pub enum GroupOp {
     /// **Signer:** group admin, holder of `CAN_MANAGE_METADATA`, or the member
     /// themselves.
     MemberMetadataSet {
-        member: PublicKey,
+        member: AccountId,
         name: Option<String>,
         data: BTreeMap<String, String>,
     },
@@ -409,13 +409,13 @@ pub enum GroupOp {
     /// Grant a capability to a member for a specific context.
     ContextCapabilityGranted {
         context_id: ContextId,
-        member: PublicKey,
+        member: AccountId,
         capability: ContextCapabilityBits,
     },
     /// Revoke a capability from a member for a specific context.
     ContextCapabilityRevoked {
         context_id: ContextId,
-        member: PublicKey,
+        member: AccountId,
         capability: ContextCapabilityBits,
     },
     /// TEE admission policy: defines which TEE nodes can auto-join the group.
@@ -432,7 +432,7 @@ pub enum GroupOp {
     /// A TEE node was admitted via attestation that matched the group's policy.
     /// Signed by an existing member who verified the attestation.
     MemberJoinedViaTeeAttestation {
-        member: PublicKey,
+        member: AccountId,
         quote_hash: [u8; 32],
         mrtd: String,
         rtmr0: String,
@@ -449,7 +449,7 @@ pub enum GroupOp {
     /// group. Authorized by group admin (for any target) or by the target
     /// member themselves (self-setting). See the auto-follow architecture doc.
     MemberSetAutoFollow {
-        target: PublicKey,
+        target: AccountId,
         auto_follow_contexts: bool,
         auto_follow_subgroups: bool,
     },
@@ -457,7 +457,7 @@ pub enum GroupOp {
     /// current Owner; `new_owner` must already be a member. Updates
     /// `GroupMetaValue.owner_identity`. The previous owner remains a
     /// regular admin (no automatic role change beyond the owner field).
-    TransferOwnership { new_owner: PublicKey },
+    TransferOwnership { new_owner: AccountId },
     /// Cascade variant of [`Self::TargetApplicationSet`]: update the
     /// target application on the signed group AND on every descendant
     /// subgroup whose current `app_key` equals `from_app_key`. Walked at
@@ -539,7 +539,7 @@ pub enum GroupOp {
         /// The member whose departure this rotation is cutting off. Names which
         /// pending row to discharge, and is the identity every rotation envelope
         /// excludes.
-        departed: PublicKey,
+        departed: AccountId,
     },
 
     // ---- account plane ----
@@ -740,7 +740,7 @@ pub enum RootOp {
         cascade_context_ids: Vec<ContextId>,
     },
     /// The namespace administrator was changed.
-    AdminChanged { new_admin: PublicKey },
+    AdminChanged { new_admin: AccountId },
     /// Namespace-wide policy was updated (extensible).
     PolicyUpdated { policy_bytes: Vec<u8> },
     /// A member joined a group via an admin-signed invitation.
@@ -761,7 +761,7 @@ pub enum RootOp {
     /// requesting it directly from a sync peer that holds it (the
     /// pull-based key-delivery path), not from any op on this DAG.
     MemberJoined {
-        member: PublicKey,
+        member: AccountId,
         /// The full admin-signed invitation — carries the inviter's
         /// identity, group_id, expiration, role, and the admin's
         /// signature. Peers use this to verify the join was authorized.
@@ -808,7 +808,7 @@ pub enum RootOp {
     /// case and never asked any holder of the group key to deliver
     /// it. See `handlers/join_context.rs`.
     MemberJoinedOpen {
-        member: PublicKey,
+        member: AccountId,
         group_id: ContextGroupId,
         /// The joiner's self-certifying account root, and the root-signed grant
         /// for the device it is joining with.
@@ -823,7 +823,7 @@ pub enum RootOp {
     /// invitation's `expiration_timestamp`, enforcing expiry
     /// deterministically on every node rather than only the joining one.
     MemberJoinedAt {
-        member: PublicKey,
+        member: AccountId,
         signed_invitation: SignedGroupOpenInvitation,
         joined_at: u64,
         /// The joiner's self-certifying account root, and the root-signed grant
@@ -870,7 +870,24 @@ pub enum RootOp {
     /// discriminants do not renumber. It is still a borsh schema addition;
     /// consumers pinning this crate (e.g. mero-tee) must reset/coordinate a
     /// core-rev bump.
-    NamespaceCreated { founder: PublicKey },
+    NamespaceCreated {
+        founder: AccountId,
+        /// The founder's self-certifying account root, and the root-signed
+        /// grant for the device it is founding with.
+        ///
+        /// Required for the same reason the join variants carry one, and more
+        /// urgently: `founder` names an ACCOUNT, and nothing else in the
+        /// namespace can bind it. Every other member is bound by the join op
+        /// that admits them, but the founder never joins — so without this the
+        /// namespace's own admin would be the one principal whose key resolves
+        /// to nothing, and every gate it signed would fail closed against the
+        /// namespace it created.
+        ///
+        /// The apply verifies it names `founder` and was signed by the device
+        /// that signed the op, then records the binding in the same apply — the
+        /// genesis analogue of "enrolled by construction".
+        account: Box<JoinAccountCredential>,
+    },
     /// A hardware-attested fleet replica admitted itself, in the clear.
     ///
     /// The cleartext counterpart of
@@ -1193,7 +1210,12 @@ pub struct SignedNamespaceOp {
 /// Appending a variant does not renumber the existing ones, but a `RootOp`
 /// addition is still a borsh schema change; consumers pinning this crate (e.g.
 /// mero-tee) coordinate on the core rev.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 6;
+///
+/// v7: the principal fields became [`AccountId`]s, and `NamespaceCreated` gained
+/// a credential so the founder is bound at genesis — it is the one member no
+/// join op ever admits. Both change the layout of signed structures, so every op
+/// id changes: another re-bootstrap.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 7;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";

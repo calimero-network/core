@@ -372,8 +372,16 @@ fn is_signed_context_member(
     // vanishing in the sub-microsecond gap can only flip a non-member to a
     // member (never revoke an in-flight read), so there is no exploitable
     // TOCTOU for this read-authorization path.
-    let mut is_member =
-        ContextRegistry::new(store.clone()).has_member(&request.context_id, &auth.public_key)?;
+    let auth_account = get_group_for_context(store, &request.context_id)?.and_then(|group_id| {
+        calimero_governance_store::member_account_in_namespace(store, &group_id, &auth.public_key)
+            .ok()
+            .flatten()
+    });
+    let mut is_member = ContextRegistry::new(store.clone()).has_member(
+        &request.context_id,
+        &auth.public_key,
+        auth_account,
+    )?;
     if !is_member {
         is_member = is_inherited_context_member(store, &request.context_id, &auth.public_key)?;
     }
@@ -410,7 +418,12 @@ fn is_inherited_context_member(
     let Some(group_id) = get_group_for_context(store, context_id)? else {
         return Ok(false);
     };
-    MembershipRepository::new(store).is_member(&group_id, public_key)
+    let Some(account) =
+        calimero_governance_store::member_account_in_namespace(store, &group_id, public_key)?
+    else {
+        return Ok(false);
+    };
+    MembershipRepository::new(store).is_member(&group_id, &account)
 }
 
 #[cfg(test)]

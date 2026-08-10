@@ -184,10 +184,13 @@ pub async fn join_namespace(
         .map_err(|e| JoinError::Local(e.to_string()))?
         .is_none()
     {
-        let admin_identity = PublicKey::from(invitation.invitation.inviter_identity.to_bytes());
+        // From the SIGNED invitation, for the same reason the context-side join
+        // takes it from there: this node has synced nothing yet, so it cannot
+        // resolve the inviter's key to an account itself. Genesis overwrites it.
+        let inviter_account = invitation.invitation.inviter_account;
         let meta = GroupMetaValue {
-            admin_identity,
-            owner_identity: admin_identity,
+            admin_identity: inviter_account,
+            owner_identity: inviter_account,
             target_application_id: ApplicationId::from([0u8; 32]),
             app_key: [0u8; 32],
             upgrade_policy: UpgradePolicy::default(),
@@ -394,7 +397,7 @@ pub async fn await_namespace_ready(
     let join_account = calimero_context::join_credential::build(store, &group_id, &my_pk)
         .map_err(|e| ReadyError::PublishMemberJoined(format!("join credential: {e}")))?;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        member: my_pk,
+        member: join_account.cert.account,
         signed_invitation: invitation,
         joined_at: now_secs,
         account: join_account,
@@ -409,7 +412,7 @@ pub async fn await_namespace_ready(
     // store read fails we substitute defaults rather than fail the
     // whole join, since the caller's primary signal is `acked_by`.
     let members_learned = MembershipRepository::new(store)
-        .namespace_pubkeys(namespace_id.into())
+        .namespace_accounts(namespace_id.into())
         .map(|m| m.len())
         .unwrap_or(0);
 

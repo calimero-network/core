@@ -3,6 +3,7 @@ use crate::{
     MetadataRepository, ReentryRepository, SigningKeysRepository, UpgradeLadderRepository,
     UpgradesRepository,
 };
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::SignedGroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -112,16 +113,30 @@ fn delete_local_gov_nonce_for_signer(
 
 /// Delete all [`GroupLocalGovNonceWindow`] rows for current group members
 /// (best-effort; ignores missing).
+/// Drop the per-signer nonce windows belonging to a group's members.
+///
+/// The nonce window is keyed by the SIGNING KEY that authored an op — it is a
+/// replay guard, not a grant — while the member list names accounts. So the
+/// members are expanded to their live device keys before deleting. Best-effort
+/// throughout: this runs during group teardown, and a missed window costs
+/// nothing but a stale row.
 fn delete_local_gov_nonces_for_listed_members(
     store: &Store,
     group_id: &ContextGroupId,
-    members: &[(PublicKey, GroupMemberRole)],
+    members: &[(AccountId, GroupMemberRole)],
 ) -> EyreResult<()> {
-    for (pk, _) in members {
-        if let Err(err) = delete_local_gov_nonce_for_signer(store, group_id, pk) {
+    let namespace = crate::NamespaceRepository::new(store).resolve(group_id)?;
+    for binding in crate::AccountBindingRepository::new(store).live_bindings(&namespace)? {
+        if !members
+            .iter()
+            .any(|(account, _)| *account == binding.account)
+        {
+            continue;
+        }
+        if let Err(err) = delete_local_gov_nonce_for_signer(store, group_id, &binding.sign_pk) {
             tracing::debug!(
                 group_id = %hex::encode(group_id.to_bytes()),
-                member = %pk,
+                member = %binding.sign_pk,
                 ?err,
                 "best-effort nonce cleanup failed"
             );
@@ -387,7 +402,7 @@ fn delete_op_log_and_head(store: &Store, group_id: &ContextGroupId) -> EyreResul
 pub fn track_member_context_join(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
     context_id: &ContextId,
     context_identity: [u8; 32],
 ) -> EyreResult<()> {
@@ -400,15 +415,15 @@ pub fn track_member_context_join(
 pub fn get_member_context_joins(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
     let gid = group_id.to_bytes();
-    let member_pk = *member;
+    let member_account = *member;
     let keys = collect_keys_with_prefix(
         store,
-        GroupMemberContext::new(gid, member_pk, ContextId::from([0u8; 32])),
+        GroupMemberContext::new(gid, member_account, ContextId::from([0u8; 32])),
         GROUP_MEMBER_CONTEXT_PREFIX,
-        |k| k.group_id() == gid && k.member() == member_pk,
+        |k| k.group_id() == gid && k.member() == member_account,
     )?;
     let handle = store.handle();
     let mut results = Vec::new();
@@ -426,7 +441,7 @@ pub fn get_member_context_joins(
 pub fn remove_all_member_context_joins(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
     let joins = get_member_context_joins(store, group_id, member)?;
     let mut handle = store.handle();
@@ -444,11 +459,11 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     let members_snapshot = MembershipRepository::new(store).list(group_id, 0, usize::MAX)?;
     delete_local_gov_nonces_for_listed_members(store, group_id, &members_snapshot)?;
 
-    for (pk, _) in &members_snapshot {
-        if let Err(err) = remove_all_member_context_joins(store, group_id, pk) {
+    for (account, _) in &members_snapshot {
+        if let Err(err) = remove_all_member_context_joins(store, group_id, account) {
             tracing::debug!(
                 group_id = %hex::encode(group_id.to_bytes()),
-                member = %pk,
+                member = ?account,
                 ?err,
                 "best-effort member-context cleanup failed"
             );
