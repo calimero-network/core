@@ -190,6 +190,25 @@ pub(super) fn bootstrap_namespace_with_admin_account(
     ((admin_sk, admin_pk), admin_account)
 }
 
+/// An enrolled participant: a deterministic signing key plus the account it
+/// speaks for, already bound in `namespace`.
+///
+/// Most tests name a participant once and then use it in BOTH spaces — the
+/// repository rows take the account, the gates take the key they sign with — so
+/// returning the pair keeps a test from having to say which it meant twice.
+///
+/// The key is derived from `seed` so a test that wants two distinct
+/// participants gets them, and a test that re-derives one gets the same key.
+pub(super) fn enrolled(
+    store: &Store,
+    namespace: &ContextGroupId,
+    seed: u8,
+) -> (PublicKey, AccountId) {
+    let sign_pk = PublicKey::from([seed; 32]);
+    let account = enrol_member(store, namespace, &sign_pk);
+    (sign_pk, account)
+}
+
 /// Bind `sign_pk` to a fresh account in `namespace` and return that account.
 ///
 /// The fixture form of what a join op does: writes the device binding AND the

@@ -11,8 +11,8 @@ use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue}
 use calimero_store::Store;
 
 use super::test_fixtures::{
-    dummy_member_removed_op, nest_for_test, nest_for_test_unchecked, sample_meta_with_admin,
-    test_group_id, test_meta, test_store,
+    dummy_member_removed_op, enrol_member, enrolled, nest_for_test, nest_for_test_unchecked,
+    sample_meta_with_admin, test_group_id, test_meta, test_store,
 };
 use super::*;
 
@@ -45,9 +45,11 @@ fn save_load_delete_group_meta() {
 fn permission_checker_enforces_admin_and_capability_rules() {
     let store = test_store();
     let gid = test_group_id();
-    let admin = PublicKey::from([0x10; 32]);
-    let member = PublicKey::from([0x11; 32]);
-    let outsider = PublicKey::from([0x12; 32]);
+    // Each participant twice over: the rows below name the account, the gates
+    // name the key it signs with, and the enrolment is what ties them.
+    let (admin_pk, admin) = enrolled(&store, &gid, 0x10);
+    let (member_pk, member) = enrolled(&store, &gid, 0x11);
+    let (outsider_pk, outsider) = enrolled(&store, &gid, 0x12);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -57,14 +59,14 @@ fn permission_checker_enforces_admin_and_capability_rules() {
         .unwrap();
 
     let checker = PermissionChecker::new(&store, gid);
-    assert!(checker.require_admin(&admin).is_ok());
-    assert!(checker.require_admin(&member).is_err());
+    assert!(checker.require_admin(&admin_pk).is_ok());
+    assert!(checker.require_admin(&member_pk).is_err());
 
     assert!(checker
-        .require_manage_members(&admin, "manage members")
+        .require_manage_members(&admin_pk, "manage members")
         .is_ok());
     assert!(checker
-        .require_manage_members(&member, "manage members")
+        .require_manage_members(&member_pk, "manage members")
         .is_err());
     CapabilitiesRepository::new(&store)
         .set_member_capability(
@@ -74,11 +76,11 @@ fn permission_checker_enforces_admin_and_capability_rules() {
         )
         .unwrap();
     assert!(checker
-        .require_manage_members(&member, "manage members")
+        .require_manage_members(&member_pk, "manage members")
         .is_ok());
 
-    assert!(checker.require_can_create_context(&admin).is_ok());
-    assert!(checker.require_can_create_context(&member).is_err());
+    assert!(checker.require_can_create_context(&admin_pk).is_ok());
+    assert!(checker.require_can_create_context(&member_pk).is_err());
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &gid,
@@ -86,11 +88,14 @@ fn permission_checker_enforces_admin_and_capability_rules() {
             calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
         )
         .unwrap();
-    assert!(checker.require_can_create_context(&member).is_ok());
+    assert!(checker.require_can_create_context(&member_pk).is_ok());
 
-    assert!(checker.require_admin_or_self(&member, &member).is_ok());
-    assert!(checker.require_admin_or_self(&member, &outsider).is_err());
-    assert!(checker.require_admin_or_self(&admin, &outsider).is_ok());
+    assert!(checker.require_admin_or_self(&member_pk, &member).is_ok());
+    assert!(checker
+        .require_admin_or_self(&member_pk, &outsider)
+        .is_err());
+    assert!(checker.require_admin_or_self(&admin_pk, &outsider).is_ok());
+    let _ = outsider_pk;
 }
 
 #[test]
