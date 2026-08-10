@@ -1976,6 +1976,17 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
+    // The deliverer has to be bound before it can be seeded: the seed writes a
+    // row naming an ACCOUNT, and a key it cannot resolve names nothing. On a
+    // real node admission is what writes this binding, and admission is what
+    // makes the node a deliverer in the first place.
+    let enrolled_account = enrol_member(&store, &ns_gid, &founder);
+    assert_eq!(
+        enrolled_account, founder_account,
+        "the enrolment and the genesis credential must agree on the account, or \
+         this test would be exercising two different principals"
+    );
+
     // ---- Seed FIRST, for the founder's OWN identity (the deliverer happens to
     // be the founder). The seed writes placeholder meta + the founder as a
     // non-authoritative `Member`. ----
@@ -3979,7 +3990,7 @@ fn rotation_apply_stores_key_for_authorized_admin() {
         &store,
         ns_gid,
         &admin_sk,
-        &AccountId::from(*removed_pk),
+        &crate::test_fixtures::account_for(&removed_pk),
         &old_key,
         old_key_id,
         &new_group_key,
@@ -4022,7 +4033,7 @@ fn rotation_apply_rejects_new_key_id_mismatch() {
         &store,
         ns_gid,
         &admin_sk,
-        &AccountId::from(*removed_pk),
+        &crate::test_fixtures::account_for(&removed_pk),
         &old_key,
         old_key_id,
         &new_group_key,
@@ -4055,7 +4066,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
         &store,
         ns_gid,
         &local_sk,
-        &AccountId::from(*removed_pk),
+        &crate::test_fixtures::account_for(&removed_pk),
         &old_key,
         old_key_id,
         &new_group_key,
