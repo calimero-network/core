@@ -1023,3 +1023,179 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
         "the founder must still be admin of the ROOT after creating a subgroup"
     );
 }
+
+/// The two planes must agree about who a key speaks for — at the same cut.
+///
+/// This is the invariant the whole account flip rests on: the live plane resolves
+/// a signer through the binding rows, the projection resolves it through the
+/// folded device links, and an op is authorized by whichever one answers. When
+/// they disagree the publisher accepts an op its peers refuse, and `scope_root`
+/// parts company with nothing able to reconcile it.
+///
+/// Exercised across the sequence that actually broke it: genesis, then a
+/// subgroup creation, then a second subgroup — because the regression only
+/// appeared once a `SubgroupCreated` had folded an admin under a key-derived id.
+#[test]
+fn both_planes_resolve_the_founder_identically_at_every_cut() {
+    let store = store();
+    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_key = founder_sk.public_key();
+    let ns = ContextGroupId::from(*founder_key);
+
+    let credential = calimero_context::test_support::credential(&founder_key);
+    let founder_account = credential.cert.account;
+    let signed_genesis = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::NamespaceCreated {
+            founder: founder_account,
+            account: credential,
+        }),
+    )
+    .expect("sign genesis");
+    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+        .apply_signed_op(&signed_genesis)
+        .expect("apply genesis");
+
+    let mut proj = ScopeProjections::new();
+    let mut cut = [0xF0u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &signed_genesis,
+        None,
+        cut,
+        hlc(0),
+        &[],
+    ));
+
+    for (nonce, sub) in [(1u64, [0xF1u8; 32]), (2, [0xF2u8; 32])] {
+        // Live plane: the resolver every gate in `calimero-governance-store` uses.
+        let live =
+            calimero_governance_store::member_account_in_namespace(&store, &ns, &founder_key)
+                .expect("live resolve");
+        assert_eq!(
+            live,
+            Some(founder_account),
+            "the live plane must resolve the founder to its credential's account"
+        );
+        // Projection plane: the at-cut gate every receiver uses.
+        assert_eq!(
+            proj.is_admin_at_cut(&store, ns, &founder_key, &[cut]),
+            Some(true),
+            "and the projection must agree the founder is admin at this cut"
+        );
+
+        let created = SignedNamespaceOp::sign(
+            &founder_sk,
+            (*founder_key).into(),
+            vec![],
+            nonce,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                group_id: ContextGroupId::from(sub).to_bytes().into(),
+                parent_id: (*founder_key).into(),
+                restricted: true,
+            }),
+        )
+        .expect("sign GroupCreated");
+        let next = sub;
+        proj.ingest_op(&op_from_namespace_op(
+            &created,
+            None,
+            next,
+            hlc(nonce),
+            &[cut],
+        ));
+        cut = next;
+    }
+
+    // ...and still after the last one.
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[cut]),
+        Some(true),
+        "a subgroup creation must never cost the founder its own admin authority"
+    );
+}
+
+/// An explicit device binding must outrank the key-derived stand-in, even when
+/// the view carries authority under the stand-in.
+///
+/// Pins the precedence directly rather than through a scenario, because the
+/// scenario only exposed it by accident: `SubgroupCreated` folds its admin as a
+/// key-derived id, and while that id won, one subgroup creation was enough to
+/// make the founder resolve to a principal no account-keyed row knows. Anything
+/// that restores the old order — including deleting the legacy stand-in
+/// carelessly — fails here rather than three e2e suites later.
+#[test]
+fn an_explicit_binding_outranks_the_key_derived_stand_in() {
+    let store = store();
+    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_key = founder_sk.public_key();
+    let ns = ContextGroupId::from(*founder_key);
+
+    let credential = calimero_context::test_support::credential(&founder_key);
+    let founder_account = credential.cert.account;
+    // The two ids for one key. They are different by construction, which is the
+    // whole reason the precedence matters.
+    assert_ne!(
+        founder_account,
+        calimero_op_adapter::legacy_account_id(&founder_key),
+        "the derived stand-in is not the account a credential certifies"
+    );
+
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::NamespaceCreated {
+            founder: founder_account,
+            account: credential,
+        }),
+    )
+    .expect("sign genesis");
+    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+        .apply_signed_op(&signed)
+        .expect("apply genesis");
+
+    let mut proj = ScopeProjections::new();
+    let genesis_id = [0xD0u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        None,
+        genesis_id,
+        hlc(0),
+        &[],
+    ));
+
+    // A GroupCreated folds `admin = legacy_account_id(signer)` — authority in the
+    // view under the STAND-IN, which is exactly the condition that used to make
+    // the stand-in win.
+    let created = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: ContextGroupId::from([0xD1u8; 32]).to_bytes().into(),
+            parent_id: (*founder_key).into(),
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+    let created_id = [0xD1u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &created,
+        None,
+        created_id,
+        hlc(1),
+        &[genesis_id],
+    ));
+
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[created_id]),
+        Some(true),
+        "the binding must still decide who this key is, or the founder resolves \
+         to a principal the account-keyed rows have never heard of"
+    );
+}
