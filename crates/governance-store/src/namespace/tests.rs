@@ -220,8 +220,8 @@ fn validate_open_invitation_rejects_expired() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
     let gid = test_group_id();
+    let admin_account = enrol_member(&store, &gid, &admin_pk);
     let ns_id = gid.to_bytes();
 
     MetaRepository::new(&store)
@@ -4402,10 +4402,10 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xE0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
 
     // `sample_meta_with_admin` pins app_key = [0xBB; 32] and
     // target_application_id = [0xCC; 32].

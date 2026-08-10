@@ -103,9 +103,9 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     let store = test_store();
     let gid = test_group_id();
     let admin_pk = PublicKey::from([0x21; 32]);
-    let admin = AccountId::from(*admin_pk);
     let member_pk = PublicKey::from([0x22; 32]);
-    let member = AccountId::from(*member_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
+    let member = enrol_member(&store, &gid, &member_pk);
     let app_id = ApplicationId::from([0x23; 32]);
 
     MembershipRepository::new(&store)
@@ -205,7 +205,7 @@ fn set_target_application_appends_upgrade_ladder_rung() {
     let store = test_store();
     let gid = test_group_id();
     let admin_pk = PublicKey::from([0x21; 32]);
-    let admin = AccountId::from(*admin_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -3883,7 +3883,7 @@ fn restore_member_context_identities_writes_missing_marker_rows() {
     let store = test_store();
     let gid = test_group_id();
     let member_pk = PublicKey::from([0x21; 32]);
-    let member = AccountId::from(*member_pk);
+    let member = enrol_member(&store, &gid, &member_pk);
     let sk_bytes = [0x99u8; 32];
     let ctx_a = ContextId::from([0xC1; 32]);
     let ctx_b = ContextId::from([0xC2; 32]);
@@ -6842,9 +6842,9 @@ fn cascade_remove_member_does_not_change_group_state_hash() {
     let store = test_store();
     let gid = test_group_id();
     let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = AccountId::from(*admin_pk);
     let target_pk = PublicKey::from([0xD0; 32]);
-    let target = AccountId::from(*target_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
+    let target = enrol_member(&store, &gid, &target_pk);
     let context_id = ContextId::from([0xE0; 32]);
 
     MetaRepository::new(&store)
@@ -6990,9 +6990,9 @@ fn apply_group_op_mutations_surfaces_divergence_on_hash_mismatch() {
     let store = test_store();
     let gid = test_group_id();
     let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = AccountId::from(*admin_pk);
     let target_pk = PublicKey::from([0xD0; 32]);
-    let target = AccountId::from(*target_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
+    let target = enrol_member(&store, &gid, &target_pk);
     let bystander = AccountId::from([0xD1; 32]);
 
     let mut meta = test_meta();
@@ -7048,9 +7048,9 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
     let store = test_store();
     let gid = test_group_id();
     let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = AccountId::from(*admin_pk);
     let target_pk = PublicKey::from([0xD0; 32]);
-    let target = AccountId::from(*target_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
+    let target = enrol_member(&store, &gid, &target_pk);
     let bystander = AccountId::from([0xD1; 32]);
 
     let mut meta = test_meta();
