@@ -190,6 +190,31 @@ pub(super) fn bootstrap_namespace_with_admin_account(
     ((admin_sk, admin_pk), admin_account)
 }
 
+/// The genesis op a namespace founder signs, and the account it establishes.
+///
+/// `NamespaceCreated` carries a credential now — the founder is the one member
+/// no join op ever admits, so this is the only place its device can be bound —
+/// and the apply verifies the credential certifies the key that signed the op.
+/// A test that hand-built the op without one would be rejected before it
+/// reached whatever it meant to exercise.
+pub(super) fn namespace_genesis_for(
+    founder_sk: &PrivateKey,
+) -> (
+    calimero_context_client::local_governance::NamespaceOp,
+    AccountId,
+) {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    let credential = real_join_account(&founder_sk.public_key());
+    let founder = credential.cert.account;
+    (
+        NamespaceOp::Root(RootOp::NamespaceCreated {
+            founder,
+            account: credential,
+        }),
+        founder,
+    )
+}
+
 /// An enrolled participant: a deterministic signing key plus the account it
 /// speaks for, already bound in `namespace`.
 ///

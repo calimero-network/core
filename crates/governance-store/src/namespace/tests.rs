@@ -20,8 +20,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    bootstrap_namespace_with_admin, nest_for_test, sample_meta_with_admin, test_group_id,
-    test_meta, test_store,
+    bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
+    namespace_genesis_for, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
+    test_store,
 };
 use super::super::*;
 
@@ -188,7 +189,7 @@ async fn sign_apply_and_publish_returns_the_signed_op() {
 
     let (store, node_client, ack_router, ns_id, sk, _tmp) = namespace_publish_fixture().await;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        member: sk.public_key(),
+        member: AccountId::from(*sk.public_key()),
         signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
         joined_at: 0,
         account: crate::test_fixtures::test_join_account(),
@@ -218,14 +219,15 @@ fn validate_open_invitation_rejects_expired() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let gid = test_group_id();
     let ns_id = gid.to_bytes();
 
     MetaRepository::new(&store)
-        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .save(&gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
 
     let signed = test_signed_invitation(&admin_sk, gid, 1_000_000);
@@ -257,14 +259,15 @@ fn validate_open_invitation_rejects_forged_inviter_signature() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let gid = test_group_id();
     let ns_id = gid.to_bytes();
 
     MetaRepository::new(&store)
-        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .save(&gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
 
     let mut signed = test_signed_invitation(&admin_sk, gid, 9_999_999_999);
@@ -304,15 +307,16 @@ fn validate_open_invitation_rejects_unauthorized_inviter() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let stranger_sk = PrivateKey::random(&mut rng);
     let gid = test_group_id();
     let ns_id = gid.to_bytes();
 
     MetaRepository::new(&store)
-        .save(&gid, &sample_meta_with_admin(admin_pk))
+        .save(&gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
 
     let signed = test_signed_invitation(&stranger_sk, gid, 9_999_999_999);
@@ -974,7 +978,9 @@ fn namespace_nesting_resolve_and_read_only_checks() {
     let outsider = ContextGroupId::from([0xA4; 32]);
     let context = ContextId::from([0xB1; 32]);
     let ro_member = PublicKey::from([0xB2; 32]);
+    let ro_member_account = AccountId::from(*ro_member);
     let rw_member = PublicKey::from([0xB3; 32]);
+    let rw_member_account = AccountId::from(*rw_member);
 
     NamespaceRepository::new(&store)
         .nest(&parent, &child)
@@ -1009,10 +1015,10 @@ fn namespace_nesting_resolve_and_read_only_checks() {
 
     register_context_in_group(&store, &child, &context).unwrap();
     MembershipRepository::new(&store)
-        .add_member(&child, &ro_member, GroupMemberRole::ReadOnly)
+        .add_member(&child, &ro_member_account, GroupMemberRole::ReadOnly)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&child, &rw_member, GroupMemberRole::Member)
+        .add_member(&child, &rw_member_account, GroupMemberRole::Member)
         .unwrap();
     assert!(NamespaceRepository::new(&store)
         .is_read_only_for_context(&context, &ro_member)
@@ -1028,27 +1034,31 @@ fn authorized_for_state_op_admits_admin_and_member_only() {
     let gid = ContextGroupId::from([0xC0; 32]);
     let context = ContextId::from([0xC1; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let member = PublicKey::from([0x02; 32]);
+    let member_account = AccountId::from(*member);
     let ro = PublicKey::from([0x03; 32]);
+    let ro_account = AccountId::from(*ro);
     let ro_tee = PublicKey::from([0x04; 32]);
+    let ro_tee_account = AccountId::from(*ro_tee);
     let outsider = PublicKey::from([0x05; 32]);
 
     let mut meta = test_meta();
-    meta.admin_identity = admin;
-    meta.owner_identity = admin;
+    meta.admin_identity = admin_account;
+    meta.owner_identity = admin_account;
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     register_context_in_group(&store, &gid, &context).unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &member, GroupMemberRole::Member)
+        .add_member(&gid, &member_account, GroupMemberRole::Member)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &ro, GroupMemberRole::ReadOnly)
+        .add_member(&gid, &ro_account, GroupMemberRole::ReadOnly)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &ro_tee, GroupMemberRole::ReadOnlyTee)
+        .add_member(&gid, &ro_tee_account, GroupMemberRole::ReadOnlyTee)
         .unwrap();
 
     assert!(
@@ -1089,18 +1099,20 @@ fn authorized_for_state_op_rejects_removed_member() {
     let gid = ContextGroupId::from([0xD0; 32]);
     let context = ContextId::from([0xD1; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let target = PublicKey::from([0xDD; 32]);
+    let target_account = AccountId::from(*target);
 
     let mut meta = test_meta();
-    meta.admin_identity = admin;
-    meta.owner_identity = admin;
+    meta.admin_identity = admin_account;
+    meta.owner_identity = admin_account;
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     register_context_in_group(&store, &gid, &context).unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &target, GroupMemberRole::Member)
+        .add_member(&gid, &target_account, GroupMemberRole::Member)
         .unwrap();
 
     // Member is authorized while in the group.
@@ -1114,7 +1126,7 @@ fn authorized_for_state_op_rejects_removed_member() {
     // from this identity at the cut; this check rejects local state ops
     // by the same identity at the WASM-execute path.
     MembershipRepository::new(&store)
-        .remove_member(&gid, &target)
+        .remove_member(&gid, &target_account)
         .unwrap();
 
     assert!(
@@ -1136,10 +1148,11 @@ fn authorized_for_state_op_recognises_namespace_creator() {
     let gid = ContextGroupId::from([0xE0; 32]);
     let context = ContextId::from([0xE1; 32]);
     let creator = PublicKey::from([0xEE; 32]);
+    let creator_account = AccountId::from(*creator);
 
     let mut meta = test_meta();
-    meta.admin_identity = creator;
-    meta.owner_identity = creator;
+    meta.admin_identity = creator_account;
+    meta.owner_identity = creator_account;
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     register_context_in_group(&store, &gid, &context).unwrap();
     // No `GroupMember` row for the creator — relies on the
@@ -1187,7 +1200,9 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     let child = ContextGroupId::from([0xC1; 32]);
     let context = ContextId::from([0xC2; 32]);
     let admin = PublicKey::from([0xC3; 32]);
+    let admin_account = AccountId::from(*admin);
     let inherited = PublicKey::from([0xC4; 32]);
+    let inherited_account = AccountId::from(*inherited);
 
     nest_for_test(&store, &ns, &child);
     CapabilitiesRepository::new(&store)
@@ -1195,8 +1210,8 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
         .unwrap();
 
     let mut meta = test_meta();
-    meta.admin_identity = admin;
-    meta.owner_identity = admin;
+    meta.admin_identity = admin_account;
+    meta.owner_identity = admin_account;
     MetaRepository::new(&store).save(&ns, &meta).unwrap();
     MetaRepository::new(&store).save(&child, &meta).unwrap();
 
@@ -1204,10 +1219,10 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
         .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &inherited, GroupMemberRole::Member)
+        .add_member(&ns, &inherited_account, GroupMemberRole::Member)
         .unwrap();
 
     // Register the context under the (Open) child — `inherited` has
@@ -1237,9 +1252,11 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // replica this is a remote signer — the node under test is NOT the author.
     let verifier_sk = PrivateKey::random(&mut rng);
     let verifier_pk = verifier_sk.public_key();
+    let verifier_account = AccountId::from(*verifier_pk);
 
     // The TEE node being admitted as a ReadOnlyTee member.
     let tee_member = PublicKey::from([0xD3; 32]);
+    let tee_member_account = AccountId::from(*tee_member);
     let quote_hash = [0xE1; 32];
 
     // Namespace root group (policy ops are namespace-scoped: must be the root).
@@ -1252,10 +1269,10 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // signer by `seed_bootstrap_admin_if_absent`), plus the group key the
     // replica received via KeyDelivery so it can decrypt the group ops.
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(verifier_pk))
+        .save(&ns_gid, &sample_meta_with_admin(verifier_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &verifier_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &verifier_account, GroupMemberRole::Admin)
         .unwrap();
     let group_key = [0x97u8; 32];
     let key_id = GroupKeyring::new(&store, ns_gid)
@@ -1320,7 +1337,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     let join_op = GroupKeyring::encrypt_op(
         &group_key,
         &GroupOp::MemberJoinedViaTeeAttestation {
-            member: tee_member,
+            member: tee_member_account,
             quote_hash,
             mrtd: "m1".to_owned(),
             rtmr0: "r0".to_owned(),
@@ -1361,13 +1378,13 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     );
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &tee_member)
+            .role_of(&ns_gid, &tee_member_account)
             .unwrap(),
         Some(GroupMemberRole::ReadOnlyTee),
         "the TEE node must be recorded as a ReadOnlyTee member on the replica"
     );
     assert!(
-        is_tee_admitted_identity(&store, &ns_gid, &tee_member).unwrap(),
+        is_tee_admitted_identity(&store, &ns_gid, &tee_member_account).unwrap(),
         "the admission op must be visible in the replica's op-log"
     );
     assert!(
@@ -1410,9 +1427,11 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // The founder/verifier = the KeyDelivery signer the replica TOFU-trusts.
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = AccountId::from(*founder);
 
     // The TEE node being admitted.
     let tee_member = PublicKey::from([0xD7; 32]);
+    let tee_member_account = AccountId::from(*tee_member);
     let quote_hash = [0xE7; 32];
 
     let namespace_id = [0xB4u8; 32];
@@ -1428,7 +1447,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // admin for those ops to apply. ----
     {
         use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
         let signed_genesis =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
                 .expect("sign genesis");
@@ -1508,7 +1527,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     let join_op = GroupKeyring::encrypt_op(
         &group_key,
         &GroupOp::MemberJoinedViaTeeAttestation {
-            member: tee_member,
+            member: tee_member_account,
             quote_hash,
             mrtd: "m1".to_owned(),
             rtmr0: "r0".to_owned(),
@@ -1541,7 +1560,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
 
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &tee_member)
+            .role_of(&ns_gid, &tee_member_account)
             .unwrap(),
         Some(GroupMemberRole::ReadOnlyTee),
         "the TEE node must be recorded as a ReadOnlyTee member on the replica"
@@ -1550,7 +1569,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // (a) The TEE's ROOT row must carry CAN_JOIN_OPEN_SUBGROUPS — snapshotted
     // from the seeded default caps at admission time.
     let tee_root_caps = CapabilitiesRepository::new(&store)
-        .member_capability(&ns_gid, &tee_member)
+        .member_capability(&ns_gid, &tee_member_account)
         .unwrap()
         .unwrap_or(0);
     assert_ne!(
@@ -1564,7 +1583,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     assert!(
         matches!(
             MembershipRepository::new(&store)
-                .check_path(&open_child, &tee_member)
+                .check_path(&open_child, &tee_member_account)
                 .unwrap(),
             crate::membership::MembershipPath::Inherited { .. }
         ),
@@ -1605,11 +1624,13 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // keypair created the namespace root in `handlers/create_group.rs`).
     let owner_sk = PrivateKey::random(&mut rng);
     let owner = owner_sk.public_key();
+    let owner_account = AccountId::from(*owner);
 
     // A DIFFERENT, non-owner member of the namespace — whoever happened to
     // deliver the group key to the bootstrapping replica. It is NOT the owner.
     let non_owner_sk = PrivateKey::random(&mut rng);
     let non_owner = non_owner_sk.public_key();
+    let non_owner_account = AccountId::from(*non_owner);
     assert_ne!(
         owner, non_owner,
         "the key-deliverer must be a different identity than the true owner"
@@ -1626,7 +1647,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // informational here; sequencing comes from the head record. The 0 below is
     // an arbitrary placeholder the apply path does not consult for ordering.)
     // This establishes the founding admin authoritatively. ----
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account });
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs NamespaceCreated genesis");
@@ -1636,13 +1657,13 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // The true owner is now the recognised founding admin; the non-owner is not.
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &owner)
+            .is_admin(&ns_gid, &owner_account)
             .unwrap(),
         "genesis must establish the TRUE owner as the namespace admin"
     );
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &non_owner)
+            .is_admin(&ns_gid, &non_owner_account)
             .unwrap(),
         "the non-owner must NOT be admin after genesis"
     );
@@ -1655,13 +1676,13 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
 
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &non_owner)
+            .is_admin(&ns_gid, &non_owner_account)
             .unwrap(),
         "#2474: a non-owner KeyDelivery seed must NOT pin the admin (the wedge is gone)"
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &owner)
+            .is_admin(&ns_gid, &owner_account)
             .unwrap(),
         "the true owner remains the admin after the non-owner seed"
     );
@@ -1730,6 +1751,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     let founder = founder_sk.public_key();
     let attacker_sk = PrivateKey::random(&mut rng);
     let attacker = attacker_sk.public_key();
+    let attacker_account = AccountId::from(*attacker);
 
     // ---- (a) bare-store genesis ----
     {
@@ -1738,18 +1760,18 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         let ns_gid = ContextGroupId::from(namespace_id);
         let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
         let signed =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
         gov.apply_signed_op(&signed)
             .expect("bare-store genesis applies");
 
         let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
-        assert_eq!(meta.admin_identity, founder, "admin == founder");
-        assert_eq!(meta.owner_identity, founder, "owner == founder");
+        assert_eq!(meta.admin_identity, founder_account, "admin == founder");
+        assert_eq!(meta.owner_identity, founder_account, "owner == founder");
         assert!(
             MembershipRepository::new(&store)
-                .is_admin(&ns_gid, &founder)
+                .is_admin(&ns_gid, &founder_account)
                 .unwrap(),
             "founder is admin"
         );
@@ -1762,7 +1784,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         );
 
         // ---- (b) anti-hijack: a second, forged genesis is a no-op ----
-        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: attacker });
+        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: attacker_account });
         let signed_forged =
             SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 1, forged).unwrap();
         gov.apply_signed_op(&signed_forged)
@@ -1770,12 +1792,12 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
 
         let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
         assert_eq!(
-            meta.admin_identity, founder,
+            meta.admin_identity, founder_account,
             "anti-hijack: established admin is NOT overwritten by a forged genesis"
         );
         assert!(
             !MembershipRepository::new(&store)
-                .is_admin(&ns_gid, &attacker)
+                .is_admin(&ns_gid, &attacker_account)
                 .unwrap(),
             "anti-hijack: the attacker did not become admin"
         );
@@ -1799,20 +1821,20 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         );
         assert!(
             !MembershipRepository::new(&store)
-                .is_admin(&ns_gid, &attacker)
+                .is_admin(&ns_gid, &attacker_account)
                 .unwrap(),
             "the non-owner deliverer is NOT admin after the seed"
         );
 
         // Genesis then lands and fills in the real founder over the placeholder.
-        let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
         let signed =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
         gov.apply_signed_op(&signed)
             .expect("genesis applies over the placeholder seed meta");
         let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
         assert_eq!(
-            meta.admin_identity, founder,
+            meta.admin_identity, founder_account,
             "genesis overwrites the placeholder admin with the real founder"
         );
     }
@@ -1835,7 +1857,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
 
         // Attacker signs the genuine FIRST op (nonce=0, empty parents) but names
         // the founder as someone else (here: `founder`).
-        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+        let (forged, _genesis_account) = namespace_genesis_for(&founder_sk);
         let signed =
             SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 0, forged).unwrap();
         assert!(
@@ -1849,13 +1871,13 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         );
         assert!(
             !MembershipRepository::new(&store)
-                .is_admin(&ns_gid, &founder)
+                .is_admin(&ns_gid, &founder_account)
                 .unwrap(),
             "the falsely-declared founder was not made admin"
         );
         assert!(
             !MembershipRepository::new(&store)
-                .is_admin(&ns_gid, &attacker)
+                .is_admin(&ns_gid, &attacker_account)
                 .unwrap(),
             "the attacker signer was not made admin"
         );
@@ -1883,6 +1905,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     let founder = founder_sk.public_key();
     let stray_owner_sk = PrivateKey::random(&mut rng);
     let stray_owner = stray_owner_sk.public_key();
+    let stray_owner_account = AccountId::from(*stray_owner);
 
     let store = test_store();
     let namespace_id = [0xA4u8; 32];
@@ -1893,12 +1916,12 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     // sentinel (no real admin), but owner_identity is a real (non-placeholder)
     // key. The OR-of-both gate would have called this "established" and refused
     // genesis; the authority-field-only gate must not.
-    let mut partial = sample_meta_with_admin(founder);
+    let mut partial = sample_meta_with_admin(founder_account);
     partial.admin_identity = PublicKey::from([0u8; 32]);
-    partial.owner_identity = stray_owner;
+    partial.owner_identity = stray_owner_account;
     MetaRepository::new(&store).save(&ns_gid, &partial).unwrap();
 
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -1906,16 +1929,16 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
 
     let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
     assert_eq!(
-        meta.admin_identity, founder,
+        meta.admin_identity, founder_account,
         "gate keys on admin_identity only: genesis repairs the placeholder admin to the founder"
     );
     assert_eq!(
-        meta.owner_identity, founder,
+        meta.owner_identity, founder_account,
         "genesis establishes the founder as owner too"
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "founder is admin after the repairing genesis"
     );
@@ -1953,20 +1976,20 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
 
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap(),
         Some(GroupMemberRole::Member),
         "precondition: seed writes the founder as a non-authoritative Member"
     );
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "precondition: the seeded founder is NOT yet admin"
     );
 
     // ---- Genesis lands and must UPGRADE the founder Member row to Admin. ----
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -1974,20 +1997,20 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
 
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap(),
         Some(GroupMemberRole::Admin),
         "#2474 item 4: genesis must UPGRADE the seeded Member row to Admin"
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "founder is admin after genesis"
     );
     let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
-    assert_eq!(meta.admin_identity, founder, "admin_identity == founder");
-    assert_eq!(meta.owner_identity, founder, "owner_identity == founder");
+    assert_eq!(meta.admin_identity, founder_account, "admin_identity == founder");
+    assert_eq!(meta.owner_identity, founder_account, "owner_identity == founder");
 }
 
 #[test]
@@ -2022,11 +2045,11 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     // member row — simulating a path that set a real `admin_identity` before
     // genesis applied.
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .save(&ns_gid, &sample_meta_with_admin(founder_account))
         .unwrap();
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap(),
         None,
         "precondition: no explicit member row for the founder yet"
@@ -2034,7 +2057,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
 
     // Genesis arrives for the SAME founder. The established gate short-circuits
     // the meta rewrite but must still ensure the Admin member row.
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -2042,7 +2065,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
 
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap(),
         Some(GroupMemberRole::Admin),
         "#2474 item 2: genesis must ensure the founder's Admin member row on the \
@@ -2050,7 +2073,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "founder is admin after the idempotent genesis"
     );
@@ -2094,21 +2117,21 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     // Pre-establish the namespace fully: meta admin == owner == founder AND an
     // explicit Admin member row for the founder.
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(founder))
+        .save(&ns_gid, &sample_meta_with_admin(founder_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &founder, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &founder_account, GroupMemberRole::Admin)
         .unwrap();
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap(),
         Some(GroupMemberRole::Admin),
         "precondition: founder is already established as Admin"
     );
 
     // A parentless same-founder genesis re-arrives (e.g. via sync backfill).
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -2116,14 +2139,14 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
 
     assert_eq!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap(),
         Some(GroupMemberRole::Admin),
         "(2a) re-arrival must NEVER downgrade an already-Admin founder row"
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "founder remains admin after the idempotent re-arrival"
     );
@@ -2147,6 +2170,7 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     let attacker_sk = PrivateKey::random(&mut rng);
     let victim_sk = PrivateKey::random(&mut rng);
     let victim = victim_sk.public_key();
+    let victim_account = AccountId::from(*victim);
 
     let store = test_store();
     let namespace_id = [0xB7u8; 32];
@@ -2154,7 +2178,7 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Attacker declares the victim as founder but signs with their OWN key.
-    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: victim });
+    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: victim_account });
     let signed =
         SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 0, forged).unwrap();
 
@@ -2171,7 +2195,7 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     );
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &victim)
+            .is_admin(&ns_gid, &victim_account)
             .unwrap(),
         "victim was not made admin by a forged genesis"
     );
@@ -2215,7 +2239,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
 
     // Self-consistent (signer == founder) but PARENTED genesis: a fabricated
     // parent op-hash makes this not the DAG root.
-    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (parented, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id.into(),
@@ -2239,20 +2263,20 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     );
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "no Admin row may be written for a rejected non-genesis NamespaceCreated"
     );
 
     // Sanity: the REAL genesis path (no parents, same founder) still applies.
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis)
         .expect("parentless genesis (the DAG root) still applies");
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "parentless genesis establishes the founder as Admin"
     );
@@ -2295,7 +2319,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     );
 
     // Parented (non-genesis) NamespaceCreated on the bare namespace.
-    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (parented, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id.into(),
@@ -2323,7 +2347,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
 
     // Consequence: a subsequent PARENTLESS genesis still applies cleanly and
     // establishes the founder (it would be impossible if the head had advanced).
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis).expect(
@@ -2332,7 +2356,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "the parentless genesis establishes the founder as Admin after the rejected parented op"
     );
@@ -2362,20 +2386,20 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Establish the namespace via a clean parentless genesis.
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis)
         .expect("parentless genesis establishes the namespace");
     let meta_before = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
     assert_eq!(
-        meta_before.admin_identity, founder,
+        meta_before.admin_identity, founder_account,
         "precondition: established"
     );
 
     // A PARENTED `NamespaceCreated` (same founder) now arrives late on the
     // established namespace. It must be a NO-OP, returning Ok — not Err.
-    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (parented, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed_parented = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id.into(),
@@ -2394,7 +2418,7 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     // The established admin is untouched.
     let meta_after = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
     assert_eq!(
-        meta_after.admin_identity, founder,
+        meta_after.admin_identity, founder_account,
         "the established admin is unchanged by the late parented no-op"
     );
 }
@@ -2427,8 +2451,8 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     // (established) but owner DIVERGED, and crucially NO Admin member row and
     // NO default caps row exist. Under the old code a same-founder re-arrival
     // would repair all three; here the op is PARENTED, so none of it must fire.
-    let mut diverged = sample_meta_with_admin(founder);
-    diverged.owner_identity = stray_owner;
+    let mut diverged = sample_meta_with_admin(founder_account);
+    diverged.owner_identity = stray_owner_account;
     MetaRepository::new(&store)
         .save(&ns_gid, &diverged)
         .unwrap();
@@ -2437,7 +2461,7 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     // and would be true here regardless of the row).
     assert!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap()
             .is_none(),
         "precondition: founder has no explicit Admin member row"
@@ -2451,7 +2475,7 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     );
 
     // PARENTED same-founder `NamespaceCreated` arrives on the established ns.
-    let parented = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (parented, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed_parented = SignedNamespaceOp::sign(
         &founder_sk,
         namespace_id.into(),
@@ -2466,16 +2490,16 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
     // Nothing was mutated: owner stays DIVERGED, no member row, no caps row.
     let meta_after = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
     assert_eq!(
-        meta_after.admin_identity, founder,
+        meta_after.admin_identity, founder_account,
         "admin unchanged by the parented no-op"
     );
     assert_eq!(
-        meta_after.owner_identity, stray_owner,
+        meta_after.owner_identity, stray_owner_account,
         "parented op must NOT run the #602 owner_identity repair (not genesis-shaped)"
     );
     assert!(
         MembershipRepository::new(&store)
-            .role_of(&ns_gid, &founder)
+            .role_of(&ns_gid, &founder_account)
             .unwrap()
             .is_none(),
         "parented op must NOT ensure the Admin member row (not genesis-shaped)"
@@ -2515,23 +2539,23 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     // a stray non-founder key. Use `sample_meta_with_admin` so other fields
     // (app_key, target_application_id, upgrade_policy, created_at, auto_join)
     // carry distinctive non-default values we can assert are preserved.
-    let mut diverged = sample_meta_with_admin(founder);
-    diverged.owner_identity = stray_owner;
+    let mut diverged = sample_meta_with_admin(founder_account);
+    diverged.owner_identity = stray_owner_account;
     MetaRepository::new(&store)
         .save(&ns_gid, &diverged)
         .unwrap();
 
     // Same-founder genesis re-arrives (parentless idempotent re-arrival).
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder });
+    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs idempotent genesis");
     gov.apply_signed_op(&signed)
         .expect("idempotent same-founder re-arrival applies as a no-op-with-repair");
 
     let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
-    assert_eq!(meta.admin_identity, founder, "admin stays the founder");
+    assert_eq!(meta.admin_identity, founder_account, "admin stays the founder");
     assert_eq!(
-        meta.owner_identity, founder,
+        meta.owner_identity, founder_account,
         "#602: same-founder re-arrival repairs the diverged owner_identity to the founder"
     );
     // All other fields are preserved from the pre-established meta.
@@ -2559,7 +2583,7 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     // The founder's Admin member row is also ensured on this path.
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &founder)
+            .is_admin(&ns_gid, &founder_account)
             .unwrap(),
         "same-founder re-arrival ensures the founder's Admin member row"
     );
@@ -2595,6 +2619,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     let attacker_sk = PrivateKey::random(&mut rng);
     let real_founder_sk = PrivateKey::random(&mut rng);
     let real_founder = real_founder_sk.public_key();
+    let real_founder_account = AccountId::from(*real_founder);
 
     let store = test_store();
     let namespace_id = [0xDBu8; 32];
@@ -2616,7 +2641,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     // SignerNotFounder gate inside the genesis handler — a real apply error
     // raised AFTER `apply_root_op` is entered but BEFORE `advance_dag_head`.
     let bad_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: real_founder,
+        founder: real_founder_account,
     });
     let signed_bad =
         SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 1, bad_genesis).unwrap();
@@ -2642,7 +2667,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     // A clean, parentless retry by the REAL founder now applies — proving the
     // namespace is not wedged after the failed attempt.
     let good_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: real_founder,
+        founder: real_founder_account,
     });
     let signed_good = SignedNamespaceOp::sign(
         &real_founder_sk,
@@ -2683,6 +2708,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
+    let signer_account = AccountId::from(*signer_pk);
 
     let namespace_id = [0xC4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
@@ -2690,10 +2716,10 @@ fn replica_op_log_dedup_survives_head_pruning() {
     // Replica bootstrap state: namespace meta with the signer as admin + the
     // group key so the encrypted ops decrypt.
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
         .unwrap();
     let group_key = [0x5Au8; 32];
     let key_id = GroupKeyring::new(&store, ns_gid)
@@ -2829,15 +2855,16 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
+    let signer_account = AccountId::from(*signer_pk);
 
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
         .unwrap();
     let group_key = [0x5Cu8; 32];
     let key_id = GroupKeyring::new(&store, ns_gid)
@@ -2925,15 +2952,16 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
+    let signer_account = AccountId::from(*signer_pk);
 
     let namespace_id = [0xC5u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
         .unwrap();
     let group_key = [0x5Bu8; 32];
     let key_id = GroupKeyring::new(&store, ns_gid)
@@ -3036,7 +3064,9 @@ fn recursive_remove_cascades_to_all_descendants() {
     let child = ContextGroupId::from([0xE1; 32]);
     let grandchild = ContextGroupId::from([0xE2; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let member = PublicKey::from([0x02; 32]);
+    let member_account = AccountId::from(*member);
 
     // Build hierarchy
     NamespaceRepository::new(&store)
@@ -3050,49 +3080,49 @@ fn recursive_remove_cascades_to_all_descendants() {
     for gid in [&root, &child, &grandchild] {
         MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
         MembershipRepository::new(&store)
-            .add_member(gid, &admin, GroupMemberRole::Admin)
+            .add_member(gid, &admin_account, GroupMemberRole::Admin)
             .unwrap();
         MembershipRepository::new(&store)
-            .add_member(gid, &member, GroupMemberRole::Member)
+            .add_member(gid, &member_account, GroupMemberRole::Member)
             .unwrap();
     }
 
     // Verify member exists everywhere
     assert!(MembershipRepository::new(&store)
-        .is_member(&root, &member)
+        .is_member(&root, &member_account)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_member(&child, &member)
+        .is_member(&child, &member_account)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_member(&grandchild, &member)
+        .is_member(&grandchild, &member_account)
         .unwrap());
 
     // Remove from root — should cascade to child and grandchild
     let removed_from = NamespaceRepository::new(&store)
-        .recursive_remove_member(&root, &member)
+        .recursive_remove_member(&root, &member_account)
         .unwrap();
     assert_eq!(removed_from.len(), 3, "should be removed from all 3 groups");
 
     assert!(!MembershipRepository::new(&store)
-        .is_member(&root, &member)
+        .is_member(&root, &member_account)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_member(&child, &member)
+        .is_member(&child, &member_account)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_member(&grandchild, &member)
+        .is_member(&grandchild, &member_account)
         .unwrap());
 
     // Admin should be unaffected
     assert!(MembershipRepository::new(&store)
-        .is_member(&root, &admin)
+        .is_member(&root, &admin_account)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_member(&child, &admin)
+        .is_member(&child, &admin_account)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_member(&grandchild, &admin)
+        .is_member(&grandchild, &admin_account)
         .unwrap());
 }
 
@@ -3103,7 +3133,9 @@ fn recursive_remove_from_child_does_not_affect_parent() {
     let child = ContextGroupId::from([0xE1; 32]);
     let grandchild = ContextGroupId::from([0xE2; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let member = PublicKey::from([0x02; 32]);
+    let member_account = AccountId::from(*member);
 
     NamespaceRepository::new(&store)
         .nest(&root, &child)
@@ -3115,31 +3147,31 @@ fn recursive_remove_from_child_does_not_affect_parent() {
     for gid in [&root, &child, &grandchild] {
         MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
         MembershipRepository::new(&store)
-            .add_member(gid, &admin, GroupMemberRole::Admin)
+            .add_member(gid, &admin_account, GroupMemberRole::Admin)
             .unwrap();
         MembershipRepository::new(&store)
-            .add_member(gid, &member, GroupMemberRole::Member)
+            .add_member(gid, &member_account, GroupMemberRole::Member)
             .unwrap();
     }
 
     // Remove from child only — should cascade to grandchild but NOT root
     let removed_from = NamespaceRepository::new(&store)
-        .recursive_remove_member(&child, &member)
+        .recursive_remove_member(&child, &member_account)
         .unwrap();
     assert_eq!(removed_from.len(), 2, "removed from child + grandchild");
 
     // Root membership should be unaffected
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&root, &member)
+            .is_member(&root, &member_account)
             .unwrap(),
         "root membership must survive child removal"
     );
     assert!(!MembershipRepository::new(&store)
-        .is_member(&child, &member)
+        .is_member(&child, &member_account)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_member(&grandchild, &member)
+        .is_member(&grandchild, &member_account)
         .unwrap());
 }
 
@@ -3149,7 +3181,9 @@ fn recursive_remove_member_not_in_some_descendants() {
     let root = ContextGroupId::from([0xE0; 32]);
     let child = ContextGroupId::from([0xE1; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let member = PublicKey::from([0x02; 32]);
+    let member_account = AccountId::from(*member);
 
     NamespaceRepository::new(&store)
         .nest(&root, &child)
@@ -3158,16 +3192,16 @@ fn recursive_remove_member_not_in_some_descendants() {
     for gid in [&root, &child] {
         MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
         MembershipRepository::new(&store)
-            .add_member(gid, &admin, GroupMemberRole::Admin)
+            .add_member(gid, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     // Member only in root, not in child
     MembershipRepository::new(&store)
-        .add_member(&root, &member, GroupMemberRole::Member)
+        .add_member(&root, &member_account, GroupMemberRole::Member)
         .unwrap();
 
     let removed_from = NamespaceRepository::new(&store)
-        .recursive_remove_member(&root, &member)
+        .recursive_remove_member(&root, &member_account)
         .unwrap();
     assert_eq!(
         removed_from.len(),
@@ -3175,7 +3209,7 @@ fn recursive_remove_member_not_in_some_descendants() {
         "only removed from root where member existed"
     );
     assert!(!MembershipRepository::new(&store)
-        .is_member(&root, &member)
+        .is_member(&root, &member_account)
         .unwrap());
 }
 
@@ -3194,7 +3228,9 @@ fn recursive_remove_skips_inherited_only_members() {
     let root = ContextGroupId::from([0xF0; 32]);
     let open_child = ContextGroupId::from([0xF1; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let member = PublicKey::from([0x02; 32]);
+    let member_account = AccountId::from(*member);
 
     NamespaceRepository::new(&store)
         .nest(&root, &open_child)
@@ -3206,21 +3242,21 @@ fn recursive_remove_skips_inherited_only_members() {
         .save(&open_child, &test_meta())
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .add_member(&root, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&open_child, &admin, GroupMemberRole::Admin)
+        .add_member(&open_child, &admin_account, GroupMemberRole::Admin)
         .unwrap();
 
     // Direct member of `root` only; inherited into `open_child` via the
     // CAN_JOIN_OPEN_SUBGROUPS cap + Open visibility.
     MembershipRepository::new(&store)
-        .add_member(&root, &member, GroupMemberRole::Member)
+        .add_member(&root, &member_account, GroupMemberRole::Member)
         .unwrap();
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &root,
-            &member,
+            &member_account,
             MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
         )
         .unwrap();
@@ -3230,13 +3266,13 @@ fn recursive_remove_skips_inherited_only_members() {
 
     // Sanity: inherited path works pre-removal.
     assert!(MembershipRepository::new(&store)
-        .is_member(&open_child, &member)
+        .is_member(&open_child, &member_account)
         .unwrap());
 
     // Recursive remove anchored at `open_child` must NOT report it as
     // removed-from -- the member has no direct row there.
     let removed_from = NamespaceRepository::new(&store)
-        .recursive_remove_member(&open_child, &member)
+        .recursive_remove_member(&open_child, &member_account)
         .unwrap();
     assert!(
         removed_from.is_empty(),
@@ -3246,16 +3282,16 @@ fn recursive_remove_skips_inherited_only_members() {
     // The member is still inherited because root membership + cap + Open
     // child are all unchanged.
     assert!(MembershipRepository::new(&store)
-        .is_member(&open_child, &member)
+        .is_member(&open_child, &member_account)
         .unwrap());
 
     // To actually revoke, the admin removes them from the anchor (root).
     let removed_from = NamespaceRepository::new(&store)
-        .recursive_remove_member(&root, &member)
+        .recursive_remove_member(&root, &member_account)
         .unwrap();
     assert_eq!(removed_from, vec![root]);
     assert!(!MembershipRepository::new(&store)
-        .is_member(&open_child, &member)
+        .is_member(&open_child, &member_account)
         .unwrap());
 }
 
@@ -3264,17 +3300,19 @@ fn recursive_remove_nonexistent_member_returns_empty() {
     let store = test_store();
     let root = ContextGroupId::from([0xE0; 32]);
     let admin = PublicKey::from([0x01; 32]);
+    let admin_account = AccountId::from(*admin);
     let stranger = PublicKey::from([0x99; 32]);
+    let stranger_account = AccountId::from(*stranger);
 
     MetaRepository::new(&store)
         .save(&root, &test_meta())
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .add_member(&root, &admin_account, GroupMemberRole::Admin)
         .unwrap();
 
     let removed_from = NamespaceRepository::new(&store)
-        .recursive_remove_member(&root, &stranger)
+        .recursive_remove_member(&root, &stranger_account)
         .unwrap();
     assert!(removed_from.is_empty(), "nothing to remove");
 }
@@ -3311,8 +3349,9 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
     // The recursive inviter is an admin of the namespace root.
     let inviter_sk = PrivateKey::random(&mut OsRng);
     let inviter_pk = inviter_sk.public_key();
+    let inviter_account = AccountId::from(*inviter_pk);
     MembershipRepository::new(&store)
-        .add_member(&ns, &inviter_pk, GroupMemberRole::Admin)
+        .add_member(&ns, &inviter_account, GroupMemberRole::Admin)
         .unwrap();
 
     // open_sub is Open -> the namespace admin inherits in.
@@ -3322,11 +3361,12 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
 
     // owner_priv is a different member's private DM: Restricted, inviter never added.
     let owner_pk = PrivateKey::random(&mut OsRng).public_key();
+    let owner_account = AccountId::from(*owner_pk);
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&owner_priv, VisibilityMode::Restricted)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&owner_priv, &owner_pk, GroupMemberRole::Admin)
+        .add_member(&owner_priv, &owner_account, GroupMemberRole::Admin)
         .unwrap();
     // ...even though there is an Open subgroup *under* it: the wall hides the whole subtree.
     CapabilitiesRepository::new(&store)
@@ -3338,22 +3378,22 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
         .set_subgroup_visibility(&inviter_priv, VisibilityMode::Restricted)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&inviter_priv, &inviter_pk, GroupMemberRole::Member)
+        .add_member(&inviter_priv, &inviter_account, GroupMemberRole::Member)
         .unwrap();
 
     // Sanity on the membership facts the walk depends on.
     assert!(MembershipRepository::new(&store)
-        .is_member(&open_sub, &inviter_pk)
+        .is_member(&open_sub, &inviter_account)
         .unwrap());
     assert!(!MembershipRepository::new(&store)
-        .is_member(&owner_priv, &inviter_pk)
+        .is_member(&owner_priv, &inviter_account)
         .unwrap());
     assert!(MembershipRepository::new(&store)
-        .is_member(&inviter_priv, &inviter_pk)
+        .is_member(&inviter_priv, &inviter_account)
         .unwrap());
 
     let visible = NamespaceRepository::new(&store)
-        .collect_visible_descendants(&ns, &inviter_pk)
+        .collect_visible_descendants(&ns, &inviter_account)
         .unwrap();
     assert!(visible.contains(&open_sub));
     assert!(visible.contains(&inviter_priv));
@@ -3407,19 +3447,21 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
 
     let inviter_sk = PrivateKey::random(&mut OsRng);
     let inviter_pk = inviter_sk.public_key();
+    let inviter_account = AccountId::from(*inviter_pk);
     MembershipRepository::new(&store)
-        .add_member(&ns, &inviter_pk, GroupMemberRole::Admin)
+        .add_member(&ns, &inviter_account, GroupMemberRole::Admin)
         .unwrap();
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
         .unwrap();
 
     let owner_pk = PrivateKey::random(&mut OsRng).public_key();
+    let owner_account = AccountId::from(*owner_pk);
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&owner_priv, VisibilityMode::Restricted)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&owner_priv, &owner_pk, GroupMemberRole::Admin)
+        .add_member(&owner_priv, &owner_account, GroupMemberRole::Admin)
         .unwrap();
 
     let invitations = NamespaceRepository::new(&store)
@@ -3464,6 +3506,7 @@ fn governance_group_reparented_via_signed_op() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -3476,10 +3519,10 @@ fn governance_group_reparented_via_signed_op() {
 
     // Bootstrap namespace: meta + admin + namespace identity
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -3558,15 +3601,16 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xC0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -3618,6 +3662,7 @@ fn governance_rejects_non_admin_signer() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let intruder_sk = PrivateKey::random(&mut rng);
 
     let ns_id = [0xA0u8; 32];
@@ -3625,10 +3670,10 @@ fn governance_rejects_non_admin_signer() {
 
     // Bootstrap namespace with admin
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -3667,16 +3712,17 @@ fn governance_group_created_is_idempotent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let new_group_id = [0xCC; 32];
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -3733,15 +3779,16 @@ fn governance_group_created_rejects_cross_namespace_parent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     // Namespace A, where our admin has authority.
     let ns_a = [0xA0u8; 32];
     let ns_a_gid = ContextGroupId::from(ns_a);
     MetaRepository::new(&store)
-        .save(&ns_a_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_a_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_a_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_a_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_a_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -3813,20 +3860,23 @@ fn rotation_test_setup() -> (
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let local_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let local_sk = PrivateKey::from(local_sk_bytes);
     let local_pk = local_sk.public_key();
+    let local_account = AccountId::from(*local_pk);
     let removed_pk = PrivateKey::random(&mut rng).public_key();
+    let removed_account = AccountId::from(*removed_pk);
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     let m = MembershipRepository::new(&store);
-    m.add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+    m.add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
-    m.add_member(&ns_gid, &local_pk, GroupMemberRole::Member)
+    m.add_member(&ns_gid, &local_account, GroupMemberRole::Member)
         .unwrap();
-    m.add_member(&ns_gid, &removed_pk, GroupMemberRole::Member)
+    m.add_member(&ns_gid, &removed_account, GroupMemberRole::Member)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &local_pk, &local_sk_bytes, &[0u8; 32])
@@ -3857,7 +3907,7 @@ fn build_rotation_op(
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 
     let inner = GroupOp::MemberRemoved {
-        member: *removed_pk,
+        member: *removed_account,
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: vec![],
     };
@@ -3867,7 +3917,7 @@ fn build_rotation_op(
         .current_key_recipients()
         .unwrap()
         .into_iter()
-        .filter(|entitled| entitled.member != *removed_pk)
+        .filter(|entitled| entitled.member != *removed_account)
         .map(|entitled| entitled.recipient)
         .collect();
     let mut rotation = keyring
@@ -4018,6 +4068,7 @@ fn governance_group_created_writes_birth_visibility() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA1u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -4025,10 +4076,10 @@ fn governance_group_created_writes_birth_visibility() {
     let restricted_group_id = [0xE1u8; 32];
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -4104,6 +4155,7 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xB2u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -4111,10 +4163,10 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     let gid = ContextGroupId::from(group_id);
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -4200,6 +4252,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -4207,10 +4260,10 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     let new_gid = ContextGroupId::from(new_group_id);
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -4219,7 +4272,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     // Simulate the create_group HANDLER pre-populating meta before publishing:
     // this is the originator's flow.
     MetaRepository::new(&store)
-        .save(&new_gid, &sample_meta_with_admin(admin_pk))
+        .save(&new_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
 
     // Now apply the GroupCreated op — idempotency must NOT skip the edges.
@@ -4273,14 +4326,15 @@ fn execute_group_created_rejects_self_parent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -4331,18 +4385,19 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xE0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
 
     // `sample_meta_with_admin` pins app_key = [0xBB; 32] and
     // target_application_id = [0xCC; 32].
-    let parent_meta = sample_meta_with_admin(admin_pk);
+    let parent_meta = sample_meta_with_admin(admin_account);
     MetaRepository::new(&store)
         .save(&ns_gid, &parent_meta)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -4397,6 +4452,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let admin_account = AccountId::from(*admin_pk);
 
     // Build: namespace → A → B (two-level subtree).
     let a_id = [0xAAu8; 32];
@@ -4404,10 +4460,10 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     let a_gid = ContextGroupId::from(a_id);
     let b_gid = ContextGroupId::from(b_id);
     MetaRepository::new(&store)
-        .save(&a_gid, &sample_meta_with_admin(admin_pk))
+        .save(&a_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MetaRepository::new(&store)
-        .save(&b_gid, &sample_meta_with_admin(admin_pk))
+        .save(&b_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&ns_gid, &a_gid)
@@ -4482,6 +4538,7 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let (admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let admin_account = AccountId::from(*admin_pk);
 
     // Build: namespace → A → B (the subtree the signer legitimately owns),
     // plus an unrelated sibling X directly under the namespace root that the
@@ -4494,7 +4551,7 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     let x_gid = ContextGroupId::from(x_id);
     for gid in [&a_gid, &b_gid, &x_gid] {
         MetaRepository::new(&store)
-            .save(gid, &sample_meta_with_admin(admin_pk))
+            .save(gid, &sample_meta_with_admin(admin_account))
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -4913,21 +4970,23 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
+    let member_account = AccountId::from(*member_pk);
     // Never added to the namespace — not a member, no capability row.
     let stranger_sk = PrivateKey::random(&mut rng);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
+        .add_member(&ns_gid, &member_account, GroupMemberRole::Member)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -4960,7 +5019,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // create a subgroup — rejected by the apply-side authorization check.
     assert!(
         !MembershipRepository::new(&store)
-            .is_member(&ns_gid, &stranger_sk.public_key())
+            .is_member(&ns_gid, &AccountId::from(*stranger_sk.public_key()))
             .unwrap(),
         "precondition: the stranger must not be enrolled in the namespace"
     );
@@ -4996,7 +5055,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &ns_gid,
-            &member_pk,
+            &member_account,
             MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         )
         .unwrap();
@@ -5008,12 +5067,12 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             .unwrap()
             .unwrap()
             .owner_identity,
-        member_pk,
+        member_account,
         "creator owns the new subgroup"
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ContextGroupId::from(chan), &member_pk)
+            .is_admin(&ContextGroupId::from(chan), &member_account)
             .unwrap(),
         "creator is added as an admin of the new subgroup"
     );
@@ -5049,23 +5108,27 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
+    let owner_account = AccountId::from(*owner_pk);
     let stranger_sk = PrivateKey::random(&mut rng);
     // A namespace member who is neither the subgroup owner, a namespace admin,
     // nor a CAN_DELETE_SUBGROUP holder — a distinct case from a total stranger.
     let plain_member_sk = PrivateKey::random(&mut rng);
     let plain_member_pk = plain_member_sk.public_key();
+    let plain_member_account = AccountId::from(*plain_member_pk);
     let janitor_sk = PrivateKey::random(&mut rng);
     let janitor_pk = janitor_sk.public_key();
+    let janitor_account = AccountId::from(*janitor_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     // `owner_pk` is enrolled as an ordinary namespace member — that mirrors the
     // real model (a subgroup owner got there by being a namespace member and
@@ -5073,13 +5136,13 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // so an owner is always a current member). It holds no caps and no admin
     // role at the namespace level, so it can only delete via the owner path.
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Member)
+        .add_member(&ns_gid, &owner_account, GroupMemberRole::Member)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &plain_member_pk, GroupMemberRole::Member)
+        .add_member(&ns_gid, &plain_member_account, GroupMemberRole::Member)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &janitor_pk, GroupMemberRole::Member)
+        .add_member(&ns_gid, &janitor_account, GroupMemberRole::Member)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
@@ -5090,7 +5153,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         let id = [tag; 32];
         let gid = ContextGroupId::from(id);
         MetaRepository::new(&store)
-            .save(&gid, &sample_meta_with_admin(owner_pk))
+            .save(&gid, &sample_meta_with_admin(owner_account))
             .unwrap();
         NamespaceRepository::new(&store)
             .nest(&ns_gid, &gid)
@@ -5127,7 +5190,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // reaches `execute_group_deleted` and fails the owner/admin/cap gate.
     assert!(
         !MembershipRepository::new(&store)
-            .is_member(&ns_gid, &stranger_sk.public_key())
+            .is_member(&ns_gid, &AccountId::from(*stranger_sk.public_key()))
             .unwrap(),
         "precondition: the stranger must not be enrolled in the namespace"
     );
@@ -5183,7 +5246,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &ns_gid,
-            &janitor_pk,
+            &janitor_account,
             MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
         )
         .unwrap();
@@ -5207,14 +5270,15 @@ fn group_created_with_no_key_skips_retry() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
+    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xF0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
 
     // Brand-new subgroup id: no GroupKeyring entry exists for it, so the
@@ -5444,6 +5508,7 @@ fn groups_member_but_keyless_reports_then_clears() {
     // This node's namespace identity — the member we'd be missing a key for.
     let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
     let my_id = PrivateKey::from(sk_bytes).public_key();
+    let my_id_account = AccountId::from(*my_id);
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
         .unwrap();
@@ -5462,7 +5527,7 @@ fn groups_member_but_keyless_reports_then_clears() {
 
     // Join the root namespace group, still holding no key.
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &my_id, GroupMemberRole::Member)
+        .add_member(&ns_gid, &my_id_account, GroupMemberRole::Member)
         .unwrap();
 
     // Member of the namespace group but keyless → reported; the non-member
@@ -5562,11 +5627,13 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
+    let joiner_account = AccountId::from(*joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
+    let responder_account = AccountId::from(*responder_pk);
 
     // ---- Responder store: holds the key, knows the joiner is a member. ----
     let responder_store = test_store();
@@ -5574,16 +5641,16 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
         .unwrap();
     MetaRepository::new(&responder_store)
-        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     MetaRepository::new(&responder_store)
-        .save(&subgroup_gid, &sample_meta_with_admin(responder_pk))
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     NamespaceRepository::new(&responder_store)
         .nest(&ns_gid, &subgroup_gid)
         .unwrap();
     MembershipRepository::new(&responder_store)
-        .add_member(&subgroup_gid, &joiner_pk, GroupMemberRole::Member)
+        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::Member)
         .unwrap();
     GroupKeyring::new(&responder_store, subgroup_gid)
         .store_key(&group_key)
@@ -5689,11 +5756,13 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let joiner_sk = PrivateKey::from(joiner_sk_bytes);
     let joiner_pk = joiner_sk.public_key();
+    let joiner_account = AccountId::from(*joiner_pk);
 
     // Responder identity: the namespace identity that holds and wraps the key.
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
+    let responder_account = AccountId::from(*responder_pk);
 
     // ---- Responder store: holds the key, knows the joiner is a TEE member. ----
     let responder_store = test_store();
@@ -5701,16 +5770,16 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
         .unwrap();
     MetaRepository::new(&responder_store)
-        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     MetaRepository::new(&responder_store)
-        .save(&subgroup_gid, &sample_meta_with_admin(responder_pk))
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     NamespaceRepository::new(&responder_store)
         .nest(&ns_gid, &subgroup_gid)
         .unwrap();
     MembershipRepository::new(&responder_store)
-        .add_member(&subgroup_gid, &joiner_pk, GroupMemberRole::ReadOnlyTee)
+        .add_member(&subgroup_gid, &joiner_account, GroupMemberRole::ReadOnlyTee)
         .unwrap();
     GroupKeyring::new(&responder_store, subgroup_gid)
         .store_key(&group_key)
@@ -5804,6 +5873,7 @@ fn responder_refuses_delivery_to_non_member() {
     let responder_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let responder_sk = PrivateKey::from(responder_sk_bytes);
     let responder_pk = responder_sk.public_key();
+    let responder_account = AccountId::from(*responder_pk);
     let stranger_pk = PrivateKey::from(rand::Rng::gen::<[u8; 32]>(&mut rng)).public_key();
 
     let store = test_store();
@@ -5811,10 +5881,10 @@ fn responder_refuses_delivery_to_non_member() {
         .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
         .unwrap();
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     MetaRepository::new(&store)
-        .save(&subgroup_gid, &sample_meta_with_admin(responder_pk))
+        .save(&subgroup_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&ns_gid, &subgroup_gid)
@@ -5858,6 +5928,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     let namespace_id: [u8; 32] = ns_gid.to_bytes();
     let responder_sk = PrivateKey::from([0x52u8; 32]);
     let responder_pk = responder_sk.public_key();
+    let responder_account = AccountId::from(*responder_pk);
     let member_sk = PrivateKey::from([0x53u8; 32]);
 
     let store = test_store();
@@ -5865,10 +5936,10 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
         .store_identity(&ns_gid, &responder_pk, &[0x52u8; 32], &[0u8; 32])
         .unwrap();
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(responder_pk))
+        .save(&ns_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &member_sk.public_key(), GroupMemberRole::Member)
+        .add_member(&ns_gid, &AccountId::from(*member_sk.public_key()), GroupMemberRole::Member)
         .unwrap();
     let group_key = [0x6Eu8; 32];
     GroupKeyring::new(&store, ns_gid)
@@ -5914,7 +5985,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     // member→account direction is read from those rows — so the fixture records
     // it too, or this would test a state production never reaches.
     bindings
-        .record_endorser(&ns_gid, account, &member_sk.public_key())
+        .record_endorser(&ns_gid, account, &AccountId::from(*member_sk.public_key()))
         .unwrap();
     let _ = bindings
         .apply_link(&ns_gid, &genesis, &[], &cert)
@@ -5990,7 +6061,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     bindings.apply_revocation(&ns_gid, device).unwrap();
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&ns_gid, &member_sk.public_key())
+            .is_member(&ns_gid, &AccountId::from(*member_sk.public_key()))
             .unwrap(),
         "the member must still be a member, or this test proves nothing"
     );
@@ -6047,14 +6118,15 @@ fn curative_sweep_redrives_stranded_context() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
+    let owner_account = AccountId::from(*owner_pk);
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(owner_pk))
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &owner_account, GroupMemberRole::Admin)
         .unwrap();
     // This receiver node's namespace identity — makes the namespace a "known"
     // one for `iter_identities`/`known_namespace_identities`.
@@ -6126,7 +6198,7 @@ fn curative_sweep_redrives_stranded_context() {
         "stored key id must match the op's key_id"
     );
     MetaRepository::new(&store)
-        .save(&sub_gid, &sample_meta_with_admin(owner_pk))
+        .save(&sub_gid, &sample_meta_with_admin(owner_account))
         .unwrap();
     // Nest the subgroup so it resolves under the namespace (for completeness).
     nest_for_test(&store, &ns_gid, &sub_gid);
@@ -6266,14 +6338,15 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
+    let owner_account = AccountId::from(*owner_pk);
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
 
     MetaRepository::new(&store)
-        .save(&ns_gid, &sample_meta_with_admin(owner_pk))
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &owner_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
@@ -6283,10 +6356,10 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
     let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
     nest_for_test(&store, &ns_gid, &sub_gid);
     MetaRepository::new(&store)
-        .save(&sub_gid, &sample_meta_with_admin(owner_pk))
+        .save(&sub_gid, &sample_meta_with_admin(owner_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&sub_gid, &owner_pk, GroupMemberRole::Admin)
+        .add_member(&sub_gid, &owner_account, GroupMemberRole::Admin)
         .unwrap();
     assert_eq!(
         CapabilitiesRepository::new(&store)
@@ -6385,6 +6458,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let owner = owner_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner = joiner_sk.public_key();
+    let joiner_account = AccountId::from(*joiner);
 
     let namespace_id = [0xE5u8; 32];
     let subgroup_id = [0xE6u8; 32];
@@ -6395,7 +6469,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         namespace_id.into(),
         vec![],
         0,
-        NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner }),
+        NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account }),
     )
     .expect("owner signs genesis");
     gov.apply_signed_op(&signed_genesis)
@@ -6428,7 +6502,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: joiner_account,
             group_id: subgroup_id.into(),
             account: crate::test_fixtures::test_join_account(),
         }),
@@ -6468,7 +6542,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account });
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs genesis");
@@ -6477,7 +6551,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 
     assert!(
         !MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &creator)
+            .is_admin(&ns_gid, &creator_account)
             .unwrap(),
         "precondition: the creator must be denied by the LIVE resolver"
     );
@@ -6532,7 +6606,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner });
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account });
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs genesis");
@@ -6541,7 +6615,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
 
     assert!(
         MembershipRepository::new(&store)
-            .is_admin(&ns_gid, &owner)
+            .is_admin(&ns_gid, &owner_account)
             .unwrap(),
         "precondition: the owner must be granted by the LIVE resolver"
     );
@@ -6609,7 +6683,7 @@ fn apply_open_join_with(
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: joiner_account,
             group_id: subgroup_id.into(),
             account,
         }),
@@ -6636,19 +6710,20 @@ fn namespace_with_open_subgroup(
     let ns_gid = ContextGroupId::from(namespace_id);
     let child = ContextGroupId::from(subgroup_id);
     let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(store, namespace_id);
+    let admin_account = AccountId::from(*admin_pk);
 
     nest_for_test(store, &ns_gid, &child);
     CapabilitiesRepository::new(store)
         .set_subgroup_visibility(&child, VisibilityMode::Open)
         .expect("open the subgroup");
     MetaRepository::new(store)
-        .save(&child, &sample_meta_with_admin(admin_pk))
+        .save(&child, &sample_meta_with_admin(admin_account))
         .expect("seed subgroup meta");
     CapabilitiesRepository::new(store)
         .set_default_capabilities(&ns_gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
         .expect("grant the open-join capability at the anchor");
     MembershipRepository::new(store)
-        .add_member(&ns_gid, joiner, GroupMemberRole::Member)
+        .add_member(&ns_gid, joiner_account, GroupMemberRole::Member)
         .expect("seed the joiner's anchor membership");
 }
 
@@ -6714,7 +6789,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
     );
     assert_ne!(
         MembershipRepository::new(&store)
-            .check_path(&ns_gid, &joiner)
+            .check_path(&ns_gid, &joiner_account)
             .expect("check path"),
         crate::membership::MembershipPath::None,
         "and costs the joiner nothing: a member without a binding is survivable, \
@@ -6821,6 +6896,7 @@ fn a_tee_admission_binds_the_replicas_device() {
 
     let replica_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let replica = replica_sk.public_key();
+    let replica_account = AccountId::from(*replica);
     let account = crate::test_fixtures::real_join_account(&replica);
     let account_id = account.cert.account;
 
@@ -6881,7 +6957,7 @@ fn a_tee_admission_binds_the_replicas_device() {
 
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&ns_gid, &replica)
+            .is_member(&ns_gid, &replica_account)
             .expect("membership"),
         "the replica is admitted"
     );
@@ -6998,7 +7074,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
     );
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&ns_gid, &replica)
+            .is_member(&ns_gid, &replica_account)
             .expect("membership"),
         "the admission itself still stands"
     );
@@ -7027,10 +7103,11 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let sub_gid = ContextGroupId::from(subgroup_id);
     let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
+    let admin_account = AccountId::from(*admin_pk);
 
     nest_for_test(&store, &ns_gid, &sub_gid);
     MetaRepository::new(&store)
-        .save(&sub_gid, &sample_meta_with_admin(admin_pk))
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
         .expect("seed subgroup meta");
     CapabilitiesRepository::new(&store)
         .set_subgroup_visibility(&sub_gid, VisibilityMode::Restricted)
