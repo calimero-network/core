@@ -337,16 +337,6 @@ pub fn record_facts_update(
     emit
 }
 
-/// Parse the leading integer of a semver string ("2", "2.0.0") into the `u32`
-/// schema-version a heartbeat reports. Best-effort: a non-numeric leading
-/// component yields `None`.
-fn parse_major_version(version: &str) -> Option<u32> {
-    version
-        .split('.')
-        .next()
-        .and_then(|major| major.trim().parse::<u32>().ok())
-}
-
 /// Resolve a single context's LOADED reader version: the ABI state version of
 /// the `ApplicationMeta` its `ContextMeta.application` points at. This is the
 /// schema the node can actually read right now, NOT the replicated migration
