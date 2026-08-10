@@ -1194,6 +1194,19 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // already proved the join happened, so we no longer need the handler live.
     calimero_context::auto_follow::shutdown();
 
+    // Point this node's identity back at the OWNER before the removal below.
+    //
+    // The Fix B section above re-pointed it at `T` on purpose, but leaving it
+    // there makes the next step a SELF-eviction: `self_purge` sees a
+    // `TeeMemberRemoved` naming the account this node's own identity resolves to
+    // and correctly deletes this group's local rows — including the very
+    // deny-list entries the Fix A assertions below read. That is the handler
+    // doing its job; the test simply must not be the evicted party while it
+    // inspects an evicted party's aftermath.
+    calimero_governance_store::NamespaceRepository::new(&node.store)
+        .store_identity(&ns_gid, &owner_pk, owner_sk.as_bytes(), &[0u8; 32])
+        .expect("re-point namespace identity back to the owner");
+
     // Subscribe to the op-events broadcast BEFORE applying, so we can observe the
     // per-subgroup `TeeMemberRemoved` the cascade emits. (Process-global channel;
     // these tests are `#[serial]`, so we only see events from this apply.)
