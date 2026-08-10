@@ -554,13 +554,19 @@ pub enum NetworkEvent {
     },
 
     /// Successfully downloaded a blob from a peer.
+    ///
+    /// Carries the blob's *size*, not its bytes. Storing the download is the
+    /// requesting path's job — it has to store before it can serve, so it cannot
+    /// delegate that here — and this event is purely a notification. Shipping the
+    /// bytes would mean a second full copy of every blob in memory (250 MiB
+    /// cloned for a 250 MiB fetch) for a consumer that only logs them.
     BlobDownloaded {
         /// The blob that was downloaded.
         blob_id: BlobId,
         /// The context this blob belongs to.
         context_id: ContextId,
-        /// The blob data.
-        data: Vec<u8>,
+        /// How many bytes were received.
+        size: usize,
         /// The peer we downloaded from.
         from_peer: PeerId,
     },

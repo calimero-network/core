@@ -28,7 +28,9 @@ calimero-store = { workspace = true, features = ["datatypes"] }
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+# `rt-multi-thread`: the concurrent-put regression test needs a reader and a
+# writer genuinely running at once, not cooperatively interleaved.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util.workspace = true
 
 [features]
