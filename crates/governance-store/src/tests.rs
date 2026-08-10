@@ -4937,9 +4937,9 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
     let store = test_store();
     let gid = ContextGroupId::from([0x9B; 32]);
     let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = AccountId::from(*admin_pk);
     let member_pk = PublicKey::from([0x02; 32]);
-    let member = AccountId::from(*member_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
+    let member = enrol_member(&store, &gid, &member_pk);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -4994,9 +4994,9 @@ fn set_upgrade_policy_admin_gated_and_blocks_flip_while_migration_pending() {
     let store = test_store();
     let gid = ContextGroupId::from([0xC1; 32]);
     let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = AccountId::from(*admin_pk);
     let member_pk = PublicKey::from([0x02; 32]);
-    let member = AccountId::from(*member_pk);
+    let admin = enrol_member(&store, &gid, &admin_pk);
+    let member = enrol_member(&store, &gid, &member_pk);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
