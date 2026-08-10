@@ -153,16 +153,15 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
 ///   trivially at target (the SDK's unversioned default is `0`), so a converged
 ///   cohort rolls up to `all_migrated`. Reporting `0` here is correct, NOT a
 ///   bogus "no migration to compare against" sentinel.
-/// * `Some(record)` — the group is at / heading to `record.to_version`. For a
-///   `Completed` record that is the version it reached (current); for an
-///   `InProgress` one it is the pending destination. Either way the cohort
-///   rolls up against `to_version`.
+/// * `Some(record)` — the group is at / heading to `record.to_state_version`.
+///   For a `Completed` record that is the version it reached (current); for an
+///   `InProgress` one it is the pending destination.
 ///
-/// A `Some(record)` whose `to_version` does not parse to a `u32` must NOT
-/// collapse to `0`: doing so makes every member reporting `schema_version >= 0`
-/// (all of them) trivially "migrated" — a false green over a real migration.
-/// An unknowable target pins to [`u32::MAX`] so no real version satisfies it and
-/// `all_migrated` stays false until the record is replaced by a parseable one.
+/// A `Some(record)` whose `to_state_version` is `0` (unresolvable) must NOT
+/// collapse to `0` as a target: doing so makes every member reporting
+/// `schema_version >= 0` (all of them) trivially "migrated" — a false green
+/// over a real migration. An unresolvable target pins to [`u32::MAX`] so no
+/// real version satisfies it until the record is replaced by a resolvable one.
 fn derive_target_version(upgrade: Option<&calimero_store::key::GroupUpgradeValue>) -> u32 {
     match upgrade {
         None => 0,

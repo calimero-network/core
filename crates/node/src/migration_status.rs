@@ -385,7 +385,7 @@ fn namespace_tree_groups(
 }
 
 /// Resolve the migration TARGET version governing `group_id`'s contexts: the
-/// parsed `to_version` of the NEAREST upgrade record found by walking from
+/// `to_state_version` of the NEAREST upgrade record found by walking from
 /// `group_id` UP its ancestors. A subgroup upgraded directly (`upgrade_group`
 /// on the subgroup) carries its own record; a subgroup under a root/cascade
 /// upgrade inherits the ancestor's record. No record anywhere up the chain ⇒ 0.
@@ -403,7 +403,11 @@ fn resolve_group_target_version(
     let mut current = *group_id;
     for _ in 0..calimero_governance_store::MAX_NAMESPACE_DEPTH {
         if let Ok(Some(record)) = upgrades.load(&current) {
-            return parse_major_version(&record.to_version).unwrap_or(u32::MAX);
+            return if record.to_state_version == 0 {
+                u32::MAX
+            } else {
+                record.to_state_version
+            };
         }
         match namespaces.parent(&current) {
             Ok(Some(parent)) => current = parent,
@@ -416,9 +420,9 @@ fn resolve_group_target_version(
 /// Compute this node's locally-advertised migration facts for `namespace_id`.
 ///
 /// `schema_version` is the node's actually-LOADED reader version — the lowest
-/// loaded `ApplicationMeta` major version across the namespace's contexts (the
+/// loaded `ApplicationMeta` state version across the namespace's contexts (the
 /// most-behind context governs whether this node has fully swapped its binary).
-/// This is deliberately NOT the migration TARGET (`UpgradesRepository.to_version`):
+/// This is deliberately NOT the migration TARGET (`UpgradesRepository.to_state_version`):
 /// under LazyOnAccess the governance target advances ahead of the locally-loaded
 /// binary, so reporting the target would let `all_migrated` flip green before the
 /// node could read the new schema (the cursor-bot bug this fixes). With no
@@ -1283,6 +1287,76 @@ mod tests {
         assert_eq!(
             facts.schema_version, 2,
             "an upgrade record targeting v2 must advertise schema_version 2"
+        );
+    }
+
+    /// `resolve_group_target_version` must read `to_state_version`, not parse
+    /// `to_version`'s leading component: a record targeting semver 10.2.0 at
+    /// ABI state 2 must resolve to 2, not the semver's major (10). An
+    /// unresolvable state version (`0`) must pin to `u32::MAX`, never collapse
+    /// to a trivially-satisfied `0`.
+    #[test]
+    fn resolve_group_target_version_reads_state_version_not_semver_major() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::UpgradesRepository;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue};
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x66u8; 32]);
+
+        UpgradesRepository::new(&store)
+            .save(
+                &ns,
+                &GroupUpgradeValue {
+                    from_version: "10.1.3".to_owned(),
+                    to_version: "10.2.0".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                    to_state_version: 2,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_group_target_version(&store, &ns),
+            2,
+            "must read to_state_version (2), not the semver major (10)"
+        );
+
+        let unresolvable = ContextGroupId::from([0x77u8; 32]);
+        UpgradesRepository::new(&store)
+            .save(
+                &unresolvable,
+                &GroupUpgradeValue {
+                    from_version: "10.1.3".to_owned(),
+                    to_version: "10.2.0".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: GroupUpgradeStatus::InProgress {
+                        total: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                    to_state_version: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_group_target_version(&store, &unresolvable),
+            u32::MAX,
+            "an unresolvable state version must pin to MAX, not collapse to 0"
         );
     }
 
