@@ -140,7 +140,11 @@ The op's **apply** handler (`member_joined_via_tee_attestation.rs`) re-checks th
 
 ### Key delivery (the verifier, again)
 
-A membership row is not enough — the replica needs the namespace's group encryption key to decrypt anything. The `MemberJoinedViaTeeAttestation` op is an _encrypted_ namespace-group op that only existing key-holders can apply, so the freshly-admitted node cannot even read its own membership until it holds the key.
+A membership row is not enough — the replica needs the namespace's group encryption key to decrypt anything.
+
+The admission itself is **cleartext**: `RootOp::MemberJoinedViaTeeAttestation`, readable by every peer. It has to be, because it carries the replica's [account credential](/protocol/accounts/#enrolling-at-join--the-default-path) and the peers who must verify that credential are precisely the ones who do not yet share a key with the joiner. Publishing it in the clear costs nothing — the measurements are not secret, an admission policy is a public allow-list of them, and the quote is verified before the op is signed.
+
+The earlier encrypted form (`GroupOp::MemberJoinedViaTeeAttestation`) is retained for the **subgroup** fan-in, where the node is already a namespace member: bindings are namespace-keyed, so admitting it inward binds nothing new and the encrypted op stays correct there.
 
 The verifier (a key-holder) therefore calls `deliver_group_key_to_member`, which publishes `NamespaceOp::Root(RootOp::KeyDelivery { group_id, envelope })` on the namespace DAG. The envelope is ECDH-wrapped for the recipient's public key, so only that node can unwrap it. Delivery is best-effort and one-shot; the durable fallback is the joiner-side recovery pull (`recover_missing_group_keys`), which sends a `GroupKeyRequest` that any key-holding member answers regardless of role. Key acquisition is thus a self-healing loop rather than a fragile single broadcast.
 
@@ -188,10 +192,15 @@ read-only follower of an existing namespace — no operator invite at any point.
    announce, runs `verify_attestation` (DCAP signature + nonce +
    `SHA-256(pubkey)` bind), checks the quote's `mrtd`/`tcb_status` against the
    policy, guards against a replayed `quote_hash`, and publishes
-   `MemberJoinedViaTeeAttestation { role: ReadOnlyTee, quote_hash, mrtd, … }`.
-   No special "verifier" role exists — any member may admit a valid quote.
+   `RootOp::MemberJoinedViaTeeAttestation { role: ReadOnlyTee, quote_hash, mrtd, …,
+   account }`. No special "verifier" role exists — any member may admit a valid quote.
 
-4. **The verifier delivers the key.** The membership row is encrypted, so the
+   The `account` is the replica's own credential, which travelled on the
+   announcement. The verifier checks it against the key the **quote** binds to
+   before admitting, so a credential lifted from another replica's announcement is
+   refused — the membership still stands, the device simply does not bind.
+
+4. **The verifier delivers the key.** Membership does not confer readability, so the
    verifier also publishes `RootOp::KeyDelivery` carrying the namespace group key
    ECDH-wrapped to the replica's public key. Only the replica can unwrap it; if
    this best-effort delivery is missed, the replica's own `GroupKeyRequest`
