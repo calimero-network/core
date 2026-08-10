@@ -519,6 +519,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 1,
             },
         )
         .expect("save_group_upgrade InProgress for G1");

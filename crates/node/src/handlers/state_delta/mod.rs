@@ -2434,6 +2434,7 @@ mod tests {
                             status: GroupUpgradeStatus::Completed { completed_at: None },
                             cascade_hlc: Some(cascade_hlc),
                             cascade_seq: None,
+                            to_state_version: 2,
                         },
                     )
                     .expect("save group upgrade");

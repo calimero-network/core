@@ -1950,6 +1950,7 @@ fn save_load_delete_upgrade() {
         },
         cascade_hlc: None,
         cascade_seq: None,
+        to_state_version: 2,
     };
 
     UpgradesRepository::new(&store)
@@ -1988,6 +1989,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             },
         )
         .unwrap();
@@ -2006,6 +2008,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             },
         )
         .unwrap();
