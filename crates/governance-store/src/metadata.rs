@@ -246,7 +246,7 @@ mod tests {
             name: Some(name.to_owned()),
             data: std::collections::BTreeMap::new(),
             updated_at: 1_700_000_000,
-            updated_by: PublicKey::from([0x01; 32]),
+            updated_by: AccountId::from([0x01; 32]),
         }
     }
 
@@ -291,7 +291,7 @@ mod tests {
         let store = test_store();
         let repo = MetadataRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.set_member(&gid, &pk, &record("alice")).unwrap();
         let loaded = repo
@@ -306,8 +306,8 @@ mod tests {
         let store = test_store();
         let repo = MetadataRepository::new(&store);
         let gid = test_group_id();
-        let pk_a = PublicKey::from([0x01; 32]);
-        let pk_b = PublicKey::from([0x02; 32]);
+        let pk_a = AccountId::from([0x01; 32]);
+        let pk_b = AccountId::from([0x02; 32]);
 
         repo.set_member(&gid, &pk_a, &record("a")).unwrap();
         repo.set_member(&gid, &pk_b, &record("b")).unwrap();
@@ -323,8 +323,8 @@ mod tests {
         let store = test_store();
         let repo = MetadataRepository::new(&store);
         let gid = test_group_id();
-        let pk_a = PublicKey::from([0x01; 32]);
-        let pk_b = PublicKey::from([0x02; 32]);
+        let pk_a = AccountId::from([0x01; 32]);
+        let pk_b = AccountId::from([0x02; 32]);
 
         repo.set_member(&gid, &pk_a, &record("alice")).unwrap();
         repo.set_member(&gid, &pk_b, &record("bob")).unwrap();

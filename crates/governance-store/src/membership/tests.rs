@@ -11,11 +11,11 @@ use crate::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     MetadataRepository,
 };
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
-use calimero_account::AccountId;
 use calimero_store::key::GroupMetaValue;
 
 use super::super::test_fixtures::{

@@ -274,8 +274,8 @@ mod tests {
     const NONCE_A: [u8; 32] = [0xA1; 32];
     const NONCE_B: [u8; 32] = [0xB2; 32];
 
-    fn bob() -> PublicKey {
-        PublicKey::from([0x02; 32])
+    fn bob() -> AccountId {
+        AccountId::from([0x02; 32])
     }
 
     #[test]
@@ -348,7 +348,7 @@ mod tests {
         let store = test_store();
         let repo = ReentryRepository::new(&store);
         let gid = test_group_id();
-        let carol = PublicKey::from([0x03; 32]);
+        let carol = AccountId::from([0x03; 32]);
 
         // Bob burns the shared open-invite link and leaves.
         repo.mark_invitation_consumed(&gid, &bob(), NONCE_A)

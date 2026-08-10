@@ -34,6 +34,7 @@
 //! Pure store rows; presence of the key IS the marker (value is `()`),
 //! mirroring [`crate::DenyListRepository`].
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::{PendingSelfPurge, PENDING_SELF_PURGE_PREFIX};
 use calimero_store::Store;
@@ -217,7 +218,7 @@ mod tests {
                 .unwrap();
             handle
                 .put(
-                    &GroupDeniedMember::new([0x44; 32], PublicKey::from([0x05; 32])),
+                    &GroupDeniedMember::new([0x44; 32], AccountId::from([0x05; 32])),
                     &(),
                 )
                 .unwrap();

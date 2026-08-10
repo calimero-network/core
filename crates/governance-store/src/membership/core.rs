@@ -813,7 +813,7 @@ mod tests {
     fn role_of_returns_none_when_not_a_member() {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
         assert!(repo.role_of(&test_group_id(), &pk).unwrap().is_none());
     }
 
@@ -822,7 +822,7 @@ mod tests {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.add_member(&gid, &pk, GroupMemberRole::Admin).unwrap();
         assert_eq!(
@@ -836,7 +836,7 @@ mod tests {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
         repo.remove_member(&gid, &pk).unwrap();
@@ -847,7 +847,7 @@ mod tests {
     fn is_admin_recognises_meta_admin_identity() {
         let store = test_store();
         let mut meta = test_meta();
-        meta.admin_identity = PublicKey::from([0xAA; 32]);
+        meta.admin_identity = AccountId::from([0xAA; 32]);
         MetaRepository::new(&store)
             .save(&test_group_id(), &meta)
             .unwrap();
@@ -864,9 +864,9 @@ mod tests {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
-        let admin_a = PublicKey::from([0x01; 32]);
-        let admin_b = PublicKey::from([0x02; 32]);
-        let member = PublicKey::from([0x03; 32]);
+        let admin_a = AccountId::from([0x01; 32]);
+        let admin_b = AccountId::from([0x02; 32]);
+        let member = AccountId::from([0x03; 32]);
 
         repo.add_member(&gid, &admin_a, GroupMemberRole::Admin)
             .unwrap();
@@ -885,7 +885,7 @@ mod tests {
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
         for i in 0..5 {
-            let pk = PublicKey::from([i as u8; 32]);
+            let pk = AccountId::from([i as u8; 32]);
             repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
         }
         let page_1 = repo.list(&gid, 0, 2).unwrap();
