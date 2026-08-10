@@ -1730,7 +1730,6 @@ pub struct GetCascadeStatusApiResponse {
 pub struct MemberMigrationReportApiData {
     pub schema_version: u32,
     pub residue_auto: u64,
-    pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     pub reported_at: u64,
     /// Member's self-reported pending-authored count (best-effort; 6f).
@@ -3074,7 +3073,6 @@ mod tests {
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 2,
                         residue_auto: 0,
-                        residue_identity: 0,
                         synced_up_to_hlc: 7,
                         reported_at: 1_700_000_000,
                         authored_remaining: 3,
@@ -3092,7 +3090,6 @@ mod tests {
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 1,
                         residue_auto: 1,
-                        residue_identity: 0,
                         synced_up_to_hlc: 5,
                         reported_at: 1_700_000_001,
                         authored_remaining: 0,

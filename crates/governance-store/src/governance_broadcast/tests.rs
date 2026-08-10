@@ -785,14 +785,13 @@ fn signed_heartbeat(
     sk: &PrivateKey,
     namespace_id: NamespaceId,
     schema_version: u32,
-    residue_identity: u64,
+    residue_auto: u64,
 ) -> SignedMigrationHeartbeat {
     let mut hb = SignedMigrationHeartbeat {
         namespace_id,
         peer_pubkey: sk.public_key(),
         schema_version,
-        residue_auto: 0,
-        residue_identity,
+        residue_auto,
         synced_up_to_hlc: 42,
         ts_millis: 1_700_000_000_000,
         signature: [0u8; 64],
@@ -836,7 +835,7 @@ async fn verify_migration_heartbeat_rejects_non_member_signer() {
 #[tokio::test]
 async fn verify_migration_heartbeat_rejects_bad_signature() {
     // Short-circuit on signature failure before consulting membership: a
-    // tampered heartbeat (e.g. residue_identity zeroed to fake completion)
+    // tampered heartbeat (e.g. residue_auto zeroed to fake completion)
     // must never be cached even from a known member.
     let store = empty_store();
     let sk = PrivateKey::random(&mut rand::thread_rng());
@@ -844,7 +843,7 @@ async fn verify_migration_heartbeat_rejects_bad_signature() {
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
     let mut hb = signed_heartbeat(&sk, ns_id.into(), 2, 5);
-    hb.residue_identity = 0; // tamper after signing — sig no longer covers body
+    hb.residue_auto = 0; // tamper after signing — sig no longer covers body
     assert!(!verify_migration_heartbeat(&store, &hb));
 }
 

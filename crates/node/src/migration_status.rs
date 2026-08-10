@@ -58,9 +58,6 @@ pub struct CacheEntry {
     pub schema_version: u32,
     /// Unconverted Convergent ("auto") contexts the peer still has pending.
     pub residue_auto: u64,
-    /// Unconverted identity-gated entries the peer still has pending
-    /// (the peer's local-derived residue scan from Task 6c.6).
-    pub residue_identity: u64,
     /// Governance HLC the peer has synced/applied through.
     pub synced_up_to_hlc: u64,
     /// Peer's self-reported pending-authored count (sum across its namespace
@@ -90,7 +87,6 @@ pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
     MigrationStatusReport {
         schema_version: entry.schema_version,
         residue_auto: entry.residue_auto,
-        residue_identity: entry.residue_identity,
         synced_up_to_hlc: entry.synced_up_to_hlc,
         reported_at: entry.ts_millis,
         authored_remaining: entry.authored_remaining,
@@ -203,7 +199,6 @@ impl MigrationStatusCache {
             CacheEntry {
                 schema_version: hb.schema_version,
                 residue_auto: hb.residue_auto,
-                residue_identity: hb.residue_identity,
                 synced_up_to_hlc: hb.synced_up_to_hlc,
                 authored_remaining: hb.authored_remaining,
                 migration_failed: hb.migration_failed,
@@ -265,21 +260,19 @@ impl MigrationStatusCache {
 /// heartbeat. Computed locally at emit time and signed into a
 /// [`SignedMigrationHeartbeat`] body.
 ///
-/// `residue_identity` is this node's local-derived count of unconverted
-/// identity-gated entries (Task 6c.6); `residue_auto` is the matching count
-/// for Convergent contexts (the 6a marker). A node reporting both at 0 with
-/// `schema_version >= target` is what a rollup reads as "this member migrated".
+/// `residue_auto` is this node's count of unconverted Convergent contexts (the
+/// 6a marker). A node reporting it at 0 with `schema_version >= target` is what
+/// a rollup reads as "this member migrated".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MigrationFacts {
     pub schema_version: u32,
     pub residue_auto: u64,
-    pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     /// Sum across this node's namespace contexts of each context's owner's
     /// identity-gated entries still below target (the node-local count the
     /// context handler persists into `ContextMeta.authored_remaining`). u64
-    /// like the residue fields (a per-namespace sum of per-context u32 counts).
-    /// Best-effort self-report — distinct from `residue_identity` (still 0).
+    /// like `residue_auto` (a per-namespace sum of per-context u32 counts).
+    /// Best-effort self-report.
     pub authored_remaining: u64,
     /// Set when one of this namespace's contexts has a migration-failure marker
     /// persisted (migration-check aborted or apply errored) AND that context is
@@ -294,9 +287,9 @@ pub struct MigrationFacts {
 ///
 /// Mirrors the readiness "edge-trigger on tier transition" pattern: a peer
 /// should re-advertise immediately when its *reported state* changes —
-/// here when `schema_version`, `residue_auto`, `residue_identity`,
-/// `authored_remaining`, or `migration_failed` flips — rather than waiting up
-/// to a full periodic interval. `synced_up_to_hlc`
+/// here when `schema_version`, `residue_auto`, `authored_remaining`, or
+/// `migration_failed` flips — rather than waiting up to a full periodic
+/// interval. `synced_up_to_hlc`
 /// is intentionally NOT an edge trigger: it advances on every applied op and
 /// would defeat the purpose of debouncing to the periodic tick; the periodic
 /// beat carries its latest value.
@@ -307,7 +300,6 @@ pub fn should_emit_on_change(last: Option<MigrationFacts>, current: MigrationFac
         Some(prev) => {
             prev.schema_version != current.schema_version
                 || prev.residue_auto != current.residue_auto
-                || prev.residue_identity != current.residue_identity
                 || prev.authored_remaining != current.authored_remaining
                 || prev.migration_failed != current.migration_failed
         }
@@ -428,24 +420,6 @@ fn resolve_group_target_version(
 /// still trails the target — each pending whole-root (Convergent/Replayable)
 /// rebuild. A context is atomically v1-or-v2 (the PR-6a/6b whole-root path), so
 /// "loaded < target" is exactly its outstanding auto-residue.
-///
-/// `residue_identity` is computed by INVOKING the 6c.6 residue scan
-/// ([`residue_identity_count`] → [`count_unconverted_identity_gated`]). At this
-/// production seam the scan runs over [`CommittedStateScan`], an honest
-/// empty-keyspace [`IterableStorage`] binding: real context state lives in the
-/// wasm `MainStorage`, whose host exposes no committed-state key-iteration (the
-/// `MainStorage` `IterableStorage` impl is intentionally absent — see
-/// `calimero_storage::store`), so the scan completes over zero keys and reports
-/// the conservative `0`. That `0` is safe because any not-yet-swapped context is
-/// already surfaced by `schema_version < target` + `residue_auto`, which keep
-/// `all_migrated` false (the cohort's `unknown`-safety covers silent members).
-/// The scan path is exercised end-to-end against an iterable adaptor by
-/// `residue_identity_count_invokes_the_scan`, so swapping `CommittedStateScan`
-/// for a key-iterating committed-state adaptor is the only change needed to
-/// begin reporting true per-context residue.
-///
-/// [`IterableStorage`]: calimero_storage::store::IterableStorage
-/// [`count_unconverted_identity_gated`]: calimero_storage::index::Index::count_unconverted_identity_gated
 #[must_use]
 pub fn compute_namespace_migration_facts(
     datastore: &Store,
@@ -541,18 +515,9 @@ pub fn compute_namespace_migration_facts(
         None => root_target,
     };
 
-    // Invoke the 6c.6 residue scan over the iterable adaptor bound at this seam.
-    // The production binding is `CommittedStateScan` — an honest empty-keyspace
-    // adaptor — because the wasm host exposes no committed-state key-iteration
-    // yet, so the scan resolves to the conservative `0`. The scan call is real
-    // (exercised against `MockedStorage` in tests) and ready to count true
-    // residue the moment the node binds a key-iterating committed-state adaptor.
-    let residue_identity = residue_identity_count::<CommittedStateScan>(root_target);
-
     MigrationFacts {
         schema_version,
         residue_auto,
-        residue_identity,
         synced_up_to_hlc: 0,
         authored_remaining,
         migration_failed,
@@ -597,7 +562,6 @@ pub fn self_migration_report(
         MigrationStatusReport {
             schema_version: facts.schema_version,
             residue_auto: facts.residue_auto,
-            residue_identity: facts.residue_identity,
             synced_up_to_hlc: facts.synced_up_to_hlc,
             reported_at: now_millis,
             authored_remaining: facts.authored_remaining,
@@ -616,66 +580,6 @@ fn more_severe_failure(
     match acc {
         Some(prev) if prev.to_u8() >= next.to_u8() => prev,
         _ => next,
-    }
-}
-
-/// Invoke the 6c.6 residue scan ([`count_unconverted_identity_gated`]) over the
-/// iterable context-storage adaptor `S` and return the count of identity-gated
-/// entries still trailing `target_version` (the node's local-derived
-/// `residue_identity` telemetry). A scan error degrades to `0` — residue is
-/// observability only and must never block on a transient read failure; the
-/// `schema_version < target` + `residue_auto` signals keep the rollup
-/// conservative regardless.
-///
-/// This is the single seam through which the heartbeat facts reach the residue
-/// scan. [`compute_namespace_migration_facts`] calls it with the production
-/// [`CommittedStateScan`] adaptor (empty keyspace ⇒ `0` until the host exposes
-/// committed-state iteration), while the unit tests drive it with
-/// `MockedStorage` to prove the scan path is wired end-to-end.
-///
-/// [`count_unconverted_identity_gated`]: calimero_storage::index::Index::count_unconverted_identity_gated
-#[must_use]
-fn residue_identity_count<S>(target_version: u32) -> u64
-where
-    S: calimero_storage::store::IterableStorage,
-{
-    calimero_storage::index::Index::<S>::count_unconverted_identity_gated(target_version)
-        .map_or(0, |count| count as u64)
-}
-
-/// The production [`IterableStorage`] binding for [`residue_identity_count`].
-///
-/// The node has no committed-state key-iteration at the heartbeat-facts seam:
-/// real context state lives in the wasm `MainStorage`, whose host exposes no
-/// `storage_iter_keys` (see `calimero_storage::store` — the `MainStorage`
-/// `IterableStorage` impl is intentionally absent). Rather than special-casing
-/// the facts builder to skip the scan, we bind this honest empty-keyspace
-/// adaptor: it implements [`IterableStorage`] with zero keys, so the 6c.6 scan
-/// runs to completion and reports the conservative `0`. When a key-iterating
-/// committed-state adaptor lands, swap this binding for it and the facts begin
-/// reporting true per-context `residue_identity` with no other change.
-///
-/// [`IterableStorage`]: calimero_storage::store::IterableStorage
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct CommittedStateScan;
-
-impl calimero_storage::store::StorageAdaptor for CommittedStateScan {
-    fn storage_read(_key: calimero_storage::store::Key) -> Option<Vec<u8>> {
-        None
-    }
-
-    fn storage_remove(_key: calimero_storage::store::Key) -> bool {
-        false
-    }
-
-    fn storage_write(_key: calimero_storage::store::Key, _value: &[u8]) -> bool {
-        false
-    }
-}
-
-impl calimero_storage::store::IterableStorage for CommittedStateScan {
-    fn storage_iter_keys() -> Vec<calimero_storage::store::Key> {
-        Vec::new()
     }
 }
 
@@ -701,7 +605,6 @@ pub fn build_signed_heartbeat(
         peer_pubkey,
         schema_version: facts.schema_version,
         residue_auto: facts.residue_auto,
-        residue_identity: facts.residue_identity,
         synced_up_to_hlc: facts.synced_up_to_hlc,
         authored_remaining: facts.authored_remaining,
         migration_failed: facts
@@ -734,9 +637,9 @@ pub const DEFAULT_EMIT_INTERVAL: Duration = Duration::from_secs(30);
 ///
 /// Facts are computed at emit time from local state. `synced_up_to_hlc`
 /// reads the namespace governance head sequence (the same source readiness
-/// uses for `applied_through`); `schema_version`, `residue_auto`, and
-/// `residue_identity` are supplied by the node when it triggers an emit and
-/// are otherwise carried forward from the last emit (see
+/// uses for `applied_through`); `schema_version` and `residue_auto` are
+/// supplied by the node when it triggers an emit and are otherwise carried
+/// forward from the last emit (see
 /// [`MigrationFactsUpdate`]). A node that has not yet computed residue
 /// reports `0` — the honest "nothing pending locally" telemetry.
 pub struct MigrationEmitter {
@@ -884,14 +787,14 @@ impl MigrationEmitter {
         let net = self.node_client.network_client().clone();
         let log_ns = ns_id;
         let log_schema = facts.schema_version;
-        let log_residue = facts.residue_identity;
+        let log_residue = facts.residue_auto;
         let log_authored = facts.authored_remaining;
         actix::spawn(async move {
             match net.publish(topic, bytes).await {
                 Ok(_) => tracing::debug!(
                     namespace_id = %hex::encode(log_ns),
                     schema_version = log_schema,
-                    residue_identity = log_residue,
+                    residue_auto = log_residue,
                     authored_remaining = log_authored,
                     "migration heartbeat emitted"
                 ),
@@ -920,7 +823,6 @@ mod tests {
         ns: [u8; 32],
         schema_version: u32,
         residue_auto: u64,
-        residue_identity: u64,
         ts_millis: u64,
     ) -> SignedMigrationHeartbeat {
         let peer_pubkey = sk.public_key();
@@ -929,7 +831,6 @@ mod tests {
             peer_pubkey,
             schema_version,
             residue_auto,
-            residue_identity,
             synced_up_to_hlc: 0,
             ts_millis,
         };
@@ -942,7 +843,6 @@ mod tests {
             peer_pubkey,
             schema_version,
             residue_auto,
-            residue_identity,
             synced_up_to_hlc: 0,
             ts_millis,
             signature,
@@ -955,7 +855,7 @@ mod tests {
     fn verified_heartbeat_is_cached_and_readable() {
         let cache = MigrationStatusCache::default();
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let hb = signed_hb(&sk, NS, 2, 0, 0, 0);
+        let hb = signed_hb(&sk, NS, 2, 0, 0);
         // Caller verifies first; a well-formed heartbeat verifies.
         assert!(hb.verify_signature().is_ok());
         cache.insert(&hb);
@@ -966,7 +866,7 @@ mod tests {
             .peer_entry(NS, sk.public_key(), DEFAULT_HEARTBEAT_TTL)
             .expect("entry readable by (ns, peer)");
         assert_eq!(entry.schema_version, 2);
-        assert_eq!(entry.residue_identity, 0);
+        assert_eq!(entry.residue_auto, 0);
     }
 
     #[test]
@@ -976,7 +876,7 @@ mod tests {
         // Each fresh entry projects 1:1; `ts_millis` becomes `reported_at`.
         let cache = MigrationStatusCache::default();
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let hb = signed_hb(&sk, NS, 2, 1, 3, 7);
+        let hb = signed_hb(&sk, NS, 2, 1, 7);
         cache.insert(&hb);
 
         let reports = cache.migration_status_reports(NS, DEFAULT_HEARTBEAT_TTL);
@@ -987,7 +887,6 @@ mod tests {
             .expect("report keyed by peer pubkey");
         assert_eq!(report.schema_version, 2);
         assert_eq!(report.residue_auto, 1);
-        assert_eq!(report.residue_identity, 3);
         assert_eq!(report.reported_at, 7, "ts_millis projects to reported_at");
     }
 
@@ -998,7 +897,7 @@ mod tests {
         let cache = MigrationStatusCache::default();
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let other_ns = [7u8; 32];
-        cache.insert(&signed_hb(&sk, other_ns, 2, 0, 0, 0));
+        cache.insert(&signed_hb(&sk, other_ns, 2, 0, 0));
 
         let reports = cache.migration_status_reports(NS, DEFAULT_HEARTBEAT_TTL);
         assert!(
@@ -1011,7 +910,7 @@ mod tests {
     fn wire_verify_signature_rejects_field_substitution() {
         // Documents the WIRE-TYPE contract `insert`'s verification-precondition
         // depends on: `SignedMigrationHeartbeat::verify_signature` covers every
-        // signed field, so flipping `residue_identity` after signing breaks it.
+        // signed field, so flipping `residue_auto` after signing breaks it.
         //
         // NOTE: this is NOT the ingest gate. The actual receiver gate is
         // `calimero_governance_store::governance_broadcast::verify_migration_heartbeat`
@@ -1021,12 +920,12 @@ mod tests {
         // unit owns. Here we only pin that the wire type's own signature check
         // (the primitive the gate is built on) catches a mutated field.
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let mut hb = signed_hb(&sk, NS, 2, 0, 5, 0);
+        let mut hb = signed_hb(&sk, NS, 2, 5, 0);
         assert!(hb.verify_signature().is_ok());
-        hb.residue_identity = 0; // tampered after signing
+        hb.residue_auto = 0; // tampered after signing
         assert!(
             hb.verify_signature().is_err(),
-            "verify_signature must reject a mutated residue_identity"
+            "verify_signature must reject a mutated residue_auto"
         );
     }
 
@@ -1034,7 +933,7 @@ mod tests {
     fn stale_entry_is_filtered_after_ttl() {
         let cache = MigrationStatusCache::default();
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        cache.insert(&signed_hb(&sk, NS, 2, 0, 0, 0));
+        cache.insert(&signed_hb(&sk, NS, 2, 0, 0));
         // Drive the TTL via a very small per-call window — the same seam the
         // readiness tests use (`pick_sync_partner_excludes_stale_entries`).
         std::thread::sleep(Duration::from_millis(10));
@@ -1057,10 +956,8 @@ mod tests {
         // arrives second.
         let cache = MigrationStatusCache::default();
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let mut fresh = signed_hb(&sk, NS, 2, 0, 0, 2000);
-        fresh.residue_identity = 0;
-        let mut stale = signed_hb(&sk, NS, 1, 0, 9, 1000);
-        stale.residue_identity = 9;
+        let fresh = signed_hb(&sk, NS, 2, 0, 2000);
+        let stale = signed_hb(&sk, NS, 1, 9, 1000);
         cache.insert(&fresh);
         cache.insert(&stale); // arrives second but is older — must be dropped
         let entry = cache
@@ -1070,15 +967,15 @@ mod tests {
             entry.schema_version, 2,
             "stale heartbeat must not overwrite fresher entry from same peer"
         );
-        assert_eq!(entry.residue_identity, 0);
+        assert_eq!(entry.residue_auto, 0);
     }
 
     #[test]
     fn insert_accepts_newer_heartbeat_from_same_peer() {
         let cache = MigrationStatusCache::default();
         let sk = PrivateKey::random(&mut rand::thread_rng());
-        let older = signed_hb(&sk, NS, 1, 0, 9, 1000);
-        let newer = signed_hb(&sk, NS, 2, 0, 0, 2000);
+        let older = signed_hb(&sk, NS, 1, 9, 1000);
+        let newer = signed_hb(&sk, NS, 2, 0, 2000);
         cache.insert(&older);
         cache.insert(&newer);
         let entry = cache
@@ -1088,7 +985,7 @@ mod tests {
             entry.schema_version, 2,
             "newer heartbeat must replace older"
         );
-        assert_eq!(entry.residue_identity, 0);
+        assert_eq!(entry.residue_auto, 0);
     }
 
     #[test]
@@ -1102,13 +999,13 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let poison = signed_hb(&sk, NS, 9, 0, 0, now_ms + 600_000);
+        let poison = signed_hb(&sk, NS, 9, 0, now_ms + 600_000);
         cache.insert(&poison);
         assert!(
             cache.fresh_peers(NS, DEFAULT_HEARTBEAT_TTL).is_empty(),
             "far-future heartbeat must be rejected to prevent cache poisoning"
         );
-        let legit = signed_hb(&sk, NS, 2, 0, 0, now_ms);
+        let legit = signed_hb(&sk, NS, 2, 0, now_ms);
         cache.insert(&legit);
         let entry = cache
             .peer_entry(NS, sk.public_key(), DEFAULT_HEARTBEAT_TTL)
@@ -1120,29 +1017,22 @@ mod tests {
     fn on_change_emit_fires_when_residue_changes() {
         let base = MigrationFacts {
             schema_version: 2,
-            residue_auto: 0,
-            residue_identity: 4,
+            residue_auto: 4,
             synced_up_to_hlc: 10,
             authored_remaining: 0,
             migration_failed: None,
         };
         // First-ever emit (no prior) always fires.
         assert!(should_emit_on_change(None, base));
-        // residue_identity drops 4 -> 0: on-change must fire.
+        // residue_auto drops 4 -> 0: on-change must fire.
         let drained = MigrationFacts {
-            residue_identity: 0,
+            residue_auto: 0,
             ..base
         };
         assert!(
             should_emit_on_change(Some(base), drained),
-            "residue_identity change must edge-trigger an emit"
+            "residue_auto change must edge-trigger an emit"
         );
-        // residue_auto change must also fire.
-        let auto_changed = MigrationFacts {
-            residue_auto: 1,
-            ..base
-        };
-        assert!(should_emit_on_change(Some(base), auto_changed));
         // schema_version change must fire.
         let bumped = MigrationFacts {
             schema_version: 3,
@@ -1169,7 +1059,6 @@ mod tests {
         let prev = MigrationFacts {
             schema_version: 2,
             residue_auto: 0,
-            residue_identity: 0,
             synced_up_to_hlc: 10,
             authored_remaining: 0,
             migration_failed: None,
@@ -1194,8 +1083,7 @@ mod tests {
         let mut last_emitted: HashMap<[u8; 32], MigrationFacts> = HashMap::new();
         let facts = MigrationFacts {
             schema_version: 2,
-            residue_auto: 0,
-            residue_identity: 3,
+            residue_auto: 3,
             synced_up_to_hlc: 10,
             authored_remaining: 0,
             migration_failed: None,
@@ -1226,7 +1114,7 @@ mod tests {
 
         // A residue drop is an edge.
         let drained = MigrationFacts {
-            residue_identity: 0,
+            residue_auto: 0,
             ..advanced
         };
         let emit = record_facts_update(&mut last_emitted, NS, drained);
@@ -1255,7 +1143,6 @@ mod tests {
             "no upgrade record => baseline schema version 0"
         );
         assert_eq!(facts.residue_auto, 0);
-        assert_eq!(facts.residue_identity, 0);
 
         // Record targeting v2 -> facts advertise 2.
         UpgradesRepository::new(&store)
@@ -1620,7 +1507,6 @@ mod tests {
         let facts = MigrationFacts {
             schema_version: 2,
             residue_auto: 3,
-            residue_identity: 1,
             synced_up_to_hlc: 77,
             authored_remaining: 0,
             migration_failed: None,
@@ -1632,7 +1518,6 @@ mod tests {
         assert_eq!(hb.peer_pubkey, sk.public_key());
         assert_eq!(hb.schema_version, 2);
         assert_eq!(hb.residue_auto, 3);
-        assert_eq!(hb.residue_identity, 1);
         assert_eq!(hb.synced_up_to_hlc, 77);
 
         let cache = MigrationStatusCache::default();
@@ -1640,54 +1525,7 @@ mod tests {
         let entry = cache
             .peer_entry(NS, sk.public_key(), DEFAULT_HEARTBEAT_TTL)
             .expect("built heartbeat is cacheable");
-        assert_eq!(entry.residue_identity, 1);
-    }
-
-    /// The facts builder's `residue_identity` is computed by INVOKING the 6c.6
-    /// residue scan (`Index::count_unconverted_identity_gated`), not hardcoded.
-    /// Driven here over an `IterableStorage` adaptor (`MockedStorage`) so the
-    /// wiring is exercised end-to-end: seed two stale identity-gated entries +
-    /// one already-converted + one Convergent, and the helper reports exactly
-    /// the two stale identity-gated entries. (Production binds the empty-keyspace
-    /// `CommittedStateScan`, which yields the documented conservative 0; this
-    /// proves the scan is wired and ready for a key-iterating committed-state
-    /// adaptor.)
-    #[test]
-    fn residue_identity_count_invokes_the_scan() {
-        use calimero_storage::address::Id;
-        use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
-        use calimero_storage::index::Index;
-        use calimero_storage::store::MockedStorage;
-
-        type S = MockedStorage<7200>;
-
-        let owner = PublicKey::from([0xAAu8; 32]);
-        let seed_user = |id: Id, schema: Option<u32>| {
-            let mut md = Metadata::new(1, 1);
-            md.storage_type = StorageType::User {
-                owner,
-                signature_data: None,
-            };
-            md.schema_version = schema;
-            <Index<S>>::add_root(ChildInfo::new(id, [0u8; 32], md)).expect("seed user entry");
-        };
-
-        // Two stale identity-gated entries (residue), one already at target, one
-        // Convergent (Public) that must never count.
-        seed_user(Id::new([1; 32]), None);
-        seed_user(Id::new([2; 32]), Some(1));
-        seed_user(Id::new([3; 32]), Some(2));
-        let mut public_md = Metadata::new(1, 1);
-        public_md.storage_type = StorageType::Public;
-        <Index<S>>::add_root(ChildInfo::new(Id::new([4; 32]), [0u8; 32], public_md))
-            .expect("seed public entry");
-
-        assert_eq!(
-            residue_identity_count::<S>(2),
-            2,
-            "residue_identity must INVOKE the scan and count only stale \
-             identity-gated entries"
-        );
+        assert_eq!(entry.residue_auto, 3);
     }
 
     /// A context that lives in a SUBGROUP under the namespace (not a direct
