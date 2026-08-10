@@ -468,7 +468,7 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     MembershipRepository::new(&store)
         .add_member(
             &gid,
-            &AccountId::from(*non_admin_sk.public_key()),
+            &enrol_member(&store, &gid, &non_admin_sk.public_key()),
             GroupMemberRole::Member,
         )
         .unwrap();
@@ -6021,11 +6021,11 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let admin = AccountId::from(*admin_pk);
 
     let ns_id = [0xE0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let subgroup = ContextGroupId::from([0xE1u8; 32]);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin))
@@ -6171,11 +6171,11 @@ fn member_joined_open_emits_membership_op_event() {
     let store = test_store();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let admin = AccountId::from(*admin_pk);
 
     let ns_id = [0xD0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let subgroup = ContextGroupId::from([0xD1u8; 32]);
+    let admin = enrol_member(&store, &ns_gid, &admin_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin))
@@ -7173,33 +7173,40 @@ mod auto_follow_tests {
         [u8; 32],
         PrivateKey,
         PrivateKey,
+        AccountId, // admin
+        AccountId, // member
     ) {
         let store = test_store();
         let gid = test_group_id();
         let gid_bytes = gid.to_bytes();
         let admin_sk = PrivateKey::random(rng);
         let member_sk = PrivateKey::random(rng);
+        let admin_account = enrol_member(&store, &gid, &admin_sk.public_key());
+        let admin = admin_account;
+        let admin = admin_account;
+        let member_account = enrol_member(&store, &gid, &member_sk.public_key());
         MembershipRepository::new(&store)
-            .add_member(
-                &gid,
-                &AccountId::from(*admin_sk.public_key()),
-                GroupMemberRole::Admin,
-            )
+            .add_member(&gid, &admin_account, GroupMemberRole::Admin)
             .unwrap();
         MembershipRepository::new(&store)
-            .add_member(
-                &gid,
-                &AccountId::from(*member_sk.public_key()),
-                GroupMemberRole::Member,
-            )
+            .add_member(&gid, &member_account, GroupMemberRole::Member)
             .unwrap();
-        (store, gid, gid_bytes, admin_sk, member_sk)
+        (
+            store,
+            gid,
+            gid_bytes,
+            admin_sk,
+            member_sk,
+            admin_account,
+            member_account,
+        )
     }
 
     #[test]
     fn admin_can_set_member_auto_follow() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         let op = SignedGroupOp::sign(
             &admin_sk,
@@ -7207,7 +7214,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: AccountId::from(*member_sk.public_key()),
+                target: member_account,
                 auto_follow_contexts: true,
                 auto_follow_subgroups: true,
             },
@@ -7216,7 +7223,7 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &op).unwrap();
 
         let val = MembershipRepository::new(&store)
-            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
+            .member_value(&gid, &member_account)
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts);
@@ -7226,7 +7233,8 @@ mod auto_follow_tests {
     #[test]
     fn member_can_set_own_auto_follow() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         let op = SignedGroupOp::sign(
             &member_sk,
@@ -7234,7 +7242,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: AccountId::from(*member_sk.public_key()),
+                target: member_account,
                 auto_follow_contexts: true,
                 auto_follow_subgroups: false,
             },
@@ -7243,7 +7251,7 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &op).unwrap();
 
         let val = MembershipRepository::new(&store)
-            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
+            .member_value(&gid, &member_account)
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts);
@@ -7253,7 +7261,8 @@ mod auto_follow_tests {
     #[test]
     fn non_admin_cannot_set_others_auto_follow() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, _admin_sk, member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, _admin_sk, member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         // `other_sk` is a real member of the group — we add them first so
         // the authorization check is the reason the op is rejected, not a
@@ -7261,12 +7270,9 @@ mod auto_follow_tests {
         // refactored to look up the target before checking auth, this
         // test would still correctly assert "non-admin, non-self rejected".
         let other_sk = PrivateKey::random(&mut rng);
+        let other_account = enrol_member(&store, &gid, &other_sk.public_key());
         MembershipRepository::new(&store)
-            .add_member(
-                &gid,
-                &AccountId::from(*other_sk.public_key()),
-                GroupMemberRole::Member,
-            )
+            .add_member(&gid, &other_account, GroupMemberRole::Member)
             .unwrap();
 
         let op = SignedGroupOp::sign(
@@ -7275,7 +7281,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: AccountId::from(*other_sk.public_key()),
+                target: other_account,
                 auto_follow_contexts: true,
                 auto_follow_subgroups: false,
             },
@@ -7294,7 +7300,7 @@ mod auto_follow_tests {
         // The point of this test is that the failed op didn't
         // SHIFT the values, not that they were originally false.
         let val = MembershipRepository::new(&store)
-            .member_value(&gid, &AccountId::from(*other_sk.public_key()))
+            .member_value(&gid, &other_account)
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts, "default contexts=true preserved");
@@ -7307,7 +7313,8 @@ mod auto_follow_tests {
     #[test]
     fn rejects_non_member_target() {
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, admin_sk, _member_sk) = seed(&mut rng);
+        let (store, _gid, gid_bytes, admin_sk, _member_sk, _admin_account, member_account) =
+            seed(&mut rng);
         let stranger = PrivateKey::random(&mut rng).public_key();
         let stranger = AccountId::from(*stranger);
 
@@ -7333,13 +7340,14 @@ mod auto_follow_tests {
     #[test]
     fn default_flags_match_default_impl_and_preserved_on_role_change() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         // Initial state matches `AutoFollowFlags::default()`. Post-#2422
         // that's {contexts: true, subgroups: false} — explicit assertion
         // on the exact shape so a future default flip can't slip through.
         let before = MembershipRepository::new(&store)
-            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
+            .member_value(&gid, &member_account)
             .unwrap()
             .unwrap();
         assert!(before.auto_follow.contexts);
@@ -7352,7 +7360,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: AccountId::from(*member_sk.public_key()),
+                target: member_account,
                 auto_follow_contexts: true,
                 auto_follow_subgroups: false,
             },
@@ -7367,7 +7375,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberRoleSet {
-                member: AccountId::from(*member_sk.public_key()),
+                member: member_account,
                 role: GroupMemberRole::ReadOnly,
             },
         )
@@ -7375,7 +7383,7 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &op2).unwrap();
 
         let after = MembershipRepository::new(&store)
-            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
+            .member_value(&gid, &member_account)
             .unwrap()
             .unwrap();
         assert_eq!(after.role, GroupMemberRole::ReadOnly);
@@ -7400,7 +7408,8 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, admin_sk, member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         // Subscribe BEFORE applying ops so we don't miss events.
         let mut rx = op_events::subscribe();
@@ -7412,7 +7421,7 @@ mod auto_follow_tests {
             vec![],
             1,
             GroupOp::MemberSetAutoFollow {
-                target: AccountId::from(*member_sk.public_key()),
+                target: member_account,
                 auto_follow_contexts: true,
                 auto_follow_subgroups: true,
             },
@@ -7422,7 +7431,7 @@ mod auto_follow_tests {
 
         // Verify state landed
         let value = MembershipRepository::new(&store)
-            .member_value(&gid, &AccountId::from(*member_sk.public_key()))
+            .member_value(&gid, &member_account)
             .unwrap()
             .unwrap();
         assert!(value.auto_follow.contexts);
@@ -7503,7 +7512,8 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         // Subscribe BEFORE applying ops so the broadcast channel
         // doesn't drop events we care about.
@@ -7605,7 +7615,7 @@ mod auto_follow_tests {
     #[test]
     fn explicit_opt_out_after_member_added_is_preserved() {
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, _) = seed(&mut rng);
+        let (store, gid, gid_bytes, admin_sk, _, _admin_account, member_account) = seed(&mut rng);
 
         let target_sk = PrivateKey::random(&mut rng);
         let target_pk = target_sk.public_key();
@@ -7683,7 +7693,8 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+        let (store, gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         // Subscribe BEFORE spawning the observer / applying.
         let mut rx = op_events::subscribe();
@@ -7798,7 +7809,8 @@ mod auto_follow_tests {
         use crate::op_events::{self, OpEvent};
 
         let mut rng = OsRng;
-        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk, _admin_account, member_account) =
+            seed(&mut rng);
 
         let new_member_sk = PrivateKey::random(&mut rng);
         let new_member_pk = new_member_sk.public_key();
@@ -7885,7 +7897,6 @@ mod auto_follow_tests {
         let admin_sk = PrivateKey::random(&mut rng);
         let admin_sk_bytes: [u8; 32] = *admin_sk.as_bytes();
         let admin_pk = admin_sk.public_key();
-        let admin = AccountId::from(*admin_pk);
 
         let ns_id = [0xA0u8; 32];
         let ns_gid = calimero_context_config::types::ContextGroupId::from(ns_id);
@@ -7895,6 +7906,7 @@ mod auto_follow_tests {
         // local namespace identity (so the originator-style apply path is
         // exercised end to end).
         let store = test_store();
+        let admin = enrol_member(&store, &ns_gid, &admin_pk);
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
             .unwrap();
@@ -8808,7 +8820,6 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let admin = AccountId::from(*admin_pk);
 
     let root = ContextGroupId::from([0x70; 32]);
     let descendant = ContextGroupId::from([0xD1; 32]);
@@ -8823,6 +8834,9 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
     // whether the signer holds MANAGE_APPLICATION on the (Restricted) descendant.
     let build = |signer_has_cap_on_descendant: bool| {
         let store = test_store();
+        // Each build gets its own store, so the admin is enrolled per store —
+        // the credential is the same, so both agree on the account.
+        let admin = enrol_member(&store, &root, &admin_pk);
 
         // Root: signer is a direct admin, on `from_app_key`.
         let mut root_meta = sample_meta_with_admin(admin);
@@ -9681,7 +9695,7 @@ mod self_leave_rotation {
         MembershipRepository::new(&f.store)
             .add_member(
                 &f.sub_gid,
-                &AccountId::from(*outsider_sk.public_key()),
+                &enrol_member(&f.store, &f.ns_gid, &outsider_sk.public_key()),
                 GroupMemberRole::Member,
             )
             .unwrap();
@@ -10414,7 +10428,7 @@ mod account_plane_apply {
         let repo = MembershipRepository::new(&store);
         repo.add_member(
             &gid,
-            &AccountId::from(*owner_sk.public_key()),
+            &enrol_member(&store, &gid, &owner_sk.public_key()),
             GroupMemberRole::Member,
         )
         .unwrap();
@@ -10503,13 +10517,13 @@ mod account_plane_apply {
         let repo = MembershipRepository::new(&store);
         repo.add_member(
             &gid,
-            &AccountId::from(*victim_sk.public_key()),
+            &enrol_member(&store, &gid, &victim_sk.public_key()),
             GroupMemberRole::Member,
         )
         .unwrap();
         repo.add_member(
             &gid,
-            &AccountId::from(*attacker_sk.public_key()),
+            &enrol_member(&store, &gid, &attacker_sk.public_key()),
             GroupMemberRole::Member,
         )
         .unwrap();
@@ -10606,13 +10620,13 @@ mod account_plane_apply {
         let repo = MembershipRepository::new(&store);
         repo.add_member(
             &gid,
-            &AccountId::from(*victim_sk.public_key()),
+            &enrol_member(&store, &gid, &victim_sk.public_key()),
             GroupMemberRole::Member,
         )
         .unwrap();
         repo.add_member(
             &gid,
-            &AccountId::from(*attacker_sk.public_key()),
+            &enrol_member(&store, &gid, &attacker_sk.public_key()),
             GroupMemberRole::Member,
         )
         .unwrap();
