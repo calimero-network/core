@@ -1140,9 +1140,9 @@ mod tests {
 
         // Invitation join: the membership still stands, the device does not.
         let signed_invitation = SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: [0xA1; 32].into(),
-                inviter_account: AccountId::from([0xA1; 32]),
                 group_id: ContextGroupId::from(gid),
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
@@ -1217,9 +1217,9 @@ mod tests {
         // role is under the admin's signature.
         use calimero_context_config::types::{GroupInvitationFromAdmin, SignedGroupOpenInvitation};
         let signed_invitation = SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: [0xA1; 32].into(),
-                inviter_account: AccountId::from([0xA1; 32]),
                 group_id: ContextGroupId::from(gid),
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],

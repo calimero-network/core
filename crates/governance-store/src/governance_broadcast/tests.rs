@@ -612,7 +612,6 @@ fn invitation_from(
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
-        inviter_account: AccountId::from(*inviter_sk.public_key()),
         group_id,
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
@@ -621,6 +620,7 @@ fn invitation_from(
     let bytes = borsh::to_vec(&invitation).expect("borsh");
     let signature = inviter_sk.sign(&Sha256::digest(&bytes)).expect("sign");
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(signature.to_bytes()),
         application_id: None,

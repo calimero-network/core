@@ -83,7 +83,6 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
-                inviter_account: requester_account,
                 group_id,
                 expiration_timestamp,
                 invitation_nonce,
@@ -104,6 +103,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             Ok((
                 SignedGroupOpenInvitation {
+                    inviter_account: Some(requester_account),
                     invitation,
                     inviter_signature,
                     // Carry the real application_id so the joiner can

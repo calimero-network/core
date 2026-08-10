@@ -44,7 +44,6 @@ fn sign_invitation(
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
-        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id,
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
@@ -55,6 +54,7 @@ fn sign_invitation(
         .sign(&Sha256::digest(&inv_bytes))
         .expect("sign invitation");
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
@@ -310,7 +310,6 @@ fn two_nodes_converge_on_namespace_member_joined() {
 
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
-        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id: gid,
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
@@ -321,6 +320,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
     let inv_hash = Sha256::digest(&inv_bytes);
     let inv_sig = admin_sk.sign(&inv_hash).expect("sign invitation");
     let signed_invitation = SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
@@ -2118,7 +2118,6 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     // matching the `two_nodes_converge_on_namespace_member_joined` setup.
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_pk.digest()),
-        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id: gid,
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
@@ -2128,6 +2127,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     let inv_hash = Sha256::digest(&inv_bytes);
     let inv_sig = admin_sk.sign(&inv_hash).expect("sign invitation");
     let signed_invitation = SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,

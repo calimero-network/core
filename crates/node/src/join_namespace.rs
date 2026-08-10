@@ -184,13 +184,17 @@ pub async fn join_namespace(
         .map_err(|e| JoinError::Local(e.to_string()))?
         .is_none()
     {
-        // From the SIGNED invitation, for the same reason the context-side join
-        // takes it from there: this node has synced nothing yet, so it cannot
-        // resolve the inviter's key to an account itself. Genesis overwrites it.
-        let inviter_account = invitation.invitation.inviter_account;
+        // From the invitation ENVELOPE, and optional there: this node has synced
+        // nothing yet, so it cannot resolve the inviter's key to an account
+        // itself, and the hint is the only thing that can name one. Absent, the
+        // placeholder stands until genesis arrives and overwrites it — the
+        // behaviour before the hint existed.
+        let seeded_admin = invitation
+            .inviter_account
+            .unwrap_or_else(calimero_governance_store::placeholder_admin_identity);
         let meta = GroupMetaValue {
-            admin_identity: inviter_account,
-            owner_identity: inviter_account,
+            admin_identity: seeded_admin,
+            owner_identity: seeded_admin,
             target_application_id: ApplicationId::from([0u8; 32]),
             app_key: [0u8; 32],
             upgrade_policy: UpgradePolicy::default(),

@@ -2071,9 +2071,9 @@ mod tests {
         RootOp::MemberJoined {
             member: legacy_account_id(&member),
             signed_invitation: SignedGroupOpenInvitation {
+                inviter_account: None,
                 invitation: GroupInvitationFromAdmin {
                     inviter_identity: [0xA1; 32].into(),
-                    inviter_account: calimero_account::AccountId::from([0x44; 32]),
                     group_id: group,
                     expiration_timestamp: 1_700_000_000,
                     invitation_nonce: [0x33; 32],
@@ -2150,9 +2150,9 @@ mod tests {
         let member = PublicKey::from([0x55; 32]);
         let group = ContextGroupId::from([0x44; 32]);
         let signed_invitation = SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: [0xA1; 32].into(),
-                inviter_account: calimero_account::AccountId::from([0x44; 32]),
                 group_id: group,
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],

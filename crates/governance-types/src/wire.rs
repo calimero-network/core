@@ -392,9 +392,9 @@ mod tests {
     /// wire and coverage by the beacon signature are under test.
     fn test_invitation(sk: &PrivateKey, id: NamespaceId) -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: SignerId::from(*sk.public_key()),
-                inviter_account: calimero_account::AccountId::from([0x44; 32]),
                 group_id: ContextGroupId::from(id.to_bytes()),
                 expiration_timestamp: 1_900_000_000,
                 invitation_nonce: [0x33; 32],

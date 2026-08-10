@@ -71,7 +71,6 @@ fn test_signed_invitation(
 
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
-        inviter_account: AccountId::from(*inviter_sk.public_key()),
         group_id,
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
@@ -80,6 +79,7 @@ fn test_signed_invitation(
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = inviter_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,

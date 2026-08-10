@@ -83,7 +83,6 @@ fn sign_invitation(
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
-        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id: group,
         // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
         // joined_at, so any non-zero expiration causes the apply gate to reject it.
@@ -96,6 +95,7 @@ fn sign_invitation(
         .sign(&Sha256::digest(&inv_bytes))
         .expect("sign invitation");
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,

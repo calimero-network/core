@@ -639,9 +639,9 @@ async fn await_first_fresh_beacon_times_out() {
 
 fn test_invitation() -> SignedGroupOpenInvitation {
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation: GroupInvitationFromAdmin {
             inviter_identity: SignerId::from([1u8; 32]),
-            inviter_account: calimero_account::AccountId::from([1u8; 32]),
             group_id: ContextGroupId::from([7u8; 32]),
             expiration_timestamp: 0,
             invitation_nonce: [2u8; 32],

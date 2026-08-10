@@ -339,7 +339,6 @@ impl<'a> NamespaceRepository<'a> {
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
-                inviter_account,
                 group_id: gid,
                 expiration_timestamp: expiration,
                 invitation_nonce,
@@ -371,6 +370,7 @@ impl<'a> NamespaceRepository<'a> {
             let signed = SignedGroupOpenInvitation {
                 invitation,
                 inviter_signature: hex::encode(sig.to_bytes()),
+                inviter_account: Some(inviter_account),
                 application_id,
                 app_key,
             };

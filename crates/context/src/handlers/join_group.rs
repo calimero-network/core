@@ -89,7 +89,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let _ = SigningKeysRepository::new(&datastore).store_key(&group_id, &joiner_identity, &sk_bytes, );
 
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
-                    let inviter_account = invitation.invitation.inviter_account;
+                    // From the invitation ENVELOPE, and optional there: it is a
+                    // bootstrap hint, not authority. `None` simply skips the
+                    // admin seeding — the state before the field existed, which
+                    // `NamespaceCreated` genesis repairs on arrival anyway.
+                    let inviter_account = invitation.inviter_account;
                     // The invitation carries the application id so joiners
                     // pre-populate `GroupMetaValue` with the real value:
                     // `target_application_id` is part of
@@ -132,12 +136,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             _ => [0u8; 32],
                         }
                     });
+                    // The joiner has synced nothing yet, so it cannot resolve the
+                    // inviter's key to an account itself. Absent the hint, the
+                    // placeholder stands until genesis arrives and overwrites it.
+                    let seeded_admin =
+                        inviter_account.unwrap_or_else(calimero_governance_store::placeholder_admin_identity);
                     let meta = calimero_store::key::GroupMetaValue {
-                        // From the SIGNED invitation: the joiner has synced nothing
-                        // yet, so it cannot resolve the inviter's key to an account
-                        // itself. Genesis overwrites this on arrival.
-                        admin_identity: inviter_account,
-                        owner_identity: inviter_account,
+                        admin_identity: seeded_admin,
+                        owner_identity: seeded_admin,
                         target_application_id,
                         app_key,
                         upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
@@ -152,14 +158,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // Direct-row check: see joiner-side guard below for
                     // why inheritance-aware `check_group_membership`
                     // would be unsafe here.
-                    if !MembershipRepository::new(&datastore)
-                        .has_direct_member(&group_id, &inviter_account)?
-                    {
-                        MembershipRepository::new(&datastore).add_member(
-                            &group_id,
-                            &inviter_account,
-                            calimero_primitives::context::GroupMemberRole::Admin,
-                        )?;
+                    // Only when the hint named someone: seeding a member row for
+                    // the placeholder would invent a principal.
+                    if let Some(inviter_account) = inviter_account {
+                        if !MembershipRepository::new(&datastore)
+                            .has_direct_member(&group_id, &inviter_account)?
+                        {
+                            MembershipRepository::new(&datastore).add_member(
+                                &group_id,
+                                &inviter_account,
+                                calimero_primitives::context::GroupMemberRole::Admin,
+                            )?;
+                        }
                     }
                 }
 

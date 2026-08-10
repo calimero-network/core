@@ -471,7 +471,6 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
     // `joined_at`, so a non-zero expiration is rejected by the apply gate.
     let invitation_body = calimero_context_config::types::GroupInvitationFromAdmin {
         inviter_identity: calimero_context_config::types::SignerId::from(*admin.digest()),
-        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id: ns,
         expiration_timestamp: 0,
         invitation_nonce: [0x21; 32],
@@ -483,6 +482,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         ))
         .expect("admin signs the invitation");
     let invitation = calimero_context_config::types::SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation: invitation_body,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,

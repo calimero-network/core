@@ -183,7 +183,11 @@ pub type ResolvedIdentity = (PublicKey, [u8; 32], [u8; 32]);
 pub(crate) const PLACEHOLDER_ADMIN_IDENTITY: [u8; 32] = [0u8; 32];
 
 /// The [`AccountId`] form of [`PLACEHOLDER_ADMIN_IDENTITY`].
-pub(crate) fn placeholder_admin_identity() -> AccountId {
+///
+/// Public because a joiner seeds it into local meta when an invitation carries
+/// no inviter-account hint — the pre-genesis placeholder, which the genesis op
+/// then overwrites.
+pub fn placeholder_admin_identity() -> AccountId {
     AccountId::from(PLACEHOLDER_ADMIN_IDENTITY)
 }
 

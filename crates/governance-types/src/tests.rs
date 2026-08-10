@@ -589,10 +589,6 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.inviter_identity [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // signed_invitation.invitation.inviter_account [0u8;32] — the account the
-    // inviter acts as, carried so a joiner can seed the group's admin before it
-    // has synced anything:
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.group_id [0u8;32]:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.expiration_timestamp u64 = 0:
@@ -600,7 +596,10 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.invited_role u8 = 1:
     1, // signed_invitation.inviter_signature String len = 0:
-    0, 0, 0, 0, // signed_invitation.application_id = None:
+    0, 0, 0, 0, // signed_invitation.inviter_account = None — an UNSIGNED envelope
+    // hint now, so a client that round-trips the invitation through its own typed
+    // model can drop it without invalidating the inviter's signature:
+    0, // signed_invitation.application_id = None:
     0, // signed_invitation.app_key = None:
     0,
     // account: JoinAccountCredential — appended when the joiner's credential moved
@@ -719,14 +718,13 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // inviter_identity
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // inviter_account
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // group_id
     0, 0, 0, 0, 0, 0, 0, 0, // expiration_timestamp
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // invitation_nonce
     1, // invited_role = 1
     0, 0, 0, 0, // inviter_signature len = 0
+    0, // inviter_account = None (unsigned envelope hint)
     0, // application_id = None
     0, // app_key = None
     0, 0, 0, 0, 0, 0, 0, 0, // joined_at u64 = 0
@@ -1702,8 +1700,8 @@ mod governance_op_storage_roundtrip {
 
     fn sample_invitation() -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
-                inviter_account: calimero_account::AccountId::from([0x44; 32]),
                 inviter_identity: SignerId::from([0xA1; 32]),
                 group_id: ContextGroupId::from([0x22; 32]),
                 expiration_timestamp: 1_900_000_000,

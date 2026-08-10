@@ -4457,7 +4457,6 @@ fn member_joined_clears_deny_list_for_rejoiner() {
 
     // Admin-signed open invitation for the subgroup (no expiry).
     let invitation = GroupInvitationFromAdmin {
-        inviter_account: AccountId::from([0x01; 32]),
         inviter_identity: SignerId::from(*admin_pk.digest()),
         group_id: subgroup,
         expiration_timestamp: 0,
@@ -4467,6 +4466,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
     let signed_invitation = SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
@@ -5744,7 +5744,6 @@ fn signed_invitation_for(
     use sha2::{Digest, Sha256};
 
     let invitation = GroupInvitationFromAdmin {
-        inviter_account: AccountId::from([0x01; 32]),
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id,
         expiration_timestamp: 0,
@@ -5754,6 +5753,7 @@ fn signed_invitation_for(
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
