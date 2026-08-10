@@ -1202,10 +1202,13 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     let ns = ContextGroupId::from([0xC0; 32]);
     let child = ContextGroupId::from([0xC1; 32]);
     let context = ContextId::from([0xC2; 32]);
+    // Enrolled at the NAMESPACE, not the child: bindings live at the anchor and
+    // every reader resolves up to it, so a row written against a subgroup is
+    // invisible the moment that subgroup is nested.
     let admin = PublicKey::from([0xC3; 32]);
-    let admin_account = enrol_member(&store, &child, &admin);
+    let admin_account = enrol_member(&store, &ns, &admin);
     let inherited = PublicKey::from([0xC4; 32]);
-    let inherited_account = enrol_member(&store, &child, &inherited);
+    let inherited_account = enrol_member(&store, &ns, &inherited);
 
     nest_for_test(&store, &ns, &child);
     CapabilitiesRepository::new(&store)
@@ -3368,7 +3371,9 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
     // The recursive inviter is an admin of the namespace root.
     let inviter_sk = PrivateKey::random(&mut OsRng);
     let inviter_pk = inviter_sk.public_key();
-    let inviter_account = AccountId::from(*inviter_pk);
+    // Enrolled, not derived: issuing an invitation resolves the inviter's key to
+    // an account, and an unbound key issues nothing.
+    let inviter_account = enrol_member(&store, &ns, &inviter_pk);
     MembershipRepository::new(&store)
         .add_member(&ns, &inviter_account, GroupMemberRole::Admin)
         .unwrap();
@@ -3466,7 +3471,9 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
 
     let inviter_sk = PrivateKey::random(&mut OsRng);
     let inviter_pk = inviter_sk.public_key();
-    let inviter_account = AccountId::from(*inviter_pk);
+    // Enrolled, not derived: issuing an invitation resolves the inviter's key to
+    // an account, and an unbound key issues nothing.
+    let inviter_account = enrol_member(&store, &ns, &inviter_pk);
     MembershipRepository::new(&store)
         .add_member(&ns, &inviter_account, GroupMemberRole::Admin)
         .unwrap();
