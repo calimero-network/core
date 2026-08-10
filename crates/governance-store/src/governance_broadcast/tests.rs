@@ -746,13 +746,14 @@ async fn admission_provable_rejects_consumed_nonce() {
     plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
 
     let gid = ContextGroupId::from(ns.to_bytes());
+    // Bound, not a member: the consumption check resolves the beacon signer's
+    // key to an account before looking for a spent-invitation row, and a key it
+    // cannot resolve names no principal that could have spent anything — so
+    // without the binding this would pass by answering the wrong question.
+    let joiner_account = crate::test_fixtures::enrol_member(&store, &gid, &joiner_sk.public_key());
     let inv = invitation_from(&admin_sk, gid, 0);
     ReentryRepository::new(&store)
-        .mark_invitation_consumed(
-            &gid,
-            &AccountId::from(*joiner_sk.public_key()),
-            inv.invitation.invitation_nonce,
-        )
+        .mark_invitation_consumed(&gid, &joiner_account, inv.invitation.invitation_nonce)
         .expect("mark consumed");
     let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
 

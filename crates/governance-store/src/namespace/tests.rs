@@ -7176,8 +7176,18 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         }),
     )
     .expect("verifier signs the admission");
-    gov.apply_signed_op(&admit)
-        .expect("a refused credential must not orphan the admission");
+    // Refused OUTRIGHT, not "admitted without a binding". The membership row an
+    // admission writes names an ACCOUNT, and the only thing that says which
+    // account the attested replica speaks for is the credential — so a
+    // credential that does not certify the attested key leaves the row
+    // unnameable and the whole op is rejected. There is nothing left to admit.
+    let err = gov
+        .apply_signed_op(&admit)
+        .expect_err("a credential for another key cannot admit a replica");
+    assert!(
+        format!("{err:#}").contains("does not certify the attested key"),
+        "expected the certify check to reject it, got: {err:#}"
+    );
 
     let bindings = crate::AccountBindingRepository::new(&store);
     assert!(
@@ -7195,10 +7205,10 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         "nor make the replica an endorser of it"
     );
     assert!(
-        MembershipRepository::new(&store)
+        !MembershipRepository::new(&store)
             .is_member(&ns_gid, &replica_account)
             .expect("membership"),
-        "the admission itself still stands"
+        "and above all must not admit the replica under an account it cannot prove"
     );
 }
 
