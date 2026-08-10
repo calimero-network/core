@@ -113,7 +113,7 @@ pub(super) fn test_group_id() -> ContextGroupId {
 /// against actual post-apply state will see a mismatch — tests that
 /// hit the apply path either ignore the mismatch (it's a warn-log,
 /// not a hard reject) or use the real `compute_*` helpers.
-pub(super) fn dummy_member_removed_op(member: PublicKey) -> GroupOp {
+pub(super) fn dummy_member_removed_op(member: AccountId) -> GroupOp {
     GroupOp::MemberRemoved {
         member,
         expected_group_state_hash: [0u8; 32],
@@ -127,16 +127,16 @@ pub(super) fn test_meta() -> GroupMetaValue {
         target_application_id: ApplicationId::from([0xCC; 32]),
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
-        admin_identity: PublicKey::from([0x01; 32]),
-        owner_identity: PublicKey::from([0x01; 32]),
+        admin_identity: AccountId::from([0x01; 32]),
+        owner_identity: AccountId::from([0x01; 32]),
         migration: None,
         auto_join: true,
     }
 }
 
-/// Variant of [`test_meta`] that wires both the admin and owner identity to
-/// the supplied key. Used by tests that want a specific admin pubkey.
-pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
+/// Variant of [`test_meta`] that wires both the admin and owner pin to the
+/// supplied account. Used by tests that want a specific admin.
+pub(super) fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
@@ -159,20 +159,65 @@ pub(super) fn bootstrap_namespace_with_admin(
     store: &Store,
     ns_id: [u8; 32],
 ) -> (PrivateKey, PublicKey) {
+    bootstrap_namespace_with_admin_account(store, ns_id).0
+}
+
+/// [`bootstrap_namespace_with_admin`], also returning the admin's account.
+///
+/// **This enrols the admin, it does not merely add a row.** Membership names an
+/// account, and a signed op resolves its signer through the binding rows — so a
+/// fixture that wrote the row without the binding would produce an admin whose
+/// own ops are refused, and every apply test built on it would fail for a reason
+/// that has nothing to do with what it is testing.
+pub(super) fn bootstrap_namespace_with_admin_account(
+    store: &Store,
+    ns_id: [u8; 32],
+) -> ((PrivateKey, PublicKey), AccountId) {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut OsRng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(store, &ns_gid, &admin_pk);
     MetaRepository::new(store)
-        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
     MembershipRepository::new(store)
-        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(store)
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
         .unwrap();
-    (admin_sk, admin_pk)
+    ((admin_sk, admin_pk), admin_account)
+}
+
+/// Bind `sign_pk` to a fresh account in `namespace` and return that account.
+///
+/// The fixture form of what a join op does: writes the device binding AND the
+/// endorser row, which is what makes `member_account_in_namespace` resolve the
+/// key afterwards. Without the endorser the binding is recorded and inert.
+///
+/// Self-endorsing is fine here for the same reason genesis self-endorses: the
+/// caller writes the member row alongside, so the endorser IS a member.
+pub(super) fn enrol_member(
+    store: &Store,
+    namespace: &ContextGroupId,
+    sign_pk: &PublicKey,
+) -> AccountId {
+    let credential = real_join_account(sign_pk);
+    let account = credential.cert.account;
+    let bindings = crate::AccountBindingRepository::new(store);
+    let _ = bindings
+        .apply_link(
+            namespace,
+            &credential.genesis,
+            &credential.chain,
+            &credential.cert,
+        )
+        .expect("store the binding");
+    bindings
+        .record_endorser(namespace, account, &account)
+        .expect("record the endorser");
+    account
 }
 
 /// Shortcut for nesting one group under another inside tests, unwrapping
@@ -242,6 +287,15 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
         Some(self.0)
     }
 
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        Some(self.0)
+    }
+
     fn is_last_admin_at_cut(
         &self,
         _group: &ContextGroupId,
@@ -291,6 +345,15 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
         _group: &ContextGroupId,
         _signer: &PublicKey,
         _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None
