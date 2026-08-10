@@ -243,8 +243,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
     let other_gid = ContextGroupId::from([0x31; 32]);
     let admin_pk = PublicKey::from([0x32; 32]);
     let admin = AccountId::from(*admin_pk);
-    let creator_pk = PublicKey::from([0x33; 32]);
-    let creator_account = AccountId::from(*creator_pk);
+    let (creator_pk, creator_account) = enrolled(&store, &gid, 0x33);
     let creator = AccountId::from(*creator_pk);
     let context = ContextId::from([0x34; 32]);
     let app_id = ApplicationId::from([0x35; 32]);
@@ -520,11 +519,11 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
 
     let member_high = PrivateKey::random(&mut rng).public_key();
 
-    let member_high_account = AccountId::from(*member_high);
+    let member_high_account = enrol_member(&store, &gid, &member_high);
 
-    let member_high_account = AccountId::from(*member_high);
+    let member_high_account = enrol_member(&store, &gid, &member_high);
     let member_low = PrivateKey::random(&mut rng).public_key();
-    let member_low_account = AccountId::from(*member_low);
+    let member_low_account = enrol_member(&store, &gid, &member_low);
 
     // The HIGHER-nonce sibling (nonce 2) is delivered first.
     let op_high = SignedGroupOp::sign(
@@ -721,11 +720,11 @@ fn reject_read_only_tee_via_member_added() {
 
     let tee_pk = PrivateKey::random(&mut rng).public_key();
 
-    let tee_account = AccountId::from(*tee_pk);
+    let tee_account = enrol_member(&store, &gid, &tee_pk);
 
-    let tee_account = AccountId::from(*tee_pk);
+    let tee_account = enrol_member(&store, &gid, &tee_pk);
 
-    let tee_account = AccountId::from(*tee_pk);
+    let tee_account = enrol_member(&store, &gid, &tee_pk);
     let op = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes.into(),
@@ -902,7 +901,7 @@ fn apply_local_context_alias_admin_or_creator() {
 
     let creator_sk = PrivateKey::random(&mut rng);
     let creator_pk = creator_sk.public_key();
-    let creator_account = AccountId::from(*creator_pk);
+    let creator_account = enrol_member(&store, &gid, &creator_pk);
     MembershipRepository::new(&store)
         .add_member(&gid, &creator_account, GroupMemberRole::Member)
         .unwrap();
@@ -998,9 +997,9 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
 
     let member_m = PrivateKey::random(&mut rng).public_key();
 
-    let member_m_account = AccountId::from(*member_m);
+    let member_m_account = enrol_member(&store, &gid, &member_m);
 
-    let member_m_account = AccountId::from(*member_m);
+    let member_m_account = enrol_member(&store, &gid, &member_m);
     MembershipRepository::new(&store)
         .add_member(&gid, &member_m_account, GroupMemberRole::Member)
         .unwrap();
@@ -1112,15 +1111,15 @@ fn transfer_ownership_rejects_non_owner_signer() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
+    let owner_account = enrol_member(&store, &gid, &owner_pk);
     // A second admin — privileged, but not the owner.
     let other_admin_sk = PrivateKey::random(&mut rng);
     let other_admin_pk = other_admin_sk.public_key();
-    let other_admin_account = AccountId::from(*other_admin_pk);
+    let other_admin_account = enrol_member(&store, &gid, &other_admin_pk);
     // A third admin standing by as a valid successor, so the op fails on
     // the owner check rather than the new-owner-role check.
     let successor_pk = PrivateKey::random(&mut rng).public_key();
-    let successor_account = AccountId::from(*successor_pk);
+    let successor_account = enrol_member(&store, &gid, &successor_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(owner_account))
@@ -1180,9 +1179,9 @@ fn transfer_ownership_rejects_new_owner_not_admin() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
+    let owner_account = enrol_member(&store, &gid, &owner_pk);
     let plain_member_pk = PrivateKey::random(&mut rng).public_key();
-    let plain_member_account = AccountId::from(*plain_member_pk);
+    let plain_member_account = enrol_member(&store, &gid, &plain_member_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(owner_account))
@@ -1240,9 +1239,9 @@ fn transfer_ownership_rejects_new_owner_not_member() {
 
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
+    let owner_account = enrol_member(&store, &gid, &owner_pk);
     let outsider_pk = PrivateKey::random(&mut rng).public_key();
-    let outsider_account = AccountId::from(*outsider_pk);
+    let outsider_account = enrol_member(&store, &gid, &outsider_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(owner_account))
@@ -1301,9 +1300,9 @@ fn transfer_ownership_moves_admin_identity_to_new_owner() {
     // explicit Admin member row (mirrors `GroupCreated`/namespace genesis).
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
+    let owner_account = enrol_member(&store, &gid, &owner_pk);
     let successor_pk = PrivateKey::random(&mut rng).public_key();
-    let successor_account = AccountId::from(*successor_pk);
+    let successor_account = enrol_member(&store, &gid, &successor_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(owner_account))
@@ -1376,7 +1375,7 @@ fn context_capability_granted_rejects_unauthorized_signer() {
     let member = AccountId::from(*member_pk);
     let context_id = ContextId::from([0x44; 32]);
     let target_pk = PrivateKey::random(&mut rng).public_key();
-    let target_account = AccountId::from(*target_pk);
+    let target_account = enrol_member(&store, &gid, &target_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(admin))
@@ -1441,7 +1440,7 @@ fn context_capability_revoked_rejects_unauthorized_signer() {
     let member = AccountId::from(*member_pk);
     let context_id = ContextId::from([0x55; 32]);
     let target_pk = PrivateKey::random(&mut rng).public_key();
-    let target_account = AccountId::from(*target_pk);
+    let target_account = enrol_member(&store, &gid, &target_pk);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(admin))
@@ -1511,7 +1510,7 @@ fn context_capability_granted_rejects_context_not_in_group() {
     // the grantee-membership guard.
     let target_sk = PrivateKey::random(&mut rng);
     let target_pk = target_sk.public_key();
-    let target_account = AccountId::from(*target_pk);
+    let target_account = enrol_member(&store, &gid, &target_pk);
     // Never registered in `gid` (nor any group).
     let context_id = ContextId::from([0x66; 32]);
 
@@ -1576,7 +1575,7 @@ fn context_capability_granted_rejects_non_member_grantee() {
     let admin = AccountId::from(*admin_pk);
     // Never added as a member of `gid`.
     let outsider_pk = PrivateKey::random(&mut rng).public_key();
-    let outsider_account = AccountId::from(*outsider_pk);
+    let outsider_account = enrol_member(&store, &gid, &outsider_pk);
     let context_id = ContextId::from([0x77; 32]);
 
     MetaRepository::new(&store)
@@ -1637,7 +1636,7 @@ fn context_capability_revoked_rejects_context_not_in_group() {
     let admin_pk = admin_sk.public_key();
     let admin = AccountId::from(*admin_pk);
     let target_pk = PrivateKey::random(&mut rng).public_key();
-    let target_account = AccountId::from(*target_pk);
+    let target_account = enrol_member(&store, &gid, &target_pk);
     // Never registered in `gid`.
     let context_id = ContextId::from([0x88; 32]);
 
@@ -1702,22 +1701,16 @@ fn cross_node_state_hash_is_order_independent() {
     // never trips the per-signer nonce window.
     let admin0_sk = PrivateKey::random(&mut rng);
     let admin0_pk = admin0_sk.public_key();
-    let admin0_account = AccountId::from(*admin0_pk);
     let admin1_sk = PrivateKey::random(&mut rng);
     let admin1_pk = admin1_sk.public_key();
-    let admin1_account = AccountId::from(*admin1_pk);
     let admin2_sk = PrivateKey::random(&mut rng);
     let admin2_pk = admin2_sk.public_key();
-    let admin2_account = AccountId::from(*admin2_pk);
 
     // Three members each op will add. Distinct identities → the ops commute
     // (the member set is the same regardless of insertion order).
     let member_x = PrivateKey::random(&mut rng).public_key();
-    let member_x_account = AccountId::from(*member_x);
     let member_y = PrivateKey::random(&mut rng).public_key();
-    let member_y_account = AccountId::from(*member_y);
     let member_z = PrivateKey::random(&mut rng).public_key();
-    let member_z_account = AccountId::from(*member_z);
 
     // Identical genesis for both nodes: admin0 is the meta owner/admin, and all
     // three admins hold `Admin` member rows. `MemberAdded` is gated by
@@ -1726,7 +1719,37 @@ fn cross_node_state_hash_is_order_independent() {
     // admin1 and admin2 can each sign a `MemberAdded` op even though only
     // admin0 is the meta admin; the membership assertions after apply confirm
     // all three ops were actually accepted (not silently rejected).
+    // Enrolment is part of the per-store bootstrap: each node has to hold the
+    // bindings, not just the rows, or a signer resolves to nobody there.
+    // Each node holds its own store, so each must hold the BINDINGS too — a
+    // signer that resolves to nobody there is refused regardless of its row.
+    // The credentials are minted once so both nodes agree on the accounts;
+    // enrolling per store independently would mint two different ones and the
+    // member sets would not converge.
+    let credentials: Vec<_> = [
+        &admin0_pk, &admin1_pk, &admin2_pk, &member_x, &member_y, &member_z,
+    ]
+    .iter()
+    .map(|pk| crate::test_fixtures::real_join_account(pk))
+    .collect();
+    let [admin0_account, admin1_account, admin2_account, member_x_account, member_y_account, member_z_account] =
+        std::array::from_fn(|i| credentials[i].cert.account);
+
     let bootstrap = |store: &Store| {
+        let bindings = crate::AccountBindingRepository::new(store);
+        for credential in &credentials {
+            let _ = bindings
+                .apply_link(
+                    &gid,
+                    &credential.genesis,
+                    &credential.chain,
+                    &credential.cert,
+                )
+                .expect("link");
+            bindings
+                .record_endorser(&gid, credential.cert.account, &credential.cert.account)
+                .expect("endorse");
+        }
         MetaRepository::new(store)
             .save(&gid, &sample_meta_with_admin(admin0_account))
             .unwrap();
@@ -3159,12 +3182,12 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
     let store = test_store();
     let mut rng = OsRng;
 
-    let founder_sk = PrivateKey::random(&mut rng);
-    let founder = founder_sk.public_key();
-    let founder_account = AccountId::from(*founder);
-
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+    let founder_account = enrol_member(&store, &ns_gid, &founder);
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -4541,7 +4564,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 
     let rejoiner_pk = PrivateKey::random(&mut rng).public_key();
 
-    let rejoiner_account = AccountId::from(*rejoiner_pk);
+    let rejoiner_account = enrol_member(&store, &gid, &rejoiner_pk);
     let ctx = ContextId::from([0xE8; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
 
@@ -4635,8 +4658,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     // A second namespace must be left alone.
     let other_ns_id = ContextGroupId::from([0xB2; 32]);
     let other_ns_bytes = other_ns_id.to_bytes();
-    let other_pk = PublicKey::from([0x55; 32]);
-    let other_account = AccountId::from(*other_pk);
+    let (other_pk, other_account) = enrolled(&store, &other_ns_id, 0x55);
     NamespaceRepository::new(&store)
         .store_identity(&other_ns_id, &other_pk, &[0x66; 32], &[0x77; 32])
         .unwrap();
@@ -5202,8 +5224,7 @@ fn deny_list_member_added_op_clears_existing_entry() {
     let admin_sk = PrivateKey::random(&mut OsRng);
     let admin_pk = admin_sk.public_key();
     let admin = AccountId::from(*admin_pk);
-    let target_pk = PublicKey::from([0xC1; 32]);
-    let target_account = AccountId::from(*target_pk);
+    let (target_pk, target_account) = enrolled(&store, &gid, 0xC1);
 
     // Bootstrap: a group meta + an admin member (so the signer has
     // permission to add members).
@@ -5260,8 +5281,7 @@ fn deny_list_member_removed_op_marks_entry() {
     let admin_sk = PrivateKey::random(&mut OsRng);
     let admin_pk = admin_sk.public_key();
     let admin = AccountId::from(*admin_pk);
-    let target_pk = PublicKey::from([0xC2; 32]);
-    let target_account = AccountId::from(*target_pk);
+    let (target_pk, target_account) = enrolled(&store, &gid, 0xC2);
 
     let mut meta = test_meta();
     meta.admin_identity = admin;
@@ -5437,8 +5457,7 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     let admin_sk = PrivateKey::random(&mut OsRng);
     let admin_pk = admin_sk.public_key();
     let admin = AccountId::from(*admin_pk);
-    let target_pk = PublicKey::from([0xC3; 32]);
-    let target_account = AccountId::from(*target_pk);
+    let (target_pk, target_account) = enrolled(&store, &gid, 0xC3);
 
     let mut meta = test_meta();
     meta.admin_identity = admin;
@@ -6051,7 +6070,7 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
     // row in the subgroup.
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
-    let bob_account = AccountId::from(*bob_pk);
+    let bob_account = enrol_member(&store, &ns_gid, &bob_pk);
     MembershipRepository::new(&store)
         .add_member(&ns_gid, &bob_account, GroupMemberRole::Member)
         .unwrap();
@@ -6200,7 +6219,7 @@ fn member_joined_open_emits_membership_op_event() {
     // Bob has no direct subgroup row, so the apply path is `Inherited`.
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
-    let bob_account = AccountId::from(*bob_pk);
+    let bob_account = enrol_member(&store, &ns_gid, &bob_pk);
     MembershipRepository::new(&store)
         .add_member(&ns_gid, &bob_account, GroupMemberRole::Member)
         .unwrap();
@@ -6356,13 +6375,13 @@ fn member_metadata_self_set_allowed_others_gated() {
 
     let alice_sk = PrivateKey::random(&mut rng);
     let alice_pk = alice_sk.public_key();
-    let alice_account = AccountId::from(*alice_pk);
+    let alice_account = enrol_member(&store, &gid, &alice_pk);
     MembershipRepository::new(&store)
         .add_member(&gid, &alice_account, GroupMemberRole::Member)
         .unwrap();
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
-    let bob_account = AccountId::from(*bob_pk);
+    let bob_account = enrol_member(&store, &gid, &bob_pk);
     MembershipRepository::new(&store)
         .add_member(&gid, &bob_account, GroupMemberRole::Member)
         .unwrap();
@@ -6753,10 +6772,8 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
     let admin = AccountId::from(*admin_pk);
-    let target_pk = PublicKey::from([0xD0; 32]);
-    let target_account = AccountId::from(*target_pk);
-    let bystander_pk = PublicKey::from([0xD1; 32]);
-    let bystander_account = AccountId::from(*bystander_pk);
+    let (target_pk, target_account) = enrolled(&store, &gid, 0xD0);
+    let (bystander_pk, bystander_account) = enrolled(&store, &gid, 0xD1);
 
     // Bootstrap: a meta + admin + target + bystander member set.
     let mut meta = test_meta();
@@ -8146,8 +8163,7 @@ mod tee_member_removed_event_tests {
         let admin_sk = PrivateKey::random(&mut OsRng);
         let admin_pk = admin_sk.public_key();
         let admin = AccountId::from(*admin_pk);
-        let tee_pk = PublicKey::from([0xE1; 32]);
-        let tee_account = AccountId::from(*tee_pk);
+        let (tee_pk, tee_account) = enrolled(&store, &gid, 0xE1);
 
         let mut meta = test_meta();
         meta.admin_identity = admin;
@@ -8198,8 +8214,7 @@ mod tee_member_removed_event_tests {
         let admin_sk = PrivateKey::random(&mut OsRng);
         let admin_pk = admin_sk.public_key();
         let admin = AccountId::from(*admin_pk);
-        let target_pk = PublicKey::from([0xE2; 32]);
-        let target_account = AccountId::from(*target_pk);
+        let (target_pk, target_account) = enrolled(&store, &gid, 0xE2);
 
         let mut meta = test_meta();
         meta.admin_identity = admin;
@@ -8262,8 +8277,7 @@ mod tee_member_removed_event_tests {
         let admin_sk = PrivateKey::random(&mut OsRng);
         let admin_pk = admin_sk.public_key();
         let admin = AccountId::from(*admin_pk);
-        let tee_pk = PublicKey::from([0xE1; 32]);
-        let tee_account = AccountId::from(*tee_pk);
+        let (tee_pk, tee_account) = enrolled(&store, &ns_gid, 0xE1);
 
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
@@ -8366,8 +8380,7 @@ mod tee_member_removed_event_tests {
         let admin_sk = PrivateKey::random(&mut OsRng);
         let admin_pk = admin_sk.public_key();
         let admin = AccountId::from(*admin_pk);
-        let tee_pk = PublicKey::from([0xE3; 32]);
-        let tee_account = AccountId::from(*tee_pk);
+        let (tee_pk, tee_account) = enrolled(&store, &ns_gid, 0xE3);
 
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
@@ -8475,7 +8488,7 @@ mod tee_member_removed_event_tests {
         // The leaver signs its own MemberLeft, so it needs a real keypair.
         let tee_sk = PrivateKey::random(&mut OsRng);
         let tee_pk = tee_sk.public_key();
-        let tee_account = AccountId::from(*tee_pk);
+        let tee_account = enrol_member(&store, &ns_gid, &tee_pk);
 
         MetaRepository::new(&store)
             .save(&ns_gid, &sample_meta_with_admin(admin))
@@ -8659,7 +8672,7 @@ mod tee_member_removed_event_tests {
             let admin = AccountId::from(*admin_pk);
             let tee_sk = PrivateKey::random(&mut OsRng);
             let tee_pk = tee_sk.public_key();
-            let tee_account = AccountId::from(*tee_pk);
+            let tee_account = enrol_member(&store, &gid, &tee_pk);
 
             let mut meta = test_meta();
             meta.admin_identity = admin;
@@ -8707,7 +8720,7 @@ mod tee_member_removed_event_tests {
             let admin = AccountId::from(*admin_pk);
             let leaver_sk = PrivateKey::random(&mut OsRng);
             let leaver_pk = leaver_sk.public_key();
-            let leaver_account = AccountId::from(*leaver_pk);
+            let leaver_account = enrol_member(&store, &gid, &leaver_pk);
 
             let mut meta = test_meta();
             meta.admin_identity = admin;
@@ -9483,7 +9496,7 @@ mod self_leave_rotation {
 
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
-        let leaver_account = AccountId::from(*leaver);
+        let leaver_account = enrol_member(&store, &ns_gid, &leaver);
 
         let sub_gid = ContextGroupId::from([0xA2u8; 32]);
         MetaRepository::new(&store)
@@ -9740,10 +9753,10 @@ mod self_leave_rotation_crypto {
 
         let stayer_sk = PrivateKey::random(&mut OsRng);
         let stayer = stayer_sk.public_key();
-        let stayer_account = AccountId::from(*stayer);
+        let stayer_account = enrol_member(&store, &ns_gid, &stayer);
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
-        let leaver_account = AccountId::from(*leaver);
+        let leaver_account = enrol_member(&store, &ns_gid, &leaver);
 
         MembershipRepository::new(&store)
             .add_member(&ns_gid, &stayer_account, GroupMemberRole::Member)
@@ -9875,7 +9888,7 @@ mod self_leave_rotation_crypto {
 
         let leaver_sk = PrivateKey::random(&mut OsRng);
         let leaver = leaver_sk.public_key();
-        let leaver_account = AccountId::from(*leaver);
+        let leaver_account = enrol_member(&store, &ns_gid, &leaver);
         MembershipRepository::new(&store)
             .add_member(&ns_gid, &leaver_account, GroupMemberRole::Member)
             .unwrap();
