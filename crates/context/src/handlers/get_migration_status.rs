@@ -145,16 +145,6 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
     }
 }
 
-/// Parse the leading integer of a semver `to_version` ("2", "2.0.0") into the
-/// `u32` schema-version a heartbeat reports. Best-effort: a non-numeric leading
-/// component yields `None`.
-fn parse_schema_version(version: &str) -> Option<u32> {
-    version
-        .split('.')
-        .next()
-        .and_then(|major| major.trim().parse::<u32>().ok())
-}
-
 /// Derive the `target_version` the cohort is rolled up against from the group's
 /// local upgrade record.
 ///
@@ -176,7 +166,12 @@ fn parse_schema_version(version: &str) -> Option<u32> {
 fn derive_target_version(upgrade: Option<&calimero_store::key::GroupUpgradeValue>) -> u32 {
     match upgrade {
         None => 0,
-        Some(record) => parse_schema_version(&record.to_version).unwrap_or(u32::MAX),
+        // `0` means the target's ABI was unreadable. It must NOT collapse to a
+        // satisfied target: every member reporting `>= 0` would be trivially
+        // migrated, a false green over a real migration. Pin to MAX so no real
+        // version satisfies it until the record is replaced by a resolvable one.
+        Some(record) if record.to_state_version == 0 => u32::MAX,
+        Some(record) => record.to_state_version,
     }
 }
 
@@ -222,7 +217,7 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{authorize_migration_status, collect_migration_cohort, parse_schema_version};
+    use super::{authorize_migration_status, collect_migration_cohort};
 
     fn meta(admin: PublicKey) -> GroupMetaValue {
         GroupMetaValue {
@@ -299,15 +294,6 @@ mod tests {
             cohort.len() > direct_count,
             "cohort must exceed the direct-row count (inherited member included)"
         );
-    }
-
-    #[test]
-    fn parse_schema_version_reads_major() {
-        assert_eq!(parse_schema_version("2"), Some(2));
-        assert_eq!(parse_schema_version("2.0.0"), Some(2));
-        assert_eq!(parse_schema_version("11.3.1"), Some(11));
-        assert_eq!(parse_schema_version("v2"), None);
-        assert_eq!(parse_schema_version(""), None);
     }
 
     /// The handler gates `GetMigrationStatusRequest` on admin authority (the
@@ -430,6 +416,52 @@ mod tests {
             u32::MAX,
             "an unparseable pending target must not collapse to 0 (false green)"
         );
+    }
+
+    /// A record targeting semver 10.2.0 at ABI state 2 must roll up against 2.
+    /// Parsing the semver yields 10, which every member on major 10 trivially
+    /// satisfies — the false green this PR exists to remove.
+    #[test]
+    fn target_version_reads_the_abi_state_version() {
+        let record = calimero_store::key::GroupUpgradeValue {
+            from_version: "10.1.3".to_owned(),
+            to_version: "10.2.0".to_owned(),
+            migration: None,
+            initiated_at: 0,
+            initiated_by: PublicKey::from([0x01; 32]),
+            status: calimero_store::key::GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+            cascade_hlc: None,
+            cascade_seq: None,
+            to_state_version: 2,
+        };
+
+        assert_eq!(super::derive_target_version(Some(&record)), 2);
+    }
+
+    /// An unresolvable target must be unsatisfiable, never trivially satisfied.
+    #[test]
+    fn unresolvable_target_state_version_pins_to_max() {
+        let record = calimero_store::key::GroupUpgradeValue {
+            from_version: "10.1.3".to_owned(),
+            to_version: "10.2.0".to_owned(),
+            migration: None,
+            initiated_at: 0,
+            initiated_by: PublicKey::from([0x01; 32]),
+            status: calimero_store::key::GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+            cascade_hlc: None,
+            cascade_seq: None,
+            to_state_version: 0,
+        };
+
+        assert_eq!(super::derive_target_version(Some(&record)), u32::MAX);
     }
 
     /// The cohort target must reflect a SUBGROUP's own upgrade record, not just

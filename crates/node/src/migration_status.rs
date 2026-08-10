@@ -339,7 +339,7 @@ pub fn record_facts_update(
 
 /// Parse the leading integer of a semver string ("2", "2.0.0") into the `u32`
 /// schema-version a heartbeat reports. Best-effort: a non-numeric leading
-/// component yields `None`. Mirrors `get_migration_status::parse_schema_version`.
+/// component yields `None`.
 fn parse_major_version(version: &str) -> Option<u32> {
     version
         .split('.')
