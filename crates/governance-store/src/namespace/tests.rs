@@ -7003,3 +7003,109 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         "the admission itself still stands"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Resolving a member key to the account it speaks for.
+//
+// The lookup the governance planes will use once they name accounts instead of
+// keys. What these pin is the part that is easy to get subtly wrong: WHERE the
+// answer is read from, and what happens when there is no answer.
+// ---------------------------------------------------------------------------
+
+/// A subgroup member resolves through the NAMESPACE binding, not the subgroup.
+///
+/// Every direct add in practice targets a subgroup and names someone who joined
+/// the namespace earlier. Bindings are namespace-keyed, so asking the subgroup
+/// would find nothing and refuse an add that is entirely legitimate.
+#[test]
+fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let namespace_id = [0xF1u8; 32];
+    let subgroup_id = [0xF2u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let sub_gid = ContextGroupId::from(subgroup_id);
+    let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
+
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_pk))
+        .expect("seed subgroup meta");
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub_gid, VisibilityMode::Restricted)
+        .expect("set visibility");
+
+    let member_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let member = member_sk.public_key();
+    let account = crate::test_fixtures::real_join_account(&member);
+    let account_id = account.cert.account;
+
+    // Bound at the namespace, exactly as a join records it.
+    crate::AccountBindingRepository::new(&store)
+        .apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)
+        .expect("store")
+        .expect("admitted");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &sub_gid, &member).expect("resolve"),
+        Some(account_id),
+        "a subgroup lookup must resolve through the namespace the subgroup belongs to"
+    );
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &member).expect("resolve"),
+        Some(account_id),
+        "and the namespace itself resolves identically"
+    );
+}
+
+/// An unbound key resolves to `None`, so callers can refuse rather than invent.
+///
+/// The whole point of the `None`: a caller that fell back to a key-derived
+/// stand-in would keep the bridge alive at the site where it is hardest to
+/// notice — a grant that looks recorded and matches nothing.
+#[test]
+fn an_unbound_member_key_resolves_to_nothing() {
+    let store = test_store();
+    let namespace_id = [0xF3u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let (_admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
+
+    let stranger = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &stranger).expect("resolve"),
+        None,
+        "a key this namespace has never seen a credential for names no account"
+    );
+}
+
+/// A revoked device stops resolving — revocation withdraws the principal too.
+#[test]
+fn a_revoked_device_resolves_to_nothing() {
+    let store = test_store();
+    let namespace_id = [0xF4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let (_admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, namespace_id);
+
+    let member_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let member = member_sk.public_key();
+    let account = crate::test_fixtures::real_join_account(&member);
+
+    let bindings = crate::AccountBindingRepository::new(&store);
+    let binding = bindings
+        .apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)
+        .expect("store")
+        .expect("admitted");
+    assert!(crate::member_account_in_namespace(&store, &ns_gid, &member)
+        .expect("resolve")
+        .is_some());
+
+    bindings
+        .apply_revocation(&ns_gid, binding.device)
+        .expect("revoke");
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &member).expect("resolve"),
+        None,
+        "a revoked device names no account, so a grant to it cannot be minted"
+    );
+}
