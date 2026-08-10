@@ -1253,16 +1253,16 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // replica this is a remote signer — the node under test is NOT the author.
     let verifier_sk = PrivateKey::random(&mut rng);
     let verifier_pk = verifier_sk.public_key();
-    let verifier_account = AccountId::from(*verifier_pk);
 
     // The TEE node being admitted as a ReadOnlyTee member.
     let tee_member = PublicKey::from([0xD3; 32]);
-    let tee_member_account = AccountId::from(*tee_member);
     let quote_hash = [0xE1; 32];
 
     // Namespace root group (policy ops are namespace-scoped: must be the root).
     let namespace_id = [0xA7u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+    let verifier_account = enrol_member(&store, &ns_gid, &verifier_pk);
+    let tee_member_account = enrol_member(&store, &ns_gid, &tee_member);
 
     // Replica bootstrap state: namespace meta + the verifier recorded as an
     // admin member (so `require_tee_attestation_verifier_membership` passes —
@@ -1625,13 +1625,11 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // keypair created the namespace root in `handlers/create_group.rs`).
     let owner_sk = PrivateKey::random(&mut rng);
     let owner = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner);
 
     // A DIFFERENT, non-owner member of the namespace — whoever happened to
     // deliver the group key to the bootstrapping replica. It is NOT the owner.
     let non_owner_sk = PrivateKey::random(&mut rng);
     let non_owner = non_owner_sk.public_key();
-    let non_owner_account = AccountId::from(*non_owner);
     assert_ne!(
         owner, non_owner,
         "the key-deliverer must be a different identity than the true owner"
@@ -1639,6 +1637,8 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
 
     let namespace_id = [0xC4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+    let owner_account = enrol_member(&store, &ns_gid, &owner);
+    let non_owner_account = enrol_member(&store, &ns_gid, &non_owner);
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
@@ -2725,10 +2725,10 @@ fn replica_op_log_dedup_survives_head_pruning() {
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
-    let signer_account = AccountId::from(*signer_pk);
 
     let namespace_id = [0xC4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+    let signer_account = enrol_member(&store, &ns_gid, &signer_pk);
 
     // Replica bootstrap state: namespace meta with the signer as admin + the
     // group key so the encrypted ops decrypt.
@@ -2872,10 +2872,10 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
-    let signer_account = AccountId::from(*signer_pk);
 
     let namespace_id = [0xC6u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+    let signer_account = enrol_member(&store, &ns_gid, &signer_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(signer_account))
@@ -2969,10 +2969,10 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
 
     let signer_sk = PrivateKey::random(&mut rng);
     let signer_pk = signer_sk.public_key();
-    let signer_account = AccountId::from(*signer_pk);
 
     let namespace_id = [0xC5u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+    let signer_account = enrol_member(&store, &ns_gid, &signer_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(signer_account))
@@ -3523,10 +3523,10 @@ fn governance_group_reparented_via_signed_op() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     let mid_id = [0xA1u8; 32];
     let mid_gid = ContextGroupId::from(mid_id);
     let new_parent_id = [0xA2u8; 32];
@@ -3618,10 +3618,10 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xC0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
@@ -3729,10 +3729,10 @@ fn governance_group_created_is_idempotent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     let new_group_id = [0xCC; 32];
 
     MetaRepository::new(&store)
@@ -3796,11 +3796,11 @@ fn governance_group_created_rejects_cross_namespace_parent() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     // Namespace A, where our admin has authority.
     let ns_a = [0xA0u8; 32];
     let ns_a_gid = ContextGroupId::from(ns_a);
+    let admin_account = enrol_member(&store, &ns_a_gid, &admin_pk);
     MetaRepository::new(&store)
         .save(&ns_a_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
@@ -4085,10 +4085,10 @@ fn governance_group_created_writes_birth_visibility() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA1u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     let open_group_id = [0xE0u8; 32];
     let restricted_group_id = [0xE1u8; 32];
 
@@ -4172,10 +4172,10 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xB2u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     let group_id = [0xE2u8; 32];
     let gid = ContextGroupId::from(group_id);
 
@@ -4269,10 +4269,10 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     let new_group_id = [0xCCu8; 32];
     let new_gid = ContextGroupId::from(new_group_id);
 
@@ -4987,15 +4987,15 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    let member_account = AccountId::from(*member_pk);
     // Never added to the namespace — not a member, no capability row.
     let stranger_sk = PrivateKey::random(&mut rng);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    let member_account = enrol_member(&store, &ns_gid, &member_pk);
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
@@ -5125,22 +5125,22 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let admin_sk = PrivateKey::from(admin_sk_bytes);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
-    let owner_account = AccountId::from(*owner_pk);
     let stranger_sk = PrivateKey::random(&mut rng);
     // A namespace member who is neither the subgroup owner, a namespace admin,
     // nor a CAN_DELETE_SUBGROUP holder — a distinct case from a total stranger.
     let plain_member_sk = PrivateKey::random(&mut rng);
     let plain_member_pk = plain_member_sk.public_key();
-    let plain_member_account = AccountId::from(*plain_member_pk);
     let janitor_sk = PrivateKey::random(&mut rng);
     let janitor_pk = janitor_sk.public_key();
-    let janitor_account = AccountId::from(*janitor_pk);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_pk);
+    let plain_member_account = enrol_member(&store, &ns_gid, &plain_member_pk);
+    let janitor_account = enrol_member(&store, &ns_gid, &janitor_pk);
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
@@ -5287,10 +5287,10 @@ fn group_created_with_no_key_skips_retry() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    let admin_account = AccountId::from(*admin_pk);
 
     let ns_id = [0xF0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
