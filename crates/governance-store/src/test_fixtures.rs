@@ -204,7 +204,7 @@ pub(super) fn namespace_genesis_for(
     AccountId,
 ) {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-    let credential = real_join_account(&founder_sk.public_key());
+    let credential = founder_credential(founder_sk);
     let founder = credential.cert.account;
     (
         NamespaceOp::Root(RootOp::NamespaceCreated {
@@ -213,6 +213,41 @@ pub(super) fn namespace_genesis_for(
         }),
         founder,
     )
+}
+
+/// The founder's credential, derived DETERMINISTICALLY from its signing key.
+///
+/// A random root would be fine for building the op, but a test that asserts
+/// "the meta names the founder" then has to receive the account back from
+/// whatever built it. Deriving the account root from the signing key means
+/// [`founder_account_for`] can answer the same question anywhere in the test,
+/// including in blocks that never build a genesis at all.
+fn founder_credential(founder_sk: &PrivateKey) -> Box<JoinAccountCredential> {
+    let root_sk = PrivateKey::from(*founder_sk.public_key());
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    join_account_for(&root_sk, genesis, &founder_sk.public_key(), [0x3E; 32], 0)
+}
+
+/// The account [`namespace_genesis_for`] will establish for this founder.
+pub(super) fn founder_account_for(founder_sk: &PrivateKey) -> AccountId {
+    founder_credential(founder_sk).cert.account
+}
+
+/// A genesis op that DECLARES `founder` while carrying `signer_sk`'s own
+/// credential — the forgery shape.
+///
+/// When the two disagree the apply refuses, which is the point: naming somebody
+/// else as founder no longer needs a separate `signer == founder` check,
+/// because the credential cannot certify a key it was not issued for.
+pub(super) fn namespace_genesis_naming(
+    founder: AccountId,
+    signer_sk: &PrivateKey,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder,
+        account: real_join_account(&signer_sk.public_key()),
+    })
 }
 
 /// An enrolled participant: a deterministic signing key plus the account it

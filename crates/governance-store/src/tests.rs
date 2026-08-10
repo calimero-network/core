@@ -121,10 +121,16 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     let settings = GroupSettingsService::new(&store, gid);
 
     assert!(settings
-        .set_subgroup_visibility(&member_pk, calimero_context_config::VisibilityMode::Restricted)
+        .set_subgroup_visibility(
+            &member_pk,
+            calimero_context_config::VisibilityMode::Restricted
+        )
         .is_err());
     settings
-        .set_subgroup_visibility(&admin_pk, calimero_context_config::VisibilityMode::Restricted)
+        .set_subgroup_visibility(
+            &admin_pk,
+            calimero_context_config::VisibilityMode::Restricted,
+        )
         .unwrap();
     assert_eq!(
         CapabilitiesRepository::new(&store)
@@ -690,7 +696,10 @@ fn nonce_window_round_trips_through_single_key() {
     assert_eq!(reloaded.floor(), 4);
     assert_eq!(reloaded.above().collect::<Vec<_>>(), vec![6, 8]);
     // get_local_gov_nonce reads the floor out of the same authoritative key.
-    assert_eq!(get_local_gov_nonce(&store, &gid, &signer_pk).unwrap(), Some(4));
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &signer_pk).unwrap(),
+        Some(4)
+    );
 }
 
 #[test]
@@ -2922,7 +2931,10 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
         .is_denied(&gid, &denied_b)
         .unwrap());
 
-    assert_eq!(get_local_gov_nonce(&store, &gid, &member_pk).unwrap(), Some(7));
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &member_pk).unwrap(),
+        Some(7)
+    );
     assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
     assert_eq!(
         get_member_context_joins(&store, &gid, &member2)
@@ -5703,10 +5715,7 @@ fn inherited_deny_write_is_hash_neutral() {
 
 /// namespace root ── subgroup, with `admin` administering the subgroup.
 /// Returns `(ns_id, ns_gid, subgroup)`.
-fn reentry_fixture(
-    store: &Store,
-    admin: AccountId,
-) -> ([u8; 32], ContextGroupId, ContextGroupId) {
+fn reentry_fixture(store: &Store, admin: AccountId) -> ([u8; 32], ContextGroupId, ContextGroupId) {
     let ns_id = [0xE0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let subgroup = ContextGroupId::from([0xE1u8; 32]);
@@ -7174,10 +7183,18 @@ mod auto_follow_tests {
         let admin_sk = PrivateKey::random(rng);
         let member_sk = PrivateKey::random(rng);
         MembershipRepository::new(&store)
-            .add_member(&gid, &AccountId::from(*admin_sk.public_key()), GroupMemberRole::Admin)
+            .add_member(
+                &gid,
+                &AccountId::from(*admin_sk.public_key()),
+                GroupMemberRole::Admin,
+            )
             .unwrap();
         MembershipRepository::new(&store)
-            .add_member(&gid, &AccountId::from(*member_sk.public_key()), GroupMemberRole::Member)
+            .add_member(
+                &gid,
+                &AccountId::from(*member_sk.public_key()),
+                GroupMemberRole::Member,
+            )
             .unwrap();
         (store, gid, gid_bytes, admin_sk, member_sk)
     }
@@ -7248,7 +7265,11 @@ mod auto_follow_tests {
         // test would still correctly assert "non-admin, non-self rejected".
         let other_sk = PrivateKey::random(&mut rng);
         MembershipRepository::new(&store)
-            .add_member(&gid, &AccountId::from(*other_sk.public_key()), GroupMemberRole::Member)
+            .add_member(
+                &gid,
+                &AccountId::from(*other_sk.public_key()),
+                GroupMemberRole::Member,
+            )
             .unwrap();
 
         let op = SignedGroupOp::sign(
@@ -8299,8 +8320,12 @@ mod tee_member_removed_event_tests {
             "cascade must deny-list the TEE in the subgroup"
         );
 
-        let (root_pair, sub_pair) =
-            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_account);
+        let (root_pair, sub_pair) = count_removed_events_for_two(
+            &mut rx,
+            ns_gid.to_bytes(),
+            subgroup.to_bytes(),
+            tee_account,
+        );
         assert_eq!(
             sub_pair,
             (1, 1),
@@ -8401,8 +8426,12 @@ mod tee_member_removed_event_tests {
         // … but no per-subgroup membership event fires (no direct row), while
         // the root still emits its pair. `tee_pk`/`subgroup` are unique to this
         // test, so the shared-bus event counts are not contaminated.
-        let (root_pair, sub_pair) =
-            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_account);
+        let (root_pair, sub_pair) = count_removed_events_for_two(
+            &mut rx,
+            ns_gid.to_bytes(),
+            subgroup.to_bytes(),
+            tee_account,
+        );
         assert_eq!(
             sub_pair,
             (0, 0),
@@ -8506,8 +8535,12 @@ mod tee_member_removed_event_tests {
 
         // … but no per-subgroup membership event fires (no direct row), while
         // the root still emits its pair.
-        let (root_pair, sub_pair) =
-            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), tee_account);
+        let (root_pair, sub_pair) = count_removed_events_for_two(
+            &mut rx,
+            ns_gid.to_bytes(),
+            subgroup.to_bytes(),
+            tee_account,
+        );
         assert_eq!(
             sub_pair,
             (0, 0),
@@ -8594,12 +8627,8 @@ mod tee_member_removed_event_tests {
             "regular-member root removal MUST NOT cascade — Restricted wall holds (#2256)"
         );
 
-        let (root_pair, sub_pair) = count_removed_events_for_two(
-            &mut rx,
-            ns_gid.to_bytes(),
-            subgroup.to_bytes(),
-            member,
-        );
+        let (root_pair, sub_pair) =
+            count_removed_events_for_two(&mut rx, ns_gid.to_bytes(), subgroup.to_bytes(), member);
         assert_eq!(
             sub_pair,
             (0, 0),
@@ -9054,10 +9083,11 @@ mod apply_auth_at_cut {
         let op = GroupOp::DefaultCapabilitiesSet {
             capabilities: MemberCapabilities::MANAGE_MEMBERS,
         };
-        let _ = apply_group_op_mutations(&store, &gid, &signer_pk, &op, &CUT, &FixedAuthorizer(false))
-            .expect_err(
-                "at-cut denial must reject DefaultCapabilitiesSet despite a live admin row",
-            );
+        let _ =
+            apply_group_op_mutations(&store, &gid, &signer_pk, &op, &CUT, &FixedAuthorizer(false))
+                .expect_err(
+                    "at-cut denial must reject DefaultCapabilitiesSet despite a live admin row",
+                );
     }
 
     #[test]
@@ -9869,7 +9899,9 @@ mod self_leave_rotation_crypto {
             ns_gid.to_bytes().into(),
             vec![],
             2,
-            calimero_governance_types::GroupOp::GroupKeyRotated { departed: leaver_account },
+            calimero_governance_types::GroupOp::GroupKeyRotated {
+                departed: leaver_account,
+            },
         )
         .expect("sign GroupKeyRotated");
 
@@ -10050,7 +10082,11 @@ mod account_plane_apply {
         // member, and the account is certifiable because its holder signs with
         // the same private half — so the same op now lands.
         MembershipRepository::new(&store)
-            .add_member(&gid, &AccountId::from(*key(9).public_key()), GroupMemberRole::Member)
+            .add_member(
+                &gid,
+                &AccountId::from(*key(9).public_key()),
+                GroupMemberRole::Member,
+            )
             .unwrap();
         sign_apply_local_group_op_borsh(
             &store,
@@ -10083,7 +10119,11 @@ mod account_plane_apply {
         let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
         let account = genesis.account_id();
         MembershipRepository::new(&store)
-            .add_member(&gid, &AccountId::from(*key(9).public_key()), GroupMemberRole::Member)
+            .add_member(
+                &gid,
+                &AccountId::from(*key(9).public_key()),
+                GroupMemberRole::Member,
+            )
             .unwrap();
 
         for seed in [5u8, 6] {
@@ -10175,7 +10215,11 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
         MembershipRepository::new(&store)
-            .add_member(&gid, &AccountId::from(*key(9).public_key()), GroupMemberRole::Member)
+            .add_member(
+                &gid,
+                &AccountId::from(*key(9).public_key()),
+                GroupMemberRole::Member,
+            )
             .unwrap();
 
         // Mallory names Alice's member key as his account's root...
@@ -10377,8 +10421,12 @@ mod account_plane_apply {
 
         let owner_sk = key(9);
         let repo = MembershipRepository::new(&store);
-        repo.add_member(&gid, &AccountId::from(*owner_sk.public_key()), GroupMemberRole::Member)
-            .unwrap();
+        repo.add_member(
+            &gid,
+            &AccountId::from(*owner_sk.public_key()),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
         let owner_root = key(9);
         let genesis = AccountGenesis::new(owner_root.public_key(), [9u8; 16]);
@@ -10462,10 +10510,18 @@ mod account_plane_apply {
         let victim_sk = key(9);
         let attacker_sk = key(7);
         let repo = MembershipRepository::new(&store);
-        repo.add_member(&gid, &AccountId::from(*victim_sk.public_key()), GroupMemberRole::Member)
-            .unwrap();
-        repo.add_member(&gid, &AccountId::from(*attacker_sk.public_key()), GroupMemberRole::Member)
-            .unwrap();
+        repo.add_member(
+            &gid,
+            &AccountId::from(*victim_sk.public_key()),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
+        repo.add_member(
+            &gid,
+            &AccountId::from(*attacker_sk.public_key()),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
         // The victim's device, linked and in force.
         let victim_root = key(9);
@@ -10557,10 +10613,18 @@ mod account_plane_apply {
         let victim_sk = key(9);
         let attacker_sk = key(7);
         let repo = MembershipRepository::new(&store);
-        repo.add_member(&gid, &AccountId::from(*victim_sk.public_key()), GroupMemberRole::Member)
-            .unwrap();
-        repo.add_member(&gid, &AccountId::from(*attacker_sk.public_key()), GroupMemberRole::Member)
-            .unwrap();
+        repo.add_member(
+            &gid,
+            &AccountId::from(*victim_sk.public_key()),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
+        repo.add_member(
+            &gid,
+            &AccountId::from(*attacker_sk.public_key()),
+            GroupMemberRole::Member,
+        )
+        .unwrap();
 
         // The victim enrolls a device, admin-signed so the link itself lands.
         let genesis = AccountGenesis::new(victim_sk.public_key(), [9u8; 16]);

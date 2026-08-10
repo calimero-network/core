@@ -21,8 +21,8 @@ use calimero_store::Store;
 
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
-    namespace_genesis_for, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    founder_account_for, namespace_genesis_for, namespace_genesis_naming, nest_for_test,
+    sample_meta_with_admin, test_group_id, test_meta, test_store,
 };
 use super::super::*;
 
@@ -71,6 +71,7 @@ fn test_signed_invitation(
 
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
+        inviter_account: AccountId::from(*inviter_sk.public_key()),
         group_id,
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
@@ -1427,6 +1428,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // The founder/verifier = the KeyDelivery signer the replica TOFU-trusts.
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
     let founder_account = AccountId::from(*founder);
 
     // The TEE node being admitted.
@@ -1447,7 +1449,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // admin for those ops to apply. ----
     {
         use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-        let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+        let (genesis, _) = namespace_genesis_for(&founder_sk);
         let signed_genesis =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
                 .expect("sign genesis");
@@ -1647,7 +1649,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // informational here; sequencing comes from the head record. The 0 below is
     // an arbitrary placeholder the apply path does not consult for ordering.)
     // This establishes the founding admin authoritatively. ----
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account });
+    let genesis = namespace_genesis_naming(owner_account, &owner_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs NamespaceCreated genesis");
@@ -1749,6 +1751,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
     let attacker_sk = PrivateKey::random(&mut rng);
     let attacker = attacker_sk.public_key();
     let attacker_account = AccountId::from(*attacker);
@@ -1760,7 +1763,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         let ns_gid = ContextGroupId::from(namespace_id);
         let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-        let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+        let (genesis, _) = namespace_genesis_for(&founder_sk);
         let signed =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
         gov.apply_signed_op(&signed)
@@ -1784,7 +1787,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         );
 
         // ---- (b) anti-hijack: a second, forged genesis is a no-op ----
-        let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: attacker_account });
+        let forged = namespace_genesis_naming(attacker_account, &attacker_sk);
         let signed_forged =
             SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 1, forged).unwrap();
         gov.apply_signed_op(&signed_forged)
@@ -1816,7 +1819,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
         assert_eq!(
             meta.admin_identity,
-            PublicKey::from([0u8; 32]),
+            AccountId::from([0u8; 32]),
             "seed writes a placeholder (zero) admin, granting authority to nobody"
         );
         assert!(
@@ -1827,7 +1830,7 @@ fn namespace_created_genesis_on_bare_store_and_anti_hijack() {
         );
 
         // Genesis then lands and fills in the real founder over the placeholder.
-        let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+        let (genesis, _) = namespace_genesis_for(&founder_sk);
         let signed =
             SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis).unwrap();
         gov.apply_signed_op(&signed)
@@ -1903,6 +1906,7 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
     let stray_owner_sk = PrivateKey::random(&mut rng);
     let stray_owner = stray_owner_sk.public_key();
     let stray_owner_account = AccountId::from(*stray_owner);
@@ -1916,12 +1920,11 @@ fn namespace_created_genesis_proceeds_when_only_admin_is_placeholder() {
     // sentinel (no real admin), but owner_identity is a real (non-placeholder)
     // key. The OR-of-both gate would have called this "established" and refused
     // genesis; the authority-field-only gate must not.
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let mut partial = sample_meta_with_admin(founder_account);
-    partial.admin_identity = PublicKey::from([0u8; 32]);
+    partial.admin_identity = AccountId::from([0u8; 32]);
     partial.owner_identity = stray_owner_account;
     MetaRepository::new(&store).save(&ns_gid, &partial).unwrap();
-
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -1962,6 +1965,7 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
     let namespace_id = [0xD9u8; 32];
@@ -1989,7 +1993,7 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
     );
 
     // ---- Genesis lands and must UPGRADE the founder Member row to Admin. ----
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -2009,8 +2013,14 @@ fn namespace_created_genesis_upgrades_seeded_member_founder_to_admin() {
         "founder is admin after genesis"
     );
     let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
-    assert_eq!(meta.admin_identity, founder_account, "admin_identity == founder");
-    assert_eq!(meta.owner_identity, founder_account, "owner_identity == founder");
+    assert_eq!(
+        meta.admin_identity, founder_account,
+        "admin_identity == founder"
+    );
+    assert_eq!(
+        meta.owner_identity, founder_account,
+        "owner_identity == founder"
+    );
 }
 
 #[test]
@@ -2035,6 +2045,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
     let namespace_id = [0xE3u8; 32];
@@ -2057,7 +2068,7 @@ fn namespace_created_genesis_ensures_member_row_for_established_founder() {
 
     // Genesis arrives for the SAME founder. The established gate short-circuits
     // the meta rewrite but must still ensure the Admin member row.
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -2108,6 +2119,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
     let namespace_id = [0xF1u8; 32];
@@ -2131,7 +2143,7 @@ fn namespace_created_genesis_same_founder_rearrival_does_not_downgrade_admin() {
     );
 
     // A parentless same-founder genesis re-arrives (e.g. via sync backfill).
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs NamespaceCreated genesis");
     gov.apply_signed_op(&signed)
@@ -2178,7 +2190,7 @@ fn namespace_created_genesis_signer_must_equal_founder() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Attacker declares the victim as founder but signs with their OWN key.
-    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder: victim_account });
+    let forged = namespace_genesis_naming(victim_account, &attacker_sk);
     let signed =
         SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 0, forged).unwrap();
 
@@ -2226,6 +2238,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
     // Distinct from the `[0xD9u8; 32]` used by
@@ -2269,7 +2282,7 @@ fn namespace_created_with_parents_is_rejected_as_non_genesis() {
     );
 
     // Sanity: the REAL genesis path (no parents, same founder) still applies.
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis)
@@ -2305,6 +2318,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
     let namespace_id = [0xDBu8; 32];
@@ -2347,7 +2361,7 @@ fn namespace_created_parented_on_bare_ns_errs_and_does_not_advance_head() {
 
     // Consequence: a subsequent PARENTLESS genesis still applies cleanly and
     // establishes the founder (it would be impossible if the head had advanced).
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis).expect(
@@ -2379,6 +2393,7 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
 
     let store = test_store();
     let namespace_id = [0xC4u8; 32];
@@ -2386,7 +2401,7 @@ fn namespace_created_parented_on_established_namespace_is_noop_not_err() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     // Establish the namespace via a clean parentless genesis.
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 1, genesis).unwrap();
     gov.apply_signed_op(&signed_genesis)
@@ -2439,8 +2454,10 @@ fn namespace_created_parented_same_founder_on_established_ns_does_no_repair() {
 
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
+    let founder_account = AccountId::from(*founder_sk.public_key());
     let founder = founder_sk.public_key();
     let stray_owner = PrivateKey::random(&mut rng).public_key();
+    let stray_owner_account = AccountId::from(*stray_owner);
 
     let store = test_store();
     let namespace_id = [0xC6u8; 32];
@@ -2528,7 +2545,9 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     let mut rng = OsRng;
     let founder_sk = PrivateKey::random(&mut rng);
     let founder = founder_sk.public_key();
+    let founder_account = founder_account_for(&founder_sk);
     let stray_owner = PrivateKey::random(&mut rng).public_key();
+    let stray_owner_account = AccountId::from(*stray_owner);
 
     let store = test_store();
     let namespace_id = [0xC5u8; 32];
@@ -2546,14 +2565,17 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
         .unwrap();
 
     // Same-founder genesis re-arrives (parentless idempotent re-arrival).
-    let (genesis, _genesis_account) = namespace_genesis_for(&founder_sk);
+    let (genesis, _) = namespace_genesis_for(&founder_sk);
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
         .expect("founder signs idempotent genesis");
     gov.apply_signed_op(&signed)
         .expect("idempotent same-founder re-arrival applies as a no-op-with-repair");
 
     let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
-    assert_eq!(meta.admin_identity, founder_account, "admin stays the founder");
+    assert_eq!(
+        meta.admin_identity, founder_account,
+        "admin stays the founder"
+    );
     assert_eq!(
         meta.owner_identity, founder_account,
         "#602: same-founder re-arrival repairs the diverged owner_identity to the founder"
@@ -2640,9 +2662,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     // signer (attacker) != declared founder (real_founder) trips the
     // SignerNotFounder gate inside the genesis handler — a real apply error
     // raised AFTER `apply_root_op` is entered but BEFORE `advance_dag_head`.
-    let bad_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: real_founder_account,
-    });
+    let bad_genesis = namespace_genesis_naming(real_founder_account, &attacker_sk);
     let signed_bad =
         SignedNamespaceOp::sign(&attacker_sk, namespace_id.into(), vec![], 1, bad_genesis).unwrap();
 
@@ -2666,9 +2686,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
 
     // A clean, parentless retry by the REAL founder now applies — proving the
     // namespace is not wedged after the failed attempt.
-    let good_genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: real_founder_account,
-    });
+    let good_genesis = namespace_genesis_naming(real_founder_account, &real_founder_sk);
     let signed_good = SignedNamespaceOp::sign(
         &real_founder_sk,
         namespace_id.into(),
@@ -3898,7 +3916,7 @@ fn build_rotation_op(
     store: &Store,
     ns_gid: ContextGroupId,
     signer_sk: &calimero_primitives::identity::PrivateKey,
-    removed_pk: &calimero_primitives::identity::PublicKey,
+    removed_account: &calimero_account::AccountId,
     old_key: &[u8; 32],
     old_key_id: [u8; 32],
     new_group_key: &[u8; 32],
@@ -3953,7 +3971,7 @@ fn rotation_apply_stores_key_for_authorized_admin() {
         &store,
         ns_gid,
         &admin_sk,
-        &removed_pk,
+        &AccountId::from(*removed_pk),
         &old_key,
         old_key_id,
         &new_group_key,
@@ -3996,7 +4014,7 @@ fn rotation_apply_rejects_new_key_id_mismatch() {
         &store,
         ns_gid,
         &admin_sk,
-        &removed_pk,
+        &AccountId::from(*removed_pk),
         &old_key,
         old_key_id,
         &new_group_key,
@@ -4029,7 +4047,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
         &store,
         ns_gid,
         &local_sk,
-        &removed_pk,
+        &AccountId::from(*removed_pk),
         &old_key,
         old_key_id,
         &new_group_key,
@@ -5939,7 +5957,11 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
         .save(&ns_gid, &sample_meta_with_admin(responder_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns_gid, &AccountId::from(*member_sk.public_key()), GroupMemberRole::Member)
+        .add_member(
+            &ns_gid,
+            &AccountId::from(*member_sk.public_key()),
+            GroupMemberRole::Member,
+        )
         .unwrap();
     let group_key = [0x6Eu8; 32];
     GroupKeyring::new(&store, ns_gid)
@@ -6455,6 +6477,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let mut rng = OsRng;
 
     let owner_sk = PrivateKey::random(&mut rng);
+    let owner_account = AccountId::from(*owner_sk.public_key());
     let owner = owner_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner = joiner_sk.public_key();
@@ -6469,7 +6492,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         namespace_id.into(),
         vec![],
         0,
-        NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account }),
+        namespace_genesis_naming(owner_account, &owner_sk),
     )
     .expect("owner signs genesis");
     gov.apply_signed_op(&signed_genesis)
@@ -6531,18 +6554,20 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let mut rng = OsRng;
 
     let owner_sk = PrivateKey::random(&mut rng);
+    let owner_account = AccountId::from(*owner_sk.public_key());
     let owner = owner_sk.public_key();
     // A namespace member with NO admin row and NO capability row: the live
     // resolver denies them outright. They stand for a signer whose
     // CAN_CREATE_SUBGROUP grant this replica has not folded yet.
     let creator_sk = PrivateKey::random(&mut rng);
+    let creator_account = AccountId::from(*creator_sk.public_key());
     let creator = creator_sk.public_key();
 
     let namespace_id = [0xE1u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account });
+    let genesis = namespace_genesis_naming(owner_account, &owner_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs genesis");
@@ -6600,13 +6625,14 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     // The owner IS a live admin — the live resolver would wave this through.
     // At the op's cut, though, the signer had no authority, so it must be rejected.
     let owner_sk = PrivateKey::random(&mut rng);
+    let owner_account = AccountId::from(*owner_sk.public_key());
     let owner = owner_sk.public_key();
 
     let namespace_id = [0xE3u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated { founder: owner_account });
+    let genesis = namespace_genesis_naming(owner_account, &owner_sk);
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs genesis");
@@ -6675,6 +6701,7 @@ fn apply_open_join_with(
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     let joiner = joiner_sk.public_key();
+    let joiner_account = AccountId::from(*joiner);
     let gov = NamespaceGovernance::new(store, namespace_id.into());
     let head = gov.read_head_record().expect("read head");
     let join = SignedNamespaceOp::sign(
@@ -6703,7 +6730,7 @@ fn namespace_with_open_subgroup(
     store: &Store,
     namespace_id: [u8; 32],
     subgroup_id: [u8; 32],
-    joiner: &PublicKey,
+    joiner_account: &AccountId,
 ) {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
@@ -6735,7 +6762,7 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
 
     let account = crate::test_fixtures::real_join_account(&joiner);
     let account_id = account.cert.account;
@@ -6767,8 +6794,9 @@ fn a_refused_credential_leaves_the_membership_intact() {
     let subgroup_id = [0xD2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+    let joiner_account = AccountId::from(*joiner_sk.public_key());
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
 
     // Structurally well-formed, cryptographically filler — `apply_link` refuses it.
     apply_open_join_with(
@@ -6805,7 +6833,7 @@ fn a_credential_certified_for_another_key_is_refused() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
 
     // A credential lifted from somebody else's join: perfectly valid, certified
     // for a key that is not the joiner's. These ops are cleartext, so observing
@@ -6842,7 +6870,7 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
 
     let (root_sk, genesis) = crate::test_fixtures::test_account_root();
     let device = [0x7C; 32];
@@ -6998,6 +7026,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         .expect("store the group key");
 
     let replica = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    let replica_account = AccountId::from(*replica);
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
     let victim_account = stolen.cert.account;
