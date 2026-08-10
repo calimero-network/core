@@ -216,6 +216,12 @@ fn credential_binds_the_member(op: &RootOp) -> bool {
         RootOp::MemberJoinedViaTeeAttestation {
             member, account, ..
         } => join_credential_certifies(member, &account.genesis, &account.chain, &account.cert),
+        // Genesis binds the FOUNDER's device, and the founder names an account
+        // like any other member — so the same "does this credential speak for
+        // the principal the op names" question applies unchanged.
+        RootOp::NamespaceCreated { founder, account } => {
+            join_credential_binds(founder, &account.genesis, &account.chain, &account.cert)
+        }
         _ => false,
     }
 }
@@ -502,6 +508,25 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
         }),
         RootOp::GroupDeleted { root_group_id, .. } => Some(OpPayload::SubgroupDeleted {
             scope: ScopeId::from(root_group_id.to_bytes()),
+        }),
+        // Genesis is where the founder's device becomes known, and it is the ONLY
+        // place: no join op ever admits the founder. Folding it as a Noop — which
+        // is what an unhandled arm does — leaves this plane unable to turn the
+        // founder's signing key into the account the live rows are keyed by, so
+        // every op the founder later signs is judged "not admin" at the cut and
+        // rejected by every receiver while the publisher accepts it.
+        //
+        // The admin half needs no arm: the root's `admin_identity` reaches the
+        // cut through `auth_cut_context`, which reads it from the root meta that
+        // genesis wrote. Only the device link is missing here.
+        RootOp::NamespaceCreated { account, .. } => Some(if credential_binds_the_member(op) {
+            OpPayload::DeviceLinked {
+                genesis: account.genesis,
+                chain: account.chain.clone(),
+                cert: account.cert,
+            }
+        } else {
+            OpPayload::Noop
         }),
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
@@ -1313,6 +1338,60 @@ mod tests {
             Some(OpPayload::SubgroupDeleted {
                 scope: ScopeId::from(gid),
             })
+        );
+    }
+
+    /// Genesis must fold the founder's DEVICE, not a Noop.
+    ///
+    /// It is the only op that ever binds the founder — no join admits it — so if
+    /// this plane does not learn the link here it can never turn the founder's
+    /// signing key into the account the live rows are keyed by. The at-cut admin
+    /// check then answers "not admin" for the namespace's own founder, and every
+    /// receiver rejects ops the publisher accepted: a split that no later op
+    /// repairs. This regressed every multi-node group scenario at once.
+    #[test]
+    fn namespace_created_folds_the_founders_device_link() {
+        let founder_pk = PublicKey::from([0x21u8; 32]);
+        let credential = real_join_account_for(founder_pk, 0x21);
+        let founder = credential.cert.account;
+
+        assert_eq!(
+            payload_from_root_op(
+                &RootOp::NamespaceCreated {
+                    founder,
+                    account: credential.clone(),
+                },
+                founder_pk
+            ),
+            Some(OpPayload::DeviceLinked {
+                genesis: credential.genesis,
+                chain: credential.chain.clone(),
+                cert: credential.cert,
+            }),
+            "genesis is the only place the founder's device is bound"
+        );
+    }
+
+    /// A genesis whose credential is for somebody else binds nothing.
+    ///
+    /// Same rule as the join arms: the credential has to speak for the principal
+    /// the op names, or the device half is not this founder's to record.
+    #[test]
+    fn namespace_created_with_a_foreign_credential_folds_no_device() {
+        let founder_pk = PublicKey::from([0x22u8; 32]);
+        let stranger = real_join_account_for(PublicKey::from([0x23u8; 32]), 0x23);
+
+        assert_eq!(
+            payload_from_root_op(
+                &RootOp::NamespaceCreated {
+                    // The account the op names is NOT the one the credential
+                    // certifies, so the pair proves nothing.
+                    founder: real_join_account_for(founder_pk, 0x22).cert.account,
+                    account: stranger,
+                },
+                founder_pk
+            ),
+            Some(OpPayload::Noop)
         );
     }
 
