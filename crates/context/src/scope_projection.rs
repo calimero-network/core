@@ -118,14 +118,31 @@ fn account_for_author(
     key: &PublicKey,
     root: Option<(ContextGroupId, AccountId)>,
 ) -> AccountId {
+    // An explicit binding wins over the derived id. A folded `DeviceLinked` is a
+    // signed statement about THIS key; `legacy_account_id` is a guess that names a
+    // real principal nowhere now that the live plane keys every row by account.
+    //
+    // This order is the reverse of what it was, and the reversal is the point.
+    // While membership was key-keyed, preferring the binding made a member who
+    // enrolled a device resolve to an account the rows did not know, and the
+    // member vanished — so the derived id had to win. Keying the rows by account
+    // removes that hazard and introduces the mirror one: stale key-derived ids
+    // still enter this view (`SubgroupCreated.admin` folds one), and letting them
+    // win makes the founder stop being admin of its own namespace the moment it
+    // creates a subgroup. Every peer then refuses what the founder signs while
+    // the founder accepts it — which is a `scope_root` split, not a hiccup.
+    if let Some(binding) = view
+        .devices
+        .values()
+        .find(|binding| binding.sign_pk == *key)
+    {
+        return binding.account;
+    }
     let own = legacy_account_id(key);
     if view_knows_author(view, &own, root) {
         return own;
     }
-    view.devices
-        .values()
-        .find(|binding| binding.sign_pk == *key)
-        .map_or(own, |binding| binding.account)
+    own
 }
 
 /// Does this view carry any authority for `account` in its own name?

@@ -946,3 +946,80 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         "and its direct root membership too"
     );
 }
+
+/// The founder must be an admin AT THE CUT on a node that has only synced.
+///
+/// A receiver learns everything from the ops it applies. Genesis is the only op
+/// that names the founder, so if the projection cannot answer "yes" here, every
+/// op the founder later signs is refused on every peer while the founder's own
+/// node accepts them all — the exact split the e2e cascade scenarios hit, where
+/// node 1 applied the upgrade and node 2 stayed on the old schema forever.
+#[test]
+fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
+    let store = store();
+    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_key = founder_sk.public_key();
+    let ns = ContextGroupId::from(*founder_key);
+
+    let credential = calimero_context::test_support::credential(&founder_key);
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: credential.cert.account,
+        account: credential,
+    });
+    let signed = SignedNamespaceOp::sign(&founder_sk, (*founder_key).into(), vec![], 0, genesis)
+        .expect("sign genesis");
+
+    // Live half: exactly what a syncing receiver does with the op.
+    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+        .apply_signed_op(&signed)
+        .expect("receiver applies genesis");
+
+    // Projection half: the same op folded, which is what the at-cut gate reads.
+    let mut proj = ScopeProjections::new();
+    let genesis_id = [0xE0u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        None,
+        genesis_id,
+        hlc(0),
+        &[],
+    ));
+
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[genesis_id]),
+        Some(true),
+        "the founder's own key must resolve to its account and be admin at the \
+         genesis cut — otherwise peers refuse everything it signs"
+    );
+
+    // ...and it must STAY true once the founder creates a subgroup. This is the
+    // cut every later op cites, so an answer that only holds at genesis is an
+    // answer that holds nowhere in practice.
+    let subgroup = ContextGroupId::from([0xE1u8; 32]);
+    let created = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: subgroup.to_bytes().into(),
+            parent_id: (*founder_key).into(),
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+    let created_id = [0xE1u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &created,
+        None,
+        created_id,
+        hlc(1),
+        &[genesis_id],
+    ));
+
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[created_id]),
+        Some(true),
+        "the founder must still be admin of the ROOT after creating a subgroup"
+    );
+}
