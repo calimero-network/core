@@ -4481,7 +4481,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         NamespaceOp::Root(RootOp::MemberJoined {
             member,
             signed_invitation,
-            account: crate::test_fixtures::test_join_account(),
+            account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
         }),
     )
     .unwrap();

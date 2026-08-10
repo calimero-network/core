@@ -190,10 +190,12 @@ async fn sign_apply_and_publish_returns_the_signed_op() {
 
     let (store, node_client, ack_router, ns_id, sk, _tmp) = namespace_publish_fixture().await;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        member: AccountId::from(*sk.public_key()),
+        // The member and the credential name the same account, which the apply
+        // requires: the signer has to hold a credential for the member it names.
+        member: crate::test_fixtures::account_for(&sk.public_key()),
         signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
         joined_at: 0,
-        account: crate::test_fixtures::test_join_account(),
+        account: crate::test_fixtures::real_join_account(&sk.public_key()),
     });
 
     let (report, signed) = NamespaceGovernance::new(&store, ns_id)
@@ -6921,17 +6923,15 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(
-        &store,
-        namespace_id,
-        subgroup_id,
-        &crate::test_fixtures::account_for(&joiner),
-    );
-
+    // The credential comes first: it decides which account the joiner speaks
+    // for, and the anchor membership has to be seeded for THAT account. This one
+    // pins its own device id rather than deriving it, which is the point of the
+    // test — the same device arriving twice must be reused, not refused.
     let (root_sk, genesis) = crate::test_fixtures::test_account_root();
     let device = [0x7C; 32];
     let first = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
     let account_id = first.cert.account;
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &account_id);
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, first)
         .expect("first join applies");
 
@@ -6942,8 +6942,14 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, again)
         .expect("rejoin applies");
 
-    let bindings = crate::AccountBindingRepository::new(&store);
-    let live = bindings.live_bindings(&ns_gid).expect("read bindings");
+    // This joiner's rows only — the namespace admin is enrolled here too, and
+    // this assertion is about how many devices ONE account ended up with.
+    let live: Vec<_> = crate::AccountBindingRepository::new(&store)
+        .live_bindings(&ns_gid)
+        .expect("read bindings")
+        .into_iter()
+        .filter(|b| b.account == account_id)
+        .collect();
     assert_eq!(
         live.len(),
         1,
