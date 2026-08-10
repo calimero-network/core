@@ -7216,3 +7216,82 @@ fn a_revoked_device_resolves_to_nothing() {
         "a revoked device names no account, so a grant to it cannot be minted"
     );
 }
+
+/// Regression: after genesis, the founder's own signing key MUST resolve to an
+/// account in its namespace. Subgroup creation reads exactly this — it refuses
+/// to name a principal it cannot resolve — so a miss here is a node unable to
+/// create a subgroup in the namespace it just founded.
+#[test]
+fn founder_resolves_to_an_account_in_its_own_namespace_after_genesis() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let store = test_store();
+    let founder_sk = PrivateKey::from([0x71u8; 32]);
+    let founder = founder_sk.public_key();
+    let namespace_id = *founder;
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let (genesis, expected_account) = namespace_genesis_for(&founder_sk);
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
+        .expect("sign genesis");
+    gov.apply_signed_op(&signed).expect("apply genesis");
+
+    let resolved = crate::member_account_in_namespace(&store, &ns_gid, &founder)
+        .expect("resolver must not error");
+    assert_eq!(
+        resolved,
+        Some(expected_account),
+        "the founder's signing key must resolve to the account genesis bound it to"
+    );
+
+    // ...and that account must be the namespace admin, which is the other half
+    // of what subgroup creation checks.
+    assert!(
+        MembershipRepository::new(&store)
+            .is_admin(&ns_gid, &expected_account)
+            .expect("is_admin must not error"),
+        "the founder's account must be admin of the namespace it founded"
+    );
+}
+
+/// Regression, and the shape the founding node actually hits: `create_group`
+/// writes the namespace's meta and Admin member rows locally BEFORE it signs
+/// and applies the genesis op, so on the founder's own node the genesis apply
+/// lands on an ALREADY-established namespace. That path must still record the
+/// founder's account binding — it is the only node that would otherwise never
+/// have one, because every peer receives the same op on a clean store and takes
+/// the establish path. Without it the founder cannot resolve its own key to an
+/// account and cannot create a subgroup in the namespace it just founded.
+#[test]
+fn founder_resolves_when_genesis_lands_on_locally_prewritten_rows() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let store = test_store();
+    let founder_sk = PrivateKey::from([0x72u8; 32]);
+    let founder = founder_sk.public_key();
+    let namespace_id = *founder;
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let (genesis, expected_account) = namespace_genesis_for(&founder_sk);
+
+    // What `create_group` does locally before publishing the genesis op.
+    let meta = sample_meta_with_admin(expected_account);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &meta)
+        .expect("pre-write meta");
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &expected_account, GroupMemberRole::Admin)
+        .expect("pre-write admin row");
+
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, genesis)
+        .expect("sign genesis");
+    gov.apply_signed_op(&signed).expect("apply genesis");
+
+    assert_eq!(
+        crate::member_account_in_namespace(&store, &ns_gid, &founder).expect("resolver"),
+        Some(expected_account),
+        "genesis landing on the founder's own pre-written rows must still bind its account"
+    );
+}

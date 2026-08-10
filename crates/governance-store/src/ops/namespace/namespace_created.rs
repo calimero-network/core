@@ -79,8 +79,57 @@ use crate::{
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::GroupMemberRole;
+use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+
+/// Record the founder's device->account binding, and the endorser row naming
+/// the founder itself.
+///
+/// The founder is the one member no join op ever admits, so genesis is the only
+/// place its binding can be written. Without it the namespace's own admin is the
+/// single principal whose signing key resolves to no account, and every gate it
+/// later signs refuses it.
+///
+/// The endorser row names the founder itself. That is not circular: an endorser
+/// must be a member, and the founder's Admin row is written before this runs.
+/// Genesis authority is what vouches here, and genesis has no earlier member to
+/// defer to.
+///
+/// Idempotent, so both the establish branch and the same-founder re-arrival
+/// branch call it — the founding node reaches genesis apply with its own meta
+/// and member rows already written locally, which routes it down the re-arrival
+/// branch. Skipping the binding there would leave the founder unable to resolve
+/// its own key on the one node that must: every peer applies the same op on a
+/// clean store and takes the establish path.
+fn bind_founder(
+    store: &Store,
+    ns_gid: &ContextGroupId,
+    namespace_id: &NamespaceId,
+    founder: AccountId,
+    account: &calimero_context_client::local_governance::JoinAccountCredential,
+) -> EyreResult<()> {
+    let bindings = crate::AccountBindingRepository::new(store);
+    let outcome = bindings.apply_link(ns_gid, &account.genesis, &account.chain, &account.cert)?;
+    if !outcome
+        .as_ref()
+        .err()
+        .is_some_and(crate::BindingRejected::is_permanent)
+    {
+        bindings.record_endorser(ns_gid, account.cert.account, &founder)?;
+    }
+    if let Err(rejected) = outcome {
+        tracing::warn!(
+            namespace_id = %hex::encode(namespace_id.as_bytes()),
+            ?founder,
+            ?rejected,
+            "namespace genesis: the founder's device credential was refused; the \
+             namespace is established but its founder has no binding"
+        );
+    }
+    Ok(())
+}
 
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
@@ -223,6 +272,7 @@ pub(crate) fn apply(
                         MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                     )?;
                 }
+                bind_founder(store, &ns_gid, &namespace_id, founder, account)?;
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),
                     %founder,
@@ -398,24 +448,7 @@ pub(crate) fn apply(
     // endorser must be a member, and the Admin row written immediately above is
     // exactly that. Genesis authority is what vouches here, and genesis has no
     // earlier member to defer to.
-    let bindings = crate::AccountBindingRepository::new(store);
-    let outcome = bindings.apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)?;
-    if !outcome
-        .as_ref()
-        .err()
-        .is_some_and(crate::BindingRejected::is_permanent)
-    {
-        bindings.record_endorser(&ns_gid, account.cert.account, &founder)?;
-    }
-    if let Err(rejected) = outcome {
-        tracing::warn!(
-            namespace_id = %hex::encode(namespace_id.as_bytes()),
-            ?founder,
-            ?rejected,
-            "namespace genesis: the founder's device credential was refused; the \
-             namespace is established but its founder has no binding"
-        );
-    }
+    bind_founder(store, &ns_gid, &namespace_id, founder, account)?;
 
     // ---- Default caps: CAN_JOIN_OPEN_SUBGROUPS. ----
     // Mirrors the bootstrap seed and the owner-side `store_group_meta`
