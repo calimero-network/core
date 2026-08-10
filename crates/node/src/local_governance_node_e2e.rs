@@ -435,6 +435,7 @@ async fn create_restricted_subgroup(
             package: "test-package".into(),
             version: "0.0.0".into(),
             signer_id: "test-signer".into(),
+            state_version: 0,
         },
     );
     node.store
@@ -532,6 +533,7 @@ async fn create_born_open_subgroup(
             package: "test-package".into(),
             version: "0.0.0".into(),
             signer_id: "test-signer".into(),
+            state_version: 0,
         },
     );
     node.store
@@ -854,6 +856,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
             package: "stub-package".into(),
             version: "0.0.0".into(),
             signer_id: "stub-signer".into(),
+            state_version: 0,
         },
     );
     node.store
@@ -1096,6 +1099,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
             package: "stub-package".into(),
             version: "0.0.0".into(),
             signer_id: "stub-signer".into(),
+            state_version: 0,
         },
     );
     node.store
@@ -1482,6 +1486,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
             package: "stub-package".into(),
             version: "0.0.0".into(),
             signer_id: "stub-signer".into(),
+            state_version: 0,
         },
     );
     node.store
@@ -2593,6 +2598,7 @@ async fn drive_open_auto_follow_replication(
             package: "stub-package".into(),
             version: "0.0.0".into(),
             signer_id: "stub-signer".into(),
+            state_version: 0,
         },
     );
     node.store

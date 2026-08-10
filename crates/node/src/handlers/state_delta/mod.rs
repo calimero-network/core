@@ -2666,6 +2666,7 @@ mod tests {
                     package: "".into(),
                     version: "".into(),
                     signer_id: "".into(),
+                    state_version: 0,
                 },
             );
             let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);

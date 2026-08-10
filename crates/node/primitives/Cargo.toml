@@ -38,6 +38,7 @@ calimero-network-primitives.workspace = true
 calimero-storage.workspace = true
 calimero-store.workspace = true
 calimero-utils-actix.workspace = true
+calimero-wasm-abi.workspace = true
 flate2.workspace = true
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }

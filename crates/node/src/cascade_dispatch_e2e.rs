@@ -173,6 +173,7 @@ fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32], 
             package: "cascade-test-pkg".to_owned().into_boxed_str(),
             version: version.to_owned().into_boxed_str(),
             signer_id: "cascade-test-signer".to_owned().into_boxed_str(),
+            state_version: 0,
         },
     );
     let mut handle = store.handle();

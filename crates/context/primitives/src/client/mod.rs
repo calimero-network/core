@@ -2747,6 +2747,7 @@ mod get_context_version_tests {
                 package: "com.test.app".into(),
                 version: "2.1.0".into(),
                 signer_id: "signer".into(),
+                state_version: 0,
             },
         );
         let cid = ContextId::from([0x07; 32]);

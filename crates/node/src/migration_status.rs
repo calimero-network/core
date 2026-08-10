@@ -1326,6 +1326,7 @@ mod tests {
                 package: "loaded-test-pkg".to_owned().into_boxed_str(),
                 version: version.to_owned().into_boxed_str(),
                 signer_id: "loaded-test-signer".to_owned().into_boxed_str(),
+                state_version: 0,
             },
         );
         let mut handle = store.handle();

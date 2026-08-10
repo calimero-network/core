@@ -28,6 +28,9 @@ pub struct ApplicationMeta {
     /// Named services within this application. Empty for single-service apps.
     /// When non-empty, `bytecode`/`compiled` above point to the first (default) service.
     pub services: Vec<ServiceMeta>,
+    /// Max ABI state version across this application's services, `0` when none
+    /// exposes a readable ABI. What the migration rollup compares, not `version`.
+    pub state_version: u32,
 }
 
 // Custom deserialization: handle backwards compatibility for old data
@@ -43,8 +46,8 @@ impl BorshDeserialize for ApplicationMeta {
         let version = Box::<str>::deserialize_reader(reader)?;
         let signer_id = Box::<str>::deserialize_reader(reader)?;
 
-        // `services` was added after the initial schema. Old records end after `signer_id`.
-        // Try to read it; if there's no more data, default to an empty Vec.
+        // `services` was added after the initial schema, so old records end after
+        // `signer_id`. Try to read it; if there's no more data, default to empty.
         let services = match Vec::<ServiceMeta>::deserialize_reader(reader) {
             Ok(v) => v,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Vec::new(),
@@ -57,6 +60,8 @@ impl BorshDeserialize for ApplicationMeta {
             Err(e) => return Err(e),
         };
 
+        let state_version = u32::deserialize_reader(reader)?;
+
         Ok(Self {
             bytecode,
             size,
@@ -67,16 +72,19 @@ impl BorshDeserialize for ApplicationMeta {
             version,
             signer_id,
             services,
+            state_version,
         })
     }
 }
 
-/// Package-manifest fields of an [`ApplicationMeta`] (name, version, signer).
+/// Identifying fields of an [`ApplicationMeta`]: who published it, what semver
+/// it claims, and what state version its ABI declares.
 #[derive(Debug, Clone)]
 pub struct PackageInfo {
     pub package: Box<str>,
     pub version: Box<str>,
     pub signer_id: Box<str>,
+    pub state_version: u32,
 }
 
 impl ApplicationMeta {
@@ -93,6 +101,7 @@ impl ApplicationMeta {
             package,
             version,
             signer_id,
+            state_version,
         } = info;
         Self {
             bytecode,
@@ -104,6 +113,7 @@ impl ApplicationMeta {
             version,
             signer_id,
             services: Vec::new(),
+            state_version,
         }
     }
 
@@ -153,4 +163,40 @@ pub struct ApplicationPreviousBlob {
 impl PredefinedEntry for key::ApplicationPreviousBlob {
     type Codec = Borsh;
     type DataType<'a> = ApplicationPreviousBlob;
+}
+
+#[cfg(test)]
+mod application_meta_tests {
+    use borsh::BorshDeserialize;
+    use calimero_primitives::blobs::BlobId;
+
+    use super::ApplicationMeta;
+    use crate::key;
+
+    // `state_version` is read by the hand-written reader, not derived, so the
+    // round trip is what proves the two halves agree.
+    #[test]
+    fn application_meta_roundtrips_state_version() {
+        let meta = ApplicationMeta {
+            bytecode: key::BlobMeta::new(BlobId::from([1; 32])),
+            size: 10,
+            source: "test".into(),
+            metadata: Box::new([]),
+            compiled: key::BlobMeta::new(BlobId::from([0; 32])),
+            package: "com.example.app".into(),
+            version: "10.1.3".into(),
+            signer_id: "did:key:zTest".into(),
+            services: Vec::new(),
+            state_version: 2,
+        };
+
+        let bytes = borsh::to_vec(&meta).expect("serialize");
+        let back = ApplicationMeta::try_from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(
+            back.state_version, 2,
+            "state_version must survive a round trip"
+        );
+        assert_eq!(back.version.as_ref(), "10.1.3");
+    }
 }
