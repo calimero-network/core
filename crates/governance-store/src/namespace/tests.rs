@@ -6600,11 +6600,14 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     // resolver denies them outright. They stand for a signer whose
     // CAN_CREATE_SUBGROUP grant this replica has not folded yet.
     let creator_sk = PrivateKey::random(&mut rng);
-    let creator_account = AccountId::from(*creator_sk.public_key());
     let _creator = creator_sk.public_key();
 
     let namespace_id = [0xE1u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
+    // Bound but NOT a member — which is precisely this scenario. A binding is
+    // what makes the creator nameable at all; membership is the separate
+    // question the live rows answer "no" to and the cut answers "yes" to.
+    let creator_account = enrol_member(&store, &ns_gid, &creator_sk.public_key());
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     let genesis = namespace_genesis_for(&owner_sk).0;

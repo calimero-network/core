@@ -9302,17 +9302,21 @@ mod undecidable_authority_parks {
         }
     }
 
-    fn group_with_live_admin(signer: &AccountId) -> (Store, ContextGroupId) {
+    /// Takes the signer's KEY, not its account: the gates under test resolve a
+    /// signing key through the bindings, so the store has to hold one. The
+    /// account it returns is the one that enrolment established.
+    fn group_with_live_admin(signer_pk: &PublicKey) -> (Store, ContextGroupId, AccountId) {
         let store = test_store();
         let gid = test_group_id();
+        let signer = enrol_member(&store, &gid, signer_pk);
         let mut meta = test_meta();
-        meta.admin_identity = *signer;
-        meta.owner_identity = *signer;
+        meta.admin_identity = signer;
+        meta.owner_identity = signer;
         MetaRepository::new(&store).save(&gid, &meta).unwrap();
         MembershipRepository::new(&store)
-            .add_member(&gid, signer, GroupMemberRole::Admin)
+            .add_member(&gid, &signer, GroupMemberRole::Admin)
             .unwrap();
-        (store, gid)
+        (store, gid, signer)
     }
 
     fn group_with_live_stranger() -> (Store, ContextGroupId) {
@@ -9343,7 +9347,7 @@ mod undecidable_authority_parks {
         // (resolving at the real cut) might reject.
         let signer_pk = PublicKey::from([0x11; 32]);
         let signer = AccountId::from(*signer_pk);
-        let (store, gid) = group_with_live_admin(&signer);
+        let (store, gid, signer) = group_with_live_admin(&signer_pk);
 
         let err = apply_group_op_mutations(
             &store,
@@ -9397,7 +9401,7 @@ mod undecidable_authority_parks {
         let signer_pk = PublicKey::from([0x11; 32]);
         let signer = AccountId::from(*signer_pk);
         let (store_a, gid_a) = group_with_live_stranger(); // would have REJECTED
-        let (store_b, gid_b) = group_with_live_admin(&signer); // would have APPLIED
+        let (store_b, gid_b, _signer_b) = group_with_live_admin(&signer_pk); // would have APPLIED
 
         for (store, gid, label) in [
             (&store_a, &gid_a, "revoke-folded replica"),
@@ -9446,7 +9450,7 @@ mod undecidable_authority_parks {
         // 2. No apply-auth context (empty cut + live-fallback authorizer) — the emit
         //    path, the local apply, tests. Abstention here means "no cut", so live
         //    decides and a live admin is authorized. This must NOT become undecidable.
-        let (store, gid) = group_with_live_admin(&signer);
+        let (store, gid, signer) = group_with_live_admin(&signer_pk);
         let (handled, _, _) = apply_group_op_mutations(
             &store,
             &gid,
