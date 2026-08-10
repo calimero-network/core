@@ -246,7 +246,7 @@ mod tests {
             name: Some(name.to_owned()),
             data: std::collections::BTreeMap::new(),
             updated_at: 1_700_000_000,
-            updated_by: AccountId::from([0x01; 32]),
+            updated_by: PublicKey::from([0x01; 32]),
         }
     }
 

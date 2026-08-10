@@ -345,6 +345,7 @@ pub fn find_local_signing_identities(
 
 #[cfg(test)]
 mod tests {
+    use calimero_account::AccountId;
     use std::sync::Arc;
 
     use calimero_primitives::context::ContextId;
@@ -428,12 +429,22 @@ mod tests {
     /// under an `Open` subgroup. Returns (root, sub, context, member).
     fn seed_inherited_context_open(
         store: &Store,
-    ) -> (ContextGroupId, ContextGroupId, ContextId, PublicKey) {
+    ) -> (
+        ContextGroupId,
+        ContextGroupId,
+        ContextId,
+        AccountId,
+        PublicKey,
+    ) {
         let root = ContextGroupId::from([0xB0; 32]);
         let sub = ContextGroupId::from([0xB1; 32]);
         let context = ContextId::from([0xB2; 32]);
-        let admin = PublicKey::from([0xEE; 32]);
-        let tee = PublicKey::from([0x01; 32]);
+        let admin = AccountId::from([0xEE; 32]);
+        // Two spellings of the same participant: the rows below name its
+        // account, the authorization gate takes the key it signs with, and the
+        // binding is what ties them.
+        let tee_pk = PublicKey::from([0x01; 32]);
+        let tee = crate::test_fixtures::enrol_member(store, &root, &tee_pk);
 
         // Distinct admin so the member is never short-circuited by the
         // `is_admin` creator carve-out in the function under test.
@@ -458,7 +469,7 @@ mod tests {
             .set_subgroup_visibility(&sub, VisibilityMode::Open)
             .expect("open sub");
         register_context_in_group(store, &sub, &context).expect("register context");
-        (root, sub, context, tee)
+        (root, sub, context, tee, tee_pk)
     }
 
     /// The authorization surface that actually gates apply must deny an
@@ -466,10 +477,10 @@ mod tests {
     #[test]
     fn flip_back_to_restricted_revokes_context_authorization() {
         let store = store();
-        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+        let (_root, sub, context, tee, tee_pk) = seed_inherited_context_open(&store);
 
         assert!(
-            is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
             "precondition: an Open subgroup authorizes the inherited member"
         );
 
@@ -478,7 +489,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            !is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
             "flip-back must deny the inherited member at the apply gate"
         );
     }
@@ -491,9 +502,9 @@ mod tests {
     #[test]
     fn flip_back_to_restricted_leaves_stale_context_identity_row() {
         let store = store();
-        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+        let (_root, sub, context, tee, tee_pk) = seed_inherited_context_open(&store);
         // The join that happened while the subgroup was Open.
-        put_identity(&store, &context, &tee, true);
+        put_identity(&store, &context, &tee_pk, true);
 
         CapabilitiesRepository::new(&store)
             .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
@@ -503,13 +514,13 @@ mod tests {
         assert!(
             store
                 .handle()
-                .has(&key::ContextIdentity::new(context, tee))
+                .has(&key::ContextIdentity::new(context, tee_pk))
                 .unwrap(),
             "the join row is not pruned on flip-back — the real gap"
         );
         // ...but it confers nothing: authorization is resolved live.
         assert!(
-            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            !is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
             "a surviving join row must not confer authorization after the wall is back up"
         );
     }

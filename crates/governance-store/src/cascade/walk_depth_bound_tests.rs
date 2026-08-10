@@ -20,6 +20,7 @@
 
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::UpgradePolicy;
@@ -43,8 +44,8 @@ fn meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
         target_application_id: ApplicationId::from([0xCC; 32]),
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
-        admin_identity: PublicKey::from([0x01; 32]),
-        owner_identity: PublicKey::from([0x01; 32]),
+        admin_identity: AccountId::from([0x01; 32]),
+        owner_identity: AccountId::from([0x01; 32]),
         migration: None,
         auto_join: true,
     }

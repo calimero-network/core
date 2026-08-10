@@ -1352,7 +1352,7 @@ mod tests {
         // RPC layer — a message that names neither accounts nor devices.
         let store = test_store();
         let gid = ContextGroupId::from([7u8; 32]);
-        let member = key(1).public_key();
+        let member = AccountId::from(*key(1).public_key());
         crate::MembershipRepository::new(&store)
             .add_member(&gid, &member, crate::GroupMemberRole::Member)
             .expect("add member");

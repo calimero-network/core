@@ -1,3 +1,4 @@
+use calimero_account::AccountId;
 use calimero_governance_types::NamespaceId;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,7 +124,9 @@ fn timeout_classifier_assigns_per_op_kind() {
 
     // Cheap class: single-row writes, no inheritance walk.
     assert_eq!(
-        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::AdminChanged { new_admin: pk })),
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::AdminChanged {
+            new_admin: AccountId::from(*pk)
+        })),
         OP_ACK_CHEAP_TIMEOUT
     );
 
@@ -186,7 +189,7 @@ fn mk_signed_op(sk: &PrivateKey, namespace_id: NamespaceId) -> SignedNamespaceOp
         Vec::new(),
         0,
         NamespaceOp::Root(RootOp::AdminChanged {
-            new_admin: sk.public_key(),
+            new_admin: AccountId::from(*sk.public_key()),
         }),
     )
     .expect("sign")
@@ -207,8 +210,12 @@ fn plant_namespace_role(
     role: GroupMemberRole,
 ) {
     let gid = ContextGroupId::from(namespace_id.to_bytes());
+    // Plant the row AND the binding: the ack/beacon verifiers resolve a signing
+    // key to its account before consulting the member set, so a row without a
+    // binding would leave every planted member's own ack unverifiable.
+    let account = crate::test_fixtures::enrol_member(store, &gid, pk);
     MembershipRepository::new(store)
-        .add_member(&gid, pk, role)
+        .add_member(&gid, &account, role)
         .expect("plant");
 }
 
@@ -605,6 +612,7 @@ fn invitation_from(
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
+        inviter_account: AccountId::from(*inviter_sk.public_key()),
         group_id,
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
@@ -742,7 +750,7 @@ async fn admission_provable_rejects_consumed_nonce() {
     ReentryRepository::new(&store)
         .mark_invitation_consumed(
             &gid,
-            &joiner_sk.public_key(),
+            &AccountId::from(*joiner_sk.public_key()),
             inv.invitation.invitation_nonce,
         )
         .expect("mark consumed");
