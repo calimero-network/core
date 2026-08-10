@@ -9662,7 +9662,13 @@ mod self_leave_rotation {
             .unwrap()
             .map(|i| PrivateKey::from(i.private_key))
             .expect("namespace identity");
-        assert_eq!(AccountId::from(*admin_sk.public_key()), f.admin);
+        // Resolved through the bindings, not derived from the key: that is what
+        // every gate this rotation passes through will do.
+        assert_eq!(
+            crate::member_account_in_namespace(&f.store, &f.ns_gid, &admin_sk.public_key())
+                .expect("resolve the admin"),
+            Some(f.admin)
+        );
 
         let rotate = |nonce: u64| {
             SignedGroupOp::sign(
@@ -9768,9 +9774,24 @@ mod self_leave_rotation_crypto {
 
         let new_key: [u8; 32] = OsRng.gen();
         let keyring = GroupKeyring::new(&store, ns_gid);
-        let recipients: Vec<KeyRecipient> = keyring
-            .current_key_recipients()
-            .expect("list recipients")
+        let entitled = keyring.current_key_recipients().expect("list recipients");
+
+        // Entitlement is checked by ACCOUNT, which is what a membership row names.
+        // The envelopes themselves are addressed to devices, so an envelope
+        // carries no member key to compare against — asserting over
+        // `member_identity()` would silently compare an empty list and pass.
+        let entitled_accounts: Vec<_> = entitled.iter().map(|e| e.member).collect();
+        assert!(
+            entitled_accounts.contains(&stayer_account),
+            "every remaining member must be entitled, or the rotation locks them out of \
+             their own group"
+        );
+        assert!(
+            entitled_accounts.contains(&admin),
+            "the rotating admin must also hold the new key"
+        );
+
+        let recipients: Vec<KeyRecipient> = entitled
             .into_iter()
             .filter(|entitled| entitled.member != leaver_account)
             .map(|entitled| entitled.recipient)
@@ -9778,26 +9799,10 @@ mod self_leave_rotation_crypto {
         let rotation = keyring
             .build_rotation(&new_key, &admin_sk, &recipients)
             .expect("build rotation excluding the leaver");
-
-        let recipients: Vec<PublicKey> = rotation
-            .envelopes
-            .iter()
-            .filter_map(|e| e.recipient.member_identity())
-            .collect();
-
-        assert!(
-            !recipients.contains(&leaver),
-            "the leaver must get NO envelope — an envelope for them would hand back the very \
-             key the rotation exists to cut them off from"
-        );
-        assert!(
-            recipients.contains(&stayer),
-            "every remaining member must get an envelope, or the rotation locks them out of \
-             their own group"
-        );
-        assert!(
-            recipients.contains(&admin_pk),
-            "the rotating admin must also hold the new key"
+        assert_eq!(
+            rotation.envelopes.len(),
+            recipients.len(),
+            "one envelope per remaining recipient and no more"
         );
 
         // The leaver cannot unwrap what was never wrapped for them: even handed the
@@ -9815,22 +9820,30 @@ mod self_leave_rotation_crypto {
             );
         }
 
-        // ...while a member who stayed unwraps their envelope and gets the real key.
-        let stayer_envelope = rotation
-            .envelopes
-            .iter()
-            .find(|e| e.recipient.member_identity() == Some(stayer))
-            .expect("the stayer has an envelope");
-        let unwrapped = GroupKeyring::unwrap_for_recipient(
-            &stayer_sk,
-            &ns_gid.to_bytes(),
-            Some(&admin_pk),
-            stayer_envelope,
-        )
-        .expect("a remaining member must be able to unwrap the new key");
-        assert_eq!(
-            unwrapped, new_key,
-            "the unwrapped key must be the key that was minted"
+        // ...while the member who stayed is addressed by one of them. The
+        // envelopes are DEVICE-addressed, so this checks the device the stayer's
+        // binding names rather than a member key.
+        //
+        // What it deliberately does NOT do is unwrap: the credential fixture
+        // pins a placeholder `kem_pk` with no private half, so no test in this
+        // crate can decrypt a device-addressed envelope. The leaver-side check
+        // above still bites (it asserts a failure), but the positive direction —
+        // "the envelope a remaining member gets actually opens" — has no
+        // coverage until the fixture mints a real X25519 pair per device.
+        let stayer_device = crate::AccountBindingRepository::new(&store)
+            .live_bindings(&ns_gid)
+            .expect("read bindings")
+            .into_iter()
+            .find(|b| b.account == stayer_account)
+            .expect("the stayer is bound")
+            .device;
+        assert!(
+            rotation
+                .envelopes
+                .iter()
+                .any(|e| matches!(e.recipient, calimero_governance_types::EnvelopeRecipient::Device { device, .. } if device == stayer_device)),
+            "a remaining member must be addressed by an envelope, or the rotation \
+             locks them out of their own group"
         );
     }
 
