@@ -160,6 +160,45 @@ pub fn member_account_for_device_key(
     Ok(None)
 }
 
+/// The account a **member key** speaks for in the namespace owning `group`.
+///
+/// The resolution the governance planes need when they stop naming keys and
+/// start naming accounts. Distinct from [`member_account_for_device_key`] in two
+/// ways that both matter:
+///
+/// * **It resolves at the NAMESPACE, not at `group`.** Bindings are
+///   namespace-keyed, so a member added to a subgroup was bound when it joined
+///   the namespace — asking the subgroup would find nothing and refuse an
+///   add that is perfectly legitimate.
+/// * **It asks only whether the key is bound**, not whether some endorser is a
+///   member of the decision group. Whether the account may be *added* here is
+///   the caller's question; this one only answers *who* it is.
+///
+/// # `None` must fail closed
+///
+/// `None` means this namespace has never seen a credential for `member_key`, so
+/// there is no account to name. Callers must refuse rather than fall back to a
+/// key-derived stand-in: the stand-in is exactly the bridge the account plane
+/// exists to remove, and a fallback would keep it alive at the one site where
+/// it is hardest to notice — a grant that looks recorded and matches nothing.
+///
+/// Post-enrolment-at-join every member of a namespace is bound by construction,
+/// so `None` is a real anomaly (an unenrolled straggler, or a key that never
+/// joined) rather than an ordinary state to paper over.
+///
+/// # Errors
+/// Propagates the namespace resolution or the binding scan.
+pub fn member_account_in_namespace(
+    store: &Store,
+    group: &ContextGroupId,
+    member_key: &PublicKey,
+) -> EyreResult<Option<AccountId>> {
+    let namespace = crate::NamespaceRepository::new(store).resolve(group)?;
+    Ok(AccountBindingRepository::new(store)
+        .binding_for_sign_pk(&namespace, member_key)?
+        .map(|binding| binding.account))
+}
+
 /// A device binding that is currently in force.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceBinding {

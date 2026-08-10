@@ -78,7 +78,8 @@ pub use self::authorizer::{
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::account_bindings::{
-    member_account_for_device_key, AccountBindingRepository, BindingRejected, DeviceBinding,
+    member_account_for_device_key, member_account_in_namespace, AccountBindingRepository,
+    BindingRejected, DeviceBinding,
 };
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
