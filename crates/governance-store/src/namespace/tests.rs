@@ -6810,22 +6810,39 @@ fn a_refused_credential_leaves_the_membership_intact() {
     let subgroup_id = [0xD2u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
-    let joiner_account = crate::test_fixtures::account_for(&joiner_sk.public_key());
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(
-        &store,
-        namespace_id,
-        subgroup_id,
-        &crate::test_fixtures::account_for(&joiner),
-    );
+    let joiner_account = crate::test_fixtures::account_for(&joiner);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner_account);
 
-    // Structurally well-formed, cryptographically filler — `apply_link` refuses it.
+    // A credential that is genuinely the joiner's — it certifies the joiner's
+    // key and names the joiner's account, so the op itself is well formed — but
+    // whose DEVICE some other account already claimed here. `apply_link` refuses
+    // it as a reassignment: one device cannot speak for two accounts.
+    //
+    // This is the only way a credential gets refused now. A credential for
+    // somebody ELSE is rejected outright a step earlier (see
+    // `a_credential_certified_for_another_key_is_refused`), because naming an
+    // account means claiming to BE it.
+    let squatter_root = PrivateKey::random(&mut rand::rngs::OsRng);
+    let squatter_genesis =
+        calimero_account::AccountGenesis::new(squatter_root.public_key(), [0x77; 16]);
+    let squatter = crate::test_fixtures::join_account_for(
+        &squatter_root,
+        squatter_genesis,
+        &PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
+        *joiner.as_ref(),
+        0,
+    );
+    let _ = crate::AccountBindingRepository::new(&store)
+        .apply_link(&ns_gid, &squatter.genesis, &squatter.chain, &squatter.cert)
+        .expect("seed the conflicting device claim");
+
     apply_open_join_with(
         &store,
         namespace_id,
         subgroup_id,
         &joiner_sk,
-        crate::test_fixtures::test_join_account(),
+        crate::test_fixtures::real_join_account(&joiner),
     )
     .expect("a credential this group cannot admit must not orphan the membership op");
 
@@ -6867,24 +6884,32 @@ fn a_credential_certified_for_another_key_is_refused() {
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
     let victim_account = stolen.cert.account;
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, stolen)
-        .expect("the membership still applies");
+
+    // Refused OUTRIGHT — not "admitted without a binding". A member names an
+    // account, so presenting the victim's credential is claiming to be the
+    // victim, and the joiner's signature does not speak for that account. The
+    // op never reaches the binding step.
+    let err = apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, stolen)
+        .expect_err("joining as somebody else must be refused");
+    assert!(
+        format!("{err:#}").contains("doesn't match member"),
+        "expected the signer/member mismatch, got: {err:#}"
+    );
 
     let bindings = crate::AccountBindingRepository::new(&store);
     assert!(
         bindings
-            .binding_for_sign_pk(&ns_gid, &victim)
+            .binding_for_sign_pk(&ns_gid, &joiner)
             .expect("read bindings")
             .is_none(),
-        "replaying a stranger's credential must not graft their account in"
+        "a refused join binds nothing"
     );
-    assert!(
-        bindings
-            .endorsers_of(&ns_gid, victim_account)
-            .expect("read endorsers")
-            .is_empty(),
-        "and must not make the replayer an endorser of it — that would aim the \
-         replayer's scope keys at the victim's devices"
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .check_path(&ns_gid, &victim_account)
+            .expect("check path"),
+        crate::membership::MembershipPath::None,
+        "and above all does not make the victim a member of a group it never joined"
     );
 }
 
