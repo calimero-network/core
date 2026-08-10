@@ -1637,7 +1637,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
 
     let namespace_id = [0xC4u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
-    let owner_account = enrol_member(&store, &ns_gid, &owner);
+    let owner_account = founder_account_for(&owner_sk);
     let non_owner_account = enrol_member(&store, &ns_gid, &non_owner);
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
@@ -1648,7 +1648,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // informational here; sequencing comes from the head record. The 0 below is
     // an arbitrary placeholder the apply path does not consult for ordering.)
     // This establishes the founding admin authoritatively. ----
-    let genesis = namespace_genesis_naming(owner_account, &owner_sk);
+    let genesis = namespace_genesis_for(&owner_sk).0;
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs NamespaceCreated genesis");
@@ -2640,7 +2640,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
     let attacker_sk = PrivateKey::random(&mut rng);
     let real_founder_sk = PrivateKey::random(&mut rng);
     let real_founder = real_founder_sk.public_key();
-    let real_founder_account = AccountId::from(*real_founder);
+    let real_founder_account = founder_account_for(&real_founder_sk);
 
     let store = test_store();
     let namespace_id = [0xDBu8; 32];
@@ -2685,7 +2685,7 @@ fn genesis_apply_failure_leaves_namespace_head_unadvanced() {
 
     // A clean, parentless retry by the REAL founder now applies — proving the
     // namespace is not wedged after the failed attempt.
-    let good_genesis = namespace_genesis_naming(real_founder_account, &real_founder_sk);
+    let good_genesis = namespace_genesis_for(&real_founder_sk).0;
     let signed_good = SignedNamespaceOp::sign(
         &real_founder_sk,
         namespace_id.into(),
@@ -6476,7 +6476,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let mut rng = OsRng;
 
     let owner_sk = PrivateKey::random(&mut rng);
-    let owner_account = AccountId::from(*owner_sk.public_key());
+    let owner_account = founder_account_for(&owner_sk);
     let _owner = owner_sk.public_key();
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner = joiner_sk.public_key();
@@ -6491,7 +6491,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         namespace_id.into(),
         vec![],
         0,
-        namespace_genesis_naming(owner_account, &owner_sk),
+        namespace_genesis_for(&owner_sk).0,
     )
     .expect("owner signs genesis");
     gov.apply_signed_op(&signed_genesis)
@@ -6553,7 +6553,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let mut rng = OsRng;
 
     let owner_sk = PrivateKey::random(&mut rng);
-    let owner_account = AccountId::from(*owner_sk.public_key());
+    let owner_account = founder_account_for(&owner_sk);
     let _owner = owner_sk.public_key();
     // A namespace member with NO admin row and NO capability row: the live
     // resolver denies them outright. They stand for a signer whose
@@ -6566,7 +6566,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let genesis = namespace_genesis_naming(owner_account, &owner_sk);
+    let genesis = namespace_genesis_for(&owner_sk).0;
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs genesis");
@@ -6624,14 +6624,14 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     // The owner IS a live admin — the live resolver would wave this through.
     // At the op's cut, though, the signer had no authority, so it must be rejected.
     let owner_sk = PrivateKey::random(&mut rng);
-    let owner_account = AccountId::from(*owner_sk.public_key());
+    let owner_account = founder_account_for(&owner_sk);
     let _owner = owner_sk.public_key();
 
     let namespace_id = [0xE3u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let genesis = namespace_genesis_naming(owner_account, &owner_sk);
+    let genesis = namespace_genesis_for(&owner_sk).0;
     let signed_genesis =
         SignedNamespaceOp::sign(&owner_sk, namespace_id.into(), vec![], 0, genesis)
             .expect("owner signs genesis");
