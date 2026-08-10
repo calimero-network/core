@@ -4366,7 +4366,7 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member,
             group_id: subgroup.to_bytes().into(),
-            account: crate::test_fixtures::test_join_account(),
+            account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
         }),
     )
     .unwrap();
@@ -6094,7 +6094,7 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: bob_account,
             group_id: subgroup,
-            account: crate::test_fixtures::test_join_account(),
+            account: crate::test_fixtures::real_join_account(&bob_sk.public_key()),
         }),
     )
     .unwrap();
@@ -6228,7 +6228,7 @@ fn member_joined_open_emits_membership_op_event() {
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
             member: bob_account,
             group_id: subgroup,
-            account: crate::test_fixtures::test_join_account(),
+            account: crate::test_fixtures::real_join_account(&bob_sk.public_key()),
         }),
     )
     .unwrap();

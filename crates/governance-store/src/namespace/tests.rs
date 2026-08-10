@@ -6747,8 +6747,8 @@ fn namespace_with_open_subgroup(
 
     let ns_gid = ContextGroupId::from(namespace_id);
     let child = ContextGroupId::from(subgroup_id);
-    let (_admin_sk, admin_pk) = bootstrap_namespace_with_admin(store, namespace_id);
-    let admin_account = AccountId::from(*admin_pk);
+    let ((_admin_sk, _admin_pk), admin_account) =
+        bootstrap_namespace_with_admin_account(store, namespace_id);
 
     nest_for_test(store, &ns_gid, &child);
     CapabilitiesRepository::new(store)
@@ -6773,7 +6773,12 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
+    namespace_with_open_subgroup(
+        &store,
+        namespace_id,
+        subgroup_id,
+        &crate::test_fixtures::account_for(&joiner),
+    );
 
     let account = crate::test_fixtures::real_join_account(&joiner);
     let account_id = account.cert.account;
@@ -6807,7 +6812,12 @@ fn a_refused_credential_leaves_the_membership_intact() {
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner_account = crate::test_fixtures::account_for(&joiner_sk.public_key());
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
+    namespace_with_open_subgroup(
+        &store,
+        namespace_id,
+        subgroup_id,
+        &crate::test_fixtures::account_for(&joiner),
+    );
 
     // Structurally well-formed, cryptographically filler — `apply_link` refuses it.
     apply_open_join_with(
@@ -6844,7 +6854,12 @@ fn a_credential_certified_for_another_key_is_refused() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
+    namespace_with_open_subgroup(
+        &store,
+        namespace_id,
+        subgroup_id,
+        &crate::test_fixtures::account_for(&joiner),
+    );
 
     // A credential lifted from somebody else's join: perfectly valid, certified
     // for a key that is not the joiner's. These ops are cleartext, so observing
@@ -6881,7 +6896,12 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     let ns_gid = ContextGroupId::from(namespace_id);
     let joiner_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let joiner = joiner_sk.public_key();
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &AccountId::from(*joiner));
+    namespace_with_open_subgroup(
+        &store,
+        namespace_id,
+        subgroup_id,
+        &crate::test_fixtures::account_for(&joiner),
+    );
 
     let (root_sk, genesis) = crate::test_fixtures::test_account_root();
     let device = [0x7C; 32];
