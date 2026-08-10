@@ -712,6 +712,9 @@ mod tests {
         admin: &PublicKey,
         with_name: bool,
     ) -> [u8; 32] {
+        // Enrolled so the rows name the account this key resolves to; the
+        // rollback assertions below read them back by that account.
+        let admin_account = crate::test_support::enrol(store, group, admin);
         MetaRepository::new(store)
             .save(
                 group,
@@ -720,15 +723,15 @@ mod tests {
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     upgrade_policy: UpgradePolicy::Automatic,
                     created_at: 1_700_000_000,
-                    admin_identity: *admin,
-                    owner_identity: *admin,
+                    admin_identity: admin_account,
+                    owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
                 },
             )
             .expect("save meta");
         MembershipRepository::new(store)
-            .add_member(group, admin, GroupMemberRole::Admin)
+            .add_member(group, &admin_account, GroupMemberRole::Admin)
             .expect("add admin");
         CapabilitiesRepository::new(store)
             .set_default_capabilities(group, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
@@ -765,7 +768,7 @@ mod tests {
         // Sanity: everything is present before the rollback.
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_some());
         assert!(MembershipRepository::new(&store)
-            .is_member(&group, &admin)
+            .is_member(&group, &crate::test_support::account_for(&admin))
             .unwrap());
         assert!(CapabilitiesRepository::new(&store)
             .default_capabilities(&group)
@@ -781,7 +784,14 @@ mod tests {
             .unwrap()
             .is_some());
 
-        rollback_local_group_rows(&store, &group, &admin, Some(key_id), true);
+        rollback_local_group_rows(
+            &store,
+            &group,
+            &crate::test_support::account_for(&admin),
+            &admin,
+            Some(key_id),
+            true,
+        );
 
         // Every row the create wrote is gone; a retry with the same id is clean.
         assert!(
@@ -790,7 +800,7 @@ mod tests {
         );
         assert!(
             !MembershipRepository::new(&store)
-                .is_member(&group, &admin)
+                .is_member(&group, &crate::test_support::account_for(&admin))
                 .unwrap(),
             "member"
         );
@@ -830,7 +840,14 @@ mod tests {
         let key_id = seed_group(&store, &victim, &admin, true);
         let _ = seed_group(&store, &bystander, &admin, true);
 
-        rollback_local_group_rows(&store, &victim, &admin, Some(key_id), true);
+        rollback_local_group_rows(
+            &store,
+            &victim,
+            &crate::test_support::account_for(&admin),
+            &admin,
+            Some(key_id),
+            true,
+        );
 
         // The bystander group is untouched — every row type the helper deletes
         // is checked here, so a rollback that used the wrong group id for any
@@ -840,7 +857,7 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(MembershipRepository::new(&store)
-            .is_member(&bystander, &admin)
+            .is_member(&bystander, &crate::test_support::account_for(&admin))
             .unwrap());
         assert!(CapabilitiesRepository::new(&store)
             .default_capabilities(&bystander)
@@ -875,15 +892,22 @@ mod tests {
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     upgrade_policy: UpgradePolicy::Automatic,
                     created_at: 1,
-                    admin_identity: admin,
-                    owner_identity: admin,
+                    admin_identity: crate::test_support::account_for(&admin),
+                    owner_identity: crate::test_support::account_for(&admin),
                     migration: None,
                     auto_join: true,
                 },
             )
             .expect("save meta");
 
-        rollback_local_group_rows(&store, &group, &admin, None, false);
+        rollback_local_group_rows(
+            &store,
+            &group,
+            &crate::test_support::account_for(&admin),
+            &admin,
+            None,
+            false,
+        );
 
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
     }

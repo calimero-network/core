@@ -1548,8 +1548,8 @@ mod tests {
             target_application_id: ApplicationId::from([0xCC; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: admin,
-            owner_identity: admin,
+            admin_identity: crate::test_support::account_for(&admin),
+            owner_identity: crate::test_support::account_for(&admin),
             migration: None,
             auto_join: false,
         }
@@ -1571,7 +1571,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &ns_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::Admin,
                 Some([0xAA; 32]),
                 Some([0xBB; 32]),
@@ -1634,7 +1634,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &ns_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::Admin,
                 Some([0xAA; 32]),
                 Some([0xBB; 32]),
@@ -1651,7 +1651,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::ReadOnlyTee,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -1780,7 +1780,7 @@ mod tests {
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         // Remove the root membership the seed added (the root eviction).
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
         // Leave a descendant subgroup membership row in place — residue the
         // root-eviction cascade did not (yet) remove.
@@ -1791,7 +1791,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -1811,7 +1811,7 @@ mod tests {
         // exactly the residue the sweep exists to clear → predicate true.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
         assert!(
             namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
@@ -1826,7 +1826,7 @@ mod tests {
         // keys AND the namespace identity — completing the abandoned purge.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
 
         // Precondition: the residue (identity + signing key) is present and
@@ -1896,7 +1896,7 @@ mod tests {
         // BOTH gates hold.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
         PendingSelfPurgeRepository::new(&store)
             .mark(&ns_id)
@@ -1963,7 +1963,7 @@ mod tests {
 
         // Root eviction: remove the namespace-root membership row.
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
 
         // Leave a descendant subgroup `GroupMember` row in place — the
@@ -1977,7 +1977,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -2041,7 +2041,7 @@ mod tests {
         // absent (looks like evicted residue), but no marker written.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
         assert!(
             !PendingSelfPurgeRepository::new(&store)
@@ -2085,7 +2085,7 @@ mod tests {
         // Make it look EXACTLY like evicted residue: identity present, no
         // membership — but DO NOT write a marker.
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
 
         // The standalone predicate would flag this as "still evicted" — that
@@ -2135,7 +2135,7 @@ mod tests {
         // the post-finalize marker clear leaves no marker.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         MembershipRepository::new(&store)
-            .remove_member(&ns_id, &self_pk)
+            .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
         PendingSelfPurgeRepository::new(&store)
             .mark(&ns_id)
@@ -2223,7 +2223,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -2393,7 +2393,7 @@ mod tests {
             MembershipRepository::new(&store)
                 .add_member_with_keys(
                     &sub,
-                    &self_pk,
+                    &crate::test_support::account_for(&self_pk),
                     GroupMemberRole::Member,
                     Some([0xCC; 32]),
                     Some([0xDD; 32]),
@@ -2486,7 +2486,11 @@ mod tests {
         let store = empty_store();
         let mut rng = OsRng;
         let other_pk = PrivateKey::random(&mut rng).public_key();
-        let action = decide_purge_action(&store, [0x99u8; 32], other_pk);
+        let action = decide_purge_action(
+            &store,
+            [0x99u8; 32],
+            crate::test_support::account_for(&other_pk),
+        );
         assert_eq!(action, PurgeAction::None);
     }
 
@@ -2497,7 +2501,11 @@ mod tests {
         let (store, ns_id, _self_pk) = seed_namespace_self_member();
         let mut rng = OsRng;
         let other_pk = PrivateKey::random(&mut rng).public_key();
-        let action = decide_purge_action(&store, ns_id.to_bytes(), other_pk);
+        let action = decide_purge_action(
+            &store,
+            ns_id.to_bytes(),
+            crate::test_support::account_for(&other_pk),
+        );
         assert_eq!(action, PurgeAction::None);
     }
 
@@ -2505,7 +2513,11 @@ mod tests {
     fn dispatch_returns_namespace_when_self_removed_at_namespace_root() {
         // Event removes self at the namespace root → cascade.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
-        let action = decide_purge_action(&store, ns_id.to_bytes(), self_pk);
+        let action = decide_purge_action(
+            &store,
+            ns_id.to_bytes(),
+            crate::test_support::account_for(&self_pk),
+        );
         assert_eq!(action, PurgeAction::Namespace(ns_id));
     }
 
@@ -2521,7 +2533,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member_with_keys(
                 &sub_id,
-                &self_pk,
+                &crate::test_support::account_for(&self_pk),
                 GroupMemberRole::Member,
                 Some([0xCC; 32]),
                 Some([0xDD; 32]),
@@ -2543,7 +2555,11 @@ mod tests {
                 .unwrap();
         }
 
-        let action = decide_purge_action(&store, sub_id.to_bytes(), self_pk);
+        let action = decide_purge_action(
+            &store,
+            sub_id.to_bytes(),
+            crate::test_support::account_for(&self_pk),
+        );
         assert_eq!(action, PurgeAction::Subgroup(sub_id));
     }
 
@@ -2571,7 +2587,10 @@ mod tests {
 
         // Subscribe BEFORE notifying so we don't miss the fire.
         let mut rx = op_events::subscribe();
-        op_events::notify(OpEvent::TeeMemberRemoved { group_id, member });
+        op_events::notify(OpEvent::TeeMemberRemoved {
+            group_id,
+            member: crate::test_support::account_for(&member),
+        });
 
         // Receive in a loop, skipping events that aren't ours. The
         // channel is in-process and dispatch is sub-millisecond, so
@@ -2593,7 +2612,7 @@ mod tests {
                     group_id: g,
                     member: m,
                 } if g == group_id => {
-                    assert_eq!(m, member);
+                    assert_eq!(m, crate::test_support::account_for(&member));
                     break;
                 }
                 // Not ours — another test in the process, ignore and keep
@@ -2720,7 +2739,7 @@ mod tests {
         let member = PrivateKey::random(&mut rng).public_key();
         let event = OpEvent::MemberRemoved {
             group_id: [0xAAu8; 32],
-            member,
+            member: crate::test_support::account_for(&member),
         };
         assert_eq!(
             dispatch_target(&event),
@@ -2738,11 +2757,11 @@ mod tests {
         let gid = [0xBBu8; 32];
         let event = OpEvent::TeeMemberRemoved {
             group_id: gid,
-            member,
+            member: crate::test_support::account_for(&member),
         };
         assert_eq!(
             dispatch_target(&event),
-            Some((gid, member)),
+            Some((gid, crate::test_support::account_for(&member))),
             "TeeMemberRemoved MUST dispatch the self-purge listener"
         );
     }
@@ -2758,7 +2777,7 @@ mod tests {
         assert_eq!(
             dispatch_target(&OpEvent::MemberAdded {
                 group_id: gid,
-                member,
+                member: crate::test_support::account_for(&member),
                 role: GroupMemberRole::ReadOnlyTee,
             }),
             None,
@@ -2766,7 +2785,7 @@ mod tests {
         assert_eq!(
             dispatch_target(&OpEvent::TeeMemberAdmitted {
                 group_id: gid,
-                member,
+                member: crate::test_support::account_for(&member),
             }),
             None,
         );
@@ -2788,7 +2807,10 @@ mod tests {
         rng.fill_bytes(&mut group_id);
 
         let mut rx = op_events::subscribe();
-        op_events::notify(OpEvent::MemberRemoved { group_id, member });
+        op_events::notify(OpEvent::MemberRemoved {
+            group_id,
+            member: crate::test_support::account_for(&member),
+        });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
         loop {
@@ -2861,7 +2883,11 @@ mod tests {
             .save(&ns_gid, &make_meta(owner_pk))
             .expect("save ns meta");
         MembershipRepository::new(&store)
-            .add_member(&ns_gid, &owner_pk, GroupMemberRole::Admin)
+            .add_member(
+                &ns_gid,
+                &crate::test_support::account_for(&owner_pk),
+                GroupMemberRole::Admin,
+            )
             .expect("add owner admin");
         NamespaceRepository::new(&store)
             .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])

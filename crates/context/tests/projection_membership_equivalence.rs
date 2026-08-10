@@ -68,7 +68,7 @@ fn hlc(ns: u64) -> HybridTimestamp {
     ))
 }
 
-fn meta(admin: PublicKey) -> GroupMetaValue {
+fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
@@ -93,6 +93,7 @@ fn sign_invitation(
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id: group,
         // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
         // joined_at, so any non-zero expiration causes the apply gate to reject it.
@@ -202,10 +203,16 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
 
     // Genesis base state (store seeds, NOT ops — exactly as create_group writes):
     // root + subgroup meta/admin, the subgroup nested + Open, root default cap.
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -237,7 +244,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
             account: test_join_account(),
         }),
@@ -255,7 +262,7 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
             account: test_join_account(),
         }),
@@ -268,7 +275,10 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // After the joins: both authorities must see the joiner in the subgroup
     // (live by inheritance walk; projection likewise).
     let live_member_after_join = MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner),
+        )
         .unwrap();
     assert!(
         live_member_after_join,
@@ -303,12 +313,12 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // is fold-vs-materialized-membership; `remove_member` yields the same
     // `is_member` result a real node's apply would, which is all `is_member` reads.
     let removal = GroupOp::MemberRemoved {
-        member: joiner,
+        member: calimero_context::test_support::account_for(&joiner),
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: Vec::new(),
     };
     MembershipRepository::new(&store)
-        .remove_member(&ns, &joiner)
+        .remove_member(&ns, &calimero_context::test_support::account_for(&joiner))
         .unwrap();
     let id3 = [0xA3; 32];
     let removal_env = ns_group_envelope(ns.to_bytes(), admin, ns);
@@ -323,7 +333,10 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // THE equivalence: after root removal, live revokes the inherited subgroup
     // access; the projection must NOT keep granting it (the over-grant).
     let live_member_after_removal = MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner),
+        )
         .unwrap();
     assert!(
         !live_member_after_removal,
@@ -359,10 +372,16 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     let ns = ContextGroupId::from([0x31; 32]);
     let subgroup = ContextGroupId::from([0x32; 32]);
 
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -392,7 +411,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
             account: test_join_account(),
         }),
@@ -413,7 +432,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
             account: test_join_account(),
         }),
@@ -438,12 +457,12 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     // rejoin would be rejected outright, no invitation able to readmit them;
     // that path is covered in `governance-store`.
     let leave = GroupOp::MemberRemoved {
-        member: joiner,
+        member: calimero_context::test_support::account_for(&joiner),
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: Vec::new(),
     };
     MembershipRepository::new(&store)
-        .remove_member(&ns, &joiner)
+        .remove_member(&ns, &calimero_context::test_support::account_for(&joiner))
         .unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &ns_group_envelope(ns.to_bytes(), admin, ns),
@@ -454,7 +473,10 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     ));
     // After leaving: not a member (both).
     assert!(!MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner)
+        )
         .unwrap());
     assert_eq!(
         proj.member_at_cut(&store, subgroup, &joiner, &[[0xB3; 32]]),
@@ -472,7 +494,7 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         vec![],
         3,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
             account: test_join_account(),
         }),
@@ -489,7 +511,10 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
 
     // After rejoin: inherited subgroup access is restored — both authorities.
     let live = MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner),
+        )
         .unwrap();
     assert!(
         live,
@@ -529,10 +554,16 @@ fn projection_defers_when_cut_ancestry_incomplete() {
     let ns = ContextGroupId::from([0x41; 32]);
     let subgroup = ContextGroupId::from([0x42; 32]);
 
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -553,7 +584,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
             account: test_join_account(),
         }),
@@ -566,7 +597,7 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
             account: test_join_account(),
         }),
@@ -575,7 +606,10 @@ fn projection_defers_when_cut_ancestry_incomplete() {
     calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&subgroup, &joiner)
+            .is_member(
+                &subgroup,
+                &calimero_context::test_support::account_for(&joiner)
+            )
             .unwrap(),
         "live: joiner inherits subgroup access"
     );
@@ -639,10 +673,16 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
     let subgroup = ContextGroupId::from([0x52; 32]);
 
     // Genesis base state (store seeds, as `create_group` writes).
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -663,7 +703,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
             account: test_join_account(),
         }),
@@ -676,7 +716,7 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
             account: test_join_account(),
         }),
@@ -784,12 +824,24 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 
     // The admin is a direct member of the ROOT ONLY — its subgroup access is
     // inherited, exactly like the namespace owner in the scenario.
-    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
     MetaRepository::new(&store)
-        .save(&subgroup, &meta(admin))
+        .save(
+            &ns,
+            &meta(calimero_context::test_support::account_for(&admin)),
+        )
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(
+            &subgroup,
+            &meta(calimero_context::test_support::account_for(&admin)),
+        )
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(
+            &ns,
+            &calimero_context::test_support::account_for(&admin),
+            GroupMemberRole::Admin,
+        )
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&ns, &subgroup)
@@ -833,7 +885,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         7,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: admin,
+            member: calimero_context::test_support::account_for(&admin),
             group_id: subgroup.to_bytes().into(),
             account: real_join_account_for(&admin, [0x7A; 32]),
         }),
@@ -863,7 +915,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
             account: real_join_account_for(&joiner, [0x3E; 32]),
         }),
@@ -879,7 +931,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
             account: real_join_account_for(&joiner, [0x3F; 32]),
         }),

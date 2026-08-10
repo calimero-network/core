@@ -206,8 +206,8 @@ mod tests {
             target_application_id: ApplicationId::from(target),
             upgrade_policy: UpgradePolicy::LazyOnAccess,
             created_at: 1_700_000_000,
-            admin_identity: pk,
-            owner_identity: pk,
+            admin_identity: crate::test_support::account_for(&pk),
+            owner_identity: crate::test_support::account_for(&pk),
             migration,
             auto_join: false,
         }

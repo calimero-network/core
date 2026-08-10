@@ -43,7 +43,7 @@ fn hlc(ns: u64) -> HybridTimestamp {
     ))
 }
 
-fn meta(admin: PublicKey) -> GroupMetaValue {
+fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
@@ -64,15 +64,21 @@ fn namespace_with_member(member: PublicKey) -> (Store, ScopeProjections, Context
     let ns = ContextGroupId::from([0x11; 32]);
     let ns_bytes = ns.to_bytes();
 
-    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    // Enrolled, so the admin row names the account this key resolves to.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    MetaRepository::new(&store)
+        .save(&ns, &meta(admin_account))
+        .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     let group_key = [0x5A; 32];
     let key_id = GroupKeyring::new(&store, ns).store_key(&group_key).unwrap();
 
     let inner = GroupOp::MemberAdded {
-        member,
+        // The op names the ACCOUNT; the key is enrolled so the two agree and the
+        // apply's own resolution finds the same principal.
+        member: calimero_context::test_support::enrol(&store, &ns, &member),
         role: GroupMemberRole::Member,
     };
     let encrypted: EncryptedGroupOp = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
@@ -129,7 +135,13 @@ fn link_device(
     .unwrap();
 
     let bindings = AccountBindingRepository::new(store);
-    bindings.record_endorser(&ns, account, endorser).unwrap();
+    bindings
+        .record_endorser(
+            &ns,
+            account,
+            &calimero_context::test_support::account_for(&endorser),
+        )
+        .unwrap();
     bindings
         .apply_link(&ns, &genesis, &[], &cert)
         .unwrap()
@@ -419,9 +431,13 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
     let ns_bytes = [0x5C; 32];
     let ns = ContextGroupId::from(ns_bytes);
 
-    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    // Enrolled, so the admin row names the account this key resolves to.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    MetaRepository::new(&store)
+        .save(&ns, &meta(admin_account))
+        .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .store_identity(&ns, &admin, &[0x11; 32], &[0u8; 32])
@@ -455,6 +471,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
     // `joined_at`, so a non-zero expiration is rejected by the apply gate.
     let invitation_body = calimero_context_config::types::GroupInvitationFromAdmin {
         inviter_identity: calimero_context_config::types::SignerId::from(*admin.digest()),
+        inviter_account: calimero_context::test_support::account_for(&admin_sk.public_key()),
         group_id: ns,
         expiration_timestamp: 0,
         invitation_nonce: [0x21; 32],
@@ -481,7 +498,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         head.next_nonce,
         NamespaceOp::Root(
             calimero_context_client::local_governance::RootOp::MemberJoined {
-                member: joiner,
+                member: calimero_context::test_support::account_for(&joiner),
                 signed_invitation: invitation,
                 account: credential,
             },

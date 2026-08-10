@@ -46,6 +46,7 @@ pub mod rotation_listener;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
+pub mod test_support;
 pub mod unified_applier;
 pub mod unified_op_store;
 

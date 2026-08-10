@@ -502,11 +502,11 @@ mod dispatch_tests {
         assert_eq!(
             admit_trigger(&OpEvent::TeeMemberAdmitted {
                 group_id: [4u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
             }),
             Some(AdmitTrigger::NewTeeMember {
                 group_id: [4u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
             })
         );
 
@@ -514,7 +514,7 @@ mod dispatch_tests {
         assert_eq!(
             admit_trigger(&OpEvent::MemberAdded {
                 group_id: [5u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
                 role: GroupMemberRole::Member,
             }),
             None
@@ -522,7 +522,7 @@ mod dispatch_tests {
         assert_eq!(
             admit_trigger(&OpEvent::TeeMemberRemoved {
                 group_id: [6u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
             }),
             None
         );

@@ -121,8 +121,8 @@ mod tests {
             target_application_id: ApplicationId::from(application_id),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: PublicKey::from([0x01; 32]),
-            owner_identity: PublicKey::from([0x01; 32]),
+            admin_identity: calimero_account::AccountId::from([0x01; 32]),
+            owner_identity: calimero_account::AccountId::from([0x01; 32]),
             migration: None,
             auto_join: true,
         }
@@ -209,8 +209,8 @@ mod tests {
             target_application_id: ApplicationId::from([0x66; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: node_identity_pk,
-            owner_identity: node_identity_pk,
+            admin_identity: crate::test_support::account_for(&node_identity_pk),
+            owner_identity: crate::test_support::account_for(&node_identity_pk),
             migration: None,
             auto_join: true,
         };
@@ -242,7 +242,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id_with_membership,
-                &node_identity_pk,
+                &crate::test_support::account_for(&node_identity_pk),
                 calimero_primitives::context::GroupMemberRole::Admin,
             )
             .expect("add node identity to first namespace group");

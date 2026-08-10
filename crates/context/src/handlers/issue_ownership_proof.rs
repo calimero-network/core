@@ -406,7 +406,11 @@ mod tests {
         let signing_pub = signing_priv.public_key();
 
         MembershipRepository::new(&store)
-            .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::account_for(&signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
@@ -494,7 +498,11 @@ mod tests {
 
         // Admin row exists and context is registered, but no signing key.
         MembershipRepository::new(&store)
-            .add_member(&group_id, &identity, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::account_for(&identity),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -569,7 +577,11 @@ mod tests {
         // Admin + signing key registered at the root (resolve_group_signing_key
         // walks up from the requested group, so a root key is reachable).
         MembershipRepository::new(&store)
-            .add_member(&root, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &root,
+                &crate::test_support::account_for(&signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&root, &signing_pub, signing_priv.as_bytes())
@@ -657,7 +669,11 @@ mod tests {
         );
 
         MembershipRepository::new(&store)
-            .add_member(&group_id, &node_identity, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::account_for(&node_identity),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &node_identity, real_priv.as_bytes())
@@ -710,7 +726,11 @@ mod tests {
         let signing_pub = signing_priv.public_key();
 
         MembershipRepository::new(&store)
-            .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::account_for(&signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
@@ -788,7 +808,11 @@ mod tests {
         // thing standing between the caller and a namespace proof is the
         // namespace-root check.
         MembershipRepository::new(&store)
-            .add_member(&child, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &child,
+                &crate::test_support::account_for(&signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin at child");
         SigningKeysRepository::new(&store)
             .store_key(&child, &signing_pub, signing_priv.as_bytes())

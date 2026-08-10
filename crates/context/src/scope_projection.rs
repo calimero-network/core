@@ -2069,10 +2069,11 @@ mod tests {
     /// `MemberJoinedOpen` inheritance proof.
     fn member_joined(group: ContextGroupId, member: PublicKey) -> RootOp {
         RootOp::MemberJoined {
-            member,
+            member: crate::test_support::account_for(&member),
             signed_invitation: SignedGroupOpenInvitation {
                 invitation: GroupInvitationFromAdmin {
                     inviter_identity: [0xA1; 32].into(),
+                    inviter_account: calimero_account::AccountId::from([0x44; 32]),
                     group_id: group,
                     expiration_timestamp: 1_700_000_000,
                     invitation_nonce: [0x33; 32],
@@ -2110,7 +2111,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoinedOpen {
-                    member,
+                    member: crate::test_support::account_for(&member),
                     group_id: group.into(),
                     account: account.clone(),
                 },
@@ -2148,6 +2149,7 @@ mod tests {
         let signed_invitation = SignedGroupOpenInvitation {
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: [0xA1; 32].into(),
+                inviter_account: calimero_account::AccountId::from([0x44; 32]),
                 group_id: group,
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
@@ -2164,7 +2166,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoined {
-                    member,
+                    member: crate::test_support::account_for(&member),
                     signed_invitation,
                     account: account.clone(),
                 },
@@ -2197,7 +2199,13 @@ mod tests {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let op = op_from_namespace_op(
-            &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            &signed_root(
+                ns,
+                signer,
+                RootOp::AdminChanged {
+                    new_admin: crate::test_support::account_for(&signer),
+                },
+            ),
             None,
             [0x99; 32],
             hlc(10),
@@ -2459,7 +2467,7 @@ mod tests {
         let add = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberAdded {
-                member,
+                member: crate::test_support::account_for(&member),
                 role: GroupMemberRole::Admin,
             }),
             [0xAB; 32],
@@ -2483,7 +2491,7 @@ mod tests {
         let remove = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberRemoved {
-                member,
+                member: crate::test_support::account_for(&member),
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             }),
@@ -2525,7 +2533,13 @@ mod tests {
             &[],
         );
         let admin = op_from_namespace_op(
-            &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            &signed_root(
+                ns,
+                signer,
+                RootOp::AdminChanged {
+                    new_admin: crate::test_support::account_for(&signer),
+                },
+            ),
             None,
             [0xAA; 32],
             hlc(20),

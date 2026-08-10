@@ -2207,15 +2207,19 @@ mod tests {
                     target_application_id: current_app,
                     upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 1_700_000_000,
-                    admin_identity: requester,
-                    owner_identity: requester,
+                    admin_identity: crate::test_support::account_for(&requester),
+                    owner_identity: crate::test_support::account_for(&requester),
                     migration: None,
                     auto_join: true,
                 },
             )
             .expect("save meta");
         MembershipRepository::new(&store)
-            .add_member(&group_id, &requester, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::account_for(&requester),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         UpgradesRepository::new(&store)
             .save(

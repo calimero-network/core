@@ -247,8 +247,8 @@ mod tests {
             target_application_id: ApplicationId::from([0x66; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            admin_identity: admin,
-            owner_identity: admin,
+            admin_identity: crate::test_support::account_for(&admin),
+            owner_identity: crate::test_support::account_for(&admin),
             migration: None,
             auto_join: true,
         }
@@ -285,18 +285,26 @@ mod tests {
         // open-subgroup join cap — it must surface in the child's closure
         // purely by inheritance (no stored row in the child).
         MembershipRepository::new(&store)
-            .add_member(&parent, &inherited, GroupMemberRole::Member)
+            .add_member(
+                &parent,
+                &crate::test_support::account_for(&inherited),
+                GroupMemberRole::Member,
+            )
             .unwrap();
         CapabilitiesRepository::new(&store)
             .set_member_capability(
                 &parent,
-                &inherited,
+                &crate::test_support::account_for(&inherited),
                 MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
         // `direct` is a direct member of the child.
         MembershipRepository::new(&store)
-            .add_member(&child, &direct, GroupMemberRole::Member)
+            .add_member(
+                &child,
+                &crate::test_support::account_for(&direct),
+                GroupMemberRole::Member,
+            )
             .unwrap();
 
         // count() on the child sees only its direct rows — the undercount we
@@ -344,14 +352,18 @@ mod tests {
         MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
         // `member` is a plain (non-admin) member of the namespace.
         MembershipRepository::new(&store)
-            .add_member(&ns, &member, GroupMemberRole::Member)
+            .add_member(
+                &ns,
+                &crate::test_support::account_for(&member),
+                GroupMemberRole::Member,
+            )
             .unwrap();
 
         // A genuine member is still rejected by the handler's gate — the gate is
         // admin authority, not membership.
         assert!(
             MembershipRepository::new(&store)
-                .is_member(&ns, &member)
+                .is_member(&ns, &crate::test_support::account_for(&member))
                 .unwrap(),
             "the rejected caller is genuinely a member — membership alone is not enough"
         );

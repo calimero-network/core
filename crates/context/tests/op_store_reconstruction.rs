@@ -55,7 +55,7 @@ fn hlc(ns: u64) -> HybridTimestamp {
     ))
 }
 
-fn meta(admin: PublicKey) -> GroupMetaValue {
+fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
@@ -80,16 +80,21 @@ fn op_store_reconstruction_recovers_late_decrypted_membership_after_key_delivery
     // Genesis base state (store seeds, exactly as create_group writes): the
     // namespace meta + admin membership + the group key so the encrypted op
     // decrypts at READ time.
-    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    // Enrolled, so the admin row names the account this key resolves to.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    MetaRepository::new(&store)
+        .save(&ns, &meta(admin_account))
+        .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     let group_key = [0x5A; 32];
     let key_id = GroupKeyring::new(&store, ns).store_key(&group_key).unwrap();
 
-    // The admin adds `member` via an ENCRYPTED group op.
+    // The admin adds `member` via an ENCRYPTED group op. The op names the
+    // ACCOUNT, so the key is enrolled here and the two agree.
     let inner = GroupOp::MemberAdded {
-        member,
+        member: calimero_context::test_support::enrol(&store, &ns, &member),
         role: GroupMemberRole::Member,
     };
     let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
@@ -236,9 +241,13 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
     let member = PrivateKey::random(&mut OsRng).public_key();
     let ns = ContextGroupId::from([0x33; 32]);
     let ns_bytes = ns.to_bytes();
-    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    // Enrolled, so the admin row names the account this key resolves to.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    MetaRepository::new(&store)
+        .save(&ns, &meta(admin_account))
+        .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     // The author holds the group key (they authored the op) — so the persist path's
     // decrypt succeeds and the real MemberAdded is folded, not a Noop.
@@ -248,7 +257,7 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
     // Simulate local authoring: an encrypted MemberAdded is in the gov-DAG (op-log +
     // head) but NOT the op-store — exactly the gap the local-author path leaves.
     let inner = GroupOp::MemberAdded {
-        member,
+        member: calimero_context::test_support::enrol(&store, &ns, &member),
         role: GroupMemberRole::Member,
     };
     let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();

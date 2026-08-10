@@ -35,7 +35,11 @@ fn empty_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
 
-fn meta(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMetaValue {
+fn meta(
+    admin: calimero_account::AccountId,
+    app_key: [u8; 32],
+    target: ApplicationId,
+) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
@@ -48,19 +52,23 @@ fn meta(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMeta
     }
 }
 
+/// `admin` is a signing KEY; it is enrolled so the rows name the account that
+/// key resolves to, which is what every gate reading them will look up.
 fn create_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
     app_key: [u8; 32],
     target: ApplicationId,
-) {
+) -> calimero_account::AccountId {
+    let account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta(admin, app_key, target))
+        .save(gid, &meta(account, app_key, target))
         .unwrap();
     MembershipRepository::new(store)
-        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .add_member(gid, &account, GroupMemberRole::Admin)
         .unwrap();
+    account
 }
 
 #[test]
