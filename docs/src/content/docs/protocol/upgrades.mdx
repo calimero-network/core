@@ -207,7 +207,7 @@ new state**. Borsh is positional, so the rule is purely about field layout:
 | Change a field's type | Yes |
 
 A migration runs **once per node**, the first time each context is accessed after the
-upgrade, under the `LazyOnAccess` upgrade policy. It reads the old root, transforms it,
+upgrade. It reads the old root, transforms it,
 and returns the new root **by value** — there is no `Result`. On unrecoverable input
 (no prior state, undeserializable bytes) the migration `panic!`s, which aborts the
 upgrade and leaves the v1 state intact for a retry: **a failed migration is
@@ -419,7 +419,7 @@ Two coordinated fences enforce this:
   (see below). The fence decides each incoming context-state delta against three facts: the
   boundary, the delta's HLC, and — crucially — the **loaded reader** app_key, the bytecode
   blob the receiver actually executes right now, *not* the replicated `GroupMeta.app_key`
-  migration target. Under `LazyOnAccess` the governance target advances for everyone at
+  migration target. The governance target advances for everyone at
   cascade-apply while each node's binary swaps lazily, so keying on the target would fence a
   node against a schema it can already read. The rule (`fence_decision`,
   `crates/context/src/hlc_fence.rs`):
@@ -475,7 +475,7 @@ is stamped **once** by the initiator so every node records an identical fence bo
     { from: 1, to: 1, label: 'emit CascadeUpgrade { from_app_key, app_key, target, migration, cascade_hlc }' },
     { from: 1, to: 2, label: 'op replicates to every member node' },
     { from: 2, to: 2, label: 'apply: set target + app_key + migration atomically; record cascade_hlc fence' },
-    { type: 'divider', label: 'LazyOnAccess: nothing migrates yet — state is reshaped on first access' },
+    { type: 'divider', label: 'nothing migrates yet — state is reshaped on first access' },
     { from: 2, to: 2, label: 'first context access → run migrate (independently, deterministically)' },
     { from: 2, to: 2, label: 'migration_check passes → commit v2 root; emit AppVersionChanged' },
     { from: 2, to: 1, label: 'fence: reject deltas with stale producing_app_key / pre-cascade_hlc' },
@@ -520,18 +520,19 @@ it to prompt owners to run `migrate_my_entries()` and to avoid bundle skew.
 
 ## The in-progress upgrade write gate
 
-An **eager** group upgrade (the `Automatic` policy, driven by a propagator) walks the group
-migrating contexts one at a time. While that walk is mid-flight the group's upgrade row is
-`GroupUpgradeStatus::InProgress`, and a second fence — the execute write-gate — keeps a
-not-yet-migrated context from committing a write that would drift against group-mates
-already on the new schema.
+A cascade upgrade spawns a propagator on the initiating node that walks each matched
+descendant group's contexts, migrating them one at a time. While that walk is mid-flight
+the group's upgrade row is `GroupUpgradeStatus::InProgress`, and a second fence — the
+execute write-gate — keeps a not-yet-migrated context from committing a write that would
+drift against group-mates already on the new schema.
 
 Only `InProgress` blocks, and the gate is deliberately narrow so it cannot deadlock the
 machinery that clears it:
 
-- **Lazy upgrades** write `Completed` directly and never pass through `InProgress`, so a
-  `LazyOnAccess` group is never write-frozen.
-- **The eager propagator** — the task doing the migrating — **bypasses the execute gate**, so
+- **A direct (non-cascade) group upgrade** writes `Completed` immediately and never passes
+  through `InProgress`; its contexts migrate lazily on next access instead, so the group is
+  never write-frozen.
+- **The cascade propagator** — the task doing the migrating — **bypasses the execute gate**, so
   the migration commits that retire `InProgress` are never blocked by it.
 
 (`upgrade_blocks_write`, `crates/context/src/handlers/execute/upgrade_gate.rs`.)
@@ -547,12 +548,13 @@ write-intent is derived **post-execution**:
   (`upgrade_rejects_committed_write`, call site
   `crates/context/src/handlers/execute/mod.rs`).
 
-So during an eager upgrade a context still serves reads from its old state and only
-side-effecting calls are turned away — for exactly as long as the `InProgress` window lasts.
+So while a cascade propagator's walk is in flight, a context still serves reads from its old
+state and only side-effecting calls are turned away — for exactly as long as the `InProgress`
+window lasts.
 
 ## Lazy upgrades: replaying the ladder hop by hop
 
-Under `LazyOnAccess` nothing migrates at cascade-apply; a context reshapes its state on its
+Nothing migrates at cascade-apply; a context reshapes its state on its
 **first access** afterward. A context idle through several releases can be many versions
 behind the group target — and it must **not** jump the latest edge against old state. Running
 `migrate_v2_to_v3` on still-`v1` bytes mis-decodes and panics. Instead the node replays the
@@ -598,20 +600,14 @@ pub struct DocV2 {
 ```
 
 Three nodes — `A`, `B`, `C` — run a context in one group. An admin on `A` ships v2 with
-`POST /groups/:id/upgrade`, emitting one `CascadeUpgrade` that replicates to all three. What
-happens next depends on the group's upgrade policy.
+`POST /groups/:id/upgrade`, emitting one `CascadeUpgrade` that replicates to all three.
 
-**Eager (`Automatic`).** A propagator walks the group. The upgrade row goes `InProgress`,
-which write-freezes the context on every node: reads of `DocV1` still serve, but a call that
-would write `notes` is refused with `UpgradeInProgress`. Each node independently runs
+The `CascadeUpgrade` records the new target application plus the migration and stamps the
+`cascade_hlc` fence; nothing migrates yet, and every context reshapes its state on first
+access. `A` and `B`, which are actively used, migrate on their next context access: each runs
 `migrate_v1_to_v2` against its own byte-identical `v1` state, the `migration_check` (if any)
 passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: 1, toVersion: 2 }`
-fires. When the last context migrates the row flips to `Completed` and writes reopen.
-
-**Lazy (`LazyOnAccess`).** The `CascadeUpgrade` only records the new target plus the
-`cascade_hlc` fence; nothing migrates yet. `A` and `B`, which are actively used, migrate on
-their next context access; `C`, idle, keeps `DocV1` bytes on disk. The group is never
-write-frozen (lazy writes `Completed` directly).
+fires. `C`, idle, keeps `DocV1` bytes on disk until it is next accessed.
 
 **The lagging node.** Say `C` stays offline across a *second* release, v3. While `C` is
 behind, the `v2`/`v3`-schema deltas its migrated peers broadcast arrive under a schema that

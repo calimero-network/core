@@ -41,8 +41,7 @@ pub(super) fn upgrade_rejects_committed_write(block_writes: bool, produced_write
     block_writes && produced_write
 }
 
-/// What the lazy-upgrade path should do for a stale context under a
-/// LazyOnAccess group.
+/// What the lazy-upgrade path should do for a stale context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LazyUpgradeAction {
     /// Context has no activation marker (never activated anything): a
@@ -62,10 +61,9 @@ pub(super) enum LazyUpgradeAction {
     Replay { bound: [u8; 32] },
 }
 
-/// Whether this context, under a LazyOnAccess group, needs an upgrade or
-/// migration, and via which mode. The caller must load bytecode by blob
-/// key (bundle ids are version-stable) — the application row may still
-/// hold the OLD wasm.
+/// Whether this context needs an upgrade or migration, and via which mode.
+/// The caller must load bytecode by blob key (bundle ids are version-stable)
+/// — the application row may still hold the OLD wasm.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,

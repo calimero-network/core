@@ -234,8 +234,8 @@ impl Handler<ExecuteRequest> for ContextManager {
         // pre-migration root. Read-vs-write intent isn't known upstream, so
         // user-call writes are caught post-execution in `internal_execute` (we
         // only record the group here); state-ops are known writes, refused now.
-        // This gate is policy-agnostic: a cascade descendant (`LazyOnAccess`)
-        // holds `InProgress` for its whole propagation walk, same as an eager group.
+        // This gate only cares whether `InProgress` is set, not why: a cascade
+        // descendant holds it for its whole propagator walk, same as the initiator.
         let mut block_writes_for_group = None;
         match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
             Ok(Some(group_id)) => {
@@ -304,8 +304,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         }
 
-        // Lazy upgrade: if context belongs to a LazyOnAccess group and is stale,
-        // trigger an upgrade before executing the method.
+        // Lazy upgrade: if this context's group has a pending upgrade and the
+        // context is stale, trigger an upgrade before executing the method.
         // Note: placed after context.lock() so that `context` borrow is released
         // before we access self.datastore.
         // Skip for sync operations — the state payload was produced by the old app

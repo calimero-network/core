@@ -258,7 +258,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 meta.migration = migration_bytes.clone();
                 MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
-                // LazyOnAccess: contexts upgrade individually on demand; there is no single
+                // Contexts upgrade individually on demand; there is no single
                 // "all done" moment, so completed_at is None.
                 let completed_status = GroupUpgradeStatus::Completed { completed_at: None };
 
@@ -279,7 +279,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 info!(
                     ?group_id,
                     %target_application_id,
-                    "LazyOnAccess upgrade target set; contexts will upgrade on next access"
+                    "upgrade target set; contexts will upgrade on next access"
                 );
 
                 let contexts = calimero_governance_store::enumerate_group_contexts(

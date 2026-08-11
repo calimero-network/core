@@ -231,9 +231,8 @@ pub fn migrate_v1_to_v2() -> AppV2 {
   sync (it's a full root replacement, not a CRDT-mergeable delta). Two
   nodes that run the same migrate fn on the same v1 bytes must produce
   byte-identical v2 state, or their roots diverge and subsequent CRDT
-  sync breaks. Under the default `LazyOnAccess` upgrade policy each node
-  migrates on its next context access (logged as `performing lazy upgrade
-  before execution`).
+  sync breaks. Each node migrates on its next context access (logged as
+  `performing lazy upgrade before execution`).
 
   The SDK macro removes the two *structural* sources of node-local
   entropy for you:
