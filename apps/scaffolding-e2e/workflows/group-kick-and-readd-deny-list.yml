@@ -125,6 +125,7 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Node-3 joins namespace
     type: join_namespace
@@ -133,6 +134,7 @@ steps:
     invitation: '{{invite_node3}}'
     outputs:
       identity_node3: memberIdentity
+      account_node3: memberAccount
 
   # Default subgroup visibility is Restricted; no `set_subgroup_visibility`
   # call is needed. Inheritance via CAN_JOIN_OPEN_SUBGROUPS does not apply.
@@ -235,7 +237,7 @@ steps:
     node: kick-readd-node-1
     group_id: '{{subgroup_id}}'
     members:
-      - '{{identity_node2}}'
+      - '{{account_node2}}'
 
   - name: Wait for MemberRemoved + deny-list to propagate
     type: wait_for_sync
@@ -256,8 +258,8 @@ steps:
   - name: Assert node-2 absent after kick
     type: assert
     statements:
-      - "not_contains({{members_after_kick}}, {{identity_node2}})"
-      - "contains({{members_after_kick}}, {{identity_node3}})"
+      - "not_contains({{members_after_kick}}, {{account_node2}})"
+      - "contains({{members_after_kick}}, {{account_node3}})"
 
   # ── Phase 4: Kicked node's write must not reach node-3 ────────────
   # The follow-on cross-peer read on node-3 is the strict negative
@@ -334,8 +336,8 @@ steps:
   - name: Assert node-2 present after re-add
     type: assert
     statements:
-      - "contains({{members_after_readd}}, {{identity_node2}})"
-      - "contains({{members_after_readd}}, {{identity_node3}})"
+      - "contains({{members_after_readd}}, {{account_node2}})"
+      - "contains({{members_after_readd}}, {{account_node3}})"
 
   # ── Phase 6: Post-readd write must reach node-3 ───────────────────
   # The end-to-end signal that node-3's deny-list entry for node-2

@@ -1,6 +1,6 @@
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
-    ReentryRepository, SigningKeysRepository,
+    account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
+    MetadataRepository, ReentryRepository, SigningKeysRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -659,9 +659,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     "member joined group via direct request-response"
                 );
 
+                // Resolved after the join has applied, so a joiner that enrolled
+                // as part of it reports the account it actually writes as rather
+                // than the stand-in its key would have derived a moment earlier.
+                let member_account = account_for_group(&datastore, &group_id)?;
+
                 Ok(JoinGroupResponse {
                     group_id,
                     member_identity: joiner_identity,
+                    member_account,
                     governance_op_bytes: vec![],
                 })
             }

@@ -39,16 +39,17 @@ use crate::group::{
     LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
     LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, MigrationStatus, NamespaceSummary, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RemoveGroupMembersRequest, ResyncContextRequest, ResyncContextResponse,
-    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    ListNamespacesRequest, MigrationStatus, NamespaceIdentity, NamespaceSummary,
+    PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -2208,7 +2209,7 @@ impl ContextClient {
         get_namespace_identity,
         GetNamespaceIdentity,
         GetNamespaceIdentityRequest,
-        eyre::Result<Option<(ContextGroupId, PublicKey)>>
+        eyre::Result<Option<NamespaceIdentity>>
     );
     forward_to_actor!(
         list_namespaces_for_application,

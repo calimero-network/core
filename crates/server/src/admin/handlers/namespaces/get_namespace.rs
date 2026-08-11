@@ -26,7 +26,7 @@ pub async fn handler(
         .get_namespace_identity(GetNamespaceIdentityRequest { group_id })
         .await
     {
-        Ok(Some((_, node_pk))) => node_pk,
+        Ok(Some(identity)) => identity.public_key,
         Ok(None) => {
             return ApiError {
                 status_code: StatusCode::NOT_FOUND,

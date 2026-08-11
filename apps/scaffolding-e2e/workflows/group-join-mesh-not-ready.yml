@@ -163,6 +163,7 @@ steps:
     invitation: '{{invitation}}'
     outputs:
       member_identity_node2: memberIdentity
+      member_account_node2: memberAccount
 
   - name: Assert re-join returned a member identity
     type: assert
@@ -180,6 +181,6 @@ steps:
     type: assert
     statements:
       - "is_set({{joiner_members}})"
-      - "contains({{joiner_members}}, {{member_identity_node2}})"
+      - "contains({{joiner_members}}, {{member_account_node2}})"
 
 stop_all_nodes: true

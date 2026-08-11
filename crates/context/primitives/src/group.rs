@@ -312,6 +312,13 @@ impl Message for JoinGroupRequest {
 pub struct JoinGroupResponse {
     pub group_id: ContextGroupId,
     pub member_identity: PublicKey,
+    /// The principal the joiner's membership row is keyed by.
+    ///
+    /// Returned beside the key for the same reason [`NamespaceIdentity`] carries
+    /// both: the joiner is about to be addressed by account (capabilities, role,
+    /// metadata, removal), and the account is a hash of the key that no caller
+    /// can compute for itself.
+    pub member_account: AccountId,
     /// Serialized `SignedGroupOp` (borsh) containing the `JoinWithInvitationClaim`.
     /// The orchestrator must relay this to the inviting node's claim-invitation
     /// endpoint so the member is registered on the remote side.
@@ -1211,8 +1218,27 @@ pub struct GetNamespaceIdentityRequest {
     pub group_id: ContextGroupId,
 }
 
+/// This node's identity inside one namespace, in both spaces it is named in.
+///
+/// The two ids are not interchangeable and neither is derivable from the other by
+/// a caller: `public_key` is the key this node signs with, while `account` is the
+/// principal the governance rows are keyed by — a domain-separated hash of that
+/// key while the node is unenrolled, and the enrolled account once a binding
+/// exists. Every member-addressing endpoint takes the account, so a caller that
+/// only ever learned the key cannot name the member it just looked up. Returning
+/// both from the one call is what closes that gap.
+#[derive(Clone, Copy, Debug)]
+pub struct NamespaceIdentity {
+    /// The namespace the identity belongs to (the resolved root group).
+    pub namespace_id: ContextGroupId,
+    /// The key this node signs namespace ops with.
+    pub public_key: PublicKey,
+    /// The principal that key writes as — what member-addressing APIs expect.
+    pub account: AccountId,
+}
+
 impl Message for GetNamespaceIdentityRequest {
-    type Result = eyre::Result<Option<(ContextGroupId, PublicKey)>>;
+    type Result = eyre::Result<Option<NamespaceIdentity>>;
 }
 
 #[derive(Debug)]

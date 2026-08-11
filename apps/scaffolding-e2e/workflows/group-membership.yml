@@ -67,6 +67,7 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Invite node-3 to namespace
     type: create_namespace_invitation
@@ -212,7 +213,7 @@ steps:
     node: e2e-node-1
     group_id: '{{subgroup_id}}'
     members:
-      - '{{identity_node2}}'
+      - '{{account_node2}}'
 
   - name: List subgroup members after removal
     type: list_group_members

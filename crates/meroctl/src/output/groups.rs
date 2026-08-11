@@ -267,6 +267,7 @@ impl Report for NamespaceIdentityApiResponse {
         ]);
         let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
         let _ = table.add_row(vec!["Public Key", &self.public_key]);
+        let _ = table.add_row(vec!["Account", &self.account]);
         println!("{table}");
     }
 }

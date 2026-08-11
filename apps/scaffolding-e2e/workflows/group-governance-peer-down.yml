@@ -111,13 +111,13 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{invitation_node3}}'
     outputs:
-      member_identity_node3: memberIdentity
+      member_account_node3: memberAccount
 
   - name: Get node-3 capabilities (inherited the default set while node-2 was down)
     type: get_member_capabilities
     node: e2e-node-3
     group_id: '{{namespace_id}}'
-    member_id: '{{member_identity_node3}}'
+    member_id: '{{member_account_node3}}'
     outputs:
       node3_caps: capabilities
 
@@ -157,7 +157,7 @@ steps:
     type: get_member_capabilities
     node: e2e-node-2
     group_id: '{{namespace_id}}'
-    member_id: '{{member_identity_node3}}'
+    member_id: '{{member_account_node3}}'
     outputs:
       node3_caps_view_node2: capabilities
 
