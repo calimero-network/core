@@ -181,7 +181,7 @@ pub fn verify_ack(
 /// promoted to a key-derived stand-in, which would match no grant while looking
 /// like it had. For these callers "fail closed" costs only a dropped best-effort
 /// gossip message, which sync recovers from.
-fn signer_is_namespace_member(
+pub fn signer_is_namespace_member(
     store: &Store,
     namespace_id: NamespaceId,
     signer: &PublicKey,
