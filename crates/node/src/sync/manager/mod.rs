@@ -4318,6 +4318,7 @@ mod pending_upgrade_tests {
                         package: "stage-pkg".to_owned().into_boxed_str(),
                         version: "1.0.0".to_owned().into_boxed_str(),
                         signer_id: "stage-signer".to_owned().into_boxed_str(),
+                        state_version: 0,
                     },
                 ),
             )
@@ -4347,6 +4348,7 @@ mod pending_upgrade_tests {
                         package: "stage-pkg".to_owned().into_boxed_str(),
                         version: "1.0.0".to_owned().into_boxed_str(),
                         signer_id: "stage-signer".to_owned().into_boxed_str(),
+                        state_version: 0,
                     },
                 ),
             )

@@ -100,6 +100,7 @@ mod tests {
             status,
             cascade_hlc: None,
             cascade_seq: None,
+            to_state_version: 2,
         }
     }
 

@@ -1318,7 +1318,7 @@ fn read_byte<R: borsh::io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> borsh::io
 /// upgrades are tracked by semver version string from the local
 /// `ApplicationMeta`, not by application id.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupUpgradeValue {
     /// Semver version of the application before the upgrade, read from the
     /// current application's `ApplicationMeta.version`.
@@ -1332,8 +1332,8 @@ pub struct GroupUpgradeValue {
     pub status: GroupUpgradeStatus,
     /// Sticky cascade fence boundary: the HLC the originating `CascadeUpgrade`
     /// op was stamped with, identical on every node that applied it. `None` for
-    /// non-cascade upgrades and pre-existing records. NEVER cleared once set
-    /// (survives `Completed`) — the boundary the state-delta HLC fence reads.
+    /// non-cascade upgrades. NEVER cleared once set (survives `Completed`) —
+    /// the boundary the state-delta HLC fence reads.
     pub cascade_hlc: Option<HybridTimestamp>,
     /// The migration's expand-entry governance position: the
     /// `NamespaceGovHead.sequence` captured when this cascade was applied.
@@ -1341,78 +1341,13 @@ pub struct GroupUpgradeValue {
     /// monotonic governance-op counter — the SAME number space the migration
     /// heartbeat's `synced_up_to_hlc` (`= head.sequence`) lives in, so the
     /// migration-status rollup pins the cohort by comparing `synced_up_to_hlc <
-    /// cascade_seq` like-for-like. `None` for non-cascade upgrades and pre-existing
-    /// records.
+    /// cascade_seq` like-for-like. `None` for non-cascade upgrades.
     pub cascade_seq: Option<u64>,
-}
-
-#[cfg(feature = "borsh")]
-impl BorshDeserialize for GroupUpgradeValue {
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let from_version = String::deserialize_reader(reader)?;
-        let to_version = String::deserialize_reader(reader)?;
-        let migration = Option::<Vec<u8>>::deserialize_reader(reader)?;
-        let initiated_at = u64::deserialize_reader(reader)?;
-        let initiated_by = PrimitivePublicKey::deserialize_reader(reader)?;
-        let status = GroupUpgradeStatus::deserialize_reader(reader)?;
-        // Backward-compatible trailing field: absent in pre-existing records
-        // (LazyOnAccess path writes directly to Completed, so this field must
-        // live here rather than inside InProgress).
-        let cascade_hlc = {
-            let mut first = [0u8; 1];
-            if !read_byte(reader, &mut first)? {
-                // Clean EOF — legacy record with no cascade_hlc bytes.
-                None
-            } else {
-                // At least one byte is present; it is the Option discriminant.
-                // 0 = None, 1 = Some(HybridTimestamp).
-                let tag = first[0];
-                match tag {
-                    0 => None,
-                    1 => Some(HybridTimestamp::deserialize_reader(reader)?),
-                    _ => {
-                        return Err(borsh::io::Error::new(
-                            borsh::io::ErrorKind::InvalidData,
-                            "invalid Option tag for cascade_hlc",
-                        ))
-                    }
-                }
-            }
-        };
-        // Second backward-compatible trailing field, added after `cascade_hlc`.
-        // Records written before this field decode as `None`: a clean EOF right
-        // after `cascade_hlc` (legacy and pre-`cascade_seq` records) yields
-        // `None`, mirroring the `cascade_hlc` decode above. 0 = None,
-        // 1 = Some(u64).
-        let cascade_seq = {
-            let mut first = [0u8; 1];
-            if !read_byte(reader, &mut first)? {
-                None
-            } else {
-                let tag = first[0];
-                match tag {
-                    0 => None,
-                    1 => Some(u64::deserialize_reader(reader)?),
-                    _ => {
-                        return Err(borsh::io::Error::new(
-                            borsh::io::ErrorKind::InvalidData,
-                            "invalid Option tag for cascade_seq",
-                        ))
-                    }
-                }
-            }
-        };
-        Ok(Self {
-            from_version,
-            to_version,
-            migration,
-            initiated_at,
-            initiated_by,
-            status,
-            cascade_hlc,
-            cascade_seq,
-        })
-    }
+    /// ABI state version of the target application, from its embedded schema.
+    /// The migration rollup compares each member's loaded state version against
+    /// this. `0` means the target's ABI was unreadable, which the rollup treats
+    /// as an unsatisfiable target rather than a satisfied one.
+    pub to_state_version: u32,
 }
 
 /// One rung of a group's upgrade ladder: the bytecode blob (`app_key`) and
@@ -3385,6 +3320,7 @@ mod tests {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3392,6 +3328,7 @@ mod tests {
 
             assert_eq!(decoded.from_version, "1.0.0");
             assert_eq!(decoded.to_version, "2.0.0");
+            assert_eq!(decoded.to_state_version, 2);
             assert_eq!(decoded.migration, Some(vec![0xDE, 0xAD]));
             assert_eq!(decoded.initiated_at, value.initiated_at);
             assert_eq!(decoded.initiated_by, value.initiated_by);
@@ -3457,6 +3394,7 @@ mod tests {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 4,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3464,6 +3402,7 @@ mod tests {
 
             assert_eq!(decoded.from_version, "3.0.0");
             assert_eq!(decoded.to_version, "4.0.0");
+            assert_eq!(decoded.to_state_version, 4);
             assert_eq!(decoded.migration, None);
             match decoded.status {
                 GroupUpgradeStatus::Completed { completed_at } => {
@@ -3494,6 +3433,7 @@ mod cascade_hlc_borsh_tests {
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc,
             cascade_seq: None,
+            to_state_version: 2,
         }
     }
 
@@ -3504,24 +3444,6 @@ mod cascade_hlc_borsh_tests {
         let decoded = GroupUpgradeValue::try_from_slice(&bytes).unwrap();
         assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
         assert_eq!(decoded.to_version, "2.0.0");
-    }
-
-    #[test]
-    fn old_format_without_field_decodes_as_none() {
-        let mut legacy = Vec::new();
-        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
-        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
-        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
-        1_700_000_000u64.serialize(&mut legacy).unwrap();
-        PrimitivePublicKey::from([7u8; 32])
-            .serialize(&mut legacy)
-            .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut legacy)
-            .unwrap();
-
-        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
-        assert_eq!(decoded.cascade_hlc, None);
     }
 
     #[test]
@@ -3567,48 +3489,40 @@ mod cascade_hlc_borsh_tests {
     }
 
     #[test]
-    fn old_format_with_cascade_hlc_but_no_cascade_seq_decodes_as_none() {
-        // A record written after `cascade_hlc` was added but before `cascade_seq`:
-        // it ends right after the `cascade_hlc` Option, so `cascade_seq` must
-        // decode as `None` (clean EOF), not error.
-        let mut legacy = Vec::new();
-        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
-        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
-        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
-        1_700_000_000u64.serialize(&mut legacy).unwrap();
-        PrimitivePublicKey::from([7u8; 32])
-            .serialize(&mut legacy)
-            .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut legacy)
-            .unwrap();
-        Some(HybridTimestamp::zero())
-            .serialize(&mut legacy)
-            .unwrap();
+    fn group_upgrade_value_roundtrips_to_state_version() {
+        let value = GroupUpgradeValue {
+            from_version: "10.1.3".to_owned(),
+            to_version: "10.2.0".to_owned(),
+            migration: None,
+            initiated_at: 7,
+            initiated_by: PrimitivePublicKey::from([3; 32]),
+            status: GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+            cascade_hlc: None,
+            cascade_seq: None,
+            to_state_version: 2,
+        };
 
-        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
-        assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
-        assert_eq!(decoded.cascade_seq, None);
+        let bytes = to_vec(&value).expect("serialize");
+        let back = GroupUpgradeValue::try_from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(back.to_state_version, 2);
+        assert_eq!(back.to_version, "10.2.0");
     }
 
     #[test]
-    fn fully_legacy_record_decodes_both_trailing_fields_as_none() {
-        // A pre-`cascade_hlc` record (clean EOF after `status`) must decode BOTH
-        // trailing optionals as `None`.
-        let mut legacy = Vec::new();
-        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
-        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
-        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
-        1_700_000_000u64.serialize(&mut legacy).unwrap();
-        PrimitivePublicKey::from([7u8; 32])
-            .serialize(&mut legacy)
-            .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut legacy)
-            .unwrap();
+    fn rejects_partial_to_state_version() {
+        let mut bytes = to_vec(&sample(None)).unwrap();
+        // Two of the four `u32` bytes. Any record short of the full layout must
+        // fail loud rather than decode a default.
+        bytes.truncate(bytes.len() - 2);
 
-        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
-        assert_eq!(decoded.cascade_hlc, None);
-        assert_eq!(decoded.cascade_seq, None);
+        // Borsh reports short input as `InvalidData`, not `UnexpectedEof`.
+        let err = GroupUpgradeValue::try_from_slice(&bytes)
+            .expect_err("expected Err for truncated to_state_version");
+        assert_eq!(err.kind(), borsh::io::ErrorKind::InvalidData);
     }
 }

@@ -1359,8 +1359,6 @@ pub struct MemberMigrationReport {
     pub schema_version: u32,
     /// Unconverted Convergent ("auto") entries the member still has pending.
     pub residue_auto: u64,
-    /// Unconverted identity-gated entries the member still has pending.
-    pub residue_identity: u64,
     /// Governance HLC the member has synced/applied through.
     pub synced_up_to_hlc: u64,
     /// Member-signed millis-since-epoch from the heartbeat itself.
@@ -1429,7 +1427,7 @@ impl MigrationFailureKind {
 /// The migration state the rollup assigns a pinned-cohort member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemberMigrationState {
-    /// Reported `schema_version >= target` with both residue counts at 0.
+    /// Reported `schema_version >= target` with `residue_auto` at 0.
     Migrated,
     /// Reported a fresh heartbeat but is still behind the target version or
     /// carrying residue.
@@ -1476,7 +1474,7 @@ pub struct MigrationStatusRollup {
     pub failed: usize,
     pub total: usize,
     /// `true` iff **every** pinned-cohort member reported
-    /// `schema_version >= target && residue_auto == 0 && residue_identity == 0`.
+    /// `schema_version >= target && residue_auto == 0`.
     /// Any `unknown`, `failed`, or in-progress member keeps this `false`.
     pub all_migrated: bool,
     /// Count of pinned-cohort members reporting `authored_remaining > 0` — i.e.
@@ -1525,8 +1523,8 @@ pub struct MigrationStatus {
 ///
 /// Pure and side-effect free — this is observability only and never gates
 /// correctness or progress. `all_migrated` is `true` IFF every pinned-cohort
-/// member reported `schema_version >= target_version` with both residue counts
-/// at 0; a single `unknown` or in-progress member keeps it `false`.
+/// member reported `schema_version >= target_version` with `residue_auto` at 0;
+/// a single `unknown` or in-progress member keeps it `false`.
 pub fn compute_migration_status_rollup(
     target_version: u32,
     cohort_pinned_at_hlc: Option<HybridTimestamp>,
@@ -1582,10 +1580,7 @@ pub fn compute_migration_status_rollup(
                 if r.authored_remaining > 0 {
                     members_pending_signature += 1;
                 }
-                if r.schema_version >= target_version
-                    && r.residue_auto == 0
-                    && r.residue_identity == 0
-                {
+                if r.schema_version >= target_version && r.residue_auto == 0 {
                     migrated += 1;
                     MemberMigrationState::Migrated
                 } else {
@@ -1642,12 +1637,8 @@ mod migration_status_tests {
 
     /// A heartbeat report whose freshest sync position is well past any pin
     /// used in these tests, so the pin overlay keeps the member in-cohort.
-    fn report(
-        schema_version: u32,
-        residue_auto: u64,
-        residue_identity: u64,
-    ) -> MemberMigrationReport {
-        report_synced(schema_version, residue_auto, residue_identity, u64::MAX)
+    fn report(schema_version: u32, residue_auto: u64) -> MemberMigrationReport {
+        report_synced(schema_version, residue_auto, u64::MAX)
     }
 
     /// Build a report whose `synced_up_to_hlc` is a `NamespaceGovHead.sequence`
@@ -1657,13 +1648,11 @@ mod migration_status_tests {
     fn report_synced(
         schema_version: u32,
         residue_auto: u64,
-        residue_identity: u64,
         synced_up_to_seq: u64,
     ) -> MemberMigrationReport {
         MemberMigrationReport {
             schema_version,
             residue_auto,
-            residue_identity,
             synced_up_to_hlc: synced_up_to_seq,
             reported_at: 0,
             authored_remaining: 0,
@@ -1675,7 +1664,7 @@ mod migration_status_tests {
     fn report_failed(kind: MigrationFailureKind) -> MemberMigrationReport {
         MemberMigrationReport {
             migration_failed: Some(kind),
-            ..report(1, 0, 0)
+            ..report(1, 0)
         }
     }
 
@@ -1685,7 +1674,7 @@ mod migration_status_tests {
         let pb = pk(0xB2);
         let st = compute_migration_status_rollup(2, None, None, &[pa, pb], |peer| {
             if *peer == pa {
-                Some(report(2, 0, 0)) // migrated
+                Some(report(2, 0)) // migrated
             } else {
                 Some(report_failed(MigrationFailureKind::CheckAborted))
             }
@@ -1707,7 +1696,7 @@ mod migration_status_tests {
         let pb = pk(0xB2);
         let st = compute_migration_status_rollup(2, None, None, &[pa, pb], |peer| {
             if *peer == pa {
-                Some(report(2, 0, 0))
+                Some(report(2, 0))
             } else {
                 Some(report_failed(MigrationFailureKind::NoMigrationPath))
             }
@@ -1751,8 +1740,8 @@ mod migration_status_tests {
     fn unknown_member_blocks_all_migrated() {
         let (a, b, c) = (pk(0xA), pk(0xB), pk(0xC));
         let mut reports = BTreeMap::new();
-        let _ = reports.insert(a, report(2, 0, 0));
-        let _ = reports.insert(b, report(2, 0, 0));
+        let _ = reports.insert(a, report(2, 0));
+        let _ = reports.insert(b, report(2, 0));
         // C absent — no fresh heartbeat.
 
         let st = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
@@ -1789,14 +1778,14 @@ mod migration_status_tests {
         let pin_seq = 10u64;
         let mut reports = BTreeMap::new();
         // A,B,C synced at/after the pinned expand-entry sequence -> in-cohort.
-        let _ = reports.insert(a, report_synced(2, 0, 0, pin_seq + 2));
-        let _ = reports.insert(b, report_synced(2, 0, 0, pin_seq + 5));
-        let _ = reports.insert(c, report_synced(2, 0, 0, pin_seq));
+        let _ = reports.insert(a, report_synced(2, 0, pin_seq + 2));
+        let _ = reports.insert(b, report_synced(2, 0, pin_seq + 5));
+        let _ = reports.insert(c, report_synced(2, 0, pin_seq));
         // D's freshest sync position (head sequence 9) is BELOW the pinned
         // expand-entry sequence (10) -> a joiner whose governance head trails
         // the migration cut, excluded by the overlay even though it carries
         // residue and is behind on version.
-        let _ = reports.insert(d, report_synced(1, 5, 5, pin_seq - 1));
+        let _ = reports.insert(d, report_synced(1, 5, pin_seq - 1));
 
         // Display HLC fence in its own (physical-time) space — must not affect
         // the overlay, which keys on `pin_seq`.
@@ -1837,8 +1826,8 @@ mod migration_status_tests {
         let (a, b) = (pk(0xA), pk(0xB));
         let mut reports = BTreeMap::new();
         // Real gov-head sequences, both at/after the expand-entry sequence (10).
-        let _ = reports.insert(a, report_synced(2, 0, 0, 12));
-        let _ = reports.insert(b, report_synced(2, 0, 0, 11));
+        let _ = reports.insert(a, report_synced(2, 0, 12));
+        let _ = reports.insert(b, report_synced(2, 0, 11));
 
         // A large display HLC (NTP64 physical time) alongside a small sequence
         // pin — the exact mismatch the old `.get_time().as_u64()` comparison hit.
@@ -1871,7 +1860,7 @@ mod migration_status_tests {
         let (a, b) = (pk(0xA), pk(0xB));
         let mut reports = BTreeMap::new();
         // A reports a head sequence past the pin.
-        let _ = reports.insert(a, report_synced(2, 0, 0, 20));
+        let _ = reports.insert(a, report_synced(2, 0, 20));
         // B absent.
 
         let st = compute_migration_status_rollup(2, None, Some(10), &[a, b], |peer| {
@@ -1884,22 +1873,22 @@ mod migration_status_tests {
     }
 
     /// `all_migrated` is true only when every pinned member reports
-    /// `v >= target` with both residue counts at 0.
+    /// `v >= target` with `residue_auto` at 0.
     #[test]
     fn all_migrated_true_only_when_every_pinned_member_v2_residue0() {
         let (a, b, c) = (pk(0xA), pk(0xB), pk(0xC));
 
         // All migrated -> green.
         let all_ok =
-            compute_migration_status_rollup(2, None, None, &[a, b, c], |_| Some(report(2, 0, 0)));
+            compute_migration_status_rollup(2, None, None, &[a, b, c], |_| Some(report(2, 0)));
         assert!(all_ok.rollup.all_migrated);
         assert_eq!(all_ok.rollup.migrated, 3);
 
-        // One member still carries identity residue -> in_progress, not green.
+        // One member still carries auto residue -> in_progress, not green.
         let mut reports = BTreeMap::new();
-        let _ = reports.insert(a, report(2, 0, 0));
-        let _ = reports.insert(b, report(2, 0, 0));
-        let _ = reports.insert(c, report(2, 0, 1));
+        let _ = reports.insert(a, report(2, 0));
+        let _ = reports.insert(b, report(2, 0));
+        let _ = reports.insert(c, report(2, 1));
         let with_residue = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
             reports.get(peer).copied()
         });
@@ -1914,9 +1903,9 @@ mod migration_status_tests {
 
         // One member behind target version -> in_progress, not green.
         let mut behind = BTreeMap::new();
-        let _ = behind.insert(a, report(2, 0, 0));
-        let _ = behind.insert(b, report(1, 0, 0));
-        let _ = behind.insert(c, report(2, 0, 0));
+        let _ = behind.insert(a, report(2, 0));
+        let _ = behind.insert(b, report(1, 0));
+        let _ = behind.insert(c, report(2, 0));
         let behind_status = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
             behind.get(peer).copied()
         });
@@ -1950,7 +1939,6 @@ mod migration_status_tests {
         let zero_stamp = MemberMigrationReport {
             schema_version: 2,
             residue_auto: 0,
-            residue_identity: 0,
             synced_up_to_hlc: u64::MAX,
             reported_at: 0,
             authored_remaining: 0,
@@ -1973,5 +1961,50 @@ mod migration_status_tests {
         let a_row = st.members.iter().find(|m| m.peer == a).expect("A present");
         assert_eq!(a_row.state, MemberMigrationState::Migrated);
         assert_eq!(a_row.report.expect("report kept").reported_at, 0);
+    }
+
+    /// The bug this PR fixes: a same-major release where one member has not
+    /// swapped. Before the fix both sides resolved to 10 and this rolled up
+    /// all_migrated. Now the target is state 2 and the laggard reports state 1.
+    #[test]
+    fn same_major_release_does_not_report_a_laggard_as_migrated() {
+        let migrated_peer = pk(0xA1);
+        let laggard_peer = pk(0xB2);
+        let closure = vec![migrated_peer, laggard_peer];
+
+        let status = compute_migration_status_rollup(
+            2, // target ABI state version, from a 10.2.0 bundle
+            None,
+            None,
+            &closure,
+            |peer| {
+                if *peer == migrated_peer {
+                    Some(MemberMigrationReport {
+                        schema_version: 2,
+                        residue_auto: 0,
+                        synced_up_to_hlc: 5,
+                        reported_at: 1_000,
+                        authored_remaining: 0,
+                        migration_failed: None,
+                    })
+                } else {
+                    Some(MemberMigrationReport {
+                        schema_version: 1, // still on the 10.1.3 binary
+                        residue_auto: 1,
+                        synced_up_to_hlc: 5,
+                        reported_at: 1_000,
+                        authored_remaining: 0,
+                        migration_failed: None,
+                    })
+                }
+            },
+        );
+
+        assert_eq!(status.rollup.migrated, 1);
+        assert_eq!(status.rollup.total, 2);
+        assert!(
+            !status.rollup.all_migrated,
+            "a member still on the old binary must not count as migrated"
+        );
     }
 }

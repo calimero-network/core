@@ -262,6 +262,7 @@ mod tests {
                         package: String::new().into_boxed_str(),
                         version: String::new().into_boxed_str(),
                         signer_id: String::new().into_boxed_str(),
+                        state_version: 0,
                     },
                 ),
             )

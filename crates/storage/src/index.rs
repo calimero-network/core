@@ -1257,8 +1257,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// Computing it as a pure function of each node's own converged view makes
     /// it idempotent (re-running yields the same count) and means a convert
     /// replicated to `N` nodes decrements each node's local count by exactly 1.
-    /// It feeds the migration-status rollup (Task 6c.9) as observability only,
-    /// never a gate.
+    /// Observability only, never a gate.
     ///
     /// `Public`/`Frozen` entries never count — those migrate via the Convergent
     /// whole-root path (PR-6a/6b), not by an owner re-write.
@@ -1266,13 +1265,9 @@ impl<S: StorageAdaptor> Index<S> {
     /// [`needs_owner_convert`]: crate::entities::needs_owner_convert
     ///
     /// # Visibility
-    /// `pub` so the node-side migration-status emitter
-    /// (`calimero_node::migration_status::compute_namespace_migration_facts`,
-    /// PR-6c) can compute honest per-context `residue_identity` telemetry. It is
-    /// the public residue-scan surface the heartbeat reports; the
-    /// `IterableStorage` bound keeps it callable only against an adaptor that can
-    /// enumerate keys (the node binds one per context via `with_runtime_env`),
-    /// so it cannot be misused as a wasm-app primitive.
+    /// `pub` as the residue-scan surface; the `IterableStorage` bound keeps it
+    /// callable only against a key-enumerating adaptor, never a wasm-app
+    /// primitive. No in-tree caller until committed state is key-iterable.
     ///
     /// # Errors
     /// Returns `StorageError` if an index entry cannot be loaded.

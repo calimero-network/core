@@ -169,8 +169,8 @@ impl SignedReadinessBeacon {
 
 /// Body of a migration heartbeat — every field except the signature.
 /// Borsh-serialized inside [`SignedMigrationHeartbeat::signable_bytes`] so
-/// the Ed25519 signature covers all seven fields and field-substitution
-/// replays (e.g. zeroing `residue_identity` to fake a completed migration)
+/// the Ed25519 signature covers all six fields and field-substitution
+/// replays (e.g. zeroing `residue_auto` to fake a completed migration)
 /// are detected at verification time.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SignableMigrationHeartbeat {
@@ -180,8 +180,6 @@ pub struct SignableMigrationHeartbeat {
     pub schema_version: u32,
     /// Unconverted Convergent ("auto") contexts still pending (from the 6a marker).
     pub residue_auto: u64,
-    /// Unconverted identity-gated entries still pending (from the 6c.6 local scan).
-    pub residue_identity: u64,
     /// Governance HLC the publisher has synced/applied through.
     pub synced_up_to_hlc: u64,
     pub ts_millis: u64,
@@ -193,9 +191,9 @@ pub struct SignableMigrationHeartbeat {
 /// gossip, NOT replicated governance state, and must never be treated as a
 /// migration gate.
 ///
-/// `residue_auto == 0 && residue_identity == 0 && schema_version >= target`
-/// across every pinned cohort member is what a rollup reads as "all migrated";
-/// the signature prevents a peer from forging another peer's completion.
+/// `residue_auto == 0 && schema_version >= target` across every pinned cohort
+/// member is what a rollup reads as "all migrated"; the signature prevents a
+/// peer from forging another peer's completion.
 // MAINTENANCE: this struct has a hand-written `BorshDeserialize` (below) that
 // reads these fields positionally. If you ADD / REMOVE / REORDER any field
 // here, update that impl in lockstep (new fields go AFTER migration_failed as
@@ -208,7 +206,6 @@ pub struct SignedMigrationHeartbeat {
     pub peer_pubkey: PublicKey,
     pub schema_version: u32,
     pub residue_auto: u64,
-    pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     pub ts_millis: u64,
     pub signature: [u8; 64],
@@ -217,8 +214,8 @@ pub struct SignedMigrationHeartbeat {
     /// signable body: it is best-effort advisory telemetry (decision #3), not a
     /// migration gate — the signed residue_* fields cover completion. Appended
     /// as the trailing field so a heartbeat from an older node (which omits it)
-    /// still deserializes (EOF ⇒ 0) and verifies against the unchanged 7-field
-    /// signed body — full mixed-fleet compatibility, no version discriminator.
+    /// still deserializes (EOF ⇒ 0) and verifies against the unchanged signed
+    /// body — full mixed-fleet compatibility, no version discriminator.
     pub authored_remaining: u64,
     /// Self-reported migration-failure reason as a discriminant: `0` = none,
     /// `1` = the developer's migration-check aborted, `2` = the migrate apply
@@ -265,9 +262,9 @@ fn read_trailing<R: borsh::io::Read, const N: usize>(
 // FIELD ORDER CONTRACT: borsh is positional (no field names), so this reader
 // MUST deserialize the prefix fields in the exact order the derived
 // `BorshSerialize` above writes them — namespace_id, peer_pubkey, schema_version,
-// residue_auto, residue_identity, synced_up_to_hlc, ts_millis, signature — then
-// the trailing authored_remaining, then migration_failed. Reordering/adding a
-// field above without updating this reader silently misreads. The round-trip +
+// residue_auto, synced_up_to_hlc, ts_millis, signature — then the trailing
+// authored_remaining, then migration_failed. Reordering/adding a field above
+// without updating this reader silently misreads. The round-trip +
 // mixed-fleet tests (which serialize via the derive and deserialize via this
 // impl) guard against such a desync; keep them in step. A future field should
 // go AFTER migration_failed (another trailing read) or behind a discriminant.
@@ -277,7 +274,6 @@ impl BorshDeserialize for SignedMigrationHeartbeat {
         let peer_pubkey = PublicKey::deserialize_reader(reader)?;
         let schema_version = u32::deserialize_reader(reader)?;
         let residue_auto = u64::deserialize_reader(reader)?;
-        let residue_identity = u64::deserialize_reader(reader)?;
         let synced_up_to_hlc = u64::deserialize_reader(reader)?;
         let ts_millis = u64::deserialize_reader(reader)?;
         let signature = <[u8; 64]>::deserialize_reader(reader)?;
@@ -291,7 +287,6 @@ impl BorshDeserialize for SignedMigrationHeartbeat {
             peer_pubkey,
             schema_version,
             residue_auto,
-            residue_identity,
             synced_up_to_hlc,
             ts_millis,
             signature,
@@ -310,7 +305,6 @@ impl SignedMigrationHeartbeat {
             peer_pubkey: self.peer_pubkey,
             schema_version: self.schema_version,
             residue_auto: self.residue_auto,
-            residue_identity: self.residue_identity,
             synced_up_to_hlc: self.synced_up_to_hlc,
             ts_millis: self.ts_millis,
         }
@@ -691,7 +685,6 @@ mod tests {
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 5,
-            residue_identity: 3,
             synced_up_to_hlc: 99,
             ts_millis: 1_700_000_000_000,
             signature: [0u8; 64],
@@ -706,16 +699,15 @@ mod tests {
     }
 
     #[test]
-    fn signed_migration_heartbeat_rejects_residue_identity_flip() {
-        // Field-substitution attack: rewriting `residue_identity` to 0 to
+    fn signed_migration_heartbeat_rejects_residue_auto_flip() {
+        // Field-substitution attack: rewriting `residue_auto` to 0 to
         // fake a completed migration must break the signature.
         let sk = PrivateKey::random(&mut rand::thread_rng());
         let mut hb = SignedMigrationHeartbeat {
             namespace_id: [7u8; 32].into(),
             peer_pubkey: sk.public_key(),
             schema_version: 2,
-            residue_auto: 0,
-            residue_identity: 4,
+            residue_auto: 4,
             synced_up_to_hlc: 99,
             ts_millis: 1_700_000_000_000,
             signature: [0u8; 64],
@@ -726,10 +718,10 @@ mod tests {
             .sign(&hb.signable_bytes().expect("signable"))
             .expect("sign")
             .to_bytes();
-        hb.residue_identity = 0; // tampered after signing
+        hb.residue_auto = 0; // tampered after signing
         assert!(
             hb.verify_signature().is_err(),
-            "verify must reject mutated `residue_identity`"
+            "verify must reject mutated `residue_auto`"
         );
     }
 
@@ -745,7 +737,6 @@ mod tests {
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
-            residue_identity: 0,
             synced_up_to_hlc: 50,
             ts_millis: 1_700_000_000_000,
             signature: [0u8; 64],
@@ -766,7 +757,7 @@ mod tests {
 
         // Old-format heartbeat: drop BOTH trailing fields (authored_remaining
         // u64 + migration_failed u8). Both default to 0 and the signature (over
-        // the unchanged 7-field body) still verifies.
+        // the unchanged signed body) still verifies.
         let legacy = &bytes[..bytes.len() - core::mem::size_of::<u64>() - 1];
         let old = SignedMigrationHeartbeat::try_from_slice(legacy).expect("de legacy");
         assert_eq!(old.authored_remaining, 0, "absent trailing field ⇒ 0");
@@ -797,7 +788,6 @@ mod tests {
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
-            residue_identity: 0,
             synced_up_to_hlc: 50,
             ts_millis: 1_700_000_000_000,
             signature: [0u8; 64],
@@ -845,7 +835,6 @@ mod tests {
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 0,
-            residue_identity: 0,
             synced_up_to_hlc: 99,
             ts_millis: 1_700_000_000_000,
         };
@@ -856,7 +845,6 @@ mod tests {
             peer_pubkey: hb_unsigned.peer_pubkey,
             schema_version: hb_unsigned.schema_version,
             residue_auto: hb_unsigned.residue_auto,
-            residue_identity: hb_unsigned.residue_identity,
             synced_up_to_hlc: hb_unsigned.synced_up_to_hlc,
             ts_millis: hb_unsigned.ts_millis,
             signature,
@@ -877,7 +865,6 @@ mod tests {
             peer_pubkey: sk.public_key(),
             schema_version: 2,
             residue_auto: 7,
-            residue_identity: 1,
             synced_up_to_hlc: 1234,
             ts_millis: 42,
             signature: [5u8; 64],
@@ -891,7 +878,6 @@ mod tests {
                 assert_eq!(hb.namespace_id.to_bytes(), [3u8; 32]);
                 assert_eq!(hb.schema_version, 2);
                 assert_eq!(hb.residue_auto, 7);
-                assert_eq!(hb.residue_identity, 1);
                 assert_eq!(hb.synced_up_to_hlc, 1234);
             }
             other => panic!("wrong variant: {other:?}"),

@@ -54,10 +54,9 @@ jobs:
     # Same runner class as e2e-rust-apps so cold-start performance is
     # comparable and we share the rust-ci cache.
     runs-on: ubuntu-24.04-8cpu
-    # 15-min cap is generous: the workflow's own timeouts are 30s per
-    # `wait_for_sync`, so a regression fails in ~30s. The cap is for the
-    # cold-build steps (merod image + WASM) plus a safety margin.
-    timeout-minutes: 15
+    # Sized for the cold-build steps (merod image + cargo-mero + WASM), which
+    # alone run ~14 min; the regression itself fails in ~30s.
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

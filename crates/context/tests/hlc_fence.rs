@@ -74,6 +74,7 @@ fn upgrade_with_hlc(cascade_hlc: Option<HybridTimestamp>) -> GroupUpgradeValue {
         status: GroupUpgradeStatus::Completed { completed_at: None },
         cascade_hlc,
         cascade_seq: None,
+        to_state_version: 2,
     }
 }
 
@@ -131,6 +132,7 @@ fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32]) 
             package: "hlc-fence-test-pkg".to_owned().into_boxed_str(),
             version: "1.0.0".to_owned().into_boxed_str(),
             signer_id: "hlc-fence-test-signer".to_owned().into_boxed_str(),
+            state_version: 0,
         },
     );
     store

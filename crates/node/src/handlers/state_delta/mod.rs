@@ -2434,6 +2434,7 @@ mod tests {
                             status: GroupUpgradeStatus::Completed { completed_at: None },
                             cascade_hlc: Some(cascade_hlc),
                             cascade_seq: None,
+                            to_state_version: 2,
                         },
                     )
                     .expect("save group upgrade");
@@ -2666,6 +2667,7 @@ mod tests {
                     package: "".into(),
                     version: "".into(),
                     signer_id: "".into(),
+                    state_version: 0,
                 },
             );
             let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);
