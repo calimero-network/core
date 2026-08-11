@@ -78,8 +78,6 @@ impl ContextManager {
                 group_id,
                 meta.target_application_id,
                 migration,
-                None,
-                0,
             );
 
             ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {

@@ -116,8 +116,6 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             group_id,
             target_application_id,
             migration,
-            None, // no context to skip on retry
-            0,    // retry: no canary assumption
         );
 
         ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {

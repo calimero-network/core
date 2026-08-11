@@ -58,14 +58,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // `propagate_upgrade` per descendant subgroup whose current
         // `app_key` matches the signed group's current `app_key`.
         //
-        // The single-group branch below stays bit-identical for
-        // `cascade = false` (the historical default).
-        //
-        // The cascade flow bypasses the single-group `validate_upgrade`
-        // preamble because (a) the signed group on a cascade is often a
-        // namespace root with no contexts of its own, and (b) cascade
-        // dispatches one propagator per matched descendant rather than
-        // one canary against a single context list.
+        // It bypasses the single-group `validate_upgrade` preamble because the
+        // signed group on a cascade is often a namespace root with no contexts
+        // of its own, which that preamble rejects.
         if cascade {
             return dispatch_cascade(
                 self,
@@ -91,9 +86,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         };
 
         let UpgradePreamble {
-            canary_context_id,
             total_contexts,
-            upgrade_policy,
             from_version,
             to_version,
             current_application_id,
@@ -132,484 +125,208 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         };
 
         let node_client = self.node_client.clone();
-        let ack_router = Arc::clone(&self.ack_router);
 
-        // --- LazyOnAccess: update target and return without canary/propagator ---
-        // Contexts will be upgraded individually on their next execution.
-        // Launching a propagator would race with the lazy mechanism and could
-        // invoke migration functions twice on the same context.
-        //
-        // Persist a short-lived InProgress record SYNCHRONOUSLY before the async
-        // work, exactly as the canary path below does. Without it two concurrent
-        // LazyOnAccess requests both clear `validate_upgrade` (which rejects only
-        // when an InProgress record already exists) and each emit its own racing
-        // TargetApplicationSet/GroupMigrationSet op pair. The async block below
-        // overwrites it with a Completed record on success, and the cleanup map
-        // on the future deletes it on failure so a failed attempt never leaves
-        // the group permanently blocked.
-        if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
-            let datastore = self.datastore.clone();
-            let ack_router_for_lazy = Arc::clone(&ack_router);
-            let target_blob_bytes: Option<[u8; 32]> = app_meta_for_contract
-                .as_ref()
-                .map(|m| *m.bytecode.blob_id().as_ref());
-
-            let inprogress = GroupUpgradeValue {
-                from_version: from_version.clone(),
-                to_version: to_version.clone(),
-                migration: None,
-                initiated_at: now,
-                initiated_by: requester,
-                status: GroupUpgradeStatus::InProgress {
-                    total: total_contexts as u32,
-                    completed: 0,
-                    failed: 0,
-                },
-                cascade_hlc: None,
-                cascade_seq: None,
-                // Unresolvable here: reading the target's ABI needs an async
-                // blob read. The async block below overwrites this record.
-                to_state_version: 0,
-            };
-            if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &inprogress)
-            {
-                return ActorResponse::reply(Err(err));
-            }
-
-            return ActorResponse::r#async(
-                async move {
-                    // Resolve the emission ladder from the apps' embedded
-                    // ABIs (every service, every hop). One rung for code-only
-                    // and one-hop upgrades; a multi-version target discovers
-                    // installed intermediates so the group moves rung by rung
-                    // and behind members replay the same sequence.
-                    let (rungs, target_state_version) = {
-                        let target_blob = target_blob_bytes
-                            .ok_or_else(|| eyre::eyre!("target application not found"))?;
-                        let target_size = app_meta_for_contract
-                            .as_ref()
-                            .map(|m| m.size)
-                            .unwrap_or_default();
-                        plan_emit_ladder(
-                            &node_client,
-                            &target_application_id,
-                            current_app_key,
-                            target_blob,
-                            target_size,
-                            force_code_only,
-                        )
-                        .await?
-                    };
-                    let migration_bytes = rungs
-                        .last()
-                        .and_then(|r| r.migration.as_ref())
-                        .map(|m| m.method.as_bytes().to_vec());
-                    // L1 identity-downgrade gate, per rung: a migration hop may
-                    // not strip identity from a top-level state field. Runs
-                    // BEFORE any group op is emitted so a forbidden downgrade
-                    // never reaches the network. Fail-open when either side
-                    // lacks an embedded ABI section.
-                    {
-                        let mut prev_schema = resolve_pre_upgrade_schema(
-                            &node_client,
-                            current_app_key,
-                            &current_application_id,
-                        )
-                        .await;
-                        for rung in &rungs {
-                            let next_schema = resolve_blob_schema(&node_client, rung.app_key).await;
-                            if rung.migration.is_some() {
-                                verify_no_identity_downgrade(&prev_schema, &next_schema)?;
-                            }
-                            prev_schema = next_schema;
-                        }
-                    }
-                    {
-                        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                            eyre::eyre!(
-                                "local group upgrade requires a signing key for the requester"
-                            )
-                        })?);
-                        // One op pair per rung, in ladder order: the applies
-                        // (local and on every receiver) append the upgrade
-                        // ladder behind contexts replay. The migration set is
-                        // unconditional per rung: a code-only rung (migration
-                        // None) must CLEAR any method left by an earlier
-                        // migration upgrade — a stale Some(method) makes the
-                        // same-id lazy trigger take the migration arm and
-                        // short-circuit on its applied marker, so the new
-                        // bytecode would never activate.
-                        for rung in &rungs {
-                            let report = calimero_governance_store::sign_apply_and_publish(
-                                &datastore,
-                                &node_client,
-                                &ack_router_for_lazy,
-                                &group_id,
-                                &sk,
-                                GroupOp::TargetApplicationSet {
-                                    app_key: rung.app_key.into(),
-                                    target_application_id,
-                                },
-                            )
-                            .await?;
-                            report.observe("upgrade_group", "TargetApplicationSet");
-                            let report = calimero_governance_store::sign_apply_and_publish(
-                                &datastore,
-                                &node_client,
-                                &ack_router_for_lazy,
-                                &group_id,
-                                &sk,
-                                GroupOp::GroupMigrationSet {
-                                    migration: rung
-                                        .migration
-                                        .as_ref()
-                                        .map(|m| m.method.as_bytes().to_vec()),
-                                },
-                            )
-                            .await?;
-                            report.observe("upgrade_group", "GroupMigrationSet");
-                        }
-                    }
-
-                    let mut meta = MetaRepository::new(&datastore)
-                        .load(&group_id)?
-                        .ok_or_else(|| eyre::eyre!("group not found"))?;
-                    meta.target_application_id = target_application_id;
-                    meta.migration = migration_bytes.clone();
-                    MetaRepository::new(&datastore).save(&group_id, &meta)?;
-
-                    // LazyOnAccess: contexts upgrade individually on demand; there is no single
-                    // "all done" moment, so completed_at is None.
-                    let completed_status = GroupUpgradeStatus::Completed { completed_at: None };
-
-                    let upgrade_value = GroupUpgradeValue {
-                        from_version,
-                        to_version,
-                        migration: migration_bytes,
-                        initiated_at: now,
-                        initiated_by: requester,
-                        status: completed_status.clone(),
-                        cascade_hlc: None,
-                        cascade_seq: None,
-                        to_state_version: target_state_version,
-                    };
-
-                    UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
-
-                    info!(
-                        ?group_id,
-                        %target_application_id,
-                        "LazyOnAccess upgrade target set; contexts will upgrade on next access"
-                    );
-
-                    let contexts = calimero_governance_store::enumerate_group_contexts(
-                        &datastore,
-                        &group_id,
-                        0,
-                        usize::MAX,
-                    )?;
-
-                    // Announce every rung blob on DHT for each group context
-                    // so peer nodes can discover and fetch intermediates while
-                    // replaying the ladder.
-                    for rung in &rungs {
-                        let blob_id = calimero_primitives::blobs::BlobId::from(rung.app_key);
-                        for context_id in &contexts {
-                            if let Err(err) = node_client
-                                .announce_blob_to_network(&blob_id, context_id, rung.size)
-                                .await
-                            {
-                                warn!(%err, "failed to announce upgrade rung blob");
-                            }
-                        }
-                    }
-
-                    Ok(UpgradeGroupResponse {
-                        group_id,
-                        status: completed_status,
-                    })
-                }
-                .into_actor(self)
-                .map(move |res, act, _ctx| {
-                    // On failure, drop the synchronously-persisted InProgress
-                    // record so the group isn't permanently wedged (nothing
-                    // else transitions it out on the lazy path). Success has
-                    // already overwritten it with a Completed record.
-                    if res.is_err() {
-                        if let Err(err) = UpgradesRepository::new(&act.datastore).delete(&group_id)
-                        {
-                            warn!(
-                                ?group_id,
-                                ?err,
-                                "failed to clear InProgress upgrade record after lazy upgrade error"
-                            );
-                        }
-                    }
-                    res
-                }),
-            );
-        }
-
-        // --- Persist InProgress BEFORE the async canary ---
-        // This prevents a concurrent UpgradeGroupRequest from passing
-        // validate_upgrade while the canary is still running.
-        let initial_status = GroupUpgradeStatus::InProgress {
-            total: total_contexts as u32,
-            completed: 0,
-            failed: 0,
-        };
-
-        let upgrade_value = GroupUpgradeValue {
-            from_version,
-            to_version,
-            // Non-lazy upgrades are code-only by construction: the canary
-            // guard below rejects any target that declares a migration.
-            migration: None,
-            initiated_at: now,
-            initiated_by: requester,
-            status: initial_status.clone(),
-            cascade_hlc: None,
-            cascade_seq: None,
-            // Stamped with the resolved value by the canary task below, which
-            // can do the async blob read this synchronous section cannot.
-            to_state_version: 0,
-        };
-
-        if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
-            return ActorResponse::reply(Err(err));
-        }
-
-        // --- Async: run canary upgrade ---
-        let context_client = self.context_client.clone();
-        let datastore_for_canary = self.datastore.clone();
+        // Contexts upgrade individually on their next execution; a propagator
+        // here would race the lazy path and migrate the same context twice.
         let datastore = self.datastore.clone();
-
-        let canary_signer = match calimero_governance_store::find_local_signing_identity(
-            &self.datastore,
-            &canary_context_id,
-        ) {
-            Ok(Some(s)) => s,
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "no local signing identity for canary context {canary_context_id}"
-                )))
-            }
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
-
-        let target_blob_info = app_meta_for_contract
-            .as_ref()
-            .map(|m| (m.bytecode.blob_id(), m.size));
-        let ack_router_for_canary = Arc::clone(&ack_router);
+        let ack_router = Arc::clone(&self.ack_router);
         let target_blob_bytes: Option<[u8; 32]> = app_meta_for_contract
             .as_ref()
             .map(|m| *m.bytecode.blob_id().as_ref());
-        let canary_task = async move {
-            // Guard: the target may DECLARE a migration in its ABI.
-            // Migrations only run under LazyOnAccess — proceeding here
-            // (Automatic/Coordinated) would swap bytecode under live state
-            // without running the declared migration. Also rejects
-            // missing-edge / multi-hop targets.
-            if let Some(target_blob) = target_blob_bytes {
-                if let Some(declared) = resolve_upgrade_from_abis(
-                    &node_client,
-                    current_app_key,
-                    target_blob,
-                    force_code_only,
-                )
-                .await?
-                {
-                    eyre::bail!(
-                        "target app declares migration '{}' in its ABI; migrations only \
-                         run under the LazyOnAccess upgrade policy",
-                        declared.method
-                    );
-                }
-                // Finish the record the synchronous section wrote: without the
-                // target's state version the rollup can never call this satisfied.
-                let to_state_version = blob_max_state_version(&node_client, target_blob)
-                    .await
-                    .unwrap_or_default();
-                let repo = UpgradesRepository::new(&datastore_for_canary);
-                if let Some(mut value) = repo.load(&group_id)? {
-                    value.to_state_version = to_state_version;
-                    repo.save(&group_id, &value)?;
-                }
-            }
-            {
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("local group upgrade requires a signing key for the requester")
-                })?);
-                let app_meta = app_meta_for_contract
-                    .as_ref()
-                    .ok_or_else(|| eyre::eyre!("target application not found"))?;
-                let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let report = calimero_governance_store::sign_apply_and_publish(
-                    &datastore_for_canary,
-                    &node_client,
-                    &ack_router_for_canary,
-                    &group_id,
-                    &sk,
-                    GroupOp::TargetApplicationSet {
-                        app_key: app_key.into(),
-                        target_application_id,
-                    },
-                )
-                .await?;
-                report.observe("upgrade_group", "TargetApplicationSet");
-                // Unconditional — see the LazyOnAccess site: clearing a stale
-                // method on code-only upgrades keeps the same-id lazy trigger
-                // out of the migration arm.
-                let report = calimero_governance_store::sign_apply_and_publish(
-                    &datastore_for_canary,
-                    &node_client,
-                    &ack_router_for_canary,
-                    &group_id,
-                    &sk,
-                    GroupOp::GroupMigrationSet { migration: None },
-                )
-                .await?;
-                report.observe("upgrade_group", "GroupMigrationSet");
-            }
 
-            context_client
-                .update_application(
-                    &canary_context_id,
-                    &target_application_id,
-                    &canary_signer,
-                    None,
-                )
-                .await
-        }
-        .into_actor(self);
-
-        let group_id_clone = group_id;
-        let context_client_for_propagator = self.context_client.clone();
-        let datastore_for_propagator = self.datastore.clone();
-        let node_client_for_gossip = self.node_client.clone();
-        let datastore_for_gossip = self.datastore.clone();
-
-        ActorResponse::r#async(canary_task.map(
-            move |canary_result, act, ctx| match canary_result {
-                Err(err) => {
-                    error!(
-                        ?group_id,
-                        canary=%canary_context_id,
-                        ?err,
-                        "canary upgrade failed, aborting group upgrade"
-                    );
-                    // Clean up the InProgress record so the group can be retried
-                    if let Err(cleanup_err) =
-                        UpgradesRepository::new(&datastore).delete(&group_id_clone)
-                    {
-                        error!(
-                            ?group_id,
-                            ?cleanup_err,
-                            "failed to clean up upgrade record after canary failure"
-                        );
-                    }
-                    Err(eyre::eyre!(
-                        "canary upgrade failed on context {canary_context_id}: {err}"
-                    ))
-                }
-                Ok(()) => {
-                    info!(
-                        ?group_id,
-                        canary=%canary_context_id,
-                        "canary upgrade succeeded, proceeding with group upgrade"
-                    );
-
-                    // Update group's target_application_id
-                    let mut meta = MetaRepository::new(&datastore)
-                        .load(&group_id_clone)?
-                        .ok_or_else(|| eyre::eyre!("group not found after canary"))?;
-
-                    meta.target_application_id = target_application_id;
-                    MetaRepository::new(&datastore).save(&group_id_clone, &meta)?;
-
-                    // Update InProgress status (canary = 1 completed)
-                    let status = GroupUpgradeStatus::InProgress {
-                        total: total_contexts as u32,
-                        completed: 1,
-                        failed: 0,
-                    };
-
-                    update_upgrade_status(&datastore, &group_id_clone, status.clone())?;
-
-                    // Gossip upgrade notification to peers
-                    if let Ok(contexts) = calimero_governance_store::enumerate_group_contexts(
-                        &datastore_for_gossip,
-                        &group_id_clone,
-                        0,
-                        usize::MAX,
-                    ) {
-                        let nc = node_client_for_gossip;
-                        ctx.spawn(
-                            async move {
-                                if let Some((blob_id, blob_size)) = target_blob_info {
-                                    for context_id in &contexts {
-                                        if let Err(err) = nc
-                                            .announce_blob_to_network(
-                                                &blob_id, context_id, blob_size,
-                                            )
-                                            .await
-                                        {
-                                            warn!(
-                                                %err,
-                                                "failed to announce target app blob"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            .into_actor(act),
-                        );
-                    }
-
-                    // Spawn propagator for remaining contexts
-                    if total_contexts > 1 {
-                        act.active_propagators.insert(group_id_clone);
-
-                        let propagator = propagate_upgrade(
-                            context_client_for_propagator,
-                            datastore_for_propagator,
-                            group_id_clone,
-                            target_application_id,
-                            None,
-                            Some(canary_context_id),
-                            1, // canary already upgraded
-                        );
-                        ctx.spawn(propagator.into_actor(act).map(move |_, act, _| {
-                            act.active_propagators.remove(&group_id_clone);
-                        }));
-                    } else {
-                        // Only one context (the canary) — mark completed
-                        let completed_at = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let completed_status = GroupUpgradeStatus::Completed {
-                            completed_at: Some(completed_at),
-                        };
-                        update_upgrade_status(
-                            &datastore,
-                            &group_id_clone,
-                            completed_status.clone(),
-                        )?;
-
-                        return Ok(UpgradeGroupResponse {
-                            group_id: group_id_clone,
-                            status: completed_status,
-                        });
-                    }
-
-                    Ok(UpgradeGroupResponse {
-                        group_id: group_id_clone,
-                        status,
-                    })
-                }
+        // Persisted SYNCHRONOUSLY: two concurrent requests would otherwise both
+        // clear `validate_upgrade` and emit racing op pairs. The async block
+        // overwrites it on success; the cleanup map drops it on failure.
+        let inprogress = GroupUpgradeValue {
+            from_version: from_version.clone(),
+            to_version: to_version.clone(),
+            migration: None,
+            initiated_at: now,
+            initiated_by: requester,
+            status: GroupUpgradeStatus::InProgress {
+                total: total_contexts as u32,
+                completed: 0,
+                failed: 0,
             },
-        ))
+            cascade_hlc: None,
+            cascade_seq: None,
+            // Unresolvable here: reading the target's ABI needs an async
+            // blob read. The async block below overwrites this record.
+            to_state_version: 0,
+        };
+        if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &inprogress) {
+            return ActorResponse::reply(Err(err));
+        }
+
+        ActorResponse::r#async(
+            async move {
+                // Resolve the emission ladder from the apps' embedded
+                // ABIs (every service, every hop). One rung for code-only
+                // and one-hop upgrades; a multi-version target discovers
+                // installed intermediates so the group moves rung by rung
+                // and behind members replay the same sequence.
+                let (rungs, target_state_version) = {
+                    let target_blob = target_blob_bytes
+                        .ok_or_else(|| eyre::eyre!("target application not found"))?;
+                    let target_size = app_meta_for_contract
+                        .as_ref()
+                        .map(|m| m.size)
+                        .unwrap_or_default();
+                    plan_emit_ladder(
+                        &node_client,
+                        &target_application_id,
+                        current_app_key,
+                        target_blob,
+                        target_size,
+                        force_code_only,
+                    )
+                    .await?
+                };
+                let migration_bytes = rungs
+                    .last()
+                    .and_then(|r| r.migration.as_ref())
+                    .map(|m| m.method.as_bytes().to_vec());
+                // L1 identity-downgrade gate, per rung: a migration hop may
+                // not strip identity from a top-level state field. Runs
+                // BEFORE any group op is emitted so a forbidden downgrade
+                // never reaches the network. Fail-open when either side
+                // lacks an embedded ABI section.
+                {
+                    let mut prev_schema = resolve_pre_upgrade_schema(
+                        &node_client,
+                        current_app_key,
+                        &current_application_id,
+                    )
+                    .await;
+                    for rung in &rungs {
+                        let next_schema = resolve_blob_schema(&node_client, rung.app_key).await;
+                        if rung.migration.is_some() {
+                            verify_no_identity_downgrade(&prev_schema, &next_schema)?;
+                        }
+                        prev_schema = next_schema;
+                    }
+                }
+                {
+                    let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
+                        eyre::eyre!("local group upgrade requires a signing key for the requester")
+                    })?);
+                    // One op pair per rung, in ladder order: the applies
+                    // (local and on every receiver) append the upgrade
+                    // ladder behind contexts replay. The migration set is
+                    // unconditional per rung: a code-only rung (migration
+                    // None) must CLEAR any method left by an earlier
+                    // migration upgrade — a stale Some(method) makes the
+                    // same-id lazy trigger take the migration arm and
+                    // short-circuit on its applied marker, so the new
+                    // bytecode would never activate.
+                    for rung in &rungs {
+                        let report = calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            &group_id,
+                            &sk,
+                            GroupOp::TargetApplicationSet {
+                                app_key: rung.app_key.into(),
+                                target_application_id,
+                            },
+                        )
+                        .await?;
+                        report.observe("upgrade_group", "TargetApplicationSet");
+                        let report = calimero_governance_store::sign_apply_and_publish(
+                            &datastore,
+                            &node_client,
+                            &ack_router,
+                            &group_id,
+                            &sk,
+                            GroupOp::GroupMigrationSet {
+                                migration: rung
+                                    .migration
+                                    .as_ref()
+                                    .map(|m| m.method.as_bytes().to_vec()),
+                            },
+                        )
+                        .await?;
+                        report.observe("upgrade_group", "GroupMigrationSet");
+                    }
+                }
+
+                let mut meta = MetaRepository::new(&datastore)
+                    .load(&group_id)?
+                    .ok_or_else(|| eyre::eyre!("group not found"))?;
+                meta.target_application_id = target_application_id;
+                meta.migration = migration_bytes.clone();
+                MetaRepository::new(&datastore).save(&group_id, &meta)?;
+
+                // LazyOnAccess: contexts upgrade individually on demand; there is no single
+                // "all done" moment, so completed_at is None.
+                let completed_status = GroupUpgradeStatus::Completed { completed_at: None };
+
+                let upgrade_value = GroupUpgradeValue {
+                    from_version,
+                    to_version,
+                    migration: migration_bytes,
+                    initiated_at: now,
+                    initiated_by: requester,
+                    status: completed_status.clone(),
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                    to_state_version: target_state_version,
+                };
+
+                UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
+
+                info!(
+                    ?group_id,
+                    %target_application_id,
+                    "LazyOnAccess upgrade target set; contexts will upgrade on next access"
+                );
+
+                let contexts = calimero_governance_store::enumerate_group_contexts(
+                    &datastore,
+                    &group_id,
+                    0,
+                    usize::MAX,
+                )?;
+
+                // Announce every rung blob on DHT for each group context
+                // so peer nodes can discover and fetch intermediates while
+                // replaying the ladder.
+                for rung in &rungs {
+                    let blob_id = calimero_primitives::blobs::BlobId::from(rung.app_key);
+                    for context_id in &contexts {
+                        if let Err(err) = node_client
+                            .announce_blob_to_network(&blob_id, context_id, rung.size)
+                            .await
+                        {
+                            warn!(%err, "failed to announce upgrade rung blob");
+                        }
+                    }
+                }
+
+                Ok(UpgradeGroupResponse {
+                    group_id,
+                    status: completed_status,
+                })
+            }
+            .into_actor(self)
+            .map(move |res, act, _ctx| {
+                // On failure, drop the synchronously-persisted InProgress
+                // record so the group isn't permanently wedged (nothing
+                // else transitions it out on the lazy path). Success has
+                // already overwritten it with a Completed record.
+                if res.is_err() {
+                    if let Err(err) = UpgradesRepository::new(&act.datastore).delete(&group_id) {
+                        warn!(
+                            ?group_id,
+                            ?err,
+                            "failed to clear InProgress upgrade record after lazy upgrade error"
+                        );
+                    }
+                }
+                res
+            }),
+        )
     }
 }
 
@@ -1165,9 +882,7 @@ async fn resolve_embedded_schema(
 }
 
 struct UpgradePreamble {
-    canary_context_id: ContextId,
     total_contexts: usize,
-    upgrade_policy: UpgradePolicy,
     from_version: String,
     to_version: String,
     /// The group's CURRENT target application id (before this upgrade), used by
@@ -1232,14 +947,9 @@ fn validate_upgrade(
         bail!("group has no contexts to upgrade");
     }
 
-    // 7. Select canary (first context, deterministic order)
-    let canary_context_id = contexts[0];
-
-    // 8. Read current and target application versions from ApplicationMeta.
-    //    Use the group's current target_application_id as the "from" version — NOT the
-    //    canary context's application. For LazyOnAccess, the canary may have already been
-    //    lazily upgraded on its last execute, making its app_id == new target_application_id,
-    //    which would produce from_version == to_version.
+    // 7. Read current and target application versions from ApplicationMeta.
+    //    The group's current target is the authoritative "from": an already
+    //    lazily-upgraded context may sit on the new app id.
     let handle = datastore.handle();
 
     let from_version = handle
@@ -1251,9 +961,7 @@ fn validate_upgrade(
         .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version));
 
     Ok(UpgradePreamble {
-        canary_context_id,
         total_contexts: contexts.len(),
-        upgrade_policy: meta.upgrade_policy.clone(),
         from_version,
         to_version,
         current_application_id: meta.target_application_id,
@@ -1273,8 +981,6 @@ pub(crate) async fn propagate_upgrade(
     group_id: ContextGroupId,
     target_application_id: ApplicationId,
     migration: Option<MigrationParams>,
-    skip_context: Option<ContextId>,
-    initial_completed: u32,
 ) {
     let contexts = match calimero_governance_store::enumerate_group_contexts(
         &datastore,
@@ -1296,22 +1002,8 @@ pub(crate) async fn propagate_upgrade(
     // Use actual enumerated count as the authoritative total so that
     // contexts added/removed since the upgrade started are reflected.
     let total_contexts = contexts.len();
-
-    // Build the list of contexts to upgrade (excluding the canary)
-    let mut pending: Vec<ContextId> = contexts
-        .into_iter()
-        .filter(|cid| skip_context != Some(*cid))
-        .collect();
-
-    // If the canary was removed from the group between the initial upgrade
-    // and this enumeration, it won't appear in the list and shouldn't count
-    // toward completed — otherwise completed can exceed total.
-    let canary_in_group = pending.len() < total_contexts;
-    let mut completed: u32 = if canary_in_group {
-        initial_completed
-    } else {
-        0
-    };
+    let mut pending: Vec<ContextId> = contexts;
+    let mut completed: u32 = 0;
     let mut failed: u32;
     let mut attempt: u32 = 0;
 
@@ -1529,8 +1221,8 @@ fn dispatch_cascade(
 ) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
     // --- Lightweight cascade validation ---
     // Cascade bypasses `validate_upgrade` because that helper requires
-    // the signed group to have at least one context (for canary
-    // selection). Namespace roots used as cascade entry-points often
+    // the signed group to have at least one context. Namespace roots
+    // used as cascade entry-points often
     // hold no contexts of their own, only descendant subgroups. We
     // re-implement the subset of checks that do apply: group exists,
     // requester is admin, signing key is available, no concurrent
@@ -1827,7 +1519,7 @@ fn dispatch_cascade(
                 .and_then(|v| v.cascade_seq);
             // Per-descendant `GroupUpgradeValue` so the propagator's
             // `update_upgrade_status` writes hit a live record. Same
-            // shape the single-group canary path uses.
+            // shape the single-group path uses.
             let upgrade_value = GroupUpgradeValue {
                 from_version: from_version.clone(),
                 to_version: to_version.clone(),
@@ -1877,7 +1569,7 @@ fn dispatch_cascade(
 
         // Best-effort blob announce so peers can fetch the target app
         // bytecode during their own context sync. Mirrors the gossip
-        // step in the single-group canary path.
+        // step in the single-group path.
         let nc_for_announce = node_client.clone();
         let datastore_for_announce = datastore.clone();
         let descendants_for_announce = matched_descendants.clone();
@@ -1938,9 +1630,7 @@ fn dispatch_cascade(
 
 /// Insert into `active_propagators`, spawn `propagate_upgrade` for the
 /// given group, and arrange the post-completion removal — used by the
-/// cascade dispatch loop. Mirrors the inline pattern in the single-
-/// group canary handler at L398-411 of `handle`, factored out so the
-/// cascade loop and any future caller can share one spawn shape.
+/// cascade dispatch loop.
 fn spawn_propagator_for(
     actor: &mut ContextManager,
     ctx: &mut <ContextManager as actix::Actor>::Context,
@@ -1957,8 +1647,6 @@ fn spawn_propagator_for(
         group_id,
         target_application_id,
         migration,
-        None, // cascade has no per-descendant canary to skip
-        0,    // initial_completed: 0 — no contexts pre-migrated
     );
     ctx.spawn(propagator.into_actor(actor).map(move |_, act, _| {
         act.active_propagators.remove(&group_id);
