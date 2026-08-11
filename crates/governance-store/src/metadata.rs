@@ -213,7 +213,6 @@ impl<'a> MetadataRepository<'a> {
             namespace_id: *group_id,
             app_key: meta.app_key.into(),
             target_application_id: meta.target_application_id,
-            upgrade_policy: meta.upgrade_policy.clone(),
             created_at: meta.created_at,
             name,
             member_count,

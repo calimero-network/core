@@ -139,7 +139,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         owner_identity: admin_identity,
                         target_application_id,
                         app_key,
-                        upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                         migration: None,
                         created_at: 0,
                         auto_join: true,

@@ -138,18 +138,6 @@ steps:
   # Phase 4: Install v2 (same version-stable application id), upgrade
   # ONLY namespace A's subgroup. The node resolves migrate_v1_to_v2
   # from the target bundle's embedded ABI.
-  - name: Set lazy-on-access policy on subgroup A
-    type: update_group_settings
-    node: app-migration-coexist-1
-    group_id: "{{group_a}}"
-    upgrade_policy: lazy_on_access
-
-  - name: Set lazy-on-access policy on subgroup B
-    type: update_group_settings
-    node: app-migration-coexist-1
-    group_id: "{{group_b}}"
-    upgrade_policy: lazy_on_access
-
   - name: Install migration-suite-v2-add-field
     type: install_application
     node: app-migration-coexist-1

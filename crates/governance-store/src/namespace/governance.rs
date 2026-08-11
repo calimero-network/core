@@ -957,7 +957,6 @@ impl<'a> NamespaceGovernance<'a> {
                 target_application_id: calimero_primitives::application::ApplicationId::from(
                     [0u8; 32],
                 ),
-                upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                 created_at: 0,
                 admin_identity: placeholder_admin,
                 owner_identity: placeholder_admin,

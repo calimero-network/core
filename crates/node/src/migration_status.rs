@@ -406,11 +406,11 @@ fn resolve_group_target_version(
 /// loaded `ApplicationMeta` state version across the namespace's contexts (the
 /// most-behind context governs whether this node has fully swapped its binary).
 /// This is deliberately NOT the migration TARGET (`UpgradesRepository.to_state_version`):
-/// under LazyOnAccess the governance target advances ahead of the locally-loaded
-/// binary, so reporting the target would let `all_migrated` flip green before the
-/// node could read the new schema (the cursor-bot bug this fixes). With no
-/// resolvable context we fall back to the target — the honest "no loaded state to
-/// contradict the record" path (covered by the no-record baseline `0`).
+/// the governance target can advance ahead of the locally-loaded binary, so
+/// reporting the target would let `all_migrated` flip green before the node could
+/// read the new schema (the cursor-bot bug this fixes). With no resolvable context
+/// we fall back to the target — the honest "no loaded state to contradict the
+/// record" path (covered by the no-record baseline `0`).
 ///
 /// `synced_up_to_hlc` is left at `0` here; the emitter overlays the live
 /// `NamespaceGovHead.sequence` ([`MigrationEmitter::refresh_hlc`]) at publish

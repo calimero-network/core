@@ -12,7 +12,7 @@ and the namespace-cascade additions designed in
 | File | What it proves |
 |---|---|
 | `00-single-group-migration-baseline.yml` | 2-node, single subgroup + one context, `v1 → v2` via `upgrade_group(cascade=false)`. **Regression guard for [#2433](https://github.com/calimero-network/core/pull/2433)** — the per-context migration write path that #2433 silently broke and PR-1 of the cascade train repairs. |
-| `01-namespace-cascade-migration.yml` | 2-node, namespace + one Open subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the full `app_key` fix triangle** (originator derivation, remote-peer `GroupCreated` inheritance, joiner-side bootstrap) AND cross-node cascade convergence: asserts node 2's `GroupMeta` flips on both layers, the receiver-side `CascadeTargetApplicationSet: applied` log fires, and node 2 self-migrates via the lazy path. |
+| `01-namespace-cascade-migration.yml` | 2-node, namespace + one Open subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the full `app_key` fix triangle** (originator derivation, remote-peer `GroupCreated` inheritance, joiner-side bootstrap) AND cross-node cascade convergence: asserts node 2's `GroupMeta` flips on both layers, the receiver-side `CascadeUpgrade: applied` log fires, and node 2 self-migrates via the lazy path. |
 
 ### Per-scenario migration matrix (`apps/migrations/migration-suite-v{1..5}` chain)
 
@@ -65,13 +65,12 @@ and the namespace-cascade additions designed in
 ### Out of scope (not in this PR)
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.
-* `Coordinated` multi-node upgrade policy — all scenarios use `lazy_on_access` (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
+* `Coordinated` multi-node upgrade policy — all scenarios exercise the lazy per-node upgrade model (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
 
-## Cross-node migration model (why `lazy_on_access`)
+## Cross-node migration model (per-node lazy execution)
 
-Every scenario sets `upgrade_policy: lazy_on_access` and relies on each
-node migrating its **own** state independently. This is deliberate, not
-a workaround:
+Every scenario relies on each node migrating its **own** state
+independently. This is deliberate, not a workaround:
 
 * Migration is a **full root-state replacement**, not a CRDT-mergeable
   delta. The migrate fn produces fully-resolved v2-shaped state, so
@@ -80,11 +79,11 @@ a workaround:
   therefore *not* propagated over sync — a peer cannot receive another
   node's migrated state, because merging a v1 root entry with a v2 root
   entry at the shared fixed `ROOT_ENTRY_ID` would corrupt it.
-* Under `LazyOnAccess` (the SDK default — *"upgrade each context
-  transparently on its next execution"*) each node re-derives v2 by
-  running the migrate fn on its **own already-synced, byte-identical v1
-  state** on the first context access after the upgrade op gossips in.
-  Determinism guarantees every node lands on the same v2 root.
+* Every context upgrades transparently on its next execution: each node
+  re-derives v2 by running the migrate fn on its **own already-synced,
+  byte-identical v1 state** on the first context access after the
+  upgrade op gossips in. Determinism guarantees every node lands on the
+  same v2 root.
 * The upgrade op (`TargetApplicationSet` + `GroupMigrationSet`, or their
   cascade equivalents) sets both `target_application_id` and the
   `migration` method on the group's `GroupMeta`; each receiver's

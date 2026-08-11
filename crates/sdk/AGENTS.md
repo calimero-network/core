@@ -231,9 +231,8 @@ pub fn migrate_v1_to_v2() -> AppV2 {
   sync (it's a full root replacement, not a CRDT-mergeable delta). Two
   nodes that run the same migrate fn on the same v1 bytes must produce
   byte-identical v2 state, or their roots diverge and subsequent CRDT
-  sync breaks. Under the default `LazyOnAccess` upgrade policy each node
-  migrates on its next context access (logged as `performing lazy upgrade
-  before execution`).
+  sync breaks. Each node migrates on its next context access (logged as
+  `performing lazy upgrade before execution`).
 
   The SDK macro removes the two *structural* sources of node-local
   entropy for you:
@@ -245,9 +244,9 @@ pub fn migrate_v1_to_v2() -> AppV2 {
     `hlc_timestamp()`/`device_id()`. `Element` update timestamps are
     likewise zeroed. This applies to the *whole* body, including any
     explicit `LwwRegister::set()` you call on a carried-over register -
-    and that is intended, not a side effect: each node runs migrate at a
-    different wall-clock time (LazyOnAccess), so a real timestamp here
-    would diverge across nodes. The migration is a full root *replacement*
+    and that is intended, not a side effect: each node self-migrates at a
+    different wall-clock time, so a real timestamp here would diverge across
+    nodes. The migration is a full root *replacement*
     (`write_pre_merged_root_state` + `clear_pending_delta`), not a CRDT
     merge, so a migrate-written value is never LWW-compared at migration
     time - it simply becomes the new baseline, which a genuine

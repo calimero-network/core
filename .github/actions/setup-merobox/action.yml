@@ -26,6 +26,8 @@ runs:
         #            does NOT reuse the revoked id, which has no literal to compare
         #            against; below this the statement is unrecognised, which reads
         #            as a failing assertion rather than an unsupported one.
+        # When this next moves: if the bundled client-py no longer requires
+        # upgradePolicy, delete UPGRADE_POLICY_COMPAT (crates/server/primitives).
         MIN_MEROBOX="0.6.52"
 
         case "$(uname -m)" in

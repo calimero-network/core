@@ -157,22 +157,6 @@ steps:
     statements:
       - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "notes": "value-that-will-be-dropped"}})'
 
-  # LazyOnAccess: each node migrates its OWN byte-identical v2 state
-  # on next access. The migration write path emits no DAG delta (full
-  # root replacement, not CRDT-mergeable), so migrated bytes do not
-  # propagate over sync — each node must self-migrate. Under
-  # `coordinated` only the emitter migrates and the receiver is left
-  # with v2 bytes behind a v3 app pointer → "Not all bytes read"
-  # panic. The per-context TargetApplicationSet + GroupMigrationSet
-  # ops set both `target_application_id` and the `migration` method on
-  # the subgroup's GroupMeta, which each receiver's
-  # `maybe_lazy_upgrade` reads to self-migrate.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-remove-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
-
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   - name: Install migration-suite-v3-remove-field on node 1
     type: install_application

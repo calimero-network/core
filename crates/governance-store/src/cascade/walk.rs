@@ -1,6 +1,5 @@
-//! Predicate-bounded walk over the descendant group tree, used by both
-//! `CascadeTargetApplicationSet` and `CascadeGroupMigrationSet` apply
-//! arms (see [`crate::cascade`]).
+//! Predicate-bounded walk over the descendant group tree, used by the
+//! `CascadeUpgrade` apply arm (see [`crate::cascade`]).
 //!
 //! The walk is **read-only**: it materializes the per-descendant
 //! `(group_id, matched?)` decision so the caller can iterate it and

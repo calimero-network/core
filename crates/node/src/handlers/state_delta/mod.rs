@@ -2376,7 +2376,7 @@ mod tests {
             register_context_in_group, MetaRepository, UpgradesRepository,
         };
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{ContextId, UpgradePolicy};
+        use calimero_primitives::context::ContextId;
         use calimero_primitives::identity::PublicKey;
         use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
         use calimero_store::db::InMemoryDB;
@@ -2411,7 +2411,6 @@ mod tests {
                     &GroupMetaValue {
                         app_key: APP_V2,
                         target_application_id: ApplicationId::from([0xCC; 32]),
-                        upgrade_policy: UpgradePolicy::Automatic,
                         created_at: 1_700_000_000,
                         admin_identity: dummy_pk,
                         owner_identity: dummy_pk,

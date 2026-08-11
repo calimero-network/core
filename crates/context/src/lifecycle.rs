@@ -5,7 +5,6 @@
 
 use actix::{ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::UpgradePolicy;
 use calimero_store::key::GroupUpgradeStatus;
 
 use crate::ContextManager;
@@ -53,12 +52,6 @@ impl ContextManager {
                 "re-spawning propagator for in-progress upgrade"
             );
 
-            let migration = upgrade
-                .migration
-                .as_ref()
-                .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-                .map(|method| calimero_context_client::messages::MigrationParams { method });
-
             let meta = match MetaRepository::new(&self.datastore).load(&group_id) {
                 Ok(Some(m)) => m,
                 Ok(None) => {
@@ -71,22 +64,49 @@ impl ContextManager {
                 }
             };
 
-            if matches!(meta.upgrade_policy, UpgradePolicy::LazyOnAccess) {
-                tracing::debug!(?group_id, "skipping crash recovery for LazyOnAccess group");
-                continue;
-            }
-
             self.active_propagators.insert(group_id);
 
-            let propagator = crate::handlers::upgrade_group::propagate_upgrade(
-                self.context_client.clone(),
-                self.datastore.clone(),
-                group_id,
-                meta.target_application_id,
-                migration,
-                None,
-                0,
-            );
+            let node_client = self.node_client.clone();
+            let context_client = self.context_client.clone();
+            let datastore = self.datastore.clone();
+            let target_application_id = meta.target_application_id;
+
+            let propagator = async move {
+                let migration = match crate::handlers::upgrade_group::resolve_resumed_migration(
+                    &node_client,
+                    &datastore,
+                    &group_id,
+                    &target_application_id,
+                )
+                .await
+                {
+                    Ok(migration) => migration,
+                    // Falling back to `None` would resume a MIGRATING upgrade
+                    // as a code-only bytecode swap over un-migrated state. A
+                    // record left for an operator is the safe half of that.
+                    Err(err) => {
+                        tracing::error!(
+                            ?group_id, %err,
+                            "cannot resolve the migration for an in-progress upgrade; refusing to \
+                             resume it rather than risk a code-only swap over un-migrated state. \
+                             Retrying the upgrade will not clear this (retry needs failed > 0, and \
+                             it re-resolves the same way): make the resolution succeed - fetch the \
+                             contexts' current bytecode blobs, or rebuild them with an embedded \
+                             ABI - then restart the node"
+                        );
+                        return;
+                    }
+                };
+
+                crate::handlers::upgrade_group::propagate_upgrade(
+                    context_client,
+                    datastore,
+                    group_id,
+                    target_application_id,
+                    migration,
+                )
+                .await;
+            };
 
             ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {
                 act.active_propagators.remove(&group_id);

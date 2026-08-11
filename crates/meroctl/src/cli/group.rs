@@ -17,7 +17,6 @@ pub mod settings;
 pub mod signing_key;
 pub mod subgroups;
 pub mod sync;
-pub mod update;
 pub mod upgrade;
 
 pub const EXAMPLES: &str = r"
@@ -65,7 +64,6 @@ pub enum GroupSubCommands {
     Get(get::GetCommand),
     #[command(alias = "del")]
     Delete(delete::DeleteCommand),
-    Update(update::UpdateCommand),
     Members(members::MembersCommand),
     Contexts(contexts::ContextsCommand),
     Metadata(metadata::MetadataCommand),
@@ -96,7 +94,6 @@ impl GroupCommand {
             environment,
             GroupSubCommands::Get,
             GroupSubCommands::Delete,
-            GroupSubCommands::Update,
             GroupSubCommands::Members,
             GroupSubCommands::Contexts,
             GroupSubCommands::Metadata,

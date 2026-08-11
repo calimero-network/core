@@ -81,24 +81,18 @@ const GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET: &[u8] = &[
     0, 0, 0, 0, // capabilities u32 = 0
 ];
 
-/// GroupOp ordinal 7 — UpgradePolicySet { policy: LazyOnAccess(1) }
-const GOLDEN_GROUP_OP_UPGRADE_POLICY_SET: &[u8] = &[
-    7, // discriminant
-    1, // UpgradePolicy::LazyOnAccess (ordinal 1, the Default)
-];
-
-/// GroupOp ordinal 8 — TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
+/// GroupOp ordinal 7 - TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
-    8, // discriminant
+    7, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // app_key [0u8;32]
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target_application_id [0u8;32]
 ];
 
-/// GroupOp ordinal 9 — ContextRegistered (all empty/zero fields)
+/// GroupOp ordinal 8 - ContextRegistered (all empty/zero fields)
 const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
-    9, // discriminant
+    8, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -109,55 +103,65 @@ const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
     0, // service_name = None
 ];
 
-/// GroupOp ordinal 10 — ContextDetached { context_id: [0;32] }
+/// GroupOp ordinal 9 - ContextDetached { context_id: [0;32] }
 const GOLDEN_GROUP_OP_CONTEXT_DETACHED: &[u8] = &[
-    10, // discriminant
+    9, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
 ];
 
-/// GroupOp ordinal 11 — SubgroupVisibilitySet { mode: 0 }
+/// GroupOp ordinal 10 - SubgroupVisibilitySet { mode: 0 }
 const GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET: &[u8] = &[
-    11, // discriminant
+    10, // discriminant
     0,  // mode = 0
 ];
 
-/// GroupOp ordinal 12 — GroupMetadataSet { name: None, data: {} }
+/// GroupOp ordinal 11 - GroupMetadataSet { name: None, data: {} }
 const GOLDEN_GROUP_OP_GROUP_METADATA_SET: &[u8] = &[
-    12, // discriminant
+    11, // discriminant
     0,  // name = None
     0, 0, 0, 0, // data BTreeMap len = 0
 ];
 
-/// GroupOp ordinal 13 — MemberMetadataSet { member: [0;32], name: None, data: {} }
+/// GroupOp ordinal 12 - MemberMetadataSet { member: [0;32], name: None, data: {} }
 const GOLDEN_GROUP_OP_MEMBER_METADATA_SET: &[u8] = &[
-    13, // discriminant
+    12, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
     0, // name = None
     0, 0, 0, 0, // data len = 0
 ];
 
-/// GroupOp ordinal 14 — ContextMetadataSet { context_id: [0;32], name: None, data: {} }
+/// GroupOp ordinal 13 - ContextMetadataSet { context_id: [0;32], name: None, data: {} }
 const GOLDEN_GROUP_OP_CONTEXT_METADATA_SET: &[u8] = &[
-    14, // discriminant
+    13, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
     0, // name = None
     0, 0, 0, 0, // data len = 0
 ];
 
-/// GroupOp ordinal 15 — GroupDelete (no fields; full encoding = discriminant only)
-const GOLDEN_GROUP_OP_GROUP_DELETE: &[u8] = &[15];
+/// GroupOp ordinal 14 - GroupDelete (no fields; full encoding = discriminant only)
+const GOLDEN_GROUP_OP_GROUP_DELETE: &[u8] = &[14];
 
-/// GroupOp ordinal 16 — GroupMigrationSet { migration: None }
+/// GroupOp ordinal 15 - GroupMigrationSet { migration: None }
 const GOLDEN_GROUP_OP_GROUP_MIGRATION_SET: &[u8] = &[
-    16, // discriminant
+    15, // discriminant
     0,  // migration = None
 ];
 
-/// GroupOp ordinal 17 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
+/// GroupOp ordinal 16 - ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
 const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
+    16, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // context_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // member
+    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
+];
+
+/// GroupOp ordinal 17 - ContextCapabilityRevoked (same shape as Granted)
+const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
     17, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
@@ -166,19 +170,9 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
     1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
-/// GroupOp ordinal 18 — ContextCapabilityRevoked (same shape as Granted)
-const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
-    18, // discriminant
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // context_id
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // member
-    1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
-];
-
-/// GroupOp ordinal 19 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
+/// GroupOp ordinal 18 - TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
 const GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET: &[u8] = &[
-    19, // discriminant
+    18, // discriminant
     0, 0, 0, 0, // allowed_mrtd vec len = 0
     0, 0, 0, 0, // allowed_rtmr0 vec len = 0
     0, 0, 0, 0, // allowed_rtmr1 vec len = 0
@@ -188,9 +182,9 @@ const GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET: &[u8] = &[
     0, // accept_mock = false
 ];
 
-/// GroupOp ordinal 20 — MemberJoinedViaTeeAttestation (all empty/zero)
+/// GroupOp ordinal 19 - MemberJoinedViaTeeAttestation (all empty/zero)
 const GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
-    20, // discriminant
+    19, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // member
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -204,39 +198,20 @@ const GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     1, // role = Member (ordinal 1)
 ];
 
-/// GroupOp ordinal 21 — MemberSetAutoFollow { target: [0;32], auto_follow_contexts: false, auto_follow_subgroups: false }
+/// GroupOp ordinal 20 - MemberSetAutoFollow { target: [0;32], auto_follow_contexts: false, auto_follow_subgroups: false }
 const GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW: &[u8] = &[
-    21, // discriminant
+    20, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target
     0, // auto_follow_contexts = false
     0, // auto_follow_subgroups = false
 ];
 
-/// GroupOp ordinal 22 — TransferOwnership { new_owner: [0;32] }
+/// GroupOp ordinal 21 - TransferOwnership { new_owner: [0;32] }
 const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
-    22, // discriminant
+    21, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // new_owner
-];
-
-/// GroupOp ordinal 23 — CascadeTargetApplicationSet { from_app_key: [0;32].into(), app_key: [0;32].into(), target: [0;32] }
-const GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET: &[u8] = &[
-    23, // discriminant
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // from_app_key
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // app_key
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // target_application_id
-];
-
-/// GroupOp ordinal 24 — CascadeGroupMigrationSet { from_app_key: [0;32].into(), migration: None }
-const GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET: &[u8] = &[
-    24, // discriminant
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // from_app_key
-    0, // migration = None
 ];
 
 /// Borsh encoding of `HybridTimestamp::zero()` — 24 bytes.
@@ -271,11 +246,9 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
     );
 }
 
-/// GroupOp ordinal 25 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
-/// `GroupKeyRotated { departed }` — appended at the END of `GroupOp`, so every
-/// pre-existing ordinal is preserved. Discriminant 26 + a 32-byte `departed` key.
+/// GroupOp ordinal 24 - AccountDeviceLinked (genesis + empty chain + cert + endorsement)
 const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
-    27, // discriminant
+    24, // discriminant
     1,  // genesis.version
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // genesis.root_sign_pk
@@ -303,8 +276,9 @@ const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
     0, // endorsement.signature
 ];
 
+/// GroupOp ordinal 25 - AccountDeviceUnlinked { account: [0;32], device: [0;32], proof: None }
 const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED: &[u8] = &[
-    28, // discriminant
+    25, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // account
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -315,8 +289,9 @@ const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED: &[u8] = &[
     0, // proof: None
 ];
 
+/// GroupOp ordinal 26 - AccountKeysRotated { handoff }
 const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
-    29, // discriminant
+    26, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // handoff.account
     0, 0, 0, 0, // handoff.from_epoch
@@ -327,20 +302,23 @@ const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
     0, // handoff.signature
 ];
 
+/// GroupOp ordinal 23 - GroupKeyRotated { departed: [0;32] }
 const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
-    26, // discriminant
+    23, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // departed
 ];
 
+/// GroupOp ordinal 22 - CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
-    25, // discriminant
+    22, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // from_app_key
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // app_key
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target_application_id
+    0, 0, 0, 0, // to_state_version u32 = 0
     0, // migration = None
     // HybridTimestamp::zero() — same bytes as GOLDEN_HLC_ZERO (verified by hlc_zero_golden_bytes_are_self_consistent)
     0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -348,6 +326,14 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
 
 #[test]
 fn group_op_discriminants_are_golden() {
+    // Ties the ordinals frozen below to the schema version they describe, so a
+    // rebase that drops the version bump while keeping the enum deletions fails
+    // here instead of shipping a silent variant confusion on the wire.
+    assert_eq!(
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 10,
+        "the ordinals frozen below are the v10 layout; bump them together"
+    );
+
     // Decode each frozen byte vector and verify the correct variant is returned.
     // A mid-enum insertion shifts ordinals so the wrong variant is decoded (or
     // decoding fails). Failures are accumulated so ALL mismatches are reported
@@ -405,115 +391,100 @@ fn group_op_discriminants_are_golden() {
         6
     );
     check_group_op!(
-        GOLDEN_GROUP_OP_UPGRADE_POLICY_SET,
-        GroupOp::UpgradePolicySet { .. },
-        7
-    );
-    check_group_op!(
         GOLDEN_GROUP_OP_TARGET_APPLICATION_SET,
         GroupOp::TargetApplicationSet { .. },
-        8
+        7
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_REGISTERED,
         GroupOp::ContextRegistered { .. },
-        9
+        8
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_DETACHED,
         GroupOp::ContextDetached { .. },
-        10
+        9
     );
     check_group_op!(
         GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET,
         GroupOp::SubgroupVisibilitySet { .. },
-        11
+        10
     );
     check_group_op!(
         GOLDEN_GROUP_OP_GROUP_METADATA_SET,
         GroupOp::GroupMetadataSet { .. },
-        12
+        11
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_METADATA_SET,
         GroupOp::MemberMetadataSet { .. },
-        13
+        12
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_METADATA_SET,
         GroupOp::ContextMetadataSet { .. },
-        14
+        13
     );
-    check_group_op!(GOLDEN_GROUP_OP_GROUP_DELETE, GroupOp::GroupDelete, 15);
+    check_group_op!(GOLDEN_GROUP_OP_GROUP_DELETE, GroupOp::GroupDelete, 14);
     check_group_op!(
         GOLDEN_GROUP_OP_GROUP_MIGRATION_SET,
         GroupOp::GroupMigrationSet { .. },
-        16
+        15
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED,
         GroupOp::ContextCapabilityGranted { .. },
-        17
+        16
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED,
         GroupOp::ContextCapabilityRevoked { .. },
-        18
+        17
     );
     check_group_op!(
         GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET,
         GroupOp::TeeAdmissionPolicySet { .. },
-        19
+        18
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE,
         GroupOp::MemberJoinedViaTeeAttestation { .. },
-        20
+        19
     );
     check_group_op!(
         GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW,
         GroupOp::MemberSetAutoFollow { .. },
-        21
+        20
     );
     check_group_op!(
         GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP,
         GroupOp::TransferOwnership { .. },
-        22
-    );
-    check_group_op!(
-        GOLDEN_GROUP_OP_CASCADE_TARGET_APPLICATION_SET,
-        GroupOp::CascadeTargetApplicationSet { .. },
-        23
-    );
-    check_group_op!(
-        GOLDEN_GROUP_OP_CASCADE_GROUP_MIGRATION_SET,
-        GroupOp::CascadeGroupMigrationSet { .. },
-        24
+        21
     );
     check_group_op!(
         GOLDEN_GROUP_OP_CASCADE_UPGRADE,
         GroupOp::CascadeUpgrade { .. },
-        25
+        22
     );
     check_group_op!(
         GOLDEN_GROUP_OP_GROUP_KEY_ROTATED,
         GroupOp::GroupKeyRotated { .. },
-        26
+        23
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED,
         GroupOp::AccountDeviceLinked { .. },
-        27
+        24
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED,
         GroupOp::AccountDeviceUnlinked { .. },
-        28
+        25
     );
     check_group_op!(
         GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED,
         GroupOp::AccountKeysRotated { .. },
-        29
+        26
     );
 
     assert!(
@@ -1225,7 +1196,7 @@ fn sample_application_id(seed: u8) -> ApplicationId {
 }
 
 #[test]
-fn cascade_target_application_set_sign_verify() {
+fn cascade_upgrade_sign_verify() {
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
 
@@ -1234,10 +1205,13 @@ fn cascade_target_application_set_sign_verify() {
         sample_group_id(),
         vec![],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: [9u8; 32].into(),
             app_key: [10u8; 32].into(),
             target_application_id: sample_application_id(0x42),
+            to_state_version: 3,
+            migration: Some(b"migrate_v1_to_v2".to_vec()),
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign");
@@ -1245,38 +1219,13 @@ fn cascade_target_application_set_sign_verify() {
     op.verify_signature().expect("verify");
     assert_eq!(
         op.op.op_kind_label(),
-        "cascade_target_application_set",
+        "cascade_upgrade",
         "op_kind_label must distinguish cascade variant for metrics"
     );
 }
 
 #[test]
-fn cascade_group_migration_set_sign_verify() {
-    let mut rng = OsRng;
-    let sk = PrivateKey::random(&mut rng);
-
-    let op = SignedGroupOp::sign(
-        &sk,
-        sample_group_id(),
-        vec![],
-        1,
-        GroupOp::CascadeGroupMigrationSet {
-            from_app_key: [9u8; 32].into(),
-            migration: Some(b"migrate_v1_to_v2".to_vec()),
-        },
-    )
-    .expect("sign");
-
-    op.verify_signature().expect("verify");
-    assert_eq!(
-        op.op.op_kind_label(),
-        "cascade_group_migration_set",
-        "op_kind_label must distinguish cascade migration variant for metrics"
-    );
-}
-
-#[test]
-fn cascade_target_distinct_from_single_group_target() {
+fn cascade_upgrade_distinct_from_single_group_target() {
     // A cascade op and a non-cascade op with the same new app_key/target
     // must produce DIFFERENT content hashes -- otherwise replay/dedup
     // would conflate the two distinct governance intents.
@@ -1302,10 +1251,13 @@ fn cascade_target_distinct_from_single_group_target() {
         sample_group_id(),
         vec![],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: [9u8; 32].into(),
             app_key: new_app_key.into(),
             target_application_id: target,
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign");
@@ -1318,10 +1270,10 @@ fn cascade_target_distinct_from_single_group_target() {
 }
 
 #[test]
-fn cascade_target_from_app_key_changes_hash() {
+fn cascade_upgrade_from_app_key_changes_hash() {
     // The Borsh-discriminant guarantees distinctness from the
     // single-group variant (covered by
-    // `cascade_target_distinct_from_single_group_target`). This test
+    // `cascade_upgrade_distinct_from_single_group_target`). This test
     // covers the stronger invariant: `from_app_key` is itself part of
     // the signed bytes, so two cascade ops that agree on every field
     // EXCEPT `from_app_key` must still hash differently. Otherwise a
@@ -1338,10 +1290,13 @@ fn cascade_target_from_app_key_changes_hash() {
         sample_group_id(),
         vec![],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: [9u8; 32].into(),
             app_key: new_app_key.into(),
             target_application_id: target,
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign");
@@ -1351,10 +1306,13 @@ fn cascade_target_from_app_key_changes_hash() {
         sample_group_id(),
         vec![],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: [8u8; 32].into(), // only this differs
             app_key: new_app_key.into(),
             target_application_id: target,
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign");
@@ -1366,112 +1324,36 @@ fn cascade_target_from_app_key_changes_hash() {
     );
 }
 
-#[test]
-fn cascade_target_application_set_borsh_round_trip() {
-    // Explicit wire-format round-trip for the new variant. The
-    // sign/verify tests above implicitly exercise serialization (sign
-    // hashes the Borsh bytes; verify rebuilds them) but do not assert
-    // that field values survive a standalone serialize -> deserialize
-    // round trip on the GroupOp itself. A future enum reordering that
-    // shifts variant tags would silently change which variant a stored
-    // op decodes as; this guards against that by asserting field
-    // equality after a round trip.
-    let original = GroupOp::CascadeTargetApplicationSet {
-        from_app_key: [9u8; 32].into(),
-        app_key: [10u8; 32].into(),
-        target_application_id: sample_application_id(0x42),
-    };
-
-    let bytes = borsh::to_vec(&original).expect("serialize");
-    let decoded: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
-
-    match decoded {
-        GroupOp::CascadeTargetApplicationSet {
-            from_app_key,
-            app_key,
-            target_application_id,
-        } => {
-            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
-            assert_eq!(app_key.to_bytes(), [10u8; 32]);
-            assert_eq!(target_application_id, sample_application_id(0x42));
-        }
-        other => panic!("expected CascadeTargetApplicationSet, got {other:?}"),
-    }
-}
-
-#[test]
-fn cascade_group_migration_set_borsh_round_trip() {
-    // Symmetric round-trip guard for the migration variant.
-    let original = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [9u8; 32].into(),
-        migration: Some(b"migrate_v1_to_v2".to_vec()),
-    };
-
-    let bytes = borsh::to_vec(&original).expect("serialize");
-    let decoded: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
-
-    match decoded {
-        GroupOp::CascadeGroupMigrationSet {
-            from_app_key,
-            migration,
-        } => {
-            assert_eq!(from_app_key.to_bytes(), [9u8; 32]);
-            assert_eq!(migration.as_deref(), Some(b"migrate_v1_to_v2".as_ref()));
-        }
-        other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
-    }
-
-    // Also cover migration = None.
-    let original_none = GroupOp::CascadeGroupMigrationSet {
-        from_app_key: [0u8; 32].into(),
-        migration: None,
-    };
-    let bytes_none = borsh::to_vec(&original_none).expect("serialize none");
-    let decoded_none: GroupOp = borsh::from_slice(&bytes_none).expect("deserialize none");
-    match decoded_none {
-        GroupOp::CascadeGroupMigrationSet {
-            from_app_key,
-            migration,
-        } => {
-            assert_eq!(from_app_key.to_bytes(), [0u8; 32]);
-            assert!(migration.is_none());
-        }
-        other => panic!("expected CascadeGroupMigrationSet, got {other:?}"),
-    }
-}
-
-// --- CascadeUpgrade wire-format back-compat (schema v7) ---
+// --- CascadeUpgrade wire-format back-compat (schema v10) ---
 
 #[test]
 fn cascade_upgrade_back_compat_discriminant_fixed() {
-    // `CascadeUpgrade` is the LAST variant of `GroupOp`, so its Borsh
-    // discriminant must stay fixed at ordinal 25. This is a GOLDEN
-    // byte-vector guard: the bytes below were produced by the enum at the
-    // v7 layout (CascadeUpgrade at ordinal 25, its leading discriminant
-    // byte). We decode these EXTERNALLY-FIXED bytes with the CURRENT enum —
-    // we never re-encode them here. A same-binary serialize -> deserialize
-    // round-trip would NOT catch a mid-enum insertion, because both sides
-    // would use the shifted layout and still agree. Decoding frozen bytes is
-    // what actually catches it: insert a variant in the MIDDLE of `GroupOp`
-    // and CascadeUpgrade's ordinal shifts off 25, so byte `25` here decodes
-    // as a DIFFERENT variant (or fails).
+    // GOLDEN byte-vector guard on CascadeUpgrade's Borsh discriminant (ordinal
+    // 22 at v10). We decode these EXTERNALLY-FIXED bytes with the CURRENT enum
+    // and never re-encode them here: a same-binary serialize -> deserialize
+    // round-trip would NOT catch a mid-enum insertion, because both sides would
+    // use the shifted layout and still agree. Decoding frozen bytes is what
+    // actually catches it: insert or remove a variant before CascadeUpgrade and
+    // byte `22` here decodes as a DIFFERENT variant (or fails).
     //
     // Golden encoding of:
     //   GroupOp::CascadeUpgrade {
     //       from_app_key: [3u8; 32].into(),
     //       app_key: [4u8; 32].into(),
     //       target_application_id: sample_application_id(5),
+    //       to_state_version: 2,
     //       migration: Some(b"migrate".to_vec()),
     //       cascade_hlc: HybridTimestamp::zero(),
     //   }
     const GOLDEN_CASCADE_UPGRADE: &[u8] = &[
-        25, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 25)
+        22, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 22 at v10)
         3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
         3, 3, // from_app_key
         4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
         4, 4, // app_key
         5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 250, // target_application_id = sample_application_id(5)
+        2, 0, 0, 0, // to_state_version = 2
         1, 7, 0, 0, 0, 109, 105, 103, 114, 97, 116, 101, // migration = Some("migrate")
         0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, // cascade_hlc = HybridTimestamp::zero()
@@ -1480,8 +1362,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     // Up-front: the leading discriminant byte must equal CascadeUpgrade's
     // known ordinal, so a mid-enum insertion (which shifts it) is caught.
     assert_eq!(
-        GOLDEN_CASCADE_UPGRADE[0], 25,
-        "CascadeUpgrade's Borsh discriminant must stay at ordinal 25; a \
+        GOLDEN_CASCADE_UPGRADE[0], 22,
+        "CascadeUpgrade's Borsh discriminant must stay at ordinal 22; a \
          changed leading byte means a prior variant moved"
     );
 
@@ -1492,17 +1374,19 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
             from_app_key,
             app_key,
             target_application_id,
+            to_state_version,
             migration,
             cascade_hlc,
         } => {
             assert_eq!(from_app_key.to_bytes(), [3u8; 32]);
             assert_eq!(app_key.to_bytes(), [4u8; 32]);
             assert_eq!(target_application_id, sample_application_id(5));
+            assert_eq!(to_state_version, 2);
             assert_eq!(migration, Some(b"migrate".to_vec()));
             assert_eq!(cascade_hlc, HybridTimestamp::zero());
         }
         other => panic!(
-            "frozen CascadeUpgrade bytes (discriminant 25) decoded as {other:?}; a \
+            "frozen CascadeUpgrade bytes (discriminant 22) decoded as {other:?}; a \
              variant was inserted mid-enum, shifting prior variant tags"
         ),
     }
@@ -1516,9 +1400,9 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
 #[test]
 fn pre_flag_day_group_op_version_is_rejected() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
-    // A struct-shaped op carrying a prior schema version (here v7, the last version
-    // that still had `state_hash`). `verify_signature` must reject on the version
-    // check alone — before touching the (here bogus) signature.
+    // A struct-shaped op carrying the immediately-previous schema version.
+    // `verify_signature` must reject on the version check alone - before
+    // touching the (here bogus) signature.
     let stale = SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
         group_id: sample_group_id(),

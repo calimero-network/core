@@ -44,7 +44,7 @@ cargo test -p calimero-governance-store tee_member_removed_event_tests -- --test
 | `unified_op_decode.rs` | Decodes an applied `SignedNamespaceOp`/`GroupOp` into a `calimero_op::Op` for the unified causal log, on the same store handle as the gov-DAG write |
 | `authorizer.rs` | `AtCutAuthorizer` trait - the apply-time authorization seam (see Mental Model) |
 | `permission_checker.rs` | `PermissionChecker` - admin/capability gate wrapper used by `GroupApplyCtx` |
-| `cascade.rs` / `cascade/walk.rs` | Descendant-subgroup fan-out walk for `CascadeTargetApplicationSet` / `CascadeGroupMigrationSet` |
+| `cascade.rs` / `cascade/walk.rs` | Descendant-subgroup fan-out walk for `CascadeUpgrade` |
 | `absorb.rs` / `absorb_record.rs` | `AbsorbRepository` - durable buffer for stale-schema (future-version) straggler deltas that can't yet be applied |
 | `meta.rs` / `metadata.rs` | `MetaRepository` (group meta row, state-hash computation), `MetadataRepository` (arbitrary metadata records for group/member/context) |
 | `capabilities.rs` | `CapabilitiesRepository` - per-member and per-context-member capability bitmasks |

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use calimero_context_client::local_governance::{GroupOp, JoinAccountCredential};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupParentRef};
@@ -124,7 +124,6 @@ pub(super) fn test_meta() -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: PublicKey::from([0x01; 32]),
         owner_identity: PublicKey::from([0x01; 32]),
@@ -139,7 +138,6 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,

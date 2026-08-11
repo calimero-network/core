@@ -154,12 +154,6 @@ steps:
     timeout: 90
     trigger_sync: true
 
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-strand-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
-
   # Phase 4: install v2, capture its blob id WHILE v2 is the row's latest
   # (same-package bundles share one applicationId, so the blob id is the only
   # per-version handle), upgrade v1 -> v2, activate v2 on node 1 ONLY.

@@ -114,15 +114,6 @@ steps:
     statements:
       - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "note_count": 2}})'
 
-  # A migrate-carrying upgrade is only valid under LazyOnAccess (the initiating
-  # node still applies it on access); set it before the cascade, as scenarios
-  # 31/32 do.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-authored-count-1
-    group_id: "{{namespace_id}}"
-    upgrade_policy: lazy_on_access
-
   # Cascade the namespace v1 → v2. The owning node applies the migration: the
   # state schema flips to 2.0.0, but the two notes keep their per-entry
   # schema_version 1 until the owner re-signs them (owner-driven convert).

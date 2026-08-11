@@ -27,8 +27,7 @@ use crate::group::{
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
     StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
     StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -203,9 +202,9 @@ pub enum ExecuteError {
     /// This is acceptable because:
     ///   * Eager upgrades complete in bounded time (one execute per
     ///     context, serialised).
-    ///   * `LazyOnAccess` groups never enter `InProgress` here — they
-    ///     upgrade per-call inside `maybe_lazy_upgrade` and skip the
-    ///     group-wide `propagate_upgrade` path entirely.
+    ///   * A direct context upgrade holds `InProgress` only across the
+    ///     target-set emission, then overwrites `Completed`; a cascade
+    ///     descendant holds `InProgress` for its whole `propagate_upgrade` walk.
     ///   * The alternative (no gate) lets a pre-migration call land on a
     ///     context whose neighbours already migrated, creating exactly the
     ///     cross-version drift the cascade is meant to prevent.
@@ -431,10 +430,6 @@ pub enum ContextMessage {
     ListAllGroups {
         request: ListAllGroupsRequest,
         outcome: oneshot::Sender<<ListAllGroupsRequest as Message>::Result>,
-    },
-    UpdateGroupSettings {
-        request: UpdateGroupSettingsRequest,
-        outcome: oneshot::Sender<<UpdateGroupSettingsRequest as Message>::Result>,
     },
     UpdateMemberRole {
         request: UpdateMemberRoleRequest,

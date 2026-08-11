@@ -307,10 +307,6 @@ fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
             Method::GET,
             Method::DELETE,
             Method::PUT,
-            // PATCH backs `updateGroupSettings` (PATCH /admin-api/groups/:id);
-            // omitting it fails the browser preflight as a status-0 network
-            // error while curl/CLI clients work fine.
-            Method::PATCH,
             Method::OPTIONS,
         ])
         .expose_headers([
@@ -402,13 +398,18 @@ mod cors_tests {
             .layer(build_cors_layer(&crate::config::CorsConfig::default()))
     }
 
-    /// Browser preflight for the PATCH-backed admin routes (e.g.
-    /// `PATCH /admin-api/groups/:id` = updateGroupSettings): the allow-methods
-    /// list must include PATCH, otherwise web apps see a status-0 network
-    /// error while curl/CLI clients (no CORS) work — which is how the gap
-    /// originally shipped unnoticed.
+    /// The allow-methods list tracks the methods actually routed, and no
+    /// endpoint serves PATCH any more. Adding a PATCH route without adding
+    /// PATCH back here fails the browser preflight as a status-0 network
+    /// error while curl/CLI clients keep working, which is how the gap
+    /// originally shipped unnoticed; this reddens instead.
     #[tokio::test]
-    async fn cors_preflight_allows_patch() {
+    async fn cors_preflight_omits_patch_while_no_route_serves_it() {
+        assert!(
+            !include_str!("../endpoints.json").contains("\"PATCH "),
+            "a PATCH route is back: re-add Method::PATCH to build_cors_layer"
+        );
+
         let app = cors_only_router(ok_handler);
 
         let resp = app
@@ -424,7 +425,6 @@ mod cors_tests {
             .await
             .expect("router service call should not fail");
 
-        assert_eq!(resp.status(), StatusCode::OK);
         let allowed = resp
             .headers()
             .get(header::ACCESS_CONTROL_ALLOW_METHODS)
@@ -432,9 +432,8 @@ mod cors_tests {
             .to_str()
             .expect("allow-methods should be ASCII");
         assert!(
-            allowed.contains("PATCH"),
-            "PATCH missing from Access-Control-Allow-Methods ({allowed}) — \
-             browser clients cannot call updateGroupSettings"
+            !allowed.contains("PATCH"),
+            "PATCH is still preflight-allowed ({allowed}) but no route serves it"
         );
     }
 

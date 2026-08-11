@@ -863,10 +863,9 @@ impl SyncManager {
     /// not reconcile its new-application-version state onto this node:
     /// HashComparison merges root entries by hash with no notion of
     /// application version, so it would overwrite the pre-upgrade state
-    /// that this node's own (LazyOnAccess) migration must read as input
-    /// — the migrate fn would then try to decode already-migrated bytes
-    /// as the old shape and panic. This is the sync-side analogue of
-    /// the write-gate.
+    /// that this node's own migration must read as input — the migrate fn
+    /// would then try to decode already-migrated bytes as the old shape
+    /// and panic. This is the sync-side analogue of the write-gate.
     ///
     /// Only per-context state reconciliation is gated. Governance sync
     /// (the namespace DAG carrying the upgrade op itself) flows through
@@ -1877,10 +1876,10 @@ impl SyncManager {
         // Sync-gate: if an application upgrade is pending on this context
         // (our bound app != the group's target app), do NOT reconcile
         // state with a peer — it may have already migrated, and merging
-        // its new-version state here would overwrite the pre-upgrade
-        // state our own LazyOnAccess migration must read as input. Skip
-        // as a clean no-op; we self-migrate on next access, after which
-        // the gate lifts. See `pending_upgrade_target`.
+        // its new-version state here would overwrite the pre-upgrade state
+        // our own migration must read as input. Skip as a clean no-op; we
+        // self-migrate on next access, after which the gate lifts.
+        // See `pending_upgrade_target`.
         // An operator resync (the recovery for a stranded context) is by
         // definition behind the group target, so the pending-upgrade gate below
         // would always fire and skip it. Resolve the marker once here: it
@@ -4049,11 +4048,8 @@ pub(crate) fn pending_upgrade_info(
         return None;
     }
     // Distinct-id (single-wasm) upgrade: the gate clears when this context's
-    // bound application advances to `target` — done by the active policy's
-    // actuation (LazyOnAccess: `maybe_lazy_upgrade` on next access; Automatic:
-    // the eager receiver-side swap). It is intentionally policy-agnostic here;
-    // the migration-vs-policy compatibility is enforced upstream at emit time
-    // (`upgrade_group` rejects a migrate target under non-LazyOnAccess).
+    // bound application advances to `target`, which `maybe_lazy_upgrade` does
+    // on the context's next access.
     if current_app != target {
         return Some((target, stage_blob_for(store, &meta)));
     }
@@ -4168,7 +4164,7 @@ mod pending_upgrade_tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{register_context_in_group, MetaRepository};
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{
@@ -4194,7 +4190,6 @@ mod pending_upgrade_tests {
         let meta = GroupMetaValue {
             app_key: [0x11; 32],
             target_application_id: target,
-            upgrade_policy: UpgradePolicy::LazyOnAccess,
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,

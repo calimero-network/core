@@ -147,15 +147,9 @@ steps:
     timeout: 90
     trigger_sync: true
 
-  # Phase 5: lazy-on-access upgrade policy, then ONE cascade v1 → v2. The
-  # schema flip is the edge-trigger that makes each node emit a migration
-  # heartbeat carrying its new schema_version + residue.
-  - name: Set upgrade policy to lazy-on-access on node 1
-    type: update_group_settings
-    node: app-migration-mstatus-1
-    group_id: "{{namespace_id}}"
-    upgrade_policy: lazy_on_access
-
+  # Phase 5: ONE cascade v1 → v2. The schema flip is the edge-trigger that
+  # makes each node emit a migration heartbeat carrying its new
+  # schema_version + residue.
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-mstatus-1

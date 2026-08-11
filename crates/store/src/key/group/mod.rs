@@ -4,9 +4,7 @@ use core::fmt::{self, Debug, Formatter};
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{
-    ContextId as PrimitiveContextId, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 use generic_array::sequence::Concat;
@@ -1177,7 +1175,6 @@ pub struct GroupOpHeadValue {
 pub struct GroupMetaValue {
     pub app_key: [u8; 32],
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     pub admin_identity: PrimitivePublicKey,
     /// Single-instance Owner of this group. Distinct from the legacy
@@ -1236,79 +1233,13 @@ impl Default for AutoFollowFlags {
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
 /// node, the Ed25519 key pair used for sync key-share across all contexts in
 /// this group.
-///
-/// `auto_follow` was added after the initial schema; [`BorshDeserialize`] is
-/// implemented manually so that records written under the legacy three-field
-/// layout still decode — the missing bytes default to
-/// [`AutoFollowFlags::default()`], which since the #2422 fix is
-/// `{contexts: true, subgroups: false}`. This means legacy on-disk records
-/// (pre-#2422) start auto-following contexts on the next deserialize.
-/// Operators who want to preserve the old opt-out behaviour for specific
-/// existing members can issue `set_member_auto_follow(contexts: false)`
-/// per member. Serialization always writes the full four-field layout, so
-/// any mutation transparently upgrades the on-disk record. See the
-/// auto-follow architecture doc.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberValue {
     pub role: GroupMemberRole,
     pub private_key: Option<[u8; 32]>,
     pub sender_key: Option<[u8; 32]>,
     pub auto_follow: AutoFollowFlags,
-}
-
-#[cfg(feature = "borsh")]
-impl BorshDeserialize for GroupMemberValue {
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let role = BorshDeserialize::deserialize_reader(reader)?;
-        let private_key = BorshDeserialize::deserialize_reader(reader)?;
-        let sender_key = BorshDeserialize::deserialize_reader(reader)?;
-
-        // `AutoFollowFlags` is two `bool`s = exactly 2 bytes in Borsh.
-        // Distinguish three cases on the trailing bytes:
-        //   - 0 bytes remaining (legacy record) → default flags
-        //   - 2 bytes remaining (new record)    → deserialize flags
-        //   - 1 byte remaining                  → corruption, EOF error
-        //
-        // Using `read_exact` alone conflates cases 1 and 3 because it
-        // returns `UnexpectedEof` in both. We read one byte at a time
-        // so a clean EOF (case 1) is distinguishable from a partial
-        // tail (case 3). See PR #2169 review for detail.
-        let auto_follow = {
-            let mut first = [0u8; 1];
-            let read1 = read_byte(reader, &mut first)?;
-            if !read1 {
-                AutoFollowFlags::default()
-            } else {
-                let mut second = [0u8; 1];
-                reader.read_exact(&mut second)?;
-                AutoFollowFlags::try_from_slice(&[first[0], second[0]])?
-            }
-        };
-
-        Ok(Self {
-            role,
-            private_key,
-            sender_key,
-            auto_follow,
-        })
-    }
-}
-
-/// Read exactly one byte into `buf`. Returns `Ok(true)` if a byte was
-/// read, `Ok(false)` on clean EOF, and forwards any other I/O error.
-/// Used to distinguish a legacy (no trailing bytes) record from a
-/// corrupted record that has fewer bytes than the new layout requires.
-#[cfg(feature = "borsh")]
-fn read_byte<R: borsh::io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> borsh::io::Result<bool> {
-    loop {
-        match reader.read(buf) {
-            Ok(0) => return Ok(false),
-            Ok(_) => return Ok(true),
-            Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        }
-    }
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -1380,8 +1311,8 @@ pub enum GroupUpgradeStatus {
         failed: u32,
     },
     Completed {
-        /// Unix timestamp when the last context was upgraded, or `None` for
-        /// `LazyOnAccess` upgrades where contexts upgrade individually on demand.
+        /// Unix timestamp when the last context was upgraded, or `None` when
+        /// each context self-migrates independently without coordination.
         completed_at: Option<u64>,
     },
 }
@@ -2956,53 +2887,10 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 33);
     }
 
-    /// A record written under the pre-auto-follow three-field layout
-    /// (role + private_key + sender_key, no auto_follow bytes) must
-    /// deserialize and fill in default flags. Exercised by seeding raw
-    /// bytes that match the legacy wire format exactly.
-    #[cfg(feature = "borsh")]
-    #[test]
-    fn group_member_value_deserializes_legacy_record() {
-        use borsh::BorshSerialize;
-
-        // Legacy layout: role (1) + private_key Option (1 + 32) + sender_key Option (1).
-        #[derive(BorshSerialize)]
-        struct LegacyGroupMemberValue {
-            role: GroupMemberRole,
-            private_key: Option<[u8; 32]>,
-            sender_key: Option<[u8; 32]>,
-        }
-
-        let legacy = LegacyGroupMemberValue {
-            role: GroupMemberRole::Admin,
-            private_key: Some([0x11; 32]),
-            sender_key: None,
-        };
-        let bytes = borsh::to_vec(&legacy).unwrap();
-
-        let decoded: GroupMemberValue = borsh::from_slice(&bytes).unwrap();
-        assert_eq!(decoded.role, GroupMemberRole::Admin);
-        assert_eq!(decoded.private_key, Some([0x11; 32]));
-        assert_eq!(decoded.sender_key, None);
-        // Post-#2422: legacy records decode with the new default
-        // (contexts=true, subgroups=false). Explicit assertion on the
-        // exact values, alongside the Default-based check, so this test
-        // documents both contracts.
-        assert_eq!(decoded.auto_follow, AutoFollowFlags::default());
-        assert_eq!(
-            decoded.auto_follow,
-            AutoFollowFlags {
-                contexts: true,
-                subgroups: false,
-            }
-        );
-    }
-
-    /// `AutoFollowFlags::default()` is the contract that ALL "no
-    /// preference expressed" entry points rely on (legacy borsh
-    /// decode + `add_group_member`'s `.unwrap_or_default()` fallback).
-    /// Pin the exact values here so a future Default impl change is
-    /// caught at compile-test time, not at runtime in production.
+    /// `AutoFollowFlags::default()` is the contract `add_group_member`'s
+    /// `.unwrap_or_default()` fallback relies on. Pin the exact values
+    /// here so a future Default impl change is caught at compile-test
+    /// time, not at runtime in production.
     #[test]
     fn auto_follow_flags_default_is_contexts_true_subgroups_false() {
         assert_eq!(
@@ -3060,7 +2948,11 @@ mod tests {
         };
         let bytes = borsh::to_vec(&partial).unwrap();
         let err = borsh::from_slice::<GroupMemberValue>(&bytes).unwrap_err();
-        assert_eq!(err.kind(), borsh::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            err.kind(),
+            borsh::io::ErrorKind::InvalidData,
+            "a truncated record must fail loudly, not default its trailing field"
+        );
     }
 
     #[test]
@@ -3218,7 +3110,7 @@ mod tests {
     mod value_roundtrips {
         use borsh::{from_slice, to_vec};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+        use calimero_primitives::context::GroupMemberRole;
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
         use super::super::{
@@ -3231,7 +3123,6 @@ mod tests {
             let value = GroupMetaValue {
                 app_key: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0xCC; 32]),
                 owner_identity: PrimitivePublicKey::from([0xCC; 32]),
@@ -3246,18 +3137,15 @@ mod tests {
             assert_eq!(decoded.target_application_id, value.target_application_id);
             assert_eq!(decoded.created_at, value.created_at);
             assert_eq!(decoded.admin_identity, value.admin_identity);
-            assert!(matches!(decoded.upgrade_policy, UpgradePolicy::Automatic));
         }
 
         #[test]
-        // The removed `Coordinated` policy used borsh tag 2. A persisted
-        // GroupMetaValue carrying that tag must now fail to decode (loud
-        // failure) rather than being silently reinterpreted as another policy.
-        fn group_meta_value_with_legacy_coordinated_tag_is_rejected() {
-            let make = |policy| GroupMetaValue {
+        // `upgrade_policy` was dropped with no store-version gate, so a record
+        // written before the removal must fail loudly, never shift into garbage.
+        fn group_meta_value_with_legacy_policy_tag_is_rejected() {
+            let value = GroupMetaValue {
                 app_key: [0x11; 32],
                 target_application_id: ApplicationId::from([0x22; 32]),
-                upgrade_policy: policy,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
                 owner_identity: PrimitivePublicKey::from([0x33; 32]),
@@ -3265,34 +3153,18 @@ mod tests {
                 auto_join: true,
             };
 
-            // Locate the upgrade-policy tag byte without hardcoding an offset:
-            // serialize two values that differ ONLY in `upgrade_policy`
-            // (Automatic = tag 0, LazyOnAccess = tag 1) and find the single
-            // differing byte. This stays correct even if fields before
-            // `upgrade_policy` change size or order.
-            let automatic = to_vec(&make(UpgradePolicy::Automatic)).expect("serialize");
-            let lazy = to_vec(&make(UpgradePolicy::LazyOnAccess)).expect("serialize");
-            let diffs: Vec<usize> = automatic
-                .iter()
-                .zip(&lazy)
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(i))
-                .collect();
-            assert_eq!(
-                diffs.len(),
-                1,
-                "the two values must differ in exactly the policy tag byte"
-            );
-            let tag_offset = diffs[0];
+            // Re-create the old layout: the policy tag sat between
+            // `target_application_id` and `created_at`.
+            let mut bytes = to_vec(&value).expect("serialize");
+            let tag_offset = to_vec(&value.app_key).expect("serialize").len()
+                + to_vec(&value.target_application_id)
+                    .expect("serialize")
+                    .len();
+            bytes.insert(tag_offset, 0);
 
-            // Patch that byte to the removed Coordinated tag (2) and assert the
-            // whole value now fails to decode.
-            let mut bytes = automatic;
-            bytes[tag_offset] = 2;
-            let decoded = from_slice::<GroupMetaValue>(&bytes);
             assert!(
-                decoded.is_err(),
-                "a stored GroupMetaValue with the removed Coordinated tag must be rejected"
+                from_slice::<GroupMetaValue>(&bytes).is_err(),
+                "a stored GroupMetaValue still carrying an upgrade-policy tag must be rejected"
             );
         }
 

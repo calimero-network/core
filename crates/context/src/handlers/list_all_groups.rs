@@ -48,7 +48,6 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
                         group_id,
                         app_key: meta.app_key.into(),
                         target_application_id: meta.target_application_id,
-                        upgrade_policy: meta.upgrade_policy,
                         created_at: meta.created_at,
                         name,
                     });

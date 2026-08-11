@@ -159,12 +159,6 @@ steps:
     method: migration_note
     expected_failure: true
 
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-frozen-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
-
   - name: Install scenario-frozen-storage-v2 on node 1
     type: install_application
     node: app-migration-frozen-1

@@ -210,7 +210,7 @@ mod tests {
         CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceRepository,
     };
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
@@ -222,7 +222,6 @@ mod tests {
         GroupMetaValue {
             app_key: [0x55; 32],
             target_application_id: ApplicationId::from([0x66; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,

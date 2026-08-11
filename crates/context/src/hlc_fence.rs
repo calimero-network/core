@@ -2,11 +2,11 @@
 //! different app schema than the receiver can currently read.
 //!
 //! Two invariants:
-//! 1. Fence on the LOADED reader version, not `GroupMeta.app_key`. Under
-//!    LazyOnAccess the governance `GroupMeta.app_key` advances for all members
-//!    at cascade-apply, but each node's wasm binary swaps lazily. The decision
-//!    must key on the schema the receiver can actually read right now — its
-//!    loaded `ApplicationMeta` bytecode blob_id — not the migration target.
+//! 1. Fence on the LOADED reader version, not `GroupMeta.app_key`. The
+//!    governance `GroupMeta.app_key` advances for all members at cascade-apply,
+//!    but each node's wasm binary swaps lazily. The decision must key on the
+//!    schema the receiver can actually read right now — its loaded
+//!    `ApplicationMeta` bytecode blob_id — not the migration target.
 //! 2. Absorb-don't-drop. A delta the receiver cannot read yet is `Buffer`ed for
 //!    later verbatim replay; dropping is reserved for unrecoverable cases.
 //!
@@ -103,8 +103,8 @@ pub fn should_fence(
 
 /// Resolve the **loaded reader** app_key for a context: the bytecode blob the
 /// context actually executes right now — distinct from the replicated
-/// `GroupMeta.app_key` (the migration target) under LazyOnAccess, where the
-/// target advances ahead of the local activation.
+/// `GroupMeta.app_key` (the migration target), which can advance ahead of the
+/// local activation.
 ///
 /// Resolution mirrors execution's per-context binding: the activation marker
 /// (set when a migration commits or a code-only swap activates) → the
@@ -146,8 +146,8 @@ pub fn loaded_reader_app_key(
 /// — the discriminator the absorb drain uses to decide when the binary has
 /// caught up to the target (so a buffered straggler delta can be verbatim-
 /// replayed). It is distinct from [`loaded_reader_app_key`] (what the node can
-/// read *right now*) under LazyOnAccess, where the governance target advances
-/// ahead of the locally-loaded binary.
+/// read *right now*) — the governance target can advance ahead of the
+/// locally-loaded binary.
 ///
 /// Returns `None` for non-group contexts (no owning group) and when the group
 /// meta row is missing. Store errors are propagated as `Err`.
@@ -347,7 +347,7 @@ mod tests {
     /// mixed v1/v2 fleet converges without ever dropping a delta.
     ///
     /// A group is cascading v1 → v2 with a sticky boundary at `hlc_at(10)`.
-    /// Under LazyOnAccess two nodes sit at different loaded readers:
+    /// Two nodes sit at different loaded readers:
     ///   * a "fast" node whose binary already swapped to v2, and
     ///   * a "slow" node still executing its v1 binary.
     ///

@@ -23,7 +23,6 @@ use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
@@ -43,7 +42,6 @@ use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetSubgroupVisibilityApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::UpdateContextApplicationRequest;
-use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
 
@@ -119,7 +117,6 @@ async fn get_group_info() {
                 "groupId": GID,
                 "appKey": "testkey",
                 "targetApplicationId": ZERO_BS58,
-                "upgradePolicy": "Automatic",
                 "memberCount": 0,
                 "contextCount": 0,
                 "activeUpgrade": null,
@@ -158,29 +155,6 @@ async fn delete_group() {
         .unwrap();
 
     assert!(resp.data.is_deleted);
-}
-
-#[tokio::test]
-async fn update_group_settings() {
-    let server = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path(format!("/admin-api/groups/{GID}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .update_group_settings(
-            GID,
-            UpdateGroupSettingsApiRequest {
-                requester: None,
-                upgrade_policy: UpgradePolicy::Automatic,
-            },
-        )
-        .await
-        .unwrap();
 }
 
 // ---- Members ----
@@ -415,7 +389,6 @@ async fn create_namespace() {
     let resp = client
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             name: None,
             app_key: None,
         })
@@ -434,7 +407,6 @@ async fn get_namespace() {
                 "namespaceId": GID,
                 "appKey": "testkey",
                 "targetApplicationId": ZERO_BS58,
-                "upgradePolicy": "Automatic",
                 "createdAt": 0,
                 "name": null,
                 "memberCount": 0,
@@ -1009,7 +981,6 @@ async fn create_namespace_returns_err_on_server_error() {
     let result = client
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             name: None,
             app_key: None,
         })

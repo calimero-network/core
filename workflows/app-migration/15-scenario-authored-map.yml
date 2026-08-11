@@ -5,9 +5,8 @@ description: >
   records the executor that wrote it. v2 carries the map THROUGH the
   migrate unchanged and adds a `migration_note` register. The migrate does
   NOT re-insert entries: `AuthoredMap::insert` stamps `env::executor_id()`
-  as owner, and migrate runs independently on every node under
-  LazyOnAccess, so re-inserting would stamp each node's OWN identity and
-  diverge the owners. Carrying the collection preserves the v1 owner
+  as owner, and since each node self-migrates independently, re-inserting
+  would stamp each node's own identity and diverge the owners. Carrying the collection preserves the v1 owner
   stamps byte-for-byte.
 
   Discriminating assertion: `owner_of("k1")` read on BOTH nodes after each
@@ -168,12 +167,6 @@ steps:
     context_id: "{{ctx_id}}"
     method: migration_note
     expected_failure: true
-
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-authmap-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
 
   # Phase 5: per-context upgrade on the subgroup (cascade=false).
   - name: Install scenario-authored-map-v2 on node 1

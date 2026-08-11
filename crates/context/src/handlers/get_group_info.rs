@@ -104,7 +104,6 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 group_id,
                 app_key: meta.app_key.into(),
                 target_application_id: meta.target_application_id,
-                upgrade_policy: meta.upgrade_policy,
                 member_count,
                 context_count,
                 active_upgrade,

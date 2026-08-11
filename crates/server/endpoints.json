@@ -47,7 +47,6 @@
   "GET /admin-api/ready",
   "GET /admin-api/usage",
   "HEAD /admin-api/blobs/:blob_id",
-  "PATCH /admin-api/groups/:group_id",
   "POST /admin-api/contexts",
   "POST /admin-api/contexts/:context_id/application",
   "POST /admin-api/contexts/:context_id/join",

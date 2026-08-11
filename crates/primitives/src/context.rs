@@ -4,7 +4,6 @@
 use core::fmt::{self, Display};
 use core::ops::Deref;
 use core::str::FromStr;
-use std::io;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
@@ -221,64 +220,6 @@ pub struct ContextConfigParams {
     pub service_name: Option<String>,
 }
 
-/// Controls how application upgrades propagate across contexts in a group.
-///
-/// A migration-carrying upgrade is only valid under `LazyOnAccess` (receivers
-/// run the migrate on next access); `Automatic` is for code-only upgrades.
-///
-/// `#[non_exhaustive]` is retained so future policies can be added without
-/// breaking downstream matchers. Any new variant MUST also claim a borsh tag in
-/// the manual impl below.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum UpgradePolicy {
-    /// Upgrade all contexts immediately when the group target changes.
-    Automatic,
-    /// Upgrade each context transparently on its next execution.
-    #[default]
-    LazyOnAccess,
-}
-
-#[cfg(feature = "borsh")]
-const _: () = {
-    use borsh::{BorshDeserialize, BorshSerialize};
-    use std::io::{Read, Write};
-
-    // Tags are stable wire/storage identifiers: 0 = Automatic, 1 = LazyOnAccess,
-    // 2 = removed `Coordinated` (now rejected). A new variant must claim the
-    // next free tag here AND add its arm to the deserializer below.
-    impl BorshSerialize for UpgradePolicy {
-        fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-            match self {
-                Self::Automatic => BorshSerialize::serialize(&0u8, writer),
-                Self::LazyOnAccess => BorshSerialize::serialize(&1u8, writer),
-            }
-        }
-    }
-
-    impl BorshDeserialize for UpgradePolicy {
-        fn deserialize_reader<R: Read>(reader: &mut R) -> io::Result<Self> {
-            let tag = u8::deserialize_reader(reader)?;
-            match tag {
-                0 => Ok(Self::Automatic),
-                1 => Ok(Self::LazyOnAccess),
-                // Tag 2 was the removed `Coordinated` policy. Reject it
-                // explicitly so a stored/in-flight value surfaces loudly
-                // instead of being silently reinterpreted.
-                2 => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "UpgradePolicy::Coordinated (tag 2) has been removed; \
-                     re-set the group's upgrade policy to Automatic or LazyOnAccess",
-                )),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid UpgradePolicy tag",
-                )),
-            }
-        }
-    }
-};
-
 /// Distinguishes admin vs regular member within a context group.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(
@@ -345,31 +286,5 @@ mod tests {
             result,
             Err(InvalidContextId(HashError::DecodeError(_)))
         ));
-    }
-
-    #[cfg(feature = "borsh")]
-    #[test]
-    fn upgrade_policy_borsh_roundtrip() {
-        for policy in [UpgradePolicy::Automatic, UpgradePolicy::LazyOnAccess] {
-            let bytes = borsh::to_vec(&policy).expect("serialize");
-            let decoded: UpgradePolicy = borsh::from_slice(&bytes).expect("deserialize");
-            assert_eq!(decoded, policy);
-        }
-    }
-
-    #[cfg(feature = "borsh")]
-    #[test]
-    fn legacy_coordinated_policy_tag_is_rejected() {
-        // Borsh encoding of the now-removed `Coordinated { deadline:
-        // Some(3600s) }` policy: tag `2`, then `Option::Some` (`1`), then the
-        // `(secs: u64, nanos: u32)` tuple little-endian (3600 = 0x0E10, 0).
-        // `Coordinated` has been removed, so this previously-valid value must
-        // now fail to decode rather than silently round-tripping.
-        let legacy_coordinated = [2u8, 1, 0x10, 0x0E, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let result = borsh::from_slice::<UpgradePolicy>(&legacy_coordinated);
-        assert!(
-            result.is_err(),
-            "legacy Coordinated (tag 2) must be rejected, got {result:?}"
-        );
     }
 }

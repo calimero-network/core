@@ -114,7 +114,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // so the joiner's pre-populated GroupMetaValue
                     // matches the originator's. Without this the
                     // joiner's app_key seeds to [0u8; 32] and any
-                    // CascadeTargetApplicationSet op the joiner
+                    // CascadeUpgrade op the joiner
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
                     app_key: Some(meta.app_key),
