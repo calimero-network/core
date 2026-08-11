@@ -724,8 +724,8 @@ async fn seed_ladder_bundles(node: &TestNode) -> LadderBlobs {
     }
 }
 
-/// Multi-hop emit: a LazyOnAccess group two state versions behind the
-/// installed row upgrades in ONE admin action. The handler discovers the
+/// Multi-hop emit: a group two state versions behind the installed row
+/// upgrades in ONE admin action. The handler discovers the
 /// locally retained intermediate (still referenced by a sibling group),
 /// emits one op pair per rung, and the fold captures the ladder behind
 /// contexts replay. `meta.migration` ends as the LAST hop's method.
@@ -848,12 +848,12 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     );
 }
 
-/// A cascade descendant is required to be LazyOnAccess, and the cascade
-/// dispatch writes it an `InProgress` record plus a propagator. Recovery
-/// used to skip LazyOnAccess groups, so a crash mid-cascade stranded the
-/// descendant `InProgress` forever - and `validate_upgrade` refuses a new
-/// upgrade while such a record exists, so the group was never upgradable
-/// again. Recovery is unconditional now.
+/// A cascade descendant requires special InProgress recovery handling.
+/// The cascade dispatch writes it an `InProgress` record plus a propagator.
+/// Recovery used to skip such descendants, so a crash mid-cascade stranded
+/// the `InProgress` forever - and `validate_upgrade` refuses a new upgrade
+/// while such a record exists, so the group was never upgradable again.
+/// Recovery is unconditional now.
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
@@ -923,7 +923,7 @@ async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
 
     assert!(
         recovered,
-        "a stranded LazyOnAccess cascade descendant must be recovered on restart, \
+        "a stranded cascade descendant must be recovered on restart, \
          not left InProgress forever"
     );
 }

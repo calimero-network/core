@@ -160,9 +160,9 @@ steps:
     expected_failure: true
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
-  # Under LazyOnAccess this sets the target + migration method on the
-  # subgroup meta and returns WITHOUT running a propagator — no node
-  # migrates eagerly; each migrates on its next access below.
+  # The upgrade sets the target + migration method on the subgroup meta
+  # and returns without running a propagator — each node self-migrates on
+  # its next access below.
   - name: Install scenario-field-split-v2 on node 1
     type: install_application
     node: app-migration-split-1

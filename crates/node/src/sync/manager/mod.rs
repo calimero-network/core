@@ -863,10 +863,9 @@ impl SyncManager {
     /// not reconcile its new-application-version state onto this node:
     /// HashComparison merges root entries by hash with no notion of
     /// application version, so it would overwrite the pre-upgrade state
-    /// that this node's own (LazyOnAccess) migration must read as input
-    /// — the migrate fn would then try to decode already-migrated bytes
-    /// as the old shape and panic. This is the sync-side analogue of
-    /// the write-gate.
+    /// that this node's own migration must read as input — the migrate fn
+    /// would then try to decode already-migrated bytes as the old shape
+    /// and panic. This is the sync-side analogue of the write-gate.
     ///
     /// Only per-context state reconciliation is gated. Governance sync
     /// (the namespace DAG carrying the upgrade op itself) flows through
@@ -1877,10 +1876,10 @@ impl SyncManager {
         // Sync-gate: if an application upgrade is pending on this context
         // (our bound app != the group's target app), do NOT reconcile
         // state with a peer — it may have already migrated, and merging
-        // its new-version state here would overwrite the pre-upgrade
-        // state our own LazyOnAccess migration must read as input. Skip
-        // as a clean no-op; we self-migrate on next access, after which
-        // the gate lifts. See `pending_upgrade_target`.
+        // its new-version state here would overwrite the pre-upgrade state
+        // our own migration must read as input. Skip as a clean no-op; we
+        // self-migrate on next access, after which the gate lifts.
+        // See `pending_upgrade_target`.
         // An operator resync (the recovery for a stranded context) is by
         // definition behind the group target, so the pending-upgrade gate below
         // would always fire and skip it. Resolve the marker once here: it

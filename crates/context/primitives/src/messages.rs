@@ -202,7 +202,7 @@ pub enum ExecuteError {
     /// This is acceptable because:
     ///   * Eager upgrades complete in bounded time (one execute per
     ///     context, serialised).
-    ///   * A direct `LazyOnAccess` upgrade holds `InProgress` only across the
+    ///   * A direct context upgrade holds `InProgress` only across the
     ///     target-set emission, then overwrites `Completed`; a cascade
     ///     descendant holds `InProgress` for its whole `propagate_upgrade` walk.
     ///   * The alternative (no gate) lets a pre-migration call land on a

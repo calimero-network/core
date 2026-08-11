@@ -296,8 +296,7 @@ fn loaded_reader_prefers_activation_marker_over_stale_row() {
 
 /// The resolver must return the LOADED application's bytecode blob_id
 /// (APP_KEY_1), NOT the replicated `GroupMeta.app_key` (APP_KEY_2). This is the
-/// core of O3: under LazyOnAccess the governance target advances ahead of the
-/// locally-loaded binary.
+/// core of O3: the governance target can advance ahead of the locally-loaded binary.
 #[test]
 fn loaded_reader_resolves_loaded_application_not_group_target() {
     // GroupMeta.app_key = v2 (target advanced), loaded application = v1.

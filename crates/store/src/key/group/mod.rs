@@ -1311,8 +1311,8 @@ pub enum GroupUpgradeStatus {
         failed: u32,
     },
     Completed {
-        /// Unix timestamp when the last context was upgraded, or `None` for
-        /// `LazyOnAccess` upgrades where contexts upgrade individually on demand.
+        /// Unix timestamp when the last context was upgraded, or `None` when
+        /// each context self-migrates independently without coordination.
         completed_at: Option<u64>,
     },
 }

@@ -1167,8 +1167,8 @@ pub(crate) async fn propagate_upgrade(
                 Ok(()) => {
                     completed += 1;
                     // The update_application handler records the per-context
-                    // activation marker itself, so a subsequent LazyOnAccess
-                    // read sees this context as already activated.
+                    // activation marker itself, so a subsequent read from this
+                    // context sees it as already activated.
                     debug!(
                         ?group_id,
                         %context_id,
@@ -1886,7 +1886,7 @@ mod tests {
 
     #[test]
     fn validate_upgrade_rejects_when_an_inprogress_record_exists() {
-        // The LazyOnAccess handler persists a short-lived InProgress record
+        // The upgrade handler persists a short-lived InProgress record
         // synchronously before its async work so a second concurrent request
         // is refused rather than emitting a second racing op pair. This pins
         // the guard that makes that work: with an InProgress record present,

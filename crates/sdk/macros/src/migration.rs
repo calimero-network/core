@@ -135,10 +135,9 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             // Run the migration body, assign deterministic collection
             // ids, and serialise — all under storage *merge mode*.
             //
-            // Migration runs independently on every node: the
-            // LazyOnAccess model emits no sync delta, so each peer
-            // re-derives the v2 root from its own byte-identical v1
-            // state. For the roots to match (CIP Invariant I9) the
+            // Each node self-migrates independently without emitting sync
+            // deltas. Each peer re-derives the v2 root from its own
+            // byte-identical v1 state. For the roots to match (CIP Invariant I9) the
             // serialised bytes must be a pure function of the v1 input —
             // no node-local entropy. Two sources of entropy are
             // suppressed here:

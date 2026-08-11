@@ -548,11 +548,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// replicas must not collide, so a content-derived key is impossible.
     /// That is correct for live operation (the random id rides along in the
     /// sync delta, so every peer agrees), but it breaks migrations: a
-    /// `#[app::migrate]` re-runs independently on every node and emits no
-    /// delta (the LazyOnAccess model), so two replicas building the same
-    /// vector from byte-identical v1 state would otherwise mint *different*
-    /// random element ids and diverge. Re-keying by append index makes the
-    /// element ids a pure function of position, restoring CIP Invariant I9.
+    /// `#[app::migrate]` re-runs independently on every node without emitting
+    /// sync deltas, so two replicas building the same vector from
+    /// byte-identical v1 state would otherwise mint *different* random
+    /// element ids and diverge. Re-keying by append index makes the element
+    /// ids a pure function of position, restoring CIP Invariant I9.
     ///
     /// Unlike the map/set path (entries are already keyed by `compute_id`
     /// at insert, so their reassign can early-return once the collection id

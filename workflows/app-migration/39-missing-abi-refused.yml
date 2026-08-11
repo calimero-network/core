@@ -3,8 +3,7 @@ description: >
   Single-node negative-path test for the missing-ABI upgrade refusal
   (core#3285). Node 1 installs migration-suite-v1 (which embeds a
   `calimero_abi_v1` state schema), creates a namespace + Open subgroup +
-  context, writes v1 state, and sets the upgrade policy to lazy_on_access.
-  It then attempts to upgrade to an UNEMBEDDED v2 build (the
+  context, and writes v1 state. It then attempts to upgrade to an UNEMBEDDED v2 build (the
   `com.calimero.migration-suite-noabi` bundle, whose wasm carries no
   `calimero_abi_v1` section - bundled with `cargo mero bundle --no-abi` in
   build-wasms.sh).

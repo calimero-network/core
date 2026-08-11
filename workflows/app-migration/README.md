@@ -65,9 +65,9 @@ and the namespace-cascade additions designed in
 ### Out of scope (not in this PR)
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.
-* `Coordinated` multi-node upgrade policy — all scenarios use `lazy_on_access` (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
+* `Coordinated` multi-node upgrade policy — all scenarios exercise the lazy per-node upgrade model (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
 
-## Cross-node migration model (why `lazy_on_access`)
+## Cross-node migration model (per-node lazy execution)
 
 Every scenario relies on each node migrating its **own** state
 independently. This is deliberate, not a workaround:
