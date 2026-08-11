@@ -330,15 +330,46 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // without the direct row that subsequent direct lookups
                 // (removal, capability writes, list_group_members) need.
                 // The joiner's own account, taken from the credential it is about
-                // to publish — the binding does not exist locally until that op
-                // applies, so it cannot be looked up.
-                let joiner_account = crate::join_credential::build(
+                // to publish.
+                let joiner_credential = crate::join_credential::build(
                     &datastore,
                     &namespace_id.into(),
                     &joiner_identity,
-                )?
-                .cert
-                .account;
+                )?;
+                let joiner_account = joiner_credential.cert.account;
+
+                // Bind the joiner's own key to that account locally, now, rather
+                // than waiting for the `MemberJoined` op below to apply.
+                //
+                // The row written just below is keyed by the ACCOUNT, while every
+                // later read resolves this node's KEY to whatever account it can
+                // look up. Publishing the credential is what normally supplies
+                // that link, so a joiner whose op does not apply locally — an
+                // invitation whose inviter it cannot resolve offline, which is
+                // every joiner that has not yet synced the inviter's binding —
+                // ends up holding a row it cannot match itself against. It reads
+                // as "not a member of the group it just joined", from its own
+                // store, with the row sitting right there.
+                //
+                // Same fix, same reason, as the founder's binding at namespace
+                // genesis: the node that mints a credential is the one node that
+                // must not depend on an op round-trip to believe it.
+                let bindings =
+                    calimero_governance_store::AccountBindingRepository::new(&datastore);
+                if let Err(rejected) = bindings.apply_link(
+                    &namespace_id.into(),
+                    &joiner_credential.genesis,
+                    &joiner_credential.chain,
+                    &joiner_credential.cert,
+                )? {
+                    warn!(
+                        ?group_id,
+                        %joiner_identity,
+                        ?rejected,
+                        "joiner's own device credential was refused locally; membership \
+                         will not resolve until a peer's binding arrives"
+                    );
+                }
                 if !MembershipRepository::new(&datastore)
                     .has_direct_member(&group_id, &joiner_account)?
                 {
