@@ -962,3 +962,90 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
         "no rung may be recorded on rejection"
     );
 }
+
+/// A cascade descendant is required to be LazyOnAccess, and the cascade
+/// dispatch writes it an `InProgress` record plus a propagator. Recovery
+/// used to skip LazyOnAccess groups, so a crash mid-cascade stranded the
+/// descendant `InProgress` forever - and `validate_upgrade` refuses a new
+/// upgrade while such a record exists, so the group was never upgradable
+/// again. Recovery is unconditional now.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
+    use actix::Actor;
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_app_blobs(&node).await;
+
+    let gid = ContextGroupId::from([0xD1; 32]);
+    let ctx = ContextId::from([0xD2; 32]);
+    install_application(&node.store, app_id_v2(), blobs.v2, "0.2.0", 1);
+    // The descendant already reached the target; only its record is stranded.
+    provision_group(
+        &node.store,
+        &gid,
+        admin_pk,
+        blobs.v2,
+        app_id_v2(),
+        UpgradePolicy::LazyOnAccess,
+    );
+    register_context_for(&node.store, &gid, ctx, app_id_v2());
+
+    UpgradesRepository::new(&node.store)
+        .save(
+            &gid,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 1,
+            },
+        )
+        .expect("seed stranded InProgress record");
+
+    // Restart: a fresh ContextManager over the crashed store. `Actor::started`
+    // is the recovery entry point, and it spawns onto the local task set, so
+    // the actor only makes progress while this `run_until` is being awaited.
+    let recovered = tokio::task::LocalSet::new()
+        .run_until(async {
+            // Hold the Addr - dropping it stops the actor.
+            let _restarted = calimero_context::ContextManager::new(
+                node.store.clone(),
+                node.node_client.clone(),
+                node.context_client.clone(),
+                None,
+            )
+            .start();
+
+            wait_until(|| {
+                !matches!(
+                    UpgradesRepository::new(&node.store)
+                        .load(&gid)
+                        .expect("load upgrade record")
+                        .expect("record exists")
+                        .status,
+                    GroupUpgradeStatus::InProgress { .. }
+                )
+            })
+            .await
+        })
+        .await;
+
+    assert!(
+        recovered,
+        "a stranded LazyOnAccess cascade descendant must be recovered on restart, \
+         not left InProgress forever"
+    );
+}

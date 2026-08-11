@@ -5,7 +5,6 @@
 
 use actix::{ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::UpgradePolicy;
 use calimero_store::key::GroupUpgradeStatus;
 
 use crate::ContextManager;
@@ -70,11 +69,6 @@ impl ContextManager {
                     continue;
                 }
             };
-
-            if matches!(meta.upgrade_policy, UpgradePolicy::LazyOnAccess) {
-                tracing::debug!(?group_id, "skipping crash recovery for LazyOnAccess group");
-                continue;
-            }
 
             self.active_propagators.insert(group_id);
 
