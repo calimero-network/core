@@ -2,12 +2,12 @@ use std::collections::BTreeSet;
 
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{
-    compute_migration_status_rollup, GetMigrationStatusRequest, MigrationStatus,
+    compute_migration_status_rollup, GetMigrationStatusRequest, MemberMigrationReport,
+    MigrationStatus,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{MembershipRepository, NamespaceRepository, UpgradesRepository};
 use calimero_primitives::identity::PublicKey;
-use calimero_storage::logical_clock::HybridTimestamp;
 use eyre::bail;
 
 use crate::ContextManager;
@@ -80,6 +80,56 @@ pub fn authorize_migration_status(
     Ok(())
 }
 
+/// Assemble and roll up a namespace's migration status.
+///
+/// Shared by the admin read and the node-side heartbeat reaction so both
+/// answer the same question from the same inputs; a second assembly is how
+/// the panel and the event stream start disagreeing.
+///
+/// Pins the cohort at the migration's expand-entry HLC (the sticky
+/// `cascade_hlc` the originating op stamped). The pin lives on the
+/// namespace-root record (a cascade stamps it there), so the pin still reads
+/// the root.
+///
+/// The overlay pin is the migration's expand-entry governance position
+/// (`NamespaceGovHead.sequence`), captured by `cascade_upgrade::apply`. It
+/// lives in the SAME number space as the heartbeat's `synced_up_to_hlc`
+/// (`= head.sequence`), so the rollup compares them like-for-like. The
+/// returned `cohort_pinned_at_hlc` is the replicated NTP64 HLC fence surfaced
+/// for display only - never the overlay pin.
+///
+/// The target is the MAX `to_version` across the namespace-root group AND
+/// every descendant subgroup's upgrade record - NOT the root's alone. A bare
+/// `upgrade_group` on a subgroup records the target only there, so reading
+/// the root alone returned 0, making every member trivially "migrated" (the
+/// false green that hid a stranded subgroup member in #37).
+///
+/// The cohort is the full inherited-membership closure for the subtree (the
+/// #2371 `list ∪ enumerate_inherited` set). The rollup applies the
+/// expand-entry HLC pin over this closure via the per-member
+/// `synced_up_to_hlc` overlay: a member whose freshest heartbeat proves it
+/// had not synced through the pin is dropped from the cohort (it was not
+/// part of the converged pinned state), realizing cohort-pinning without an
+/// as-of membership enumeration the store does not provide.
+///
+/// `report_for` resolves the freshest per-member heartbeat report; a member
+/// absent from it resolves to `unknown`, which keeps `all_migrated` false -
+/// never a false green.
+pub fn compute_namespace_rollup(
+    store: &calimero_store::Store,
+    namespace_id: &ContextGroupId,
+    mut report_for: impl FnMut(&PublicKey) -> Option<MemberMigrationReport>,
+) -> eyre::Result<MigrationStatus> {
+    let upgrade = UpgradesRepository::new(store).load(namespace_id)?;
+    Ok(compute_migration_status_rollup(
+        max_subtree_target_version(store, namespace_id)?,
+        upgrade.as_ref().and_then(|u| u.cascade_hlc),
+        upgrade.as_ref().and_then(|u| u.cascade_seq),
+        &collect_migration_cohort(store, namespace_id)?,
+        &mut report_for,
+    ))
+}
+
 impl Handler<GetMigrationStatusRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetMigrationStatusRequest as Message>::Result>;
 
@@ -100,49 +150,11 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             // (`retry_group_upgrade`, `upgrade_group`) keep their admin gates.
             authorize_migration_status(&self.datastore, &namespace_id, &node_identity)?;
 
-            // Pin the cohort at the migration's expand-entry HLC (the sticky
-            // `cascade_hlc` the originating op stamped). The pin lives on the
-            // namespace-root record (a cascade stamps it there), so the pin still
-            // reads the root.
-            let upgrade = UpgradesRepository::new(&self.datastore).load(&namespace_id)?;
-            let cohort_pinned_at_hlc: Option<HybridTimestamp> =
-                upgrade.as_ref().and_then(|u| u.cascade_hlc);
-            // The overlay pin: the migration's expand-entry governance position
-            // (`NamespaceGovHead.sequence`), captured by `cascade_upgrade::apply`.
-            // It lives in the SAME number space as the heartbeat's
-            // `synced_up_to_hlc` (`= head.sequence`), so the rollup compares them
-            // like-for-like. `cohort_pinned_at_hlc` is the replicated NTP64 HLC
-            // fence surfaced for display only — never the overlay pin.
-            let cohort_pinned_at_seq: Option<u64> = upgrade.as_ref().and_then(|u| u.cascade_seq);
-            // The target is the MAX `to_version` across the namespace-root group
-            // AND every descendant subgroup's upgrade record — NOT the root's
-            // alone. A bare `upgrade_group` on a subgroup records the target only
-            // there, so reading the root alone returned 0, making every member
-            // trivially "migrated" (the false green that hid a stranded subgroup
-            // member in #37).
-            let target_version = max_subtree_target_version(&self.datastore, &namespace_id)?;
-
-            // The full inherited-membership closure for the subtree (the #2371
-            // `list ∪ enumerate_inherited` set). The rollup applies the
-            // expand-entry HLC pin over this closure via the per-member
-            // `synced_up_to_hlc` overlay: a member whose freshest heartbeat
-            // proves it had not synced through the pin is dropped from the
-            // cohort (it was not part of the converged pinned state), realizing
-            // cohort-pinning without an as-of membership enumeration the store
-            // does not provide.
-            let closure = collect_migration_cohort(&self.datastore, &namespace_id)?;
-
             // Roll up the freshest per-member heartbeat reports the caller
             // snapshotted from the node-side `MigrationStatusCache` (Task 6c.8).
-            // A member absent from the snapshot resolves to `unknown`, which
-            // keeps `all_migrated` false — never a false green.
-            Ok::<MigrationStatus, eyre::Report>(compute_migration_status_rollup(
-                target_version,
-                cohort_pinned_at_hlc,
-                cohort_pinned_at_seq,
-                &closure,
-                |peer| member_reports.get(peer).copied(),
-            ))
+            compute_namespace_rollup(&self.datastore, &namespace_id, |peer| {
+                member_reports.get(peer).copied()
+            })
         })();
         ActorResponse::reply(result)
     }

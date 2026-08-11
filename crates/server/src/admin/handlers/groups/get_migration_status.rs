@@ -4,9 +4,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::{
-    GetMigrationStatusRequest, MemberMigrationReport, MigrationFailureKind,
-};
+use calimero_context_client::group::{GetMigrationStatusRequest, MemberMigrationReport};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     GetMigrationStatusApiResponse, MemberMigrationReportApiData, MemberMigrationStatusApiEntry,
@@ -47,19 +45,7 @@ pub async fn handler(
     {
         Ok(reports) => reports
             .into_iter()
-            .map(|(peer, r)| {
-                (
-                    peer,
-                    MemberMigrationReport {
-                        schema_version: r.schema_version,
-                        residue_auto: r.residue_auto,
-                        synced_up_to_hlc: r.synced_up_to_hlc,
-                        reported_at: r.reported_at,
-                        authored_remaining: r.authored_remaining,
-                        migration_failed: MigrationFailureKind::from_u8(r.migration_failed),
-                    },
-                )
-            })
+            .map(|(peer, r)| (peer, r.into()))
             .collect(),
         Err(err) => {
             error!(namespace_id=%namespace_id_str, error=?err, "Failed to read migration heartbeat cache");

@@ -1357,6 +1357,19 @@ pub struct MemberMigrationReport {
     pub migration_failed: Option<MigrationFailureKind>,
 }
 
+impl From<calimero_node_primitives::messages::MigrationStatusReport> for MemberMigrationReport {
+    fn from(r: calimero_node_primitives::messages::MigrationStatusReport) -> Self {
+        Self {
+            schema_version: r.schema_version,
+            residue_auto: r.residue_auto,
+            synced_up_to_hlc: r.synced_up_to_hlc,
+            reported_at: r.reported_at,
+            authored_remaining: r.authored_remaining,
+            migration_failed: MigrationFailureKind::from_u8(r.migration_failed),
+        }
+    }
+}
+
 /// Why a member's migration did not complete. A categorized, `Copy`-safe
 /// reason (the human string is derived from this in the UI); kept narrow so
 /// the report stays `Copy` and the heartbeat carries a single discriminant.
