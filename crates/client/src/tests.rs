@@ -58,6 +58,11 @@ const IDENT: &str = "test-ident";
 /// required in JSON response bodies.
 const ZERO_BS58: &str = "11111111111111111111111111111111";
 
+/// Hex encoding of `[0u8; 32]` — how an `AccountId` renders, deliberately not
+/// the bs58 above. A member is named by account and signs with a key, and the
+/// encodings differ precisely so one cannot stand in for the other.
+const ZERO_HEX_ACCOUNT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
 // ---- Stub impls (node_name=None means these are never called) ----
 
 #[derive(Clone)]
@@ -510,6 +515,12 @@ async fn join_namespace() {
             "data": {
                 "groupId": GID,
                 "memberIdentity": ZERO_BS58,
+                // The account the joiner joined as, beside the key it signs
+                // with. Both, because a caller needs the account to address the
+                // member it just became and the key for everything still keyed
+                // by one — and the two render differently, so a fixture carrying
+                // only one would not catch a field wired to the wrong space.
+                "memberAccount": ZERO_HEX_ACCOUNT,
                 "governanceOp": "deadbeef"
             }
         })))
