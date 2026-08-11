@@ -3870,8 +3870,8 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
 // rationale as the prior dispatch impls.
 #[async_trait::async_trait(?Send)]
 impl super::driver::SyncDriverDispatch for SyncManager {
-    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
-        let _ops = SyncManager::sync_namespace_from_peer(self, namespace_id, None).await;
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) -> usize {
+        SyncManager::sync_namespace_from_peer(self, namespace_id, None).await
     }
 
     async fn initiate_namespace_join(
