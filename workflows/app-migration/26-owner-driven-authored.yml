@@ -168,13 +168,7 @@ steps:
     statements:
       - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "note_count": 2}})'
 
-  # Phase 5: lazy-on-access upgrade policy, then ONE cascade v1 → v2.
-  - name: Set upgrade policy to lazy-on-access on node 1
-    type: update_group_settings
-    node: app-migration-owner-1
-    group_id: "{{namespace_id}}"
-    upgrade_policy: lazy_on_access
-
+  # Phase 5: ONE cascade v1 → v2.
   - name: Install scenario-user-storage-v2 on node 1
     type: install_application
     node: app-migration-owner-1
@@ -226,7 +220,7 @@ steps:
   # applied, on whatever trigger path — under a cascade upgrade (migration_v2,
   # PR-6b) the cascade propagator drives it, so the lazy-on-read-only
   # "performing lazy upgrade before execution" log does NOT fire and is not
-  # asserted here. Each node self-derives v2 from its own v1 under LazyOnAccess.
+  # asserted here. Each node self-derives v2 from its own v1.
   - name: Assert the migration executed on node 1
     type: assert_log_present
     nodes:

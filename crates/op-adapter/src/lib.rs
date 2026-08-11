@@ -248,8 +248,8 @@ fn credential_binds_the_member(op: &RootOp) -> bool {
 ///
 /// **Out-of-model (`None`, by design — not gaps).** Ops that never enter the
 /// authorization decision:
-/// - app / upgrade / migration config (`UpgradePolicySet`,
-///   `TargetApplicationSet`, `GroupMigrationSet`, the `Cascade*` ops) — owned by
+/// - app / upgrade / migration config (`TargetApplicationSet`,
+///   `GroupMigrationSet`, `CascadeUpgrade`) - owned by
 ///   the app-version machinery;
 /// - metadata (`GroupMetadataSet`, `MemberMetadataSet`, `ContextMetadataSet`),
 ///   TEE-admission *policy* (`TeeAdmissionPolicySet`), auto-follow

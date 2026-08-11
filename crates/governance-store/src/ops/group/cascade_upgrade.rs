@@ -1,23 +1,14 @@
-//! `GroupOp::CascadeUpgrade` apply handler (PR-3).
+//! `GroupOp::CascadeUpgrade` apply handler.
 //!
-//! Atomic replacement for the legacy two-op cascade path
-//! (`CascadeTargetApplicationSet` + `CascadeGroupMigrationSet`). Both
-//! legacy ops keyed their descendant walk on the SAME
-//! `from_app_key == descendant.app_key` predicate, so a receiver that
-//! applied target-set FIRST rewrote every descendant's `app_key` away
-//! from `from_app_key`, leaving the later migration-set predicate
-//! matching nothing and silently dropping `migration` (xilosada review
-//! of core#2507, item #3 — see the characterization test in
-//! `crates/context/tests/cascade_atomic_apply.rs`).
-//!
-//! This op sets `target_application_id`, `app_key`, AND `migration` in a
+//! Sets `target_application_id`, `app_key`, AND `migration` in a
 //! SINGLE walk per matched descendant, so there is no intra-cascade
-//! ordering dependency the receiver can split. It also stamps a sticky
-//! `cascade_hlc` fence onto each matched descendant's upgrade record:
-//! identical on every node that applies the op (the initiator stamps it
-//! once), it is the boundary the state-delta HLC fence reads. The field is
-//! never cleared to `None` (it survives a `Completed` record); a later cascade
-//! legitimately advances it to its own newer `cascade_hlc`.
+//! ordering dependency a receiver can split across two applies. It also
+//! stamps a sticky `cascade_hlc` fence onto each matched descendant's
+//! upgrade record: identical on every node that applies the op (the
+//! initiator stamps it once), it is the boundary the state-delta HLC fence
+//! reads. The field is never cleared to `None` (it survives a `Completed`
+//! record); a later cascade legitimately advances it to its own newer
+//! `cascade_hlc`.
 
 use super::context::GroupApplyCtx;
 use crate::{GroupSettingsService, NamespaceRepository, UpgradesRepository};
@@ -31,6 +22,7 @@ pub(crate) fn apply(
     from_app_key: &[u8; 32],
     app_key: &[u8; 32],
     target_application_id: &ApplicationId,
+    to_state_version: u32,
     migration: &Option<Vec<u8>>,
     cascade_hlc: HybridTimestamp,
 ) -> EyreResult<()> {
@@ -61,8 +53,7 @@ pub(crate) fn apply(
     // mutation to every descendant whose current `app_key` matches
     // `from_app_key`. Heterogeneous descendants are silently skipped —
     // that skip is also the optimistic-concurrency guard for two cascade
-    // ops racing the same subtree. See the legacy
-    // `cascade_target_application_set` module for the longer rationale.
+    // ops racing the same subtree.
     let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_app_key)?;
 
     // The migration's expand-entry governance position: the namespace gov-head
@@ -99,9 +90,9 @@ pub(crate) fn apply(
         let gid = entry.group_id;
 
         // Atomic per-descendant mutation: target_application_id + app_key
-        // AND migration in one go, eliminating the legacy two-op ordering
-        // hazard. UNCHECKED writes: the cascade was authorized once against
-        // the root admin above, so per-descendant authority is not re-derived
+        // AND migration in one go, so no receiver can split the cascade across
+        // two applies. UNCHECKED writes: the cascade was authorized once
+        // against the root admin above, so per-descendant authority is not re-derived
         // here (doing so from live caps is the cross-replica divergence this
         // fix removes).
         let entry_settings = GroupSettingsService::new(store, gid);
@@ -122,7 +113,11 @@ pub(crate) fn apply(
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
             cascade_seq: None,
+            to_state_version,
         });
+        // Overwrite on an existing record too: a stale value from a prior
+        // upgrade reads as a satisfied target, which is a false green.
+        value.to_state_version = to_state_version;
         // Reflect THIS cascade's migration bytes on an existing record too, so
         // the record's `migration` matches the `GroupMeta.migration` we just
         // wrote (the authoritative source the migrate runs from); otherwise an

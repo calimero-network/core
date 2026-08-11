@@ -7,6 +7,7 @@ use calimero_context_client::group::ListNamespacesForApplicationRequest;
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     ListNamespacesApiResponse, ListNamespacesForApplicationQuery, NamespaceApiResponse,
+    UPGRADE_POLICY_COMPAT,
 };
 use reqwest::StatusCode;
 use tracing::{error, info};
@@ -65,7 +66,7 @@ pub async fn handler(
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     app_key: hex::encode(ns.app_key.to_bytes()),
                     target_application_id: ns.target_application_id.to_string(),
-                    upgrade_policy: format!("{:?}", ns.upgrade_policy),
+                    upgrade_policy: UPGRADE_POLICY_COMPAT.to_owned(),
                     created_at: ns.created_at,
                     name: ns.name,
                     member_count: ns.member_count,

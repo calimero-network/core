@@ -234,7 +234,8 @@ impl Handler<ExecuteRequest> for ContextManager {
         // pre-migration root. Read-vs-write intent isn't known upstream, so
         // user-call writes are caught post-execution in `internal_execute` (we
         // only record the group here); state-ops are known writes, refused now.
-        // `LazyOnAccess` upgrades write `Completed`, never `InProgress`.
+        // This gate only cares whether `InProgress` is set, not why: a cascade
+        // descendant holds it for its whole propagator walk, same as the initiator.
         let mut block_writes_for_group = None;
         match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
             Ok(Some(group_id)) => {
@@ -303,8 +304,8 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         }
 
-        // Lazy upgrade: if context belongs to a LazyOnAccess group and is stale,
-        // trigger an upgrade before executing the method.
+        // Lazy upgrade: if this context's group has a pending upgrade and the
+        // context is stale, trigger an upgrade before executing the method.
         // Note: placed after context.lock() so that `context` borrow is released
         // before we access self.datastore.
         // Skip for sync operations — the state payload was produced by the old app
@@ -2655,7 +2656,7 @@ mod tests {
         register_context_in_group, MetaRepository, NamespaceRepository,
     };
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
@@ -2680,7 +2681,6 @@ mod tests {
         GroupMetaValue {
             app_key,
             target_application_id: ApplicationId::from([0xCC; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&dummy_pk),
             owner_identity: crate::test_support::account_for(&dummy_pk),

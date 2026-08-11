@@ -13,7 +13,7 @@ use calimero_governance_store::{
     apply_local_signed_group_op, MembershipRepository, MetaRepository, NamespaceRepository,
 };
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
@@ -43,7 +43,6 @@ fn meta(
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -101,6 +100,7 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 0,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
         },

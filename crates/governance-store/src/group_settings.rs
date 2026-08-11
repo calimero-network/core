@@ -2,7 +2,6 @@ use crate::{CapabilitiesRepository, MetaRepository, UpgradeLadderRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, LadderRung};
 use calimero_store::Store;
@@ -68,27 +67,6 @@ impl<'a> GroupSettingsService<'a> {
         permissions.require_admin(signer)?;
         CapabilitiesRepository::new(self.store)
             .set_default_capabilities(&self.group_id, capabilities)
-    }
-
-    pub fn set_upgrade_policy(&self, signer: &PublicKey, policy: &UpgradePolicy) -> EyreResult<()> {
-        let permissions = self.permissions();
-        permissions.require_admin(signer)?;
-        let mut meta = self.load_required_meta()?;
-        // A pending migration only runs on receivers under LazyOnAccess.
-        // Flipping away from it while one is pending would leave un-accessed
-        // contexts swapping bytecode without migrating (silent corruption /
-        // stranded state). Reject deterministically — `meta.migration` is
-        // replicated, so every node folds this op to the same decision.
-        if meta.migration.is_some() && !matches!(policy, UpgradePolicy::LazyOnAccess) {
-            return Err(eyre!(
-                "cannot set upgrade policy to {policy:?} while a migration is pending for group \
-                 {:?}; only LazyOnAccess runs the pending migration on receivers — complete or \
-                 abort the migration first",
-                self.group_id
-            ));
-        }
-        meta.upgrade_policy = policy.clone();
-        MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
 
     pub fn set_target_application(

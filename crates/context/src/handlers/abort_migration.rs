@@ -170,7 +170,7 @@ mod tests {
         register_context_in_group, MetaRepository, NamespaceRepository, UpgradesRepository,
     };
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{self, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
@@ -204,7 +204,6 @@ mod tests {
         GroupMetaValue {
             app_key,
             target_application_id: ApplicationId::from(target),
-            upgrade_policy: UpgradePolicy::LazyOnAccess,
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&pk),
             owner_identity: crate::test_support::account_for(&pk),
@@ -223,6 +222,7 @@ mod tests {
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
             cascade_seq: None,
+            to_state_version: 2,
         }
     }
 
@@ -377,8 +377,8 @@ mod tests {
     }
 
     /// **Cascade abort.** A namespace mid-*cascade* migration applies the same
-    /// pending migration to descendant subgroups (`GroupOp::CascadeUpgrade` /
-    /// `CascadeGroupMigrationSet` walks the subtree and sets each matched
+    /// pending migration to descendant subgroups (`GroupOp::CascadeUpgrade`
+    /// walks the subtree and sets each matched
     /// descendant's `migration` marker + v2 target). Aborting the ROOT must
     /// therefore also abort every descendant carrying the same pending migration
     /// — otherwise the descendants keep lazy-migrating and the abort is

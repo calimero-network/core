@@ -385,7 +385,7 @@ pub(crate) fn apply(
     // ---- Establish the founder as admin == owner on the root meta. ----
     // Only the founding identity is authoritative here; we carry forward every
     // OTHER meta field from `existing` (target_application_id / app_key /
-    // upgrade_policy / migration / created_at / auto_join) rather than reset it.
+    // migration / created_at / auto_join) rather than reset it.
     //
     // What this preserve actually covers:
     //   * ORIGINATOR case — the creating node may have written real
@@ -406,10 +406,6 @@ pub(crate) fn apply(
             .map(|m| m.target_application_id)
             .unwrap_or_else(|| calimero_primitives::application::ApplicationId::from([0u8; 32])),
         app_key: existing.as_ref().map(|m| m.app_key).unwrap_or([0u8; 32]),
-        upgrade_policy: existing
-            .as_ref()
-            .map(|m| m.upgrade_policy.clone())
-            .unwrap_or_default(),
         migration: existing.as_ref().and_then(|m| m.migration.clone()),
         created_at: existing.as_ref().map(|m| m.created_at).unwrap_or(0),
         auto_join: existing.as_ref().map(|m| m.auto_join).unwrap_or(true),

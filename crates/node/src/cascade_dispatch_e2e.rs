@@ -6,8 +6,7 @@
 //! (`cascade_apply_walk.rs`) and concurrent-safety properties
 //! (`cascade_concurrent_safety.rs`) in isolation, but not the
 //! emitter-side RPC flow as a whole — walk → permission pre-scan →
-//! publish (cleartext `GroupOp::CascadeTargetApplicationSet` +
-//! optional `CascadeGroupMigrationSet`) → local apply → per-descendant
+//! publish (cleartext `GroupOp::CascadeUpgrade`) → local apply → per-descendant
 //! `UpgradesRepository::new(InProgress).save()` → propagator spawn.
 //!
 //! Cross-peer convergence via real gossip is intentionally out of
@@ -23,11 +22,13 @@ use calimero_governance_store::{
 };
 use std::time::Duration;
 
-use calimero_context_client::group::UpgradeGroupRequest;
+use calimero_context_client::group::{
+    GetGroupUpgradeStatusRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::register_context_in_group;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
@@ -119,12 +120,10 @@ fn meta_for(
     admin: calimero_account::AccountId,
     app_key: [u8; 32],
     target: ApplicationId,
-    upgrade_policy: UpgradePolicy,
 ) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -143,13 +142,12 @@ fn provision_group(
     admin: PublicKey,
     app_key: [u8; 32],
     target: ApplicationId,
-    policy: UpgradePolicy,
 ) {
     // Enrolled so the rows name the account this key resolves to; the cascade's
     // per-descendant admin pre-scan resolves the signer the same way.
     let admin_account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta_for(admin_account, app_key, target, policy))
+        .save(gid, &meta_for(admin_account, app_key, target))
         .expect("save_group_meta");
     MembershipRepository::new(store)
         .add_member(gid, &admin_account, GroupMemberRole::Admin)
@@ -161,7 +159,13 @@ fn provision_group(
 /// `new_app_key = app_meta.bytecode.blob_id()` for the target — so
 /// driving the test's target app_key through this field is what makes
 /// the apply arm rewrite descendants to `APP_KEY_V2`.
-fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32], version: &str) {
+fn install_application(
+    store: &Store,
+    app_id: ApplicationId,
+    app_key: [u8; 32],
+    version: &str,
+    state_version: u32,
+) {
     let bytecode_blob = key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(app_key));
     // `compiled` is unused on the cascade path (cascade-time blob
     // announce only references `bytecode`), so reusing `bytecode_blob`
@@ -176,6 +180,7 @@ fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32], 
             package: "cascade-test-pkg".to_owned().into_boxed_str(),
             version: version.to_owned().into_boxed_str(),
             signer_id: "cascade-test-signer".to_owned().into_boxed_str(),
+            state_version,
         },
     );
     let mut handle = store.handle();
@@ -237,7 +242,6 @@ fn provision_namespace(
     admin_sk: &PrivateKey,
     blobs: &AppBlobs,
     g2_on_other: bool,
-    policy: UpgradePolicy,
     target_v2_key: [u8; 32],
 ) -> CascadeFixture {
     let admin_pk = admin_sk.public_key();
@@ -245,15 +249,15 @@ fn provision_namespace(
     let g1 = ContextGroupId::from([0xA1; 32]);
     let g2 = ContextGroupId::from([0xA2; 32]);
 
-    provision_group(store, &ns, admin_pk, blobs.v1, app_id_v1(), policy.clone());
-    provision_group(store, &g1, admin_pk, blobs.v1, app_id_v1(), policy.clone());
+    provision_group(store, &ns, admin_pk, blobs.v1, app_id_v1());
+    provision_group(store, &g1, admin_pk, blobs.v1, app_id_v1());
     // G2 may be on a different app_key for the heterogeneous test.
     let (g2_app_key, g2_target) = if g2_on_other {
         (blobs.other, app_id_other())
     } else {
         (blobs.v1, app_id_v1())
     };
-    provision_group(store, &g2, admin_pk, g2_app_key, g2_target, policy);
+    provision_group(store, &g2, admin_pk, g2_app_key, g2_target);
 
     NamespaceRepository::new(store)
         .nest(&ns, &g1)
@@ -262,10 +266,17 @@ fn provision_namespace(
         .nest(&ns, &g2)
         .expect("nest g2");
 
-    install_application(store, app_id_v1(), blobs.v1, "0.1.0");
-    install_application(store, app_id_v2(), target_v2_key, "0.2.0");
+    // `target_v2_key` is one of the two ABI state versions blobs.v2 embeds:
+    // 1 for the code-only pair, 2 for the migration-declaring release.
+    let target_v2_sv = if target_v2_key == blobs.v2_migrating {
+        2
+    } else {
+        1
+    };
+    install_application(store, app_id_v1(), blobs.v1, "0.1.0", 1);
+    install_application(store, app_id_v2(), target_v2_key, "0.2.0", target_v2_sv);
     if g2_on_other {
-        install_application(store, app_id_other(), blobs.other, "0.1.0-other");
+        install_application(store, app_id_other(), blobs.other, "0.1.0-other", 1);
     }
 
     let ctx_ns = ContextId::from([0xC0; 32]);
@@ -346,14 +357,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        false,
-        UpgradePolicy::LazyOnAccess,
-        blobs.v2,
-    );
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
 
     let response = node
         .context_client
@@ -372,7 +376,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     // Apply-arm side effect: every matched descendant flipped to
     // (APP_KEY_V2, app_id_v2). The cleartext publish path inside
     // `dispatch_cascade` calls `sign_apply_local_group_op_borsh`,
-    // which runs the `CascadeTargetApplicationSet` apply arm before
+    // which runs the `CascadeUpgrade` apply arm before
     // the publish gate.
     for gid in [&fx.ns, &fx.g1, &fx.g2] {
         let meta = MetaRepository::new(&node.store)
@@ -477,17 +481,9 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
-    // Code-only path (no migration), so descendant policy is irrelevant to
-    // the gate; keep Automatic.
+    // Code-only path: the write gate reads the upgrade row, not the app pair.
     let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        false,
-        UpgradePolicy::Automatic,
-        blobs.v2,
-    );
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
 
     // Directly pin G1's status to InProgress — no cascade dispatch,
     // no propagator involvement. The gate reads this row at
@@ -508,6 +504,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 1,
             },
         )
         .expect("save_group_upgrade InProgress for G1");
@@ -558,14 +555,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        true,
-        UpgradePolicy::LazyOnAccess,
-        blobs.v2,
-    );
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, true, blobs.v2);
 
     node.context_client
         .upgrade_group(UpgradeGroupRequest {
@@ -633,71 +623,6 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     // iteration land before `TestNode` drops the arbiter underneath
     // it — keeps the test's tail-end logs benign.
     sleep(Duration::from_millis(25)).await;
-}
-
-/// Test 4 — migrating cascade is rejected when a matched descendant is not
-/// `LazyOnAccess`, validating the per-descendant policy gate through the real
-/// `dispatch_cascade` path (the unit tests cover the pure helper).
-///
-/// Descendants are provisioned `Automatic` and the target blob's embedded
-/// ABI declares a v1→v2 migration edge; the cascade must fail with the
-/// policy error BEFORE any op is emitted — so no descendant's `app_key`
-/// rotates and no `GroupUpgradeValue` row is written.
-#[tokio::test]
-#[serial(boot_test_node)]
-async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
-    let node = boot_test_node().await;
-    let mut rng = OsRng;
-    let admin_sk = PrivateKey::random(&mut rng);
-    let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        false,
-        UpgradePolicy::Automatic,
-        blobs.v2_migrating,
-    );
-
-    let result = node
-        .context_client
-        .upgrade_group(UpgradeGroupRequest {
-            group_id: fx.ns,
-            target_application_id: app_id_v2(),
-            requester: Some(fx.admin_pk),
-            cascade: true,
-            force_code_only: false,
-        })
-        .await;
-
-    let err = result.expect_err("migrating cascade under Automatic descendants must be rejected");
-    assert!(
-        err.to_string().contains("LazyOnAccess"),
-        "error should name the required policy, got: {err}"
-    );
-
-    // No op emitted: every group keeps its original app_key and target, and no
-    // GroupUpgradeValue row exists.
-    for gid in [&fx.ns, &fx.g1, &fx.g2] {
-        let meta = MetaRepository::new(&node.store)
-            .load(gid)
-            .expect("load_group_meta")
-            .expect("meta exists");
-        assert_eq!(
-            meta.app_key,
-            blobs.v1,
-            "group {} must NOT rotate app_key on a rejected cascade",
-            hex::encode(gid.to_bytes())
-        );
-        assert!(
-            UpgradesRepository::new(&node.store)
-                .load(gid)
-                .expect("load_group_upgrade")
-                .is_none(),
-            "group {} must have no GroupUpgradeValue row on a rejected cascade",
-            hex::encode(gid.to_bytes())
-        );
-    }
 }
 
 /// Minimal in-memory bundle: gz tar with a signed manifest.json and one
@@ -806,8 +731,8 @@ async fn seed_ladder_bundles(node: &TestNode) -> LadderBlobs {
     }
 }
 
-/// Multi-hop emit: a LazyOnAccess group two state versions behind the
-/// installed row upgrades in ONE admin action. The handler discovers the
+/// Multi-hop emit: a group two state versions behind the installed row
+/// upgrades in ONE admin action. The handler discovers the
 /// locally retained intermediate (still referenced by a sibling group),
 /// emits one op pair per rung, and the fold captures the ladder behind
 /// contexts replay. `meta.migration` ends as the LAST hop's method.
@@ -823,29 +748,15 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
     let app_id = app_id_v1();
     // The shared row holds the LATEST release (v3) — bundle ids are
     // version-stable, so the row is where a same-id upgrade targets.
-    install_application(&node.store, app_id, blobs.v3, "0.3.0");
+    install_application(&node.store, app_id, blobs.v3, "0.3.0", 3);
 
     let gid = ContextGroupId::from([0x71; 32]);
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v1,
-        app_id,
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v1, app_id);
     register_context_for(&node.store, &gid, ContextId::from([0xC5; 32]), app_id);
     // A sibling group still running 0.2.0 keeps the intermediate blob
     // referenced — that's what makes it discoverable as a rung.
     let sibling = ContextGroupId::from([0x72; 32]);
-    provision_group(
-        &node.store,
-        &sibling,
-        admin_pk,
-        blobs.v2,
-        app_id,
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &sibling, admin_pk, blobs.v2, app_id);
     SigningKeysRepository::new(&node.store)
         .store_key(&gid, &admin_pk, admin_sk.as_bytes())
         .expect("store signing key");
@@ -901,17 +812,10 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     let blobs = seed_ladder_bundles(&node).await;
 
     let app_id = app_id_v1();
-    install_application(&node.store, app_id, blobs.v3, "0.3.0");
+    install_application(&node.store, app_id, blobs.v3, "0.3.0", 3);
 
     let gid = ContextGroupId::from([0x73; 32]);
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v1,
-        app_id,
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v1, app_id);
     register_context_for(&node.store, &gid, ContextId::from([0xC6; 32]), app_id);
     SigningKeysRepository::new(&node.store)
         .store_key(&gid, &admin_pk, admin_sk.as_bytes())
@@ -948,5 +852,332 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
             .expect("load ladder")
             .is_empty(),
         "no rung may be recorded on rejection"
+    );
+}
+
+/// A cascade descendant requires special InProgress recovery handling.
+/// The cascade dispatch writes it an `InProgress` record plus a propagator.
+/// Recovery used to skip such descendants, so a crash mid-cascade stranded
+/// the `InProgress` forever - and `validate_upgrade` refuses a new upgrade
+/// while such a record exists, so the group was never upgradable again.
+/// Recovery is unconditional now.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
+    use actix::Actor;
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_app_blobs(&node).await;
+
+    let gid = ContextGroupId::from([0xD1; 32]);
+    let ctx = ContextId::from([0xD2; 32]);
+    install_application(&node.store, app_id_v2(), blobs.v2, "0.2.0", 1);
+    // The descendant already reached the target; only its record is stranded.
+    provision_group(&node.store, &gid, admin_pk, blobs.v2, app_id_v2());
+    register_context_for(&node.store, &gid, ctx, app_id_v2());
+
+    UpgradesRepository::new(&node.store)
+        .save(
+            &gid,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 1,
+            },
+        )
+        .expect("seed stranded InProgress record");
+
+    // Restart: a fresh ContextManager over the crashed store. `Actor::started`
+    // is the recovery entry point, and it spawns onto the local task set, so
+    // the actor only makes progress while this `run_until` is being awaited.
+    let recovered = tokio::task::LocalSet::new()
+        .run_until(async {
+            // Hold the Addr - dropping it stops the actor.
+            let _restarted = calimero_context::ContextManager::new(
+                node.store.clone(),
+                node.node_client.clone(),
+                node.context_client.clone(),
+                None,
+            )
+            .start();
+
+            wait_until(|| {
+                !matches!(
+                    UpgradesRepository::new(&node.store)
+                        .load(&gid)
+                        .expect("load upgrade record")
+                        .expect("record exists")
+                        .status,
+                    GroupUpgradeStatus::InProgress { .. }
+                )
+            })
+            .await
+        })
+        .await;
+
+    assert!(
+        recovered,
+        "a stranded cascade descendant must be recovered on restart, \
+         not left InProgress forever"
+    );
+}
+
+/// Provision `sk` as a local signing identity for `context_id`, plus the
+/// context-config row `finalize_application_update` requires. Without both the
+/// propagator bails before `update_application` and the fixture can no longer
+/// observe whether a bytecode swap happened.
+fn provision_local_context_identity(store: &Store, context_id: ContextId, sk: &PrivateKey) {
+    let mut handle = store.handle();
+    handle
+        .put(
+            &key::ContextIdentity::new(context_id, sk.public_key()),
+            &calimero_store::types::ContextIdentity {
+                private_key: Some(*sk.as_bytes()),
+            },
+        )
+        .expect("put ContextIdentity");
+    handle
+        .put(
+            &key::ContextConfig::new(context_id),
+            &calimero_store::types::ContextConfig::new(0, 0),
+        )
+        .expect("put ContextConfig");
+}
+
+/// The lazy path persists its `InProgress` record SYNCHRONOUSLY as a
+/// concurrency mutex, before an async blob read could tell it the real
+/// migration - so the record carries `migration: None` by construction. A
+/// crash after the group's meta advanced to the new application but before
+/// the record was overwritten leaves recovery holding a record that claims
+/// "code-only" for what is a MIGRATING upgrade. Recovery must re-resolve the
+/// migration from the target's ABI, never trust the record: a code-only
+/// bytecode swap over un-migrated state is silent corruption.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
+    use actix::Actor;
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_app_blobs(&node).await;
+
+    let gid = ContextGroupId::from([0xE1; 32]);
+    let ctx = ContextId::from([0xE2; 32]);
+
+    install_application(&node.store, app_id_v1(), blobs.v1, "0.1.0", 1);
+    // The target declares state v2 plus a v1->v2 edge: a MIGRATING upgrade.
+    install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
+
+    // Mid-window: `TargetApplicationSet` already applied, so the group's meta
+    // names the new application AND its app_key advanced - but the context is
+    // still on v1 and the record was never overwritten.
+    provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
+    register_context_for(&node.store, &gid, ctx, app_id_v1());
+    provision_local_context_identity(&node.store, ctx, &admin_sk);
+
+    UpgradesRepository::new(&node.store)
+        .save(
+            &gid,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                // Verbatim from the lazy path's synchronous mutex write.
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 0,
+            },
+        )
+        .expect("seed hollow InProgress record");
+
+    let progressed = tokio::task::LocalSet::new()
+        .run_until(async {
+            let _restarted = calimero_context::ContextManager::new(
+                node.store.clone(),
+                node.node_client.clone(),
+                node.context_client.clone(),
+                None,
+            )
+            .start();
+
+            // The propagator rewrites the record's counters once it has
+            // processed the context, either way - so this waits for the
+            // decision instead of guessing at a delay.
+            wait_until(|| {
+                !matches!(
+                    UpgradesRepository::new(&node.store)
+                        .load(&gid)
+                        .expect("load upgrade record")
+                        .expect("record exists")
+                        .status,
+                    GroupUpgradeStatus::InProgress {
+                        completed: 0,
+                        failed: 0,
+                        ..
+                    }
+                )
+            })
+            .await
+        })
+        .await;
+
+    assert!(progressed, "recovery must have processed the group");
+
+    // The observable: which application the context runs. `app_id_v2` here
+    // means the bytecode was swapped, and the swap can only have been
+    // code-only (the target's migrate export cannot even load in this
+    // fixture, so a resolved migration necessarily leaves the context on v1).
+    let application = node
+        .context_client
+        .get_context(&ctx)
+        .expect("load context")
+        .expect("context exists")
+        .application_id;
+    assert_eq!(
+        application,
+        app_id_v1(),
+        "recovery trusted the record's `migration: None` and swapped the bytecode \
+         without migrating - the migration must be re-resolved from the target's ABI"
+    );
+}
+
+/// Retry is the sibling of crash recovery and the SAME hollow record reaches
+/// it, one step further along: recovery re-resolves the migration, a context
+/// fails it, and `update_upgrade_status` rewrites only the counters - so the
+/// record still reads `migration: None` while `failed > 0`, which is exactly
+/// retry's precondition. Trusting the record here hands an operator the
+/// code-only swap of a MIGRATING upgrade that recovery just refused.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
+    use actix::Actor;
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_app_blobs(&node).await;
+
+    let gid = ContextGroupId::from([0xF1; 32]);
+    let ctx = ContextId::from([0xF2; 32]);
+
+    install_application(&node.store, app_id_v1(), blobs.v1, "0.1.0", 1);
+    // The target declares state v2 plus a v1->v2 edge: a MIGRATING upgrade.
+    install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
+
+    provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
+    register_context_for(&node.store, &gid, ctx, app_id_v1());
+    provision_local_context_identity(&node.store, ctx, &admin_sk);
+
+    let progressed = tokio::task::LocalSet::new()
+        .run_until(async {
+            let manager = calimero_context::ContextManager::new(
+                node.store.clone(),
+                node.node_client.clone(),
+                node.context_client.clone(),
+                None,
+            )
+            .start();
+
+            // `Actor::started` runs its recovery scan before the first message
+            // is handled, so this round-trip is the barrier that lets the
+            // record be seeded without recovery claiming the group: the
+            // operator command is the subject here, not the restart.
+            let _ = manager
+                .send(GetGroupUpgradeStatusRequest { group_id: gid })
+                .await
+                .expect("status mailbox");
+
+            UpgradesRepository::new(&node.store)
+                .save(
+                    &gid,
+                    &GroupUpgradeValue {
+                        from_version: "0.1.0".to_owned(),
+                        to_version: "0.2.0".to_owned(),
+                        // Still the lazy path's synchronous mutex write: nothing
+                        // on the recovery or propagation path ever fills it in.
+                        migration: None,
+                        initiated_at: 1_700_000_000,
+                        initiated_by: admin_pk,
+                        // Where recovery leaves the group once a context fails.
+                        status: GroupUpgradeStatus::InProgress {
+                            total: 1,
+                            completed: 0,
+                            failed: 1,
+                        },
+                        cascade_hlc: None,
+                        cascade_seq: None,
+                        to_state_version: 0,
+                    },
+                )
+                .expect("seed post-recovery failed record");
+
+            manager
+                .send(RetryGroupUpgradeRequest {
+                    group_id: gid,
+                    requester: Some(admin_pk),
+                })
+                .await
+                .expect("retry mailbox")
+                .expect("retry should be accepted");
+
+            // Retry resets the counters to (0, 0) before it answers, so this
+            // waits for the propagator's decision rather than a fixed delay.
+            wait_until(|| {
+                !matches!(
+                    UpgradesRepository::new(&node.store)
+                        .load(&gid)
+                        .expect("load upgrade record")
+                        .expect("record exists")
+                        .status,
+                    GroupUpgradeStatus::InProgress {
+                        completed: 0,
+                        failed: 0,
+                        ..
+                    }
+                )
+            })
+            .await
+        })
+        .await;
+
+    assert!(progressed, "retry must have processed the group");
+
+    // Same observable as the recovery fixture: the target's migrate export
+    // cannot load here, so a resolved migration necessarily leaves the context
+    // on v1, while a code-only swap flips it to v2.
+    let application = node
+        .context_client
+        .get_context(&ctx)
+        .expect("load context")
+        .expect("context exists")
+        .application_id;
+    assert_eq!(
+        application,
+        app_id_v1(),
+        "retry trusted the record's `migration: None` and swapped the bytecode \
+         without migrating - it must re-resolve the migration from the target's ABI"
     );
 }

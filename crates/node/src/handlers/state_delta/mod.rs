@@ -2376,7 +2376,7 @@ mod tests {
             register_context_in_group, MetaRepository, UpgradesRepository,
         };
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{ContextId, UpgradePolicy};
+        use calimero_primitives::context::ContextId;
         use calimero_primitives::identity::PublicKey;
         use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
         use calimero_store::db::InMemoryDB;
@@ -2414,7 +2414,6 @@ mod tests {
                     &GroupMetaValue {
                         app_key: APP_V2,
                         target_application_id: ApplicationId::from([0xCC; 32]),
-                        upgrade_policy: UpgradePolicy::Automatic,
                         created_at: 1_700_000_000,
                         admin_identity: dummy_pk,
                         owner_identity: dummy_pk,
@@ -2437,6 +2436,7 @@ mod tests {
                             status: GroupUpgradeStatus::Completed { completed_at: None },
                             cascade_hlc: Some(cascade_hlc),
                             cascade_seq: None,
+                            to_state_version: 2,
                         },
                     )
                     .expect("save group upgrade");
@@ -2669,6 +2669,7 @@ mod tests {
                     package: "".into(),
                     version: "".into(),
                     signer_id: "".into(),
+                    state_version: 0,
                 },
             );
             let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use calimero_context_config::types::{Capability, SignedGroupOpenInvitation};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{AccountId, ClientKey, ContextUser, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
@@ -13,6 +13,11 @@ use url::Url;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Empty;
+
+/// Constant compat key: the released calimero-client-py merobox bundles rejects
+/// group/namespace responses that omit it. Delete once merobox ships a client-py
+/// built off post-merge master and MIN_MEROBOX (.github/actions/setup-merobox) names it.
+pub const UPGRADE_POLICY_COMPAT: &str = "LazyOnAccess";
 
 // -------------------------------------------- Application API --------------------------------------------
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1407,7 +1412,6 @@ pub struct CreateGroupApiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_key: Option<String>,
     pub application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1442,7 +1446,6 @@ pub struct CreateGroupApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct CreateNamespaceApiRequest {
     pub application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Hex-encoded 32-byte bytecode blob id to pin the namespace to a
@@ -1532,7 +1535,9 @@ pub struct GroupInfoApiResponseData {
     pub group_id: String,
     pub app_key: String,
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
+    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
+    #[serde(default)]
+    pub upgrade_policy: String,
     pub member_count: u64,
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1734,6 +1739,9 @@ pub struct GetCascadeStatusApiResponse {
 pub struct MemberMigrationReportApiData {
     pub schema_version: u32,
     pub residue_auto: u64,
+    /// Always 0. Held on the wire only because the released calimero-client-py
+    /// the e2e suite runs still requires it; drop once that floor moves.
+    #[serde(default)]
     pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     pub reported_at: u64,
@@ -2396,32 +2404,13 @@ pub struct GroupSummaryApiData {
     pub group_id: String,
     pub app_key: String,
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
+    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
+    #[serde(default)]
+    pub upgrade_policy: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
-
-// ---- Update Group Settings ----
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateGroupSettingsApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-    pub upgrade_policy: UpgradePolicy,
-}
-
-impl Validate for UpdateGroupSettingsApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-// ---- Update Group Settings ----
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct UpdateGroupSettingsApiResponse {}
 
 // ---- Update Member Role ----
 
@@ -3127,6 +3116,9 @@ mod tests {
         assert_eq!(members[0]["report"]["schemaVersion"], 2);
         assert_eq!(members[0]["report"]["syncedUpToHlc"], 7);
         assert_eq!(members[0]["report"]["authoredRemaining"], 3);
+        // Released calimero-client-py (which the e2e suite runs) still requires
+        // this key; omitting it fails its deserialize before any assert runs.
+        assert_eq!(members[0]["report"]["residueIdentity"], 0);
         // A migrated member carries no failure reason — `migrationFailed` omitted.
         assert!(members[0]["report"].get("migrationFailed").is_none());
         // The unknown member has no fresh report — `report` is omitted.
@@ -3206,6 +3198,8 @@ pub struct NamespaceApiResponse {
     pub namespace_id: String,
     pub app_key: String,
     pub target_application_id: String,
+    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
+    #[serde(default)]
     pub upgrade_policy: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

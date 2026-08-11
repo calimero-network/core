@@ -47,8 +47,6 @@ use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
 use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiResponse;
-use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
-use calimero_server_primitives::admin::UpdateGroupSettingsApiResponse;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiResponse;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
@@ -78,18 +76,6 @@ where
         let response = self
             .connection
             .delete_with_body(&format!("admin-api/groups/{group_id}"), request)
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn update_group_settings(
-        &self,
-        group_id: &str,
-        request: UpdateGroupSettingsApiRequest,
-    ) -> Result<UpdateGroupSettingsApiResponse> {
-        let response = self
-            .connection
-            .patch(&format!("admin-api/groups/{group_id}"), request)
             .await?;
         Ok(response)
     }

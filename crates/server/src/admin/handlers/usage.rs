@@ -203,7 +203,7 @@ mod tests {
 
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{self, GroupMetaValue};
@@ -255,7 +255,6 @@ mod tests {
         let meta = GroupMetaValue {
             app_key: [0xAA; 32],
             target_application_id: ApplicationId::from([0xBB; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: node_account,
             owner_identity: node_account,
@@ -310,7 +309,6 @@ mod tests {
         let meta = GroupMetaValue {
             app_key: [0xAA; 32],
             target_application_id: ApplicationId::from([0xBB; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             // Never resolved: this namespace is the one the walk must SKIP for
             // having no identity and no membership, so a bare account id says

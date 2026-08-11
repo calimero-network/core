@@ -167,9 +167,9 @@ A governance op a node receives before it holds the scope key is **buffered** aw
 
 The sweep is a **fixpoint loop**, because applying one op can unblock a later op from a _different_ signer (the nonce window is tracked per `(group, signer)`, so one pass orders only within a signer). It re-runs until a full pass applies nothing new — narrowing each pass to only the groups that just made progress — bounded by `MAX_PASSES = 64` as a defensive cap against a logic bug. It runs before the event loop and after the op-event subscription, so any `ContextRegistered` events it emits drive [auto-follow](#auto-follow-turning-membership-into-replication) rather than being lost. It is best-effort: per-group errors are logged and swallowed, and the next restart re-runs it.
 
-### Re-spawning interrupted eager upgrades
+### Re-spawning interrupted upgrades
 
-An eager (`Automatic`) [group upgrade](/protocol/upgrades/) is driven by an in-memory propagator; a crash mid-walk leaves the upgrade row `InProgress` with no task pushing it. On actor startup the `ContextManager` scans the store for in-progress upgrades and re-spawns a propagator for each (`recover_in_progress_upgrades`, `crates/context/src/lifecycle.rs`). `LazyOnAccess` groups are skipped — they never enter `InProgress`, so there is nothing to resume.
+A [group upgrade](/protocol/upgrades/) is driven by an in-memory propagator; a crash mid-walk leaves the upgrade row `InProgress` with no task pushing it. On actor startup the `ContextManager` scans the store for in-progress upgrades and re-spawns a propagator for each (`recover_in_progress_upgrades`, `crates/context/src/lifecycle.rs`). Recovery is unconditional: a cascade descendant left `InProgress` by a crash would otherwise block that group's next upgrade forever.
 
 ## Roles, capabilities, and the owner
 

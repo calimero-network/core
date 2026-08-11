@@ -2572,7 +2572,7 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
 
     // Pre-establish meta: admin == founder (established), but owner DIVERGED to
     // a stray non-founder key. Use `sample_meta_with_admin` so other fields
-    // (app_key, target_application_id, upgrade_policy, created_at, auto_join)
+    // (app_key, target_application_id, created_at, auto_join)
     // carry distinctive non-default values we can assert are preserved.
     let mut diverged = sample_meta_with_admin(founder_account);
     diverged.owner_identity = stray_owner_account;
@@ -2604,10 +2604,6 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     assert_eq!(
         meta.target_application_id, diverged.target_application_id,
         "target_application_id preserved across the owner repair"
-    );
-    assert_eq!(
-        meta.upgrade_policy, diverged.upgrade_policy,
-        "upgrade_policy preserved across the owner repair"
     );
     assert_eq!(
         meta.created_at, diverged.created_at,

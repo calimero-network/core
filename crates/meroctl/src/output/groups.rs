@@ -12,7 +12,7 @@ use calimero_server_primitives::admin::{
     RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
     RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
     SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -42,7 +42,6 @@ impl Report for GroupInfoApiResponse {
         let _ = table.add_row(vec!["Group ID", &d.group_id]);
         let _ = table.add_row(vec!["App Key", &d.app_key]);
         let _ = table.add_row(vec!["Application ID", &d.target_application_id.to_string()]);
-        let _ = table.add_row(vec!["Upgrade Policy", &format!("{:?}", d.upgrade_policy)]);
         let _ = table.add_row(vec!["Members", &d.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &d.context_count.to_string()]);
         if let Some(meta) = d.metadata.as_ref() {
@@ -214,7 +213,6 @@ impl Report for NamespaceApiResponse {
         let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
         let _ = table.add_row(vec!["App Key", &self.app_key]);
         let _ = table.add_row(vec!["Application ID", &self.target_application_id]);
-        let _ = table.add_row(vec!["Upgrade Policy", &self.upgrade_policy]);
         let _ = table.add_row(vec!["Created At", &self.created_at.to_string()]);
         let _ = table.add_row(vec!["Members", &self.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &self.context_count.to_string()]);
@@ -237,7 +235,6 @@ impl Report for ListNamespacesApiResponse {
         let _ = table.set_header(vec![
             Cell::new("Namespace ID").fg(Color::Blue),
             Cell::new("Application ID").fg(Color::Blue),
-            Cell::new("Upgrade Policy").fg(Color::Blue),
             Cell::new("Members").fg(Color::Blue),
             Cell::new("Contexts").fg(Color::Blue),
             Cell::new("Subgroups").fg(Color::Blue),
@@ -247,7 +244,6 @@ impl Report for ListNamespacesApiResponse {
             let _ = table.add_row(vec![
                 ns.namespace_id.clone(),
                 ns.target_application_id.clone(),
-                ns.upgrade_policy.clone(),
                 ns.member_count.to_string(),
                 ns.context_count.to_string(),
                 ns.subgroup_count.to_string(),
@@ -337,15 +333,6 @@ impl Report for DeleteGroupApiResponse {
             "Successfully deleted group (deleted: {})",
             self.data.is_deleted
         )]);
-        println!("{table}");
-    }
-}
-
-impl Report for UpdateGroupSettingsApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Group Settings Updated").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully updated group settings"]);
         println!("{table}");
     }
 }

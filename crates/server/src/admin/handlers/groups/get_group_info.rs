@@ -4,7 +4,9 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::GetGroupInfoRequest;
-use calimero_server_primitives::admin::{GroupInfoApiResponse, GroupInfoApiResponseData};
+use calimero_server_primitives::admin::{
+    GroupInfoApiResponse, GroupInfoApiResponseData, UPGRADE_POLICY_COMPAT,
+};
 use tracing::{error, info};
 
 use super::{parse_group_id, upgrade_info_to_api_data};
@@ -39,7 +41,7 @@ pub async fn handler(
                         group_id: hex::encode(info.group_id.to_bytes()),
                         app_key: hex::encode(info.app_key.to_bytes()),
                         target_application_id: info.target_application_id,
-                        upgrade_policy: info.upgrade_policy,
+                        upgrade_policy: UPGRADE_POLICY_COMPAT.to_owned(),
                         member_count: info.member_count,
                         context_count: info.context_count,
                         active_upgrade,

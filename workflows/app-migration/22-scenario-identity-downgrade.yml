@@ -2,9 +2,8 @@ name: 22 — Scenario "identity downgrade" negative-path gate (L1, 1-node)
 description: >
   Single-node negative-path test for the L1 identity-downgrade gate.
   Node 1 installs scenario-identity-downgrade-v1 (state: wiki AuthoredMap),
-  creates a namespace + Open subgroup + context, sets the upgrade policy to
-  lazy_on_access, then attempts to upgrade to v2 (wiki UnorderedMap) with a
-  migrate_v1_to_v2 method. The emitter-side gate in upgrade_group.rs
+  creates a namespace + Open subgroup + context, and then attempts to upgrade to v2
+  (wiki UnorderedMap) with a migrate_v1_to_v2 method. The emitter-side gate in upgrade_group.rs
   (verify_no_identity_downgrade) MUST refuse this upgrade before any group op
   is emitted — the upgrade_group RPC returns an error, and the step is expected
   to fail. Two trailing assertions confirm the gate fired for the right reason
@@ -78,8 +77,7 @@ steps:
     outputs:
       ctx_id: contextId
 
-  # Phase 3: Write v1 state so the group has a context with live data,
-  # then set upgrade policy to lazy-on-access (required for migration).
+  # Phase 3: Write v1 state.
   - name: Write a wiki entry (v1)
     type: call
     node: app-migration-iddowngrade-1
@@ -88,15 +86,6 @@ steps:
     args:
       key: "hello"
       value: "world"
-
-  # LazyOnAccess is required for migration-carrying upgrades (see
-  # ensure_migration_policy_supported). The L1 gate check runs inside the
-  # LazyOnAccess branch of upgrade_group before any op is emitted.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-iddowngrade-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
 
   # Phase 4: Attempt the forbidden upgrade.
   #

@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::ListAllGroupsRequest;
 use calimero_server_primitives::admin::{
-    GroupSummaryApiData, ListAllGroupsApiResponse, ListAllGroupsQuery,
+    GroupSummaryApiData, ListAllGroupsApiResponse, ListAllGroupsQuery, UPGRADE_POLICY_COMPAT,
 };
 use tracing::{error, info};
 
@@ -40,7 +40,7 @@ pub async fn handler(
                     group_id: hex::encode(g.group_id.to_bytes()),
                     app_key: hex::encode(g.app_key.to_bytes()),
                     target_application_id: g.target_application_id,
-                    upgrade_policy: g.upgrade_policy,
+                    upgrade_policy: UPGRADE_POLICY_COMPAT.to_owned(),
                     created_at: g.created_at,
                     name: g.name,
                 })

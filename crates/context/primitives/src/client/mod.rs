@@ -48,8 +48,7 @@ use crate::group::{
     StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
     StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
     StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -2056,12 +2055,6 @@ impl ContextClient {
         eyre::Result<Vec<GroupSummary>>
     );
     forward_to_actor!(
-        update_group_settings,
-        UpdateGroupSettings,
-        UpdateGroupSettingsRequest,
-        eyre::Result<()>
-    );
-    forward_to_actor!(
         update_member_role,
         UpdateMemberRole,
         UpdateMemberRoleRequest,
@@ -2769,6 +2762,7 @@ mod get_context_version_tests {
                 package: "com.test.app".into(),
                 version: "2.1.0".into(),
                 signer_id: "signer".into(),
+                state_version: 0,
             },
         );
         let cid = ContextId::from([0x07; 32]);

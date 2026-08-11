@@ -182,9 +182,7 @@ pub(crate) fn setup(
         .route("/groups", post(groups::create_group::handler))
         .route(
             "/groups/:group_id",
-            get(groups::get_group_info::handler)
-                .patch(groups::update_group_settings::handler)
-                .delete(groups::delete_group::handler),
+            get(groups::get_group_info::handler).delete(groups::delete_group::handler),
         )
         .route(
             "/groups/:group_id/contexts",

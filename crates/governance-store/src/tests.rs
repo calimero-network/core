@@ -5,7 +5,7 @@ use super::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
@@ -964,7 +964,7 @@ fn apply_local_context_alias_admin_or_creator() {
 }
 
 #[test]
-fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
+fn apply_local_signed_group_op_capabilities_and_delete() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -1014,28 +1014,8 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
         0x7
     );
 
-    let op_policy = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes.into(),
-        vec![],
-        2,
-        GroupOp::UpgradePolicySet {
-            policy: UpgradePolicy::Automatic,
-        },
-    )
-    .unwrap();
-    apply_local_signed_group_op(&store, &op_policy).unwrap();
-    assert_eq!(
-        MetaRepository::new(&store)
-            .load(&gid)
-            .unwrap()
-            .unwrap()
-            .upgrade_policy,
-        UpgradePolicy::Automatic
-    );
-
     let op_del =
-        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 3, GroupOp::GroupDelete).unwrap();
+        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 2, GroupOp::GroupDelete).unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -2047,6 +2027,7 @@ fn save_load_delete_upgrade() {
         },
         cascade_hlc: None,
         cascade_seq: None,
+        to_state_version: 2,
     };
 
     UpgradesRepository::new(&store)
@@ -2085,6 +2066,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             },
         )
         .unwrap();
@@ -2103,6 +2085,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             },
         )
         .unwrap();
@@ -2776,7 +2759,6 @@ fn auto_group_node_identity_is_admin_member() {
             &GroupMetaValue {
                 app_key: [0u8; 32],
                 target_application_id: ApplicationId::from([0xCC; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: node_account,
                 owner_identity: node_account,
@@ -4981,57 +4963,6 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
             .unwrap(),
         VisibilityMode::Restricted
     );
-}
-
-#[test]
-fn set_upgrade_policy_admin_gated_and_blocks_flip_while_migration_pending() {
-    use calimero_primitives::context::UpgradePolicy;
-
-    use super::group_settings::GroupSettingsService;
-    use crate::test_fixtures::sample_meta_with_admin;
-    use crate::MetaRepository;
-
-    let store = test_store();
-    let gid = ContextGroupId::from([0xC1; 32]);
-    let admin_pk = PublicKey::from([0x01; 32]);
-    let member_pk = PublicKey::from([0x02; 32]);
-    let admin = enrol_member(&store, &gid, &admin_pk);
-    let member = enrol_member(&store, &gid, &member_pk);
-
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &member, GroupMemberRole::Member)
-        .unwrap();
-
-    let mut meta = sample_meta_with_admin(admin);
-    meta.upgrade_policy = UpgradePolicy::LazyOnAccess;
-    MetaRepository::new(&store).save(&gid, &meta).unwrap();
-
-    let svc = GroupSettingsService::new(&store, gid);
-
-    // Admin-gate (#27): a non-admin signer is rejected.
-    assert!(svc
-        .set_upgrade_policy(&member_pk, &UpgradePolicy::Automatic)
-        .is_err());
-
-    // No migration pending: an admin may flip in either direction.
-    svc.set_upgrade_policy(&admin_pk, &UpgradePolicy::Automatic)
-        .unwrap();
-    svc.set_upgrade_policy(&admin_pk, &UpgradePolicy::LazyOnAccess)
-        .unwrap();
-
-    // Pending migration (#6): flipping AWAY from LazyOnAccess is rejected (it
-    // would strand un-accessed contexts), but staying LazyOnAccess is allowed.
-    meta.upgrade_policy = UpgradePolicy::LazyOnAccess;
-    meta.migration = Some(vec![1, 2, 3]);
-    MetaRepository::new(&store).save(&gid, &meta).unwrap();
-    assert!(svc
-        .set_upgrade_policy(&admin_pk, &UpgradePolicy::Automatic)
-        .is_err());
-    svc.set_upgrade_policy(&admin_pk, &UpgradePolicy::LazyOnAccess)
-        .unwrap();
 }
 
 // ---------------------------------------------------------------------
@@ -8917,6 +8848,7 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
                 from_app_key: from_app_key.into(),
                 app_key: to_app_key.into(),
                 target_application_id: app_v2,
+                to_state_version: 0,
                 migration: None,
                 cascade_hlc: HybridTimestamp::zero(),
             },
@@ -8973,13 +8905,104 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
     }
 }
 
+/// PR A's rollup fix compares each member's loaded ABI state version against
+/// the record's `to_state_version`. On a non-initiator that number arrives
+/// only through the op, so a `CascadeUpgrade` that does not carry it leaves
+/// the receiver's record at 0 (pinned red) or stale (falsely green).
+#[test]
+fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let root = ContextGroupId::from([0xE1; 32]);
+    let descendant = ContextGroupId::from([0xE2; 32]);
+    let from_app_key = [0x11u8; 32];
+    let to_app_key = [0x22u8; 32];
+    let app_v2 = ApplicationId::from([0x33u8; 32]);
+
+    // `with_prior_record` picks which apply branch runs: `false` exercises the
+    // load-or-default create, `true` the existing-record update.
+    let build = |with_prior_record: bool| {
+        let store = test_store();
+        // Enrolled against `root`: the descendant is nested under it below, so
+        // both resolve the signing key to this one account.
+        let admin = enrol_member(&store, &root, &admin_pk);
+        for gid in [&root, &descendant] {
+            let mut meta = sample_meta_with_admin(admin);
+            meta.app_key = from_app_key;
+            MetaRepository::new(&store).save(gid, &meta).unwrap();
+        }
+        MembershipRepository::new(&store)
+            .add_member(&root, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &root, &descendant);
+
+        if with_prior_record {
+            UpgradesRepository::new(&store)
+                .save(
+                    &descendant,
+                    &GroupUpgradeValue {
+                        from_version: "10.0.0".to_owned(),
+                        to_version: "10.1.0".to_owned(),
+                        migration: None,
+                        initiated_at: 0,
+                        initiated_by: admin_pk,
+                        status: GroupUpgradeStatus::Completed { completed_at: None },
+                        cascade_hlc: None,
+                        cascade_seq: None,
+                        // The stale value the false green came from.
+                        to_state_version: 1,
+                    },
+                )
+                .unwrap();
+        }
+        store
+    };
+
+    for with_prior_record in [false, true] {
+        let store = build(with_prior_record);
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            root.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::CascadeUpgrade {
+                from_app_key: from_app_key.into(),
+                app_key: to_app_key.into(),
+                target_application_id: app_v2,
+                to_state_version: 2,
+                migration: None,
+                cascade_hlc: HybridTimestamp::zero(),
+            },
+        )
+        .expect("sign CascadeUpgrade");
+
+        apply_local_signed_group_op(&store, &op).expect("cascade applies");
+
+        let record = UpgradesRepository::new(&store)
+            .load(&descendant)
+            .unwrap()
+            .expect("descendant upgrade record");
+        assert_eq!(
+            record.to_state_version, 2,
+            "receiver must record the initiator's target state version \
+             (with_prior_record = {with_prior_record})"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // Apply-time authority must resolve at the op's causal cut, not against the
 // receiver's live rows.
 //
 // The settings ops (`TargetApplicationSet`, `GroupMigrationSet`,
-// `UpgradePolicySet`, `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`) run
-// their gates through `GroupSettingsService`, which used to build a LIVE
+// `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`) run their gates
+// through `GroupSettingsService`, which used to build a LIVE
 // `PermissionChecker` regardless of the apply context. That made the verdict a
 // function of each replica's fold progress: a replica that had folded a
 // concurrent capability revoke rejected the op (and, because the reject path

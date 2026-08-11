@@ -966,7 +966,6 @@ impl<'a> NamespaceGovernance<'a> {
                 target_application_id: calimero_primitives::application::ApplicationId::from(
                     [0u8; 32],
                 ),
-                upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                 created_at: 0,
                 admin_identity: placeholder_admin,
                 owner_identity: placeholder_admin,
@@ -1768,6 +1767,7 @@ impl<'a> NamespaceGovernance<'a> {
                             package: String::new().into_boxed_str(),
                             version: String::new().into_boxed_str(),
                             signer_id: String::new().into_boxed_str(),
+                            state_version: 0,
                         },
                     );
                     let mut wh = self.store.handle();

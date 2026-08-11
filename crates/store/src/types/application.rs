@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::Borsh;
@@ -14,7 +12,7 @@ pub struct ServiceMeta {
     pub compiled: key::BlobMeta,
 }
 
-#[derive(BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ApplicationMeta {
     pub bytecode: key::BlobMeta,
@@ -28,55 +26,19 @@ pub struct ApplicationMeta {
     /// Named services within this application. Empty for single-service apps.
     /// When non-empty, `bytecode`/`compiled` above point to the first (default) service.
     pub services: Vec<ServiceMeta>,
+    /// Max ABI state version across this application's services, `0` when none
+    /// exposes a readable ABI. What the migration rollup compares, not `version`.
+    pub state_version: u32,
 }
 
-// Custom deserialization: handle backwards compatibility for old data
-// that doesn't have the `services` field (added in rc.19).
-impl BorshDeserialize for ApplicationMeta {
-    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
-        let bytecode = key::BlobMeta::deserialize_reader(reader)?;
-        let size = u64::deserialize_reader(reader)?;
-        let source = Box::<str>::deserialize_reader(reader)?;
-        let metadata = Box::<[u8]>::deserialize_reader(reader)?;
-        let compiled = key::BlobMeta::deserialize_reader(reader)?;
-        let package = Box::<str>::deserialize_reader(reader)?;
-        let version = Box::<str>::deserialize_reader(reader)?;
-        let signer_id = Box::<str>::deserialize_reader(reader)?;
-
-        // `services` was added after the initial schema. Old records end after `signer_id`.
-        // Try to read it; if there's no more data, default to an empty Vec.
-        let services = match Vec::<ServiceMeta>::deserialize_reader(reader) {
-            Ok(v) => v,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Vec::new(),
-            Err(e)
-                if e.kind() == std::io::ErrorKind::InvalidData
-                    && e.to_string().contains("Unexpected length") =>
-            {
-                Vec::new()
-            }
-            Err(e) => return Err(e),
-        };
-
-        Ok(Self {
-            bytecode,
-            size,
-            source,
-            metadata,
-            compiled,
-            package,
-            version,
-            signer_id,
-            services,
-        })
-    }
-}
-
-/// Package-manifest fields of an [`ApplicationMeta`] (name, version, signer).
+/// Identifying fields of an [`ApplicationMeta`]: who published it, what semver
+/// it claims, and what state version its ABI declares.
 #[derive(Debug, Clone)]
 pub struct PackageInfo {
     pub package: Box<str>,
     pub version: Box<str>,
     pub signer_id: Box<str>,
+    pub state_version: u32,
 }
 
 impl ApplicationMeta {
@@ -93,6 +55,7 @@ impl ApplicationMeta {
             package,
             version,
             signer_id,
+            state_version,
         } = info;
         Self {
             bytecode,
@@ -104,6 +67,7 @@ impl ApplicationMeta {
             version,
             signer_id,
             services: Vec::new(),
+            state_version,
         }
     }
 
@@ -153,4 +117,55 @@ pub struct ApplicationPreviousBlob {
 impl PredefinedEntry for key::ApplicationPreviousBlob {
     type Codec = Borsh;
     type DataType<'a> = ApplicationPreviousBlob;
+}
+
+#[cfg(test)]
+mod application_meta_tests {
+    use borsh::BorshDeserialize;
+    use calimero_primitives::blobs::BlobId;
+
+    use super::ApplicationMeta;
+    use crate::key;
+
+    fn sample() -> ApplicationMeta {
+        ApplicationMeta {
+            bytecode: key::BlobMeta::new(BlobId::from([1; 32])),
+            size: 10,
+            source: "test".into(),
+            metadata: Box::new([]),
+            compiled: key::BlobMeta::new(BlobId::from([0; 32])),
+            package: "com.example.app".into(),
+            version: "10.1.3".into(),
+            signer_id: "did:key:zTest".into(),
+            services: Vec::new(),
+            state_version: 2,
+        }
+    }
+
+    #[test]
+    fn application_meta_roundtrips_state_version() {
+        let meta = sample();
+
+        let bytes = borsh::to_vec(&meta).expect("serialize");
+        let back = ApplicationMeta::try_from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(
+            back.state_version, 2,
+            "state_version must survive a round trip"
+        );
+        assert_eq!(back.version.as_ref(), "10.1.3");
+    }
+
+    /// Pre-`state_version` records must fail loud rather than decode a default.
+    /// Both legacy shapes: missing the trailing `u32`, and missing `services` too.
+    #[test]
+    fn rejects_records_written_before_state_version() {
+        let bytes = borsh::to_vec(&sample()).expect("serialize");
+
+        for drop in [4, 8] {
+            let truncated = &bytes[..bytes.len() - drop];
+            let _err = ApplicationMeta::try_from_slice(truncated)
+                .expect_err("a record short of the full layout must not decode");
+        }
+    }
 }

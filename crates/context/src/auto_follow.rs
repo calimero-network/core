@@ -817,7 +817,7 @@ mod tests {
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::{MemberCapabilities, VisibilityMode};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+        use calimero_primitives::context::{ContextId, GroupMemberRole};
         use calimero_primitives::identity::{PrivateKey, PublicKey};
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{AutoFollowFlags, ContextLeftMarker, GroupMetaValue};
@@ -843,7 +843,6 @@ mod tests {
             GroupMetaValue {
                 app_key: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: admin,
                 owner_identity: admin,

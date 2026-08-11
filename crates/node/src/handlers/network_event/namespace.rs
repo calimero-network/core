@@ -127,7 +127,6 @@ pub(super) fn handle_namespace_governance_delta(
                 peer = %heartbeat.peer_pubkey,
                 schema_version = heartbeat.schema_version,
                 residue_auto = heartbeat.residue_auto,
-                residue_identity = heartbeat.residue_identity,
                 "migration heartbeat cached"
             );
             return;

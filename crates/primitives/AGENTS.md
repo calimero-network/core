@@ -34,7 +34,7 @@ src/
 ├── lib.rs          # `pub mod` list only - no re-exports, no prelude
 ├── hash.rs          # Hash - the 32-byte digest every ID newtype wraps
 ├── identity.rs      # PrivateKey, PublicKey, Did, RootKey, ClientKey, ContextUser
-├── context.rs        # ContextId, Context, ContextConfigParams, UpgradePolicy, GroupMemberRole
+├── context.rs        # ContextId, Context, ContextConfigParams, GroupMemberRole
 ├── application.rs    # ApplicationId, SignerId, AppKey, Application, ApplicationBlob, Version (semver), ApplicationSource
 ├── blobs.rs           # BlobId, BlobInfo, BlobMetadata
 ├── crdt.rs             # CrdtType - merge-semantics tag shared by storage + sync
@@ -72,7 +72,6 @@ src/
 | `NodeEvent`/`ContextEvent`/... | `events` | WebSocket event envelope and payloads | serde only, tagged JSON |
 | `Did`/`RootKey`/`ClientKey`/`ContextUser` | `identity` | DID-adjacent identity records | serde only, `#[non_exhaustive]` |
 | `Context` | `context` | Snapshot of a context's id/app/root-hash/DAG-heads/version/name | serde (`camelCase`), `#[non_exhaustive]` builder methods |
-| `UpgradePolicy` | `context` | `Automatic` / `LazyOnAccess` app-upgrade propagation | serde; hand-written borsh with a rejected legacy tag `2` |
 | `GroupMemberRole` | `context` | `Admin`/`Member`/`ReadOnly`/`ReadOnlyTee` | serde + borsh, deliberately NOT `#[non_exhaustive]` |
 
 ## Mental Model
@@ -87,7 +86,6 @@ This crate has no dependency on any other Calimero crate - it is the leaf that `
 - **`PrivateKey` never derives serialization or `Clone`/`Copy`**: the only sanctioned way to reach the raw bytes is `as_bytes()`. Serializing or copying it would produce an untracked copy of the secret that `ZeroizeOnDrop` cannot wipe. The inner type is a plain `[u8; 32]` (not `Hash`) specifically so the derived `ZeroizeOnDrop` can zero it directly.
 - **All 32-byte digest newtypes (`Hash`, `ContextId`, `ApplicationId`, `BlobId`, `PublicKey`) share one text encoding**: base58 over Serde (`Display`/`FromStr`/`Serialize`), raw fixed bytes over borsh (only under the `borsh` feature). Do not mix - a base58 string is never valid input to a borsh decoder for these types.
 - **`CrdtType`'s borsh tags are pinned and append-only**: a dedicated test (`test_borsh_discriminant_tags_are_stable`) locks each variant's discriminant. `RotationLog` was deliberately added last to avoid shifting later tags. New variants must be appended at the end, never inserted.
-- **`UpgradePolicy`'s borsh decoder explicitly rejects tag `2`** (the removed `Coordinated` policy) instead of silently reinterpreting it - a stored/in-flight legacy value fails loudly rather than resurrecting removed semantics.
 - **`Alias<T>` is a fixed 50-byte buffer, not a `String`**: characters are restricted to `[A-Za-z0-9._-]` because aliases are interpolated into store keys and URL paths; `MAX_ALIAS_LEN` has a compile-time assertion that it fits in `u8`. `ScopedAlias` is a marker trait (`PublicKey`'s scope is `ContextId`; `ContextId`/`ApplicationId` are unscoped, `Scope = ()`) used purely as a phantom type parameter - there's no runtime scope check in this crate.
 - **`version::Version`'s `BorshDeserialize` is hand-written, not derived**: each string field is read through `read_capped_string`, which checks the length prefix against `MAX_VERSION_STRING_LEN` (256) *before* allocating, so a hostile peer can't force a multi-gigabyte allocation via a crafted length prefix during handshake. `BorshSerialize` is still derived.
 - **`application::Version` (semver) and `version::Version` (build metadata) are unrelated types that happen to share a name** - the former validates `major.minor.patch`, the latter carries release/build/commit/rustc strings; import the one you mean explicitly.

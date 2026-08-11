@@ -60,7 +60,6 @@ pub async fn handler(
             group_id,
             app_key,
             application_id: req.application_id,
-            upgrade_policy: req.upgrade_policy,
             name: req.name,
             parent_group_id,
             // Born-Restricted (default, #2771); this legacy path doesn't yet

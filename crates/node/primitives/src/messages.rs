@@ -95,8 +95,6 @@ pub struct MigrationStatusReport {
     pub schema_version: u32,
     /// Unconverted Convergent ("auto") entries the member still has pending.
     pub residue_auto: u64,
-    /// Unconverted identity-gated entries the member still has pending.
-    pub residue_identity: u64,
     /// Governance HLC the member has synced/applied through.
     pub synced_up_to_hlc: u64,
     /// Member-signed millis-since-epoch from the heartbeat itself.

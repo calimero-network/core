@@ -5,9 +5,7 @@ use core::fmt::{self, Debug, Formatter};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{
-    ContextId as PrimitiveContextId, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 use generic_array::sequence::Concat;
@@ -1190,7 +1188,6 @@ pub struct GroupOpHeadValue {
 pub struct GroupMetaValue {
     pub app_key: [u8; 32],
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     /// The founding admin, named by **account**. Both this and
     /// `owner_identity` are principals — they answer "who may act" — so they
@@ -1252,79 +1249,13 @@ impl Default for AutoFollowFlags {
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
 /// node, the Ed25519 key pair used for sync key-share across all contexts in
 /// this group.
-///
-/// `auto_follow` was added after the initial schema; [`BorshDeserialize`] is
-/// implemented manually so that records written under the legacy three-field
-/// layout still decode — the missing bytes default to
-/// [`AutoFollowFlags::default()`], which since the #2422 fix is
-/// `{contexts: true, subgroups: false}`. This means legacy on-disk records
-/// (pre-#2422) start auto-following contexts on the next deserialize.
-/// Operators who want to preserve the old opt-out behaviour for specific
-/// existing members can issue `set_member_auto_follow(contexts: false)`
-/// per member. Serialization always writes the full four-field layout, so
-/// any mutation transparently upgrades the on-disk record. See the
-/// auto-follow architecture doc.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberValue {
     pub role: GroupMemberRole,
     pub private_key: Option<[u8; 32]>,
     pub sender_key: Option<[u8; 32]>,
     pub auto_follow: AutoFollowFlags,
-}
-
-#[cfg(feature = "borsh")]
-impl BorshDeserialize for GroupMemberValue {
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let role = BorshDeserialize::deserialize_reader(reader)?;
-        let private_key = BorshDeserialize::deserialize_reader(reader)?;
-        let sender_key = BorshDeserialize::deserialize_reader(reader)?;
-
-        // `AutoFollowFlags` is two `bool`s = exactly 2 bytes in Borsh.
-        // Distinguish three cases on the trailing bytes:
-        //   - 0 bytes remaining (legacy record) → default flags
-        //   - 2 bytes remaining (new record)    → deserialize flags
-        //   - 1 byte remaining                  → corruption, EOF error
-        //
-        // Using `read_exact` alone conflates cases 1 and 3 because it
-        // returns `UnexpectedEof` in both. We read one byte at a time
-        // so a clean EOF (case 1) is distinguishable from a partial
-        // tail (case 3). See PR #2169 review for detail.
-        let auto_follow = {
-            let mut first = [0u8; 1];
-            let read1 = read_byte(reader, &mut first)?;
-            if !read1 {
-                AutoFollowFlags::default()
-            } else {
-                let mut second = [0u8; 1];
-                reader.read_exact(&mut second)?;
-                AutoFollowFlags::try_from_slice(&[first[0], second[0]])?
-            }
-        };
-
-        Ok(Self {
-            role,
-            private_key,
-            sender_key,
-            auto_follow,
-        })
-    }
-}
-
-/// Read exactly one byte into `buf`. Returns `Ok(true)` if a byte was
-/// read, `Ok(false)` on clean EOF, and forwards any other I/O error.
-/// Used to distinguish a legacy (no trailing bytes) record from a
-/// corrupted record that has fewer bytes than the new layout requires.
-#[cfg(feature = "borsh")]
-fn read_byte<R: borsh::io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> borsh::io::Result<bool> {
-    loop {
-        match reader.read(buf) {
-            Ok(0) => return Ok(false),
-            Ok(_) => return Ok(true),
-            Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        }
-    }
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -1334,7 +1265,7 @@ fn read_byte<R: borsh::io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> borsh::io
 /// upgrades are tracked by semver version string from the local
 /// `ApplicationMeta`, not by application id.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupUpgradeValue {
     /// Semver version of the application before the upgrade, read from the
     /// current application's `ApplicationMeta.version`.
@@ -1348,8 +1279,8 @@ pub struct GroupUpgradeValue {
     pub status: GroupUpgradeStatus,
     /// Sticky cascade fence boundary: the HLC the originating `CascadeUpgrade`
     /// op was stamped with, identical on every node that applied it. `None` for
-    /// non-cascade upgrades and pre-existing records. NEVER cleared once set
-    /// (survives `Completed`) — the boundary the state-delta HLC fence reads.
+    /// non-cascade upgrades. NEVER cleared once set (survives `Completed`) —
+    /// the boundary the state-delta HLC fence reads.
     pub cascade_hlc: Option<HybridTimestamp>,
     /// The migration's expand-entry governance position: the
     /// `NamespaceGovHead.sequence` captured when this cascade was applied.
@@ -1357,78 +1288,13 @@ pub struct GroupUpgradeValue {
     /// monotonic governance-op counter — the SAME number space the migration
     /// heartbeat's `synced_up_to_hlc` (`= head.sequence`) lives in, so the
     /// migration-status rollup pins the cohort by comparing `synced_up_to_hlc <
-    /// cascade_seq` like-for-like. `None` for non-cascade upgrades and pre-existing
-    /// records.
+    /// cascade_seq` like-for-like. `None` for non-cascade upgrades.
     pub cascade_seq: Option<u64>,
-}
-
-#[cfg(feature = "borsh")]
-impl BorshDeserialize for GroupUpgradeValue {
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        let from_version = String::deserialize_reader(reader)?;
-        let to_version = String::deserialize_reader(reader)?;
-        let migration = Option::<Vec<u8>>::deserialize_reader(reader)?;
-        let initiated_at = u64::deserialize_reader(reader)?;
-        let initiated_by = PrimitivePublicKey::deserialize_reader(reader)?;
-        let status = GroupUpgradeStatus::deserialize_reader(reader)?;
-        // Backward-compatible trailing field: absent in pre-existing records
-        // (LazyOnAccess path writes directly to Completed, so this field must
-        // live here rather than inside InProgress).
-        let cascade_hlc = {
-            let mut first = [0u8; 1];
-            if !read_byte(reader, &mut first)? {
-                // Clean EOF — legacy record with no cascade_hlc bytes.
-                None
-            } else {
-                // At least one byte is present; it is the Option discriminant.
-                // 0 = None, 1 = Some(HybridTimestamp).
-                let tag = first[0];
-                match tag {
-                    0 => None,
-                    1 => Some(HybridTimestamp::deserialize_reader(reader)?),
-                    _ => {
-                        return Err(borsh::io::Error::new(
-                            borsh::io::ErrorKind::InvalidData,
-                            "invalid Option tag for cascade_hlc",
-                        ))
-                    }
-                }
-            }
-        };
-        // Second backward-compatible trailing field, added after `cascade_hlc`.
-        // Records written before this field decode as `None`: a clean EOF right
-        // after `cascade_hlc` (legacy and pre-`cascade_seq` records) yields
-        // `None`, mirroring the `cascade_hlc` decode above. 0 = None,
-        // 1 = Some(u64).
-        let cascade_seq = {
-            let mut first = [0u8; 1];
-            if !read_byte(reader, &mut first)? {
-                None
-            } else {
-                let tag = first[0];
-                match tag {
-                    0 => None,
-                    1 => Some(u64::deserialize_reader(reader)?),
-                    _ => {
-                        return Err(borsh::io::Error::new(
-                            borsh::io::ErrorKind::InvalidData,
-                            "invalid Option tag for cascade_seq",
-                        ))
-                    }
-                }
-            }
-        };
-        Ok(Self {
-            from_version,
-            to_version,
-            migration,
-            initiated_at,
-            initiated_by,
-            status,
-            cascade_hlc,
-            cascade_seq,
-        })
-    }
+    /// ABI state version of the target application, from its embedded schema.
+    /// The migration rollup compares each member's loaded state version against
+    /// this. `0` means the target's ABI was unreadable, which the rollup treats
+    /// as an unsatisfiable target rather than a satisfied one.
+    pub to_state_version: u32,
 }
 
 /// One rung of a group's upgrade ladder: the bytecode blob (`app_key`) and
@@ -1461,8 +1327,8 @@ pub enum GroupUpgradeStatus {
         failed: u32,
     },
     Completed {
-        /// Unix timestamp when the last context was upgraded, or `None` for
-        /// `LazyOnAccess` upgrades where contexts upgrade individually on demand.
+        /// Unix timestamp when the last context was upgraded, or `None` when
+        /// each context self-migrates independently without coordination.
         completed_at: Option<u64>,
     },
 }
@@ -3111,53 +2977,10 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 33);
     }
 
-    /// A record written under the pre-auto-follow three-field layout
-    /// (role + private_key + sender_key, no auto_follow bytes) must
-    /// deserialize and fill in default flags. Exercised by seeding raw
-    /// bytes that match the legacy wire format exactly.
-    #[cfg(feature = "borsh")]
-    #[test]
-    fn group_member_value_deserializes_legacy_record() {
-        use borsh::BorshSerialize;
-
-        // Legacy layout: role (1) + private_key Option (1 + 32) + sender_key Option (1).
-        #[derive(BorshSerialize)]
-        struct LegacyGroupMemberValue {
-            role: GroupMemberRole,
-            private_key: Option<[u8; 32]>,
-            sender_key: Option<[u8; 32]>,
-        }
-
-        let legacy = LegacyGroupMemberValue {
-            role: GroupMemberRole::Admin,
-            private_key: Some([0x11; 32]),
-            sender_key: None,
-        };
-        let bytes = borsh::to_vec(&legacy).unwrap();
-
-        let decoded: GroupMemberValue = borsh::from_slice(&bytes).unwrap();
-        assert_eq!(decoded.role, GroupMemberRole::Admin);
-        assert_eq!(decoded.private_key, Some([0x11; 32]));
-        assert_eq!(decoded.sender_key, None);
-        // Post-#2422: legacy records decode with the new default
-        // (contexts=true, subgroups=false). Explicit assertion on the
-        // exact values, alongside the Default-based check, so this test
-        // documents both contracts.
-        assert_eq!(decoded.auto_follow, AutoFollowFlags::default());
-        assert_eq!(
-            decoded.auto_follow,
-            AutoFollowFlags {
-                contexts: true,
-                subgroups: false,
-            }
-        );
-    }
-
-    /// `AutoFollowFlags::default()` is the contract that ALL "no
-    /// preference expressed" entry points rely on (legacy borsh
-    /// decode + `add_group_member`'s `.unwrap_or_default()` fallback).
-    /// Pin the exact values here so a future Default impl change is
-    /// caught at compile-test time, not at runtime in production.
+    /// `AutoFollowFlags::default()` is the contract `add_group_member`'s
+    /// `.unwrap_or_default()` fallback relies on. Pin the exact values
+    /// here so a future Default impl change is caught at compile-test
+    /// time, not at runtime in production.
     #[test]
     fn auto_follow_flags_default_is_contexts_true_subgroups_false() {
         assert_eq!(
@@ -3215,7 +3038,11 @@ mod tests {
         };
         let bytes = borsh::to_vec(&partial).unwrap();
         let err = borsh::from_slice::<GroupMemberValue>(&bytes).unwrap_err();
-        assert_eq!(err.kind(), borsh::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            err.kind(),
+            borsh::io::ErrorKind::InvalidData,
+            "a truncated record must fail loudly, not default its trailing field"
+        );
     }
 
     #[test]
@@ -3374,7 +3201,7 @@ mod tests {
         use borsh::{from_slice, to_vec};
         use calimero_account::AccountId;
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+        use calimero_primitives::context::GroupMemberRole;
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
         use super::super::{
@@ -3387,7 +3214,6 @@ mod tests {
             let value = GroupMetaValue {
                 app_key: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: AccountId::from([0xCC; 32]),
                 owner_identity: AccountId::from([0xCC; 32]),
@@ -3402,18 +3228,15 @@ mod tests {
             assert_eq!(decoded.target_application_id, value.target_application_id);
             assert_eq!(decoded.created_at, value.created_at);
             assert_eq!(decoded.admin_identity, value.admin_identity);
-            assert!(matches!(decoded.upgrade_policy, UpgradePolicy::Automatic));
         }
 
         #[test]
-        // The removed `Coordinated` policy used borsh tag 2. A persisted
-        // GroupMetaValue carrying that tag must now fail to decode (loud
-        // failure) rather than being silently reinterpreted as another policy.
-        fn group_meta_value_with_legacy_coordinated_tag_is_rejected() {
-            let make = |policy| GroupMetaValue {
+        // `upgrade_policy` was dropped with no store-version gate, so a record
+        // written before the removal must fail loudly, never shift into garbage.
+        fn group_meta_value_with_legacy_policy_tag_is_rejected() {
+            let value = GroupMetaValue {
                 app_key: [0x11; 32],
                 target_application_id: ApplicationId::from([0x22; 32]),
-                upgrade_policy: policy,
                 created_at: 1_700_000_000,
                 admin_identity: AccountId::from([0x33; 32]),
                 owner_identity: AccountId::from([0x33; 32]),
@@ -3421,34 +3244,18 @@ mod tests {
                 auto_join: true,
             };
 
-            // Locate the upgrade-policy tag byte without hardcoding an offset:
-            // serialize two values that differ ONLY in `upgrade_policy`
-            // (Automatic = tag 0, LazyOnAccess = tag 1) and find the single
-            // differing byte. This stays correct even if fields before
-            // `upgrade_policy` change size or order.
-            let automatic = to_vec(&make(UpgradePolicy::Automatic)).expect("serialize");
-            let lazy = to_vec(&make(UpgradePolicy::LazyOnAccess)).expect("serialize");
-            let diffs: Vec<usize> = automatic
-                .iter()
-                .zip(&lazy)
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(i))
-                .collect();
-            assert_eq!(
-                diffs.len(),
-                1,
-                "the two values must differ in exactly the policy tag byte"
-            );
-            let tag_offset = diffs[0];
+            // Re-create the old layout: the policy tag sat between
+            // `target_application_id` and `created_at`.
+            let mut bytes = to_vec(&value).expect("serialize");
+            let tag_offset = to_vec(&value.app_key).expect("serialize").len()
+                + to_vec(&value.target_application_id)
+                    .expect("serialize")
+                    .len();
+            bytes.insert(tag_offset, 0);
 
-            // Patch that byte to the removed Coordinated tag (2) and assert the
-            // whole value now fails to decode.
-            let mut bytes = automatic;
-            bytes[tag_offset] = 2;
-            let decoded = from_slice::<GroupMetaValue>(&bytes);
             assert!(
-                decoded.is_err(),
-                "a stored GroupMetaValue with the removed Coordinated tag must be rejected"
+                from_slice::<GroupMetaValue>(&bytes).is_err(),
+                "a stored GroupMetaValue still carrying an upgrade-policy tag must be rejected"
             );
         }
 
@@ -3476,6 +3283,7 @@ mod tests {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 2,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3483,6 +3291,7 @@ mod tests {
 
             assert_eq!(decoded.from_version, "1.0.0");
             assert_eq!(decoded.to_version, "2.0.0");
+            assert_eq!(decoded.to_state_version, 2);
             assert_eq!(decoded.migration, Some(vec![0xDE, 0xAD]));
             assert_eq!(decoded.initiated_at, value.initiated_at);
             assert_eq!(decoded.initiated_by, value.initiated_by);
@@ -3548,6 +3357,7 @@ mod tests {
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
+                to_state_version: 4,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3555,6 +3365,7 @@ mod tests {
 
             assert_eq!(decoded.from_version, "3.0.0");
             assert_eq!(decoded.to_version, "4.0.0");
+            assert_eq!(decoded.to_state_version, 4);
             assert_eq!(decoded.migration, None);
             match decoded.status {
                 GroupUpgradeStatus::Completed { completed_at } => {
@@ -3585,6 +3396,7 @@ mod cascade_hlc_borsh_tests {
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc,
             cascade_seq: None,
+            to_state_version: 2,
         }
     }
 
@@ -3595,24 +3407,6 @@ mod cascade_hlc_borsh_tests {
         let decoded = GroupUpgradeValue::try_from_slice(&bytes).unwrap();
         assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
         assert_eq!(decoded.to_version, "2.0.0");
-    }
-
-    #[test]
-    fn old_format_without_field_decodes_as_none() {
-        let mut legacy = Vec::new();
-        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
-        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
-        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
-        1_700_000_000u64.serialize(&mut legacy).unwrap();
-        PrimitivePublicKey::from([7u8; 32])
-            .serialize(&mut legacy)
-            .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut legacy)
-            .unwrap();
-
-        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
-        assert_eq!(decoded.cascade_hlc, None);
     }
 
     #[test]
@@ -3658,48 +3452,40 @@ mod cascade_hlc_borsh_tests {
     }
 
     #[test]
-    fn old_format_with_cascade_hlc_but_no_cascade_seq_decodes_as_none() {
-        // A record written after `cascade_hlc` was added but before `cascade_seq`:
-        // it ends right after the `cascade_hlc` Option, so `cascade_seq` must
-        // decode as `None` (clean EOF), not error.
-        let mut legacy = Vec::new();
-        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
-        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
-        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
-        1_700_000_000u64.serialize(&mut legacy).unwrap();
-        PrimitivePublicKey::from([7u8; 32])
-            .serialize(&mut legacy)
-            .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut legacy)
-            .unwrap();
-        Some(HybridTimestamp::zero())
-            .serialize(&mut legacy)
-            .unwrap();
+    fn group_upgrade_value_roundtrips_to_state_version() {
+        let value = GroupUpgradeValue {
+            from_version: "10.1.3".to_owned(),
+            to_version: "10.2.0".to_owned(),
+            migration: None,
+            initiated_at: 7,
+            initiated_by: PrimitivePublicKey::from([3; 32]),
+            status: GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+            cascade_hlc: None,
+            cascade_seq: None,
+            to_state_version: 2,
+        };
 
-        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
-        assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
-        assert_eq!(decoded.cascade_seq, None);
+        let bytes = to_vec(&value).expect("serialize");
+        let back = GroupUpgradeValue::try_from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(back.to_state_version, 2);
+        assert_eq!(back.to_version, "10.2.0");
     }
 
     #[test]
-    fn fully_legacy_record_decodes_both_trailing_fields_as_none() {
-        // A pre-`cascade_hlc` record (clean EOF after `status`) must decode BOTH
-        // trailing optionals as `None`.
-        let mut legacy = Vec::new();
-        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
-        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
-        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
-        1_700_000_000u64.serialize(&mut legacy).unwrap();
-        PrimitivePublicKey::from([7u8; 32])
-            .serialize(&mut legacy)
-            .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut legacy)
-            .unwrap();
+    fn rejects_partial_to_state_version() {
+        let mut bytes = to_vec(&sample(None)).unwrap();
+        // Two of the four `u32` bytes. Any record short of the full layout must
+        // fail loud rather than decode a default.
+        bytes.truncate(bytes.len() - 2);
 
-        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
-        assert_eq!(decoded.cascade_hlc, None);
-        assert_eq!(decoded.cascade_seq, None);
+        // Borsh reports short input as `InvalidData`, not `UnexpectedEof`.
+        let err = GroupUpgradeValue::try_from_slice(&bytes)
+            .expect_err("expected Err for truncated to_state_version");
+        assert_eq!(err.kind(), borsh::io::ErrorKind::InvalidData);
     }
 }

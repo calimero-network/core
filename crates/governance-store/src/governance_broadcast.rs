@@ -306,7 +306,7 @@ pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) 
 /// checked via [`SignedMigrationHeartbeat::verify_signature`] (which uses
 /// the canonical `MIGRATION_HEARTBEAT_SIGN_DOMAIN || borsh(SignableMigrationHeartbeat)`
 /// payload and rejects field-substitution replays such as zeroing
-/// `residue_identity` to fake completion), and the `peer_pubkey` must be a
+/// `residue_auto` to fake completion), and the `peer_pubkey` must be a
 /// member of the heartbeat's namespace cohort. The membership check reuses
 /// [`MembershipRepository::namespace_accounts`], which includes the meta admin
 /// even when the admin has no member row.

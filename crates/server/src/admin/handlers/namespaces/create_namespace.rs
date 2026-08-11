@@ -49,7 +49,6 @@ pub async fn handler(
             group_id: None,
             app_key,
             application_id: req.application_id,
-            upgrade_policy: req.upgrade_policy,
             name: req.name,
             // Root creation has no `GroupCreated` op; `restricted` is ignored
             // here (kept Restricted for struct completeness). (#2771)

@@ -29,7 +29,6 @@ mod network;
 mod node;
 mod peers;
 mod tee;
-mod upgrade_policy;
 pub mod validation;
 
 use app::AppCommand;

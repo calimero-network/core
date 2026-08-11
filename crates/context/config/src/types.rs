@@ -918,7 +918,7 @@ pub struct SignedGroupOpenInvitation {
     /// namespace-root meta with the same value the cascade predicate
     /// (`from_app_key == descendant.app_key`) checks. Without this, the
     /// joiner's pre-populated `app_key` is `[0u8; 32]` and any
-    /// `CascadeTargetApplicationSet` op the joiner applies locally
+    /// `CascadeUpgrade` op the joiner applies locally
     /// silently skips the subtree — divergence between originator
     /// (cascade applied) and joiner (cascade no-op'd). Sibling of
     /// `application_id` above; same null-safety: `None` for

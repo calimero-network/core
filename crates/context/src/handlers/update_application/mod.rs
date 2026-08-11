@@ -1821,6 +1821,7 @@ mod tests {
                 package: "com.test.app".into(),
                 version: "1.0.0".into(),
                 signer_id: signer_id.into(),
+                state_version: 0,
             },
         )
     }

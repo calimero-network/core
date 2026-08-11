@@ -1,11 +1,9 @@
-//! Apply-handler tests for the atomic `GroupOp::CascadeUpgrade` op (PR-3).
+//! Apply-handler tests for the atomic `GroupOp::CascadeUpgrade` op.
 //!
-//! The atomic op sets `target_application_id`, `app_key`, AND `migration`
-//! in a SINGLE descendant walk per matched group, plus stamps a sticky
-//! `cascade_hlc` fence onto the per-group upgrade record. This eliminates
-//! the receiver apply-order bug that the legacy two-op path
-//! (`CascadeTargetApplicationSet` then `CascadeGroupMigrationSet`) suffers
-//! from — see the characterization test at the bottom of this file.
+//! The op sets `target_application_id`, `app_key`, AND `migration` in a
+//! SINGLE descendant walk per matched group, plus stamps a sticky
+//! `cascade_hlc` fence onto the per-group upgrade record, so no arrival
+//! order can split the cascade across two applies.
 //!
 //! Harness helpers (`empty_store`/`meta`/`create_group`/consts) are copied
 //! verbatim from `cascade_apply_walk.rs`.
@@ -20,7 +18,7 @@ use calimero_governance_store::{
     apply_local_signed_group_op, UpgradeLadderRepository, UpgradesRepository,
 };
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
@@ -49,7 +47,6 @@ fn meta(
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -108,6 +105,7 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
         },
@@ -129,6 +127,7 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
             .unwrap()
             .expect("upgrade record");
         assert_eq!(up.cascade_hlc, Some(fence));
+        assert_eq!(up.to_state_version, 4);
         // The op also appends an upgrade-ladder rung per matched descendant
         // — the sequence a behind context replays to catch up.
         let rungs = UpgradeLadderRepository::new(&store).load(gid).unwrap();
@@ -201,6 +200,7 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
         },
@@ -276,61 +276,4 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
             );
         }
     }
-}
-
-/// CHARACTERIZATION of the xilosada core#2507 review-item-#3 apply-order bug.
-/// Delivering CascadeTargetApplicationSet BEFORE CascadeGroupMigrationSet
-/// rewrites every descendant's app_key away from `from_app_key`, so the
-/// migration-set predicate then matches nothing and `migration` is dropped.
-/// The assertion below PASSES today (migration == None) — the green proves
-/// the bug exists: the two-op path silently drops migration on reverse delivery.
-/// Disposed of in Step 9 once the atomic op replaces the two-op path.
-#[test]
-#[ignore = "documents the pre-CascadeUpgrade two-op apply-order bug (xilosada core#2507 item #3); cascade no longer emits these ops — see cascade_upgrade.rs"]
-#[allow(deprecated)]
-fn two_op_reverse_delivery_drops_migration_characterization() {
-    let mut rng = OsRng;
-    let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
-    let store = empty_store();
-    let r = ContextGroupId::from([0x70; 32]);
-    create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
-
-    apply_local_signed_group_op(
-        &store,
-        &SignedGroupOp::sign(
-            &admin_sk,
-            r.to_bytes().into(),
-            vec![],
-            1,
-            GroupOp::CascadeTargetApplicationSet {
-                from_app_key: APP_KEY_1.into(),
-                app_key: APP_KEY_2.into(),
-                target_application_id: app_id_2(),
-            },
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    apply_local_signed_group_op(
-        &store,
-        &SignedGroupOp::sign(
-            &admin_sk,
-            r.to_bytes().into(),
-            vec![],
-            2,
-            GroupOp::CascadeGroupMigrationSet {
-                from_app_key: APP_KEY_1.into(),
-                migration: Some(b"migrate_v2".to_vec()),
-            },
-        )
-        .unwrap(),
-    )
-    .unwrap();
-
-    let m = MetaRepository::new(&store).load(&r).unwrap().unwrap();
-    assert_eq!(
-        m.migration, None,
-        "two-op reverse delivery drops migration (documented bug)"
-    );
 }

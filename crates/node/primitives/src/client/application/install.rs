@@ -148,6 +148,8 @@ impl NodeClient {
                 package: package.to_owned().into_boxed_str(),
                 version: version.to_owned().into_boxed_str(),
                 signer_id: String::new().into_boxed_str(),
+                // Raw wasm has no manifest and no guaranteed ABI.
+                state_version: 0,
             },
         );
 
@@ -229,7 +231,15 @@ impl NodeClient {
         let version = &manifest.app_version;
 
         let mut services = Vec::new();
+        let mut max_state_version = 0;
         for artifact in &wasm {
+            // Before the name guard: an unnamed single-service artifact still
+            // carries a state version.
+            if let Some(schema) =
+                calimero_wasm_abi::embed::read_embedded_state_schema(&artifact.bytes)
+            {
+                max_state_version = max_state_version.max(schema.state_version_or_default());
+            }
             let Some(name) = &artifact.name else { continue };
             let (svc_blob_id, _svc_size) = self
                 .add_blob(
@@ -254,6 +264,7 @@ impl NodeClient {
                 package: package.as_str().into(),
                 version: version.as_str().into(),
                 signer_id: verified.signer_id().into(),
+                state_version: max_state_version,
             },
             services,
         )

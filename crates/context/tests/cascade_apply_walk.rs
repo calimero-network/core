@@ -1,5 +1,5 @@
 //! End-to-end apply-handler test for the cascade engine
-//! (`GroupOp::CascadeTargetApplicationSet`).
+//! (`GroupOp::CascadeUpgrade`).
 //!
 //! This exercises the store-level apply path
 //! [`apply_local_signed_group_op`] — i.e. what a peer receiving the
@@ -17,8 +17,9 @@ use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::apply_local_signed_group_op;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -46,7 +47,6 @@ fn meta(
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -79,7 +79,7 @@ fn create_group(
 }
 
 #[test]
-fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sibling_namespace() {
+fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -129,13 +129,16 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
         r.to_bytes().into(),
         vec![],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
-    .expect("sign CascadeTargetApplicationSet");
+    .expect("sign CascadeUpgrade");
 
     // Apply must succeed (i.e. `apply_group_op_mutations` returns
     // `Ok((true, _))`). A `false` (variant-not-handled) return would

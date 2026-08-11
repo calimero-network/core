@@ -174,26 +174,10 @@ steps:
       notes: "should-fail-pre-upgrade"
     expected_failure: true
 
-  # LazyOnAccess: each node migrates its OWN byte-identical v1 state
-  # on next access. The migration write path emits no DAG delta (full
-  # root replacement, not CRDT-mergeable), so migrated bytes do not
-  # propagate over sync — each node must self-migrate. Under
-  # `coordinated` only the emitter migrates and the receiver is left
-  # with v1 bytes behind a v2 app pointer → "Not all bytes read"
-  # panic. The per-context TargetApplicationSet + GroupMigrationSet
-  # ops set both `target_application_id` and the `migration` method on
-  # the subgroup's GroupMeta, which each receiver's
-  # `maybe_lazy_upgrade` reads to self-migrate.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-additive-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
-
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
-  # Under LazyOnAccess this sets the target + migration method on the
-  # subgroup meta and returns WITHOUT running a propagator — no node
-  # migrates eagerly; each migrates on its next access below.
+  # The upgrade sets the target + migration method on the subgroup meta
+  # and returns without running a propagator — each node self-migrates on
+  # its next access below.
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-additive-1
