@@ -25,8 +25,11 @@ use std::time::Duration;
 use calimero_context_client::group::{
     GetGroupUpgradeStatusRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
 };
+use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::register_context_in_group;
+use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
+use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::events::{GroupMigrationEvent, GroupMigrationPayload, NodeEvent};
@@ -40,10 +43,12 @@ use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
 use core::pin::pin;
 use futures_util::StreamExt;
+use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serial_test::serial;
 use tokio::time::sleep;
 
+use crate::migration_status::{build_signed_heartbeat, MigrationFacts};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
 /// The app-keys the fixture runs on. Blob ids are content hashes, so the
@@ -1346,5 +1351,189 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
         app_id_v1(),
         "retry trusted the record's `migration: None` and swapped the bytecode \
          without migrating - it must re-resolve the migration from the target's ABI"
+    );
+}
+
+/// Deliver `heartbeat` to the running node exactly as gossipsub would: wrapped
+/// in the namespace-topic envelope, on `ns/<id>`, through `Handler<NetworkEvent>`.
+async fn deliver_heartbeat(
+    node: &TestNode,
+    ns: ContextGroupId,
+    heartbeat: SignedMigrationHeartbeat,
+) {
+    let payload =
+        borsh::to_vec(&NamespaceTopicMsg::MigrationHeartbeat(heartbeat)).expect("borsh heartbeat");
+    let envelope = BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id: ns.to_bytes(),
+        delta_id: [0u8; 32],
+        parent_ids: Vec::new(),
+        payload,
+    };
+    node.node_addr
+        .send(NetworkEvent::Message {
+            id: MessageId(b"test-heartbeat".to_vec()),
+            message: Message {
+                source: Some(PeerId::random()),
+                data: borsh::to_vec(&envelope).expect("borsh envelope"),
+                sequence_number: Some(1),
+                topic: IdentTopic::new(format!("ns/{}", hex::encode(ns.to_bytes()))).hash(),
+            },
+        })
+        .await
+        .expect("deliver NetworkEvent to node actor");
+}
+
+/// `completed_at` is `None` under lazy upgrades until the fleet is actually
+/// done, and the initiator has no other way to learn that moment: the rollup's
+/// `all_migrated` edge is it. This stamps the record and announces once, and a
+/// later heartbeat that still rolls up green announces nothing more.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn fleet_completion_stamps_the_record_once() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    // A namespace whose sole context is already loaded at the target state
+    // version, so this node's own self-report is `migrated` and only the peer's
+    // heartbeat is outstanding.
+    let ns = ContextGroupId::from([0x71; 32]);
+    let app_key = [0xB2; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xC7; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .expect("store namespace identity");
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The record a lazy upgrade leaves behind: completed as far as this node
+    // can tell, with no timestamp because the fleet's state was unknowable.
+    UpgradesRepository::new(&node.store)
+        .save(
+            &ns,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 0,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::Completed { completed_at: None },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 2,
+            },
+        )
+        .expect("save upgrade record");
+
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
+    let facts = MigrationFacts {
+        schema_version: 2,
+        residue_auto: 0,
+        synced_up_to_hlc: 0,
+        authored_remaining: 0,
+        migration_failed: None,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms).expect("sign heartbeat"),
+    )
+    .await;
+
+    let progress = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup");
+    match progress.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "total is the COHORT size, not a node-local count");
+            assert_eq!(migrated, 2, "this node's self-report plus the peer's");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    let completed = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the all_migrated edge must announce completion");
+    let stamped_at = match completed.payload {
+        GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at,
+        } => {
+            assert_eq!(to_version, "0.2.0");
+            completed_at
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    };
+
+    let record_at = |store: &Store| match UpgradesRepository::new(store)
+        .load(&ns)
+        .expect("load record")
+        .expect("record exists")
+        .status
+    {
+        GroupUpgradeStatus::Completed { completed_at } => completed_at,
+        other => panic!("expected Completed, got {other:?}"),
+    };
+    assert_eq!(
+        record_at(&node.store),
+        Some(stamped_at),
+        "the announced timestamp is the one persisted on the record"
+    );
+
+    // A newer heartbeat carrying different facts (the peer now owes authored
+    // re-signatures) recomputes and rolls up green again. The persisted stamp
+    // is the latch: a subscriber must never see a second completion banner.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                authored_remaining: 1,
+                ..facts
+            },
+            now_ms + 1_000,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    let second = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("a changed heartbeat still announces progress");
+    assert!(
+        matches!(
+            second.payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "expected MigrationProgress, got {:?}",
+        second.payload
+    );
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "completion must not re-announce while the record already carries a stamp"
+    );
+    assert_eq!(
+        record_at(&node.store),
+        Some(stamped_at),
+        "the stamp is written once, not refreshed on every recompute"
     );
 }

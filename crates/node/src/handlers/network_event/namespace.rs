@@ -86,7 +86,8 @@ pub(super) fn handle_namespace_governance_delta(
         // AND cohort membership via `verify_migration_heartbeat` before
         // inserting — an unsigned or non-member heartbeat must never enter a
         // rollup. The heartbeat is ephemeral telemetry, not governance state,
-        // so there is no apply / ack / backfill — just the cache upsert.
+        // so there is no apply / ack / backfill — just the cache upsert and,
+        // when it moved the peer's facts, the fleet-rollup reaction.
         NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
             if heartbeat.namespace_id != namespace_id.into() {
                 warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
@@ -102,7 +103,17 @@ pub(super) fn handle_namespace_governance_delta(
                 );
                 return;
             }
-            this.migration_status_cache.insert(&heartbeat);
+            // The rollup recompute only runs when the peer's REPORTED FACTS
+            // moved, so a re-delivery or a bare `synced_up_to_hlc` advance
+            // costs one map lookup.
+            if this.migration_status_cache.insert(&heartbeat) {
+                crate::migration_status::on_heartbeat_facts_changed(
+                    &this.datastore,
+                    &this.clients.node,
+                    &this.migration_status_cache,
+                    heartbeat.namespace_id.to_bytes(),
+                );
+            }
             debug!(
                 namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
                 peer = %heartbeat.peer_pubkey,

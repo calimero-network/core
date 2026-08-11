@@ -76,6 +76,21 @@ pub struct CacheEntry {
     pub received_at: Instant,
 }
 
+impl CacheEntry {
+    /// Project into the shape the emit side compares, so
+    /// [`should_emit_on_change`] decides "changed" identically for a received
+    /// heartbeat and a locally-computed one.
+    fn facts(&self) -> MigrationFacts {
+        MigrationFacts {
+            schema_version: self.schema_version,
+            residue_auto: self.residue_auto,
+            synced_up_to_hlc: self.synced_up_to_hlc,
+            authored_remaining: self.authored_remaining,
+            migration_failed: MigrationFailureKind::from_u8(self.migration_failed),
+        }
+    }
+}
+
 /// Project a cached heartbeat into the transport-neutral
 /// [`MigrationStatusReport`] DTO the admin route threads into the
 /// `get_migration_status` rollup (Task 6c.9). Pure 1:1 field map; the peer's
@@ -148,7 +163,13 @@ impl MigrationStatusCache {
     /// accumulating entries from peers that left the namespace.
     /// Stale-but-within-eviction-window entries are still filtered out of
     /// `fresh_peers` by the per-call `ttl` check.
-    pub fn insert(&self, hb: &SignedMigrationHeartbeat) {
+    ///
+    /// Returns `true` iff the heartbeat was stored AND its reported facts
+    /// differ from the entry it replaced — the edge the receive path hangs
+    /// its rollup recompute off. A dropped heartbeat (drift, stale) and a
+    /// stored one that only advanced `synced_up_to_hlc` both report `false`,
+    /// so a re-delivery or an op-rate HLC bump costs nothing.
+    pub fn insert(&self, hb: &SignedMigrationHeartbeat) -> bool {
         // Wall-clock sanity bound — reject far-future ts_millis. Only applied
         // when the wall clock is readable: an unreadable clock (system time
         // before the epoch) must fail *open* here, otherwise treating `now` as 0
@@ -157,7 +178,7 @@ impl MigrationStatusCache {
             Ok(now) => {
                 let now_ms = now.as_millis() as u64;
                 if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
-                    return;
+                    return false;
                 }
             }
             Err(err) => {
@@ -173,14 +194,16 @@ impl MigrationStatusCache {
         let now = Instant::now();
         let mut g = self.entries_lock();
         let key = (hb.namespace_id.to_bytes(), hb.peer_pubkey);
+        let mut existing_facts = None;
         if let Some(existing) = g.get(&key) {
             // Drop the heartbeat if it's older or equal-clock-but-not-fresher.
             if hb.ts_millis < existing.ts_millis
                 || (hb.ts_millis == existing.ts_millis
                     && hb.synced_up_to_hlc <= existing.synced_up_to_hlc)
             {
-                return;
+                return false;
             }
+            existing_facts = Some(existing.facts());
         }
 
         // Opportunistic eviction for the same namespace — keep the BTreeMap
@@ -194,18 +217,18 @@ impl MigrationStatusCache {
                 || now.duration_since(entry.received_at) <= evict_window
         });
 
-        let _ = g.insert(
-            key,
-            CacheEntry {
-                schema_version: hb.schema_version,
-                residue_auto: hb.residue_auto,
-                synced_up_to_hlc: hb.synced_up_to_hlc,
-                authored_remaining: hb.authored_remaining,
-                migration_failed: hb.migration_failed,
-                ts_millis: hb.ts_millis,
-                received_at: now,
-            },
-        );
+        let entry = CacheEntry {
+            schema_version: hb.schema_version,
+            residue_auto: hb.residue_auto,
+            synced_up_to_hlc: hb.synced_up_to_hlc,
+            authored_remaining: hb.authored_remaining,
+            migration_failed: hb.migration_failed,
+            ts_millis: hb.ts_millis,
+            received_at: now,
+        };
+        let changed = should_emit_on_change(existing_facts, entry.facts());
+        let _ = g.insert(key, entry);
+        changed
     }
 
     /// All peers in `ns` whose most recent heartbeat is fresh within `ttl`.
@@ -568,6 +591,129 @@ pub fn self_migration_report(
             migration_failed: facts.migration_failed.map_or(0, |k| k.to_u8()),
         },
     ))
+}
+
+/// The freshest in-TTL report for every member of `namespace_id`, including
+/// this node's own freshly-computed facts.
+///
+/// The self-report injection is not optional: a node never receives its own
+/// gossiped heartbeat, so the receive cache never holds it, and an absent
+/// local node resolves to `unknown` — which pins `all_migrated` false forever.
+/// Stale entries are filtered by the cache's per-call TTL; a member with no
+/// fresh entry is simply absent, which the rollup also resolves to `unknown`.
+#[must_use]
+pub(crate) fn namespace_member_reports(
+    cache: &MigrationStatusCache,
+    datastore: &Store,
+    namespace_id: [u8; 32],
+) -> BTreeMap<PublicKey, MigrationStatusReport> {
+    let mut reports = cache.migration_status_reports(namespace_id, DEFAULT_HEARTBEAT_TTL);
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    if let Some((self_pk, self_report)) = self_migration_report(datastore, namespace_id, now_millis)
+    {
+        let _ = reports.insert(self_pk, self_report);
+    }
+    reports
+}
+
+/// React to a heartbeat that moved a peer's reported facts: recompute the
+/// namespace rollup, mirror its counters to subscribers, and stamp the real
+/// completion timestamp on the false-to-true `all_migrated` edge.
+///
+/// The recompute walks the namespace subtree, so it is not free — it runs only
+/// on a genuine facts change (bounded by the on-change heartbeat rate plus the
+/// low-frequency periodic tick, never by op volume), and through the same
+/// `compute_namespace_rollup` the admin read uses so the event stream and the
+/// panel can never answer differently.
+pub(crate) fn on_heartbeat_facts_changed(
+    datastore: &Store,
+    node_client: &NodeClient,
+    cache: &MigrationStatusCache,
+    namespace_id: [u8; 32],
+) {
+    let ns = calimero_context_config::types::ContextGroupId::from(namespace_id);
+    let reports = namespace_member_reports(cache, datastore, namespace_id);
+    let status = match calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+        datastore,
+        &ns,
+        |peer| reports.get(peer).copied().map(Into::into),
+    ) {
+        Ok(status) => status,
+        Err(err) => {
+            tracing::debug!(?err, "migration rollup failed; skipping progress event");
+            return;
+        }
+    };
+
+    calimero_context::migration_events::emit(
+        node_client,
+        datastore,
+        &ns,
+        calimero_primitives::events::GroupMigrationPayload::MigrationProgress {
+            migrated: status.rollup.migrated,
+            in_progress: status.rollup.in_progress,
+            unknown: status.rollup.unknown,
+            failed: status.rollup.failed,
+            total: status.rollup.total,
+        },
+    );
+
+    if status.rollup.all_migrated {
+        stamp_fleet_completion(datastore, node_client, &ns);
+    }
+}
+
+/// Write the completion timestamp the API has always promised, once.
+///
+/// Guarded on `Completed { completed_at: None }`: an `InProgress` record still
+/// holds this node's `validate_upgrade` rule-4 mutex and must never be released
+/// from an observability path. The stamp is also the idempotence latch — once
+/// `completed_at` is `Some`, every later heartbeat finds the guard closed and
+/// announces nothing, and that survives a restart.
+///
+/// Namespace-root record only: a bare `upgrade_group` on a subgroup writes no
+/// root record and so gets no completion stamp, the same asymmetry
+/// `resolve_group_target_version` already carries.
+fn stamp_fleet_completion(
+    datastore: &Store,
+    node_client: &NodeClient,
+    ns: &calimero_context_config::types::ContextGroupId,
+) {
+    let repo = calimero_governance_store::UpgradesRepository::new(datastore);
+    let Ok(Some(mut record)) = repo.load(ns) else {
+        return;
+    };
+    if !matches!(
+        record.status,
+        calimero_store::key::GroupUpgradeStatus::Completed { completed_at: None }
+    ) {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    record.status = calimero_store::key::GroupUpgradeStatus::Completed {
+        completed_at: Some(now),
+    };
+    let to_version = record.to_version.clone();
+    if let Err(err) = repo.save(ns, &record) {
+        tracing::error!(?err, "failed to stamp migration completion");
+        return;
+    }
+
+    calimero_context::migration_events::emit(
+        node_client,
+        datastore,
+        ns,
+        calimero_primitives::events::GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at: now,
+        },
+    );
 }
 
 /// Pick the more severe of an accumulated failure and a freshly-read one:
@@ -986,6 +1132,39 @@ mod tests {
             "newer heartbeat must replace older"
         );
         assert_eq!(entry.residue_auto, 0);
+    }
+
+    /// `insert` reports whether the peer's REPORTED FACTS moved, not merely
+    /// whether the heartbeat was newer — `synced_up_to_hlc` advances on every
+    /// applied op and must not trigger a rollup recompute.
+    #[test]
+    fn insert_reports_a_facts_change_but_not_a_bare_hlc_advance() {
+        let cache = MigrationStatusCache::default();
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        // `signed_hb` signs `synced_up_to_hlc: 0`; overwriting it after signing
+        // is fine here because `insert` never verifies (the receiver gate does).
+        let hb = |schema_version, residue_auto, ts_millis, hlc| {
+            let mut hb = signed_hb(&sk, NS, schema_version, residue_auto, ts_millis);
+            hb.synced_up_to_hlc = hlc;
+            hb
+        };
+
+        assert!(cache.insert(&hb(1, 5, 100, 1)), "first sight is a change");
+        // Same facts, newer clock and a further-advanced sync position.
+        assert!(
+            !cache.insert(&hb(1, 5, 200, 9)),
+            "an HLC-only advance is not a facts change"
+        );
+        // Residue dropped: a real change.
+        assert!(cache.insert(&hb(1, 0, 300, 9)), "a residue change is");
+        // Gossip re-delivers the heartbeat just stored: dropped as not-fresher,
+        // so the reaction never fires twice for one beat.
+        assert!(
+            !cache.insert(&hb(1, 0, 300, 9)),
+            "an exact re-delivery is not a change"
+        );
+        // A stale re-delivery is dropped outright and reports no change.
+        assert!(!cache.insert(&hb(2, 0, 250, 9)), "a stale heartbeat is not");
     }
 
     #[test]
