@@ -983,3 +983,138 @@ async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
          not left InProgress forever"
     );
 }
+
+/// Provision `sk` as a local signing identity for `context_id`, plus the
+/// context-config row `finalize_application_update` requires. Without both the
+/// propagator bails before `update_application` and the fixture can no longer
+/// observe whether a bytecode swap happened.
+fn provision_local_context_identity(store: &Store, context_id: ContextId, sk: &PrivateKey) {
+    let mut handle = store.handle();
+    handle
+        .put(
+            &key::ContextIdentity::new(context_id, sk.public_key()),
+            &calimero_store::types::ContextIdentity {
+                private_key: Some(*sk.as_bytes()),
+            },
+        )
+        .expect("put ContextIdentity");
+    handle
+        .put(
+            &key::ContextConfig::new(context_id),
+            &calimero_store::types::ContextConfig::new(0, 0),
+        )
+        .expect("put ContextConfig");
+}
+
+/// The lazy path persists its `InProgress` record SYNCHRONOUSLY as a
+/// concurrency mutex, before an async blob read could tell it the real
+/// migration - so the record carries `migration: None` by construction. A
+/// crash after the group's meta advanced to the new application but before
+/// the record was overwritten leaves recovery holding a record that claims
+/// "code-only" for what is a MIGRATING upgrade. Recovery must re-resolve the
+/// migration from the target's ABI, never trust the record: a code-only
+/// bytecode swap over un-migrated state is silent corruption.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
+    use actix::Actor;
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_app_blobs(&node).await;
+
+    let gid = ContextGroupId::from([0xE1; 32]);
+    let ctx = ContextId::from([0xE2; 32]);
+
+    install_application(&node.store, app_id_v1(), blobs.v1, "0.1.0", 1);
+    // The target declares state v2 plus a v1->v2 edge: a MIGRATING upgrade.
+    install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
+
+    // Mid-window: `TargetApplicationSet` already applied, so the group's meta
+    // names the new application AND its app_key advanced - but the context is
+    // still on v1 and the record was never overwritten.
+    provision_group(
+        &node.store,
+        &gid,
+        admin_pk,
+        blobs.v2_migrating,
+        app_id_v2(),
+        UpgradePolicy::LazyOnAccess,
+    );
+    register_context_for(&node.store, &gid, ctx, app_id_v1());
+    provision_local_context_identity(&node.store, ctx, &admin_sk);
+
+    UpgradesRepository::new(&node.store)
+        .save(
+            &gid,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                // Verbatim from the lazy path's synchronous mutex write.
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 0,
+            },
+        )
+        .expect("seed hollow InProgress record");
+
+    let progressed = tokio::task::LocalSet::new()
+        .run_until(async {
+            let _restarted = calimero_context::ContextManager::new(
+                node.store.clone(),
+                node.node_client.clone(),
+                node.context_client.clone(),
+                None,
+            )
+            .start();
+
+            // The propagator rewrites the record's counters once it has
+            // processed the context, either way - so this waits for the
+            // decision instead of guessing at a delay.
+            wait_until(|| {
+                !matches!(
+                    UpgradesRepository::new(&node.store)
+                        .load(&gid)
+                        .expect("load upgrade record")
+                        .expect("record exists")
+                        .status,
+                    GroupUpgradeStatus::InProgress {
+                        completed: 0,
+                        failed: 0,
+                        ..
+                    }
+                )
+            })
+            .await
+        })
+        .await;
+
+    assert!(progressed, "recovery must have processed the group");
+
+    // The observable: which application the context runs. `app_id_v2` here
+    // means the bytecode was swapped, and the swap can only have been
+    // code-only (the target's migrate export cannot even load in this
+    // fixture, so a resolved migration necessarily leaves the context on v1).
+    let application = node
+        .context_client
+        .get_context(&ctx)
+        .expect("load context")
+        .expect("context exists")
+        .application_id;
+    assert_eq!(
+        application,
+        app_id_v1(),
+        "recovery trusted the record's `migration: None` and swapped the bytecode \
+         without migrating - the migration must be re-resolved from the target's ABI"
+    );
+}

@@ -4,11 +4,60 @@
 //! namespace heartbeat publishing. These are wired in via `Actor::started`.
 
 use actix::{ActorFutureExt, AsyncContext, WrapFuture};
+use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
-use calimero_store::key::GroupUpgradeStatus;
+use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::application::ApplicationId;
+use calimero_store::key::{self, GroupUpgradeStatus};
+use calimero_store::Store;
 
 use crate::ContextManager;
-use calimero_governance_store::{MetaRepository, NamespaceRepository, UpgradesRepository};
+use calimero_governance_store::{
+    enumerate_group_contexts, MetaRepository, NamespaceRepository, UpgradesRepository,
+};
+
+/// The migration for a recovering group's remaining hop, resolved from the
+/// apps' embedded ABIs.
+///
+/// The `InProgress` record cannot answer this: the lazy path persists it
+/// synchronously as a concurrency mutex, before an async blob read could
+/// resolve the target's ABI, so its `migration` is `None` by construction.
+async fn resolve_recovery_migration(
+    node_client: &NodeClient,
+    datastore: &Store,
+    group_id: &ContextGroupId,
+    target_application_id: &ApplicationId,
+) -> eyre::Result<Option<MigrationParams>> {
+    let target_blob = datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(*target_application_id))?
+        .map(|app| *app.bytecode.blob_id().as_ref())
+        .ok_or_else(|| eyre::eyre!("target application not found"))?;
+
+    for context_id in enumerate_group_contexts(datastore, group_id, 0, usize::MAX)? {
+        // `GroupMeta.app_key` advanced with the `TargetApplicationSet` apply
+        // the crash interrupted, so the from-side can only come from what a
+        // context actually executes.
+        let Some(current) = crate::hlc_fence::loaded_reader_app_key(datastore, &context_id)? else {
+            continue;
+        };
+        if current == target_blob {
+            continue;
+        }
+        // `force_code_only` is not persisted on the record; recovery takes the
+        // strict branch.
+        return crate::handlers::upgrade_group::resolve_upgrade_from_abis(
+            node_client,
+            current,
+            target_blob,
+            false,
+        )
+        .await;
+    }
+
+    // Every context already runs the target bytecode: nothing to migrate.
+    Ok(None)
+}
 
 impl ContextManager {
     /// Scans the store for in-progress group upgrades and re-spawns
@@ -52,12 +101,6 @@ impl ContextManager {
                 "re-spawning propagator for in-progress upgrade"
             );
 
-            let migration = upgrade
-                .migration
-                .as_ref()
-                .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
-                .map(|method| calimero_context_client::messages::MigrationParams { method });
-
             let meta = match MetaRepository::new(&self.datastore).load(&group_id) {
                 Ok(Some(m)) => m,
                 Ok(None) => {
@@ -72,13 +115,43 @@ impl ContextManager {
 
             self.active_propagators.insert(group_id);
 
-            let propagator = crate::handlers::upgrade_group::propagate_upgrade(
-                self.context_client.clone(),
-                self.datastore.clone(),
-                group_id,
-                meta.target_application_id,
-                migration,
-            );
+            let node_client = self.node_client.clone();
+            let context_client = self.context_client.clone();
+            let datastore = self.datastore.clone();
+            let target_application_id = meta.target_application_id;
+
+            let propagator = async move {
+                let migration = match resolve_recovery_migration(
+                    &node_client,
+                    &datastore,
+                    &group_id,
+                    &target_application_id,
+                )
+                .await
+                {
+                    Ok(migration) => migration,
+                    // Falling back to `None` would resume a MIGRATING upgrade
+                    // as a code-only bytecode swap over un-migrated state. A
+                    // record left for an operator is the safe half of that.
+                    Err(err) => {
+                        tracing::error!(
+                            ?group_id, %err,
+                            "cannot resolve the migration for an in-progress upgrade; leaving the \
+                             record for an operator rather than risking a code-only swap"
+                        );
+                        return;
+                    }
+                };
+
+                crate::handlers::upgrade_group::propagate_upgrade(
+                    context_client,
+                    datastore,
+                    group_id,
+                    target_application_id,
+                    migration,
+                )
+                .await;
+            };
 
             ctx.spawn(propagator.into_actor(self).map(move |_, act, _| {
                 act.active_propagators.remove(&group_id);
