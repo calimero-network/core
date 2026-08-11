@@ -16,7 +16,7 @@ use tracing::info;
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
 use crate::interface::StorageError;
-use crate::store::{IterableStorage, Key, StorageAdaptor};
+use crate::store::{Key, StorageAdaptor};
 
 // Deferred ancestor recomputation (#2238).
 //
@@ -1239,60 +1239,5 @@ impl<S: StorageAdaptor> Index<S> {
         Self::save_index(&index)?;
         <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
-    }
-
-    /// Residue: a LOCAL DERIVED count of identity-gated entries that still
-    /// trail `target_version` (owner-driven migration, PR-6c).
-    ///
-    /// Scans this node's converged store and counts every live entry for which
-    /// [`needs_owner_convert`] holds — i.e. an identity-gated
-    /// (`User`/`Shared`/`SharedMember`) entry whose stamped
-    /// [`schema_version`](Metadata::schema_version) is older than the v2
-    /// binary's target. Tombstoned (deleted) entries are excluded: they are no
-    /// longer part of the live state and can never be owner-converted, so they
-    /// must not inflate the residue.
-    ///
-    /// This is deliberately **not** a replicated shrink-CRDT — the only such
-    /// counter double-counts under a concurrent convert (spec decision 8).
-    /// Computing it as a pure function of each node's own converged view makes
-    /// it idempotent (re-running yields the same count) and means a convert
-    /// replicated to `N` nodes decrements each node's local count by exactly 1.
-    /// Observability only, never a gate.
-    ///
-    /// `Public`/`Frozen` entries never count — those migrate via the Convergent
-    /// whole-root path (PR-6a/6b), not by an owner re-write.
-    ///
-    /// [`needs_owner_convert`]: crate::entities::needs_owner_convert
-    ///
-    /// # Visibility
-    /// `pub` as the residue-scan surface; the `IterableStorage` bound keeps it
-    /// callable only against a key-enumerating adaptor, never a wasm-app
-    /// primitive. No in-tree caller until committed state is key-iterable.
-    ///
-    /// # Errors
-    /// Returns `StorageError` if an index entry cannot be loaded.
-    pub fn count_unconverted_identity_gated(target_version: u32) -> Result<usize, StorageError>
-    where
-        S: IterableStorage,
-    {
-        let mut residue = 0;
-
-        for key in S::storage_iter_keys() {
-            // Only `Index` keys carry an entry's metadata (not `Entry` payload
-            // keys).
-            if let Key::Index(id) = key {
-                if let Some(index) = Self::get_index(id)? {
-                    // A tombstoned entry is no longer live state — skip it.
-                    if index.deleted_at.is_some() {
-                        continue;
-                    }
-                    if crate::entities::needs_owner_convert(&index.metadata, target_version) {
-                        residue += 1;
-                    }
-                }
-            }
-        }
-
-        Ok(residue)
     }
 }
