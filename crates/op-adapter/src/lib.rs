@@ -383,7 +383,11 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
 /// (mirrors the live `GroupMeta.admin_identity = GroupCreated.signer`). It is
 /// ignored by every other variant.
 #[must_use]
-pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload> {
+/// Every arm now reads the account off the OP. Nothing is derived from the
+/// signing key any more, which is why this takes no signer: a fold that derives
+/// a principal puts a second id space into the view, and whichever space the
+/// resolver prefers, the other one mismatches.
+pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
     match op {
         RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
             new_admin: *new_admin,
@@ -489,6 +493,7 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             group_id,
             parent_id,
             restricted,
+            admin,
         } => Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(group_id.to_bytes()),
             parent: ScopeId::from(parent_id.to_bytes()),
@@ -497,7 +502,11 @@ pub fn payload_from_root_op(op: &RootOp, signer: PublicKey) -> Option<OpPayload>
             // This aligns the projection-plane `SubgroupCreated.restricted`
             // with the live op instead of hardcoding Restricted.
             restricted: *restricted,
-            admin: legacy_account_id(&signer),
+            // The account the op carries, NOT one derived from the signer's key.
+            // A derived id names no principal the account-keyed rows know, and
+            // folding one here made the creator lose its own admin authority at
+            // every cut after this op.
+            admin: *admin,
         }),
         RootOp::GroupReparented {
             child_group_id,
@@ -1152,14 +1161,11 @@ mod tests {
 
         // Open self-join: back to the graph-only node, no device.
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::MemberJoinedOpen {
-                    member: m,
-                    group_id: gid.into(),
-                    account: test_join_account_for(stranger),
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::MemberJoinedOpen {
+                member: m,
+                group_id: gid.into(),
+                account: test_join_account_for(stranger),
+            }),
             Some(OpPayload::Noop)
         );
 
@@ -1178,14 +1184,11 @@ mod tests {
             app_key: None,
         };
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::MemberJoined {
-                    member: m,
-                    signed_invitation,
-                    account: test_join_account_for(stranger),
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::MemberJoined {
+                member: m,
+                signed_invitation,
+                account: test_join_account_for(stranger),
+            }),
             Some(OpPayload::MemberAdded {
                 group: ContextGroupId::from(gid),
                 member: m,
@@ -1201,19 +1204,13 @@ mod tests {
         let gid = [3u8; 32];
 
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::AdminChanged { new_admin: admin },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::AdminChanged { new_admin: admin }),
             Some(OpPayload::AdminChanged { new_admin: admin })
         );
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::PolicyUpdated {
-                    policy_bytes: vec![1, 2, 3],
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::PolicyUpdated {
+                policy_bytes: vec![1, 2, 3],
+            }),
             Some(OpPayload::PolicyUpdated {
                 policy_bytes: vec![1, 2, 3],
             })
@@ -1223,14 +1220,11 @@ mod tests {
         // would outlive the anchor that grants it.
         let joined_open = real_join_account_for(m_key, 0x61);
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::MemberJoinedOpen {
-                    member: joined_open.cert.account,
-                    group_id: gid.into(),
-                    account: joined_open.clone(),
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::MemberJoinedOpen {
+                member: joined_open.cert.account,
+                group_id: gid.into(),
+                account: joined_open.clone(),
+            }),
             Some(OpPayload::DeviceLinked {
                 genesis: joined_open.genesis,
                 chain: joined_open.chain.clone(),
@@ -1256,14 +1250,11 @@ mod tests {
         };
         let invited = real_join_account_for(m_key, 0x62);
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::MemberJoined {
-                    member: invited.cert.account,
-                    signed_invitation: signed_invitation.clone(),
-                    account: invited.clone(),
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::MemberJoined {
+                member: invited.cert.account,
+                signed_invitation: signed_invitation.clone(),
+                account: invited.clone(),
+            }),
             Some(OpPayload::MemberJoinedWithDevice {
                 group: ContextGroupId::from(gid),
                 member: invited.cert.account,
@@ -1277,15 +1268,12 @@ mod tests {
         // decodes identically — it is NOT out-of-model.
         let invited_at = real_join_account_for(m_key, 0x63);
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::MemberJoinedAt {
-                    member: invited_at.cert.account,
-                    signed_invitation,
-                    joined_at: 42,
-                    account: invited_at.clone(),
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::MemberJoinedAt {
+                member: invited_at.cert.account,
+                signed_invitation,
+                joined_at: 42,
+                account: invited_at.clone(),
+            }),
             Some(OpPayload::MemberJoinedWithDevice {
                 group: ContextGroupId::from(gid),
                 member: invited_at.cert.account,
@@ -1297,44 +1285,40 @@ mod tests {
         );
         let parent = [0x70; 32]; // placeholder parent id
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::GroupCreated {
-                    group_id: gid.into(),
-                    parent_id: parent.into(),
-                    restricted: true,
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::GroupCreated {
+                group_id: gid.into(),
+                parent_id: parent.into(),
+                restricted: true,
+                admin: AccountId::from([0x5C; 32]),
+            }),
             Some(OpPayload::SubgroupCreated {
                 child: ScopeId::from(gid),
                 parent: ScopeId::from(parent),
                 restricted: true,
-                admin: legacy_account_id(&PublicKey::from([1u8; 32])),
+                // The account the OP carries, never one derived from the signer:
+                // a derived id names no principal the account-keyed rows know, so
+                // folding one puts two id spaces in one view and whichever the
+                // resolver prefers, the other side mismatches.
+                admin: AccountId::from([0x5C; 32]),
             })
         );
         // Scope-tree restructure ops now map to the structural OpPayload arms.
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::GroupReparented {
-                    child_group_id: gid.into(),
-                    new_parent_id: [9u8; 32].into(),
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::GroupReparented {
+                child_group_id: gid.into(),
+                new_parent_id: [9u8; 32].into(),
+            }),
             Some(OpPayload::SubgroupReparented {
                 child: ScopeId::from(gid),
                 new_parent: ScopeId::from([9u8; 32]),
             })
         );
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::GroupDeleted {
-                    root_group_id: gid.into(),
-                    cascade_group_ids: vec![],
-                    cascade_context_ids: vec![],
-                },
-                PublicKey::from([1u8; 32])
-            ),
+            payload_from_root_op(&RootOp::GroupDeleted {
+                root_group_id: gid.into(),
+                cascade_group_ids: vec![],
+                cascade_context_ids: vec![],
+            }),
             Some(OpPayload::SubgroupDeleted {
                 scope: ScopeId::from(gid),
             })
@@ -1356,13 +1340,10 @@ mod tests {
         let founder = credential.cert.account;
 
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::NamespaceCreated {
-                    founder,
-                    account: credential.clone(),
-                },
-                founder_pk
-            ),
+            payload_from_root_op(&RootOp::NamespaceCreated {
+                founder,
+                account: credential.clone(),
+            }),
             Some(OpPayload::DeviceLinked {
                 genesis: credential.genesis,
                 chain: credential.chain.clone(),
@@ -1382,15 +1363,12 @@ mod tests {
         let stranger = real_join_account_for(PublicKey::from([0x23u8; 32]), 0x23);
 
         assert_eq!(
-            payload_from_root_op(
-                &RootOp::NamespaceCreated {
-                    // The account the op names is NOT the one the credential
-                    // certifies, so the pair proves nothing.
-                    founder: real_join_account_for(founder_pk, 0x22).cert.account,
-                    account: stranger,
-                },
-                founder_pk
-            ),
+            payload_from_root_op(&RootOp::NamespaceCreated {
+                // The account the op names is NOT the one the credential
+                // certifies, so the pair proves nothing.
+                founder: real_join_account_for(founder_pk, 0x22).cert.account,
+                account: stranger,
+            }),
             Some(OpPayload::Noop)
         );
     }

@@ -1931,6 +1931,7 @@ async fn restricted_ctx_redriven_after_group_created() {
         vec![],
         3,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
             group_id: sub_gid.to_bytes().into(),
             parent_id: namespace_id.into(),
             restricted: true,
@@ -2139,6 +2140,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
             group_id: sub_gid.to_bytes().into(),
             parent_id: namespace_id.into(),
             restricted: false,
@@ -2431,6 +2433,7 @@ async fn tee_matrix_restricted_late_join() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
             group_id: sub_gid.to_bytes().into(),
             parent_id: namespace_id.into(),
             restricted: true,

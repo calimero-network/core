@@ -7954,6 +7954,7 @@ mod auto_follow_tests {
             vec![],
             1,
             NamespaceOp::Root(RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
                 group_id: new_group_id.into(),
                 parent_id: ns_id.into(),
                 restricted: true,

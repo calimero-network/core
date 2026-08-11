@@ -368,6 +368,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+                        // The account this node acts as — the same one written
+                        // into the local rows above, so a receiver folds the
+                        // creator the rows already name.
+                        admin: admin_account,
                         group_id: group_id.to_bytes().into(),
                         parent_id: parent_id.to_bytes().into(),
                         restricted,

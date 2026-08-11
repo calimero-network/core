@@ -42,12 +42,14 @@ pub(crate) fn dispatch_root_op(
             group_id,
             parent_id,
             restricted,
+            admin,
         } => group_created::apply(
             ctx,
             op,
             group_id.to_bytes(),
             parent_id.to_bytes(),
             *restricted,
+            *admin,
         ),
         RootOp::GroupDeleted {
             root_group_id,

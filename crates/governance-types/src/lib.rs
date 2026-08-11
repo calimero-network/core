@@ -714,6 +714,19 @@ pub enum RootOp {
         group_id: ContextGroupId,
         parent_id: ContextGroupId,
         restricted: bool,
+        /// The ACCOUNT the creator acts as, and the subgroup's founding admin.
+        ///
+        /// Carried rather than derived. A receiver folding this op has only the
+        /// signer's KEY, and the only account it could compute from a bare key is
+        /// a stand-in that names no principal any account-keyed row knows — so a
+        /// fold that invented one made the creator stop being an admin of its own
+        /// namespace the moment it created a subgroup, and every peer refused
+        /// what it signed afterwards.
+        ///
+        /// The apply does NOT trust this field for authority: it resolves the
+        /// signer's account from the binding rows and refuses a mismatch, so a
+        /// forged value names nobody and admits nothing.
+        admin: AccountId,
     },
     /// Atomically move `child_group_id` from its current parent to
     /// `new_parent_id`. Both groups MUST exist in this namespace.

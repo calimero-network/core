@@ -18,6 +18,7 @@ pub(crate) fn apply(
     group_id: [u8; 32],
     parent_id: [u8; 32],
     restricted: bool,
+    declared_admin: calimero_account::AccountId,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -120,6 +121,20 @@ pub(crate) fn apply(
                 identity: format!("{}", op.signer),
             });
         };
+        // The op CARRIES the creator's account so a receiver can fold it without
+        // resolving anything — but authority still comes from the resolution
+        // above, never from the field. They must agree: a signer that names an
+        // account it does not speak for would otherwise pin a subgroup admin its
+        // own later signatures could never match, and the fold would record a
+        // principal the rows disagree with.
+        if declared_admin != creator {
+            bail!(ApplyError::GroupCreatedRejected(
+                GroupCreatedRejection::Unauthorized {
+                    signer: format!("{}", op.signer),
+                    namespace: hex::encode(namespace_id.as_bytes()),
+                }
+            ));
+        }
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: creator,
             owner_identity: creator,

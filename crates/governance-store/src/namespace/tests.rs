@@ -1708,6 +1708,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     );
     let subgroup_id = [0xC5u8; 32];
     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
         group_id: subgroup_id.into(),
         parent_id: namespace_id.into(),
         restricted: true,
@@ -3579,6 +3580,7 @@ fn governance_group_reparented_via_signed_op() {
             vec![],
             (i + 1) as u64,
             NamespaceOp::Root(RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
                 group_id: (*gid).into(),
                 parent_id: (*parent).into(),
                 restricted: true,
@@ -3661,6 +3663,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: [0xC1; 32].into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -3725,6 +3728,7 @@ fn governance_rejects_non_admin_signer() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&intruder_sk.public_key()),
             group_id: [0xBB; 32].into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -3773,6 +3777,7 @@ fn governance_group_created_is_idempotent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: new_group_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -3790,6 +3795,7 @@ fn governance_group_created_is_idempotent() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: new_group_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -3852,6 +3858,7 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: new_group.into(),
             parent_id: foreign.to_bytes().into(),
             restricted: true,
@@ -4135,6 +4142,7 @@ fn governance_group_created_writes_birth_visibility() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: open_group_id.into(),
             parent_id: ns_id.into(),
             restricted: false,
@@ -4157,6 +4165,7 @@ fn governance_group_created_writes_birth_visibility() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: restricted_group_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -4222,6 +4231,7 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: group_id.into(),
             parent_id: ns_id.into(),
             restricted: false,
@@ -4254,6 +4264,7 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: group_id.into(),
             parent_id: ns_id.into(),
             restricted: false,
@@ -4323,6 +4334,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: new_group_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -4387,6 +4399,7 @@ fn execute_group_created_rejects_self_parent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: ns_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -4452,6 +4465,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: sub_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -5045,6 +5059,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&sk.public_key()),
                 group_id: group_id.into(),
                 parent_id: parent_id.into(),
                 restricted: true,
@@ -5339,6 +5354,7 @@ fn group_created_with_no_key_skips_retry() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
             group_id: new_group_id.into(),
             parent_id: ns_id.into(),
             restricted: true,
@@ -6546,6 +6562,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
             group_id: subgroup_id.into(),
             parent_id: namespace_id.into(),
             restricted: false,
@@ -6626,6 +6643,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     let head = gov.read_head_record().expect("read head");
     let subgroup_id = [0xE2u8; 32];
     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        admin: crate::test_fixtures::account_for(&creator_sk.public_key()),
         group_id: subgroup_id.into(),
         parent_id: namespace_id.into(),
         restricted: true,
@@ -6691,6 +6709,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     let head = gov.read_head_record().expect("read head");
     let subgroup_id = [0xE4u8; 32];
     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+        admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
         group_id: subgroup_id.into(),
         parent_id: namespace_id.into(),
         restricted: true,

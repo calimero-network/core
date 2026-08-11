@@ -539,6 +539,10 @@ const GOLDEN_ROOT_OP_GROUP_CREATED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // parent_id
     0, // restricted = false
+    // admin: the creator's ACCOUNT, carried so a receiver folds the principal
+    // the rows already name instead of deriving a stand-in from the signer's key.
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // admin [0u8;32]
 ];
 
 /// NamespaceOp::Root(RootOp::GroupReparented) — RootOp ordinal 1
@@ -1119,6 +1123,7 @@ fn namespace_op_sign_verify_root() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1189,6 +1194,7 @@ fn namespace_op_content_hash_distinct() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1202,6 +1208,7 @@ fn namespace_op_content_hash_distinct() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1228,6 +1235,7 @@ fn namespace_signable_bytes_deterministic() {
         signer: pk,
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1763,6 +1771,7 @@ mod governance_op_storage_roundtrip {
     fn every_root_op_roundtrips_through_stored_signed_entry() {
         let ops = [
             RootOp::GroupCreated {
+                admin: calimero_account::AccountId::from([0x5C; 32]),
                 group_id: [1; 32].into(),
                 parent_id: [2; 32].into(),
                 restricted: true,

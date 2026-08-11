@@ -124,6 +124,7 @@ fn fold_subgroup_structure(
         signer: admin,
         nonce: 0,
         op: NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: subgroup.to_bytes().into(),
             parent_id: namespace.into(),
             restricted: true,
@@ -1002,6 +1003,7 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: subgroup.to_bytes().into(),
             parent_id: (*founder_key).into(),
             restricted: true,
@@ -1092,6 +1094,7 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
             vec![],
             nonce,
             NamespaceOp::Root(RootOp::GroupCreated {
+                admin: calimero_account::AccountId::from([0x5C; 32]),
                 group_id: ContextGroupId::from(sub).to_bytes().into(),
                 parent_id: (*founder_key).into(),
                 restricted: true,
@@ -1177,6 +1180,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: ContextGroupId::from([0xD1u8; 32]).to_bytes().into(),
             parent_id: (*founder_key).into(),
             restricted: true,

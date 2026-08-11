@@ -133,6 +133,7 @@ fn timeout_classifier_assigns_per_op_kind() {
     // Member-change class: membership-table mutations, possible inheritance walks.
     assert_eq!(
         timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: [0u8; 32].into(),
             parent_id: [0u8; 32].into(),
             restricted: true,
