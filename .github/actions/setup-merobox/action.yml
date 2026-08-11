@@ -1,10 +1,40 @@
 name: Setup Merobox
 description: "Install the merobox release binary (Linux only)"
 
+inputs:
+  artifact:
+    description: >
+      Name of a same-repo artifact holding a prebuilt `merobox` binary. When set,
+      that binary is installed instead of the published release, which is how the
+      suite runs against a merobox that has not shipped yet. The floor check below
+      is skipped with it: an unreleased build has no meaningful version to compare,
+      and the point of passing it is that the release is not good enough.
+    required: false
+    default: ""
+
 runs:
   using: "composite"
   steps:
+    - name: Download prebuilt merobox
+      if: inputs.artifact != ''
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.artifact }}
+        path: /tmp/merobox-prebuilt
+
+    - name: Install prebuilt merobox
+      if: inputs.artifact != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 /tmp/merobox-prebuilt/merobox "$HOME/.local/bin/merobox"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.local/bin:$PATH"
+        merobox --version
+
     - name: Install merobox
+      if: inputs.artifact == ''
       shell: bash
       run: |
         set -euo pipefail
