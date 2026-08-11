@@ -912,3 +912,53 @@ fn classify_publish_readiness_not_ready_without_acks() {
         PublishReadiness::Degraded
     );
 }
+
+/// "I cannot resolve this signer yet" must not be reported as a failed check.
+///
+/// A joiner holds its namespace identity — and considers itself a member
+/// locally — before the op that publishes that membership reaches a peer, and
+/// that same op carries the device binding. So every join has a window where a
+/// receiver legitimately cannot verify the joiner's heartbeats. Collapsing that
+/// into the same verdict as a bad signature made each join look like a forgery
+/// attempt in the logs, which is what the migration-status e2e asserts against.
+#[tokio::test]
+async fn an_unresolvable_signer_is_not_yet_known_rather_than_refused() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [43u8; 32];
+
+    // Nothing planted: no binding, no member row — the state a peer is in
+    // before a joiner's op arrives.
+    let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
+    assert_eq!(
+        classify_migration_heartbeat(&store, &hb),
+        HeartbeatVerdict::NotYetKnown,
+        "a signer this replica cannot resolve is early, not hostile"
+    );
+    assert!(
+        !verify_migration_heartbeat(&store, &hb),
+        "...and is still not admitted to the rollup"
+    );
+}
+
+/// A signer this replica CAN resolve, who is simply not a member, is refused.
+///
+/// The other side of the split: once the binding is here, "not a member" is a
+/// real answer rather than a timing artifact, and it deserves the loud verdict.
+#[tokio::test]
+async fn a_resolvable_non_member_is_refused_not_deferred() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [44u8; 32];
+    let gid = ContextGroupId::from(ns_id);
+
+    // Bound, but never added to the namespace's member set.
+    let _ = crate::test_fixtures::enrol_member(&store, &gid, &sk.public_key());
+
+    let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
+    assert_eq!(
+        classify_migration_heartbeat(&store, &hb),
+        HeartbeatVerdict::Refused,
+        "a resolvable non-member is a genuine refusal"
+    );
+}

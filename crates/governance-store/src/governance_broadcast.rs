@@ -316,10 +316,59 @@ pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) 
 /// entering the migration-status TTL cache — telemetry, never governance state.
 #[must_use]
 pub fn verify_migration_heartbeat(store: &Store, heartbeat: &SignedMigrationHeartbeat) -> bool {
+    matches!(
+        classify_migration_heartbeat(store, heartbeat),
+        HeartbeatVerdict::Admit
+    )
+}
+
+/// Why a heartbeat is not being cached — because two very different situations
+/// used to share one verdict, and one of them is routine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HeartbeatVerdict {
+    /// Signed by a device of a current member. Cache it.
+    Admit,
+    /// The signature does not check out, or the signer speaks for somebody who
+    /// is not a member here. Genuinely bad, and worth surfacing.
+    Refused,
+    /// The signer resolves to no account on this replica yet.
+    ///
+    /// Ordinary rather than suspicious: a joiner holds its namespace identity —
+    /// and considers itself a member locally — before the op that publishes that
+    /// membership reaches this replica, and that same op is what carries the
+    /// device binding. So there is a window where the only honest answer is "ask
+    /// again later", and reporting it as a failed check makes every join look
+    /// like a forgery attempt.
+    NotYetKnown,
+}
+
+/// Split [`verify_migration_heartbeat`]'s answer into "bad" and "too early".
+#[must_use]
+pub fn classify_migration_heartbeat(
+    store: &Store,
+    heartbeat: &SignedMigrationHeartbeat,
+) -> HeartbeatVerdict {
     if heartbeat.verify_signature().is_err() {
-        return false;
+        return HeartbeatVerdict::Refused;
     }
-    signer_is_namespace_member(store, heartbeat.namespace_id, &heartbeat.peer_pubkey)
+    let group_id = ContextGroupId::from(heartbeat.namespace_id.to_bytes());
+    match crate::member_account_in_namespace(store, &group_id, &heartbeat.peer_pubkey) {
+        Ok(Some(account)) => {
+            if MembershipRepository::new(store)
+                .namespace_accounts(heartbeat.namespace_id)
+                .map(|members| members.contains(&account))
+                .unwrap_or(false)
+            {
+                HeartbeatVerdict::Admit
+            } else {
+                HeartbeatVerdict::Refused
+            }
+        }
+        // No binding here yet — the join op that carries it has not arrived.
+        Ok(None) => HeartbeatVerdict::NotYetKnown,
+        Err(_) => HeartbeatVerdict::Refused,
+    }
 }
 
 /// Sign an ack for `op_hash` using `signer_sk`.
