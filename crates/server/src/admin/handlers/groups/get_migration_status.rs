@@ -16,15 +16,15 @@ use super::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// `GET /admin-api/groups/{namespace_id}/migration-status` — the
-/// namespace-member-visible "have all peers migrated?" rollup.
+/// `GET /admin-api/groups/{namespace_id}/migration-status` - the admin-only,
+/// operator-facing "have all peers migrated?" rollup.
 ///
 /// Mirrors [`super::get_cascade_status::handler`]: parse the namespace id,
 /// dispatch the read to the context actor, map the typed result into the admin
 /// JSON shape. The per-member heartbeat reports are snapshotted from the
-/// node-side TTL cache (Task 6c.8) via `NodeClient::migration_status_reports`
-/// and threaded into the rollup request, because the context actor cannot reach
-/// that node-local cache itself. Observability only — never gates a write.
+/// node-side TTL cache via `NodeClient::migration_status_reports` and threaded
+/// into the rollup request, because the context actor cannot reach that
+/// node-local cache itself. Observability only - never gates a write.
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,

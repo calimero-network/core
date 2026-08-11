@@ -60,24 +60,19 @@ pub fn collect_migration_cohort(
     Ok(cohort.into_iter().collect())
 }
 
-/// Gate the `get_migration_status` read on namespace membership.
+/// Admin-gate the `get_migration_status` read.
 ///
-/// Same deny-list-aware predicate `caller_may_observe_group` applies to a
-/// `groupIds` subscription, plus the `GroupMeta.admin_identity` fallback.
+/// `get_migration_status` is an admin-API read (it exposes per-member completion
+/// across the cohort), so it requires the same MANAGE/admin authority the sibling
+/// migration admin operations (`retry_group_upgrade`, `upgrade_group`) enforce
+/// via `require_admin`, NOT mere membership. Extracted as a pure (store read
+/// only) helper so the gate the handler applies can be exercised directly.
 pub fn authorize_migration_status(
     store: &calimero_store::Store,
     namespace_id: &ContextGroupId,
     node_identity: &PublicKey,
 ) -> eyre::Result<()> {
-    let membership = MembershipRepository::new(store);
-    if membership
-        .effective_capabilities(namespace_id, node_identity)?
-        .is_none()
-        && !membership.is_admin(namespace_id, node_identity)?
-    {
-        bail!("caller is not a member of this namespace");
-    }
-    Ok(())
+    MembershipRepository::new(store).require_admin(namespace_id, node_identity)
 }
 
 /// Assemble and roll up a namespace's migration status.
@@ -102,10 +97,10 @@ pub fn authorize_migration_status(
 /// every descendant subgroup's upgrade record - NOT the root's alone. A bare
 /// `upgrade_group` on a subgroup records the target only there, so reading
 /// the root alone returned 0, making every member trivially "migrated" (the
-/// false green that hid a stranded subgroup member in #37).
+/// false green that hid a stranded subgroup member).
 ///
 /// The cohort is the full inherited-membership closure for the subtree (the
-/// #2371 `list ∪ enumerate_inherited` set). The rollup applies the
+/// `list ∪ enumerate_inherited` set). The rollup applies the
 /// expand-entry HLC pin over this closure via the per-member
 /// `synced_up_to_hlc` overlay: a member whose freshest heartbeat proves it
 /// had not synced through the pin is dropped from the cohort (it was not
@@ -145,13 +140,15 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&namespace_id) else {
                 bail!("node has no group identity configured");
             };
-            // Member-visible observability, matching the audience the
-            // `GroupMigration` events reach. The sibling migration WRITES
-            // (`retry_group_upgrade`, `upgrade_group`) keep their admin gates.
+            // Admin-gated observability: `get_migration_status` is an admin-API
+            // read (it exposes per-member completion across the cohort), so it
+            // requires the same MANAGE/admin authority the sibling migration
+            // admin operations (`retry_group_upgrade`, `upgrade_group`) enforce
+            // via `require_admin`, not merely membership.
             authorize_migration_status(&self.datastore, &namespace_id, &node_identity)?;
 
             // Roll up the freshest per-member heartbeat reports the caller
-            // snapshotted from the node-side `MigrationStatusCache` (Task 6c.8).
+            // snapshotted from the node-side `MigrationStatusCache`.
             compute_namespace_rollup(&self.datastore, &namespace_id, |peer| {
                 member_reports.get(peer).copied()
             })
@@ -222,8 +219,7 @@ mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_governance_store::{
-        CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-        NamespaceRepository,
+        CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -310,97 +306,48 @@ mod tests {
         );
     }
 
-    /// The read and the `GroupMigration` event stream must answer to the same
-    /// audience: a member subscribed to the namespace receives progress events,
-    /// so it must also be able to resolve them into per-member detail. A
-    /// non-member gets neither.
+    /// The handler gates `GetMigrationStatusRequest` on admin authority (the
+    /// same `require_admin` the sibling migration admin ops enforce), NOT mere
+    /// membership: a plain member must be rejected, the group admin allowed.
     ///
-    /// The admin here holds only `GroupMeta.admin_identity` with no membership
-    /// row, the fallback the previous `require_admin` gate honoured: relaxing to
-    /// membership must not revoke the operator's own access.
+    /// The payload is a subtree-wide cohort rollup that `collect_descendants`
+    /// walks unfiltered, so a member-level gate would disclose peer identities
+    /// inside Restricted subgroups. This drives `authorize_migration_status` -
+    /// the exact gate the handler calls - so relaxing the gate fails it.
     #[test]
-    fn migration_status_read_is_open_to_members_and_closed_to_others() {
+    fn admin_gate_rejects_non_admin_member() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let ns = ContextGroupId::from([0x33; 32]);
         let admin = PublicKey::from([0xAD; 32]);
         let member = PublicKey::from([0x11; 32]);
-        let stranger = PublicKey::from([0x99; 32]);
 
         MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+        // `member` is a plain (non-admin) member of the namespace.
         MembershipRepository::new(&store)
             .add_member(&ns, &member, GroupMemberRole::Member)
             .unwrap();
 
-        assert!(
-            authorize_migration_status(&store, &ns, &member).is_ok(),
-            "a plain member must be able to read the rollup it receives events for"
-        );
-        assert!(
-            authorize_migration_status(&store, &ns, &admin).is_ok(),
-            "the meta-only admin must keep the access `require_admin` gave it"
-        );
-        assert!(
-            authorize_migration_status(&store, &ns, &stranger).is_err(),
-            "a non-member must still be refused"
-        );
-    }
-
-    /// A member kicked from an Open subgroup keeps an inherited path but is
-    /// deny-listed, so `is_member` still passes while the read must not. Pins
-    /// the gate to the deny-list-aware predicate the subscription filter uses.
-    #[test]
-    fn migration_status_read_refuses_deny_listed_inherited_member() {
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let parent = ContextGroupId::from([0x77; 32]);
-        let child = ContextGroupId::from([0x88; 32]);
-        let admin = PublicKey::from([0xAD; 32]);
-        let kicked = PublicKey::from([0xB2; 32]);
-
-        MetaRepository::new(&store)
-            .save(&parent, &meta(admin))
-            .unwrap();
-        MetaRepository::new(&store)
-            .save(&child, &meta(admin))
-            .unwrap();
-        NamespaceRepository::new(&store)
-            .nest(&parent, &child)
-            .unwrap();
-        CapabilitiesRepository::new(&store)
-            .set_subgroup_visibility(&child, VisibilityMode::Open)
-            .unwrap();
-
-        // Direct member of the parent only, with the cap that makes it inherit
-        // into the Open child.
-        MembershipRepository::new(&store)
-            .add_member(&parent, &kicked, GroupMemberRole::Member)
-            .unwrap();
-        CapabilitiesRepository::new(&store)
-            .set_member_capability(
-                &parent,
-                &kicked,
-                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
-            )
-            .unwrap();
-
-        assert!(
-            authorize_migration_status(&store, &child, &kicked).is_ok(),
-            "the inherited member reads the child's rollup before being kicked"
-        );
-
-        DenyListRepository::new(&store)
-            .mark(&child, &kicked)
-            .unwrap();
-
+        // A genuine member is still rejected by the handler's gate - the gate is
+        // admin authority, not membership.
         assert!(
             MembershipRepository::new(&store)
-                .is_member(&child, &kicked)
+                .is_member(&ns, &member)
                 .unwrap(),
-            "is_member still passes - the inherited path survives the kick"
+            "the rejected caller is genuinely a member - membership alone is not enough"
         );
         assert!(
-            authorize_migration_status(&store, &child, &kicked).is_err(),
-            "a deny-listed inherited member must be refused"
+            MembershipRepository::new(&store)
+                .effective_capabilities(&ns, &member)
+                .unwrap()
+                .is_some(),
+            "the rejected caller also passes the subscription-level gate"
         );
+        assert!(
+            authorize_migration_status(&store, &ns, &member).is_err(),
+            "a non-admin member must be rejected by the migration-status admin gate"
+        );
+        // The admin passes the same gate, holding only `GroupMeta.admin_identity`.
+        assert!(authorize_migration_status(&store, &ns, &admin).is_ok());
     }
 
     fn upgrade_record(

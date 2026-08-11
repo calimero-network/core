@@ -2005,4 +2005,31 @@ mod migration_status_tests {
             "a member still on the old binary must not count as migrated"
         );
     }
+
+    /// Four of the mapped fields are `u64`, so a transposition compiles
+    /// silently - swapping `synced_up_to_hlc` with `reported_at` would corrupt
+    /// the cohort pin comparison. Distinct values per field pin the mapping.
+    #[test]
+    fn heartbeat_report_maps_field_for_field() {
+        let mapped: MemberMigrationReport =
+            calimero_node_primitives::messages::MigrationStatusReport {
+                schema_version: 7,
+                residue_auto: 11,
+                synced_up_to_hlc: 22,
+                reported_at: 33,
+                authored_remaining: 44,
+                migration_failed: 2,
+            }
+            .into();
+
+        assert_eq!(mapped.schema_version, 7);
+        assert_eq!(mapped.residue_auto, 11);
+        assert_eq!(mapped.synced_up_to_hlc, 22);
+        assert_eq!(mapped.reported_at, 33);
+        assert_eq!(mapped.authored_remaining, 44);
+        assert_eq!(
+            mapped.migration_failed,
+            Some(MigrationFailureKind::ApplyFailed)
+        );
+    }
 }
