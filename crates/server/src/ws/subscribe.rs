@@ -1,8 +1,11 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::MembershipRepository;
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::ws::{SubscribeRequest, SubscribeResponse};
 use calimero_server_primitives::Infallible;
 use eyre::Result as EyreResult;
@@ -53,8 +56,10 @@ async fn handle(
 
     // Authorize by effective (deny-list-aware) group membership, not is_member:
     // a kicked inherited member keeps a path but is denied, and must not observe.
-    // Subscribe-time only, like may_observe_context.
+    // Subscribe-time only, like may_observe_context. Admin authority is resolved
+    // in the same pass, since admin-only payloads ride the same subscription.
     let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
+    let mut admin_groups = Vec::new();
     for group_id in request.group_ids {
         if caller_may_observe_group(
             &state.ctx_client,
@@ -63,6 +68,15 @@ async fn handle(
             caller.as_ref(),
             &group_id,
         ) {
+            if caller_may_observe_group_as_admin(
+                &state.ctx_client,
+                state.auth_enabled,
+                node_owner,
+                caller.as_ref(),
+                &group_id,
+            ) {
+                admin_groups.push(group_id);
+            }
             subscribed_groups.push(group_id);
         } else {
             warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
@@ -77,6 +91,9 @@ async fn handle(
         }
         for gid in &subscribed_groups {
             let _ = inner.group_subscriptions.insert(*gid);
+        }
+        for gid in &admin_groups {
+            let _ = inner.admin_group_subscriptions.insert(*gid);
         }
     }
 
@@ -125,8 +142,8 @@ pub(crate) fn caller_may_observe_group(
     ctx_client: &ContextClient,
     auth_enabled: bool,
     node_owner: bool,
-    caller: Option<&calimero_primitives::identity::PublicKey>,
-    group_id: &calimero_primitives::hash::Hash,
+    caller: Option<&PublicKey>,
+    group_id: &Hash,
 ) -> bool {
     let caller_is_member = caller.map(|key| {
         let gid = ContextGroupId::from(*group_id.as_bytes());
@@ -141,9 +158,61 @@ pub(crate) fn caller_may_observe_group(
     may_observe_group(auth_enabled, node_owner, caller_is_member)
 }
 
+/// Whether a connection additionally holds ADMIN authority over `group_id`, the
+/// gate for group events whose payload is admin-only.
+///
+/// The predicate is `is_admin` on the subscribed id itself - the same authority
+/// the `migration-status` read requires. It is deliberately NOT re-keyed to the
+/// descendant subgroup a payload names: for a Restricted subgroup, `check_path`
+/// returns before its ancestor-admin arm, so an admin of the root resolves to
+/// no membership there and would be refused its own cascade detail.
+pub(crate) fn caller_may_observe_group_as_admin(
+    ctx_client: &ContextClient,
+    auth_enabled: bool,
+    node_owner: bool,
+    caller: Option<&PublicKey>,
+    group_id: &Hash,
+) -> bool {
+    let caller_is_admin = caller.map(|key| {
+        let gid = ContextGroupId::from(*group_id.as_bytes());
+        MembershipRepository::new(ctx_client.datastore())
+            .is_admin(&gid, key)
+            .unwrap_or_else(|err| {
+                warn!(group_id=%group_id, %err, "group admin lookup failed; denying admin-only detail");
+                false
+            })
+    });
+    may_observe_group(auth_enabled, node_owner, caller_is_admin)
+}
+
+/// Whether a group-keyed event may be delivered to a connection holding these
+/// subscription sets. Shared by the WS fan-out and the SSE per-session task so
+/// the per-variant rule cannot hold on one transport and not the other.
+///
+/// `admin_only` payloads ride `admin_groups` (always a subset of `groups`), so a
+/// plain member subscribed to the namespace keeps the counter-only frames and
+/// loses the ones naming descendant subgroups.
+pub(crate) fn may_deliver_group_event(
+    admin_only: bool,
+    group_id: &Hash,
+    groups: &HashSet<Hash>,
+    admin_groups: &HashSet<Hash>,
+) -> bool {
+    if admin_only {
+        admin_groups.contains(group_id)
+    } else {
+        groups.contains(group_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{may_observe_context, may_observe_group};
+    use std::collections::HashSet;
+
+    use calimero_primitives::events::GroupMigrationPayload;
+    use calimero_primitives::hash::Hash;
+
+    use super::{may_deliver_group_event, may_observe_context, may_observe_group};
 
     #[test]
     fn node_owner_observes_everything() {
@@ -174,5 +243,53 @@ mod tests {
         assert!(may_observe_group(true, false, Some(true)));
         assert!(!may_observe_group(true, false, Some(false)));
         assert!(!may_observe_group(true, false, None));
+    }
+
+    /// The cascade frame names a descendant subgroup id, so a plain member of
+    /// the namespace must not receive it while still receiving the counter-only
+    /// progress frames. Both the WS fan-out and the SSE session task decide
+    /// delivery through this function, so the rule cannot diverge between them.
+    #[test]
+    fn cascade_detail_reaches_admins_only_while_progress_reaches_members() {
+        let group = Hash::from([0x5au8; 32]);
+        let subscribed: HashSet<Hash> = [group].into_iter().collect();
+        let no_admin = HashSet::new();
+
+        let progress = GroupMigrationPayload::MigrationProgress {
+            migrated: 1,
+            in_progress: 1,
+            unknown: 0,
+            failed: 0,
+            total: 2,
+        };
+        let cascade = GroupMigrationPayload::CascadeProgress {
+            subgroup_id: Hash::from([0xccu8; 32]),
+            completed: 1,
+            total: 2,
+        };
+
+        for (payload, member_gets, name) in
+            [(&progress, true, "progress"), (&cascade, false, "cascade")]
+        {
+            assert_eq!(
+                may_deliver_group_event(
+                    payload.requires_group_admin(),
+                    &group,
+                    &subscribed,
+                    &no_admin
+                ),
+                member_gets,
+                "a non-admin member subscriber and the {name} frame"
+            );
+            assert!(
+                may_deliver_group_event(
+                    payload.requires_group_admin(),
+                    &group,
+                    &subscribed,
+                    &subscribed
+                ),
+                "an admin subscriber must receive the {name} frame"
+            );
+        }
     }
 }

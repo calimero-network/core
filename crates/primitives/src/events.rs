@@ -110,6 +110,20 @@ pub enum GroupMigrationPayload {
     },
 }
 
+impl GroupMigrationPayload {
+    /// Whether this payload may only be delivered to an admin of the namespace
+    /// root the event is keyed on.
+    ///
+    /// `CascadeProgress` names a descendant `subgroup_id`, and a Restricted
+    /// subgroup's existence is not something a plain namespace member may
+    /// enumerate - the same disclosure the `migration-status` read is
+    /// admin-gated against. The other variants carry counters only.
+    #[must_use]
+    pub const fn requires_group_admin(&self) -> bool {
+        matches!(*self, Self::CascadeProgress { .. })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEvent {

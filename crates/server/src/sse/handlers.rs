@@ -236,24 +236,39 @@ pub async fn handle_subscription(
 
                 // Authorize by effective (deny-list-aware) group membership, not
                 // is_member: a kicked inherited member keeps a path but is denied.
-                // Subscribe-time only, like may_observe_context.
+                // Subscribe-time only, like may_observe_context. Admin authority
+                // is resolved in the same pass, since admin-only payloads ride
+                // the same subscription.
+                let caller_key = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                 let subscribed_groups: Vec<_> = ctxs
                     .group_ids
                     .iter()
                     .copied()
                     .filter(|group_id| {
-                        let caller = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                         let authorized = crate::ws::caller_may_observe_group(
                             &state.ctx_client,
                             state.auth_enabled,
                             node_owner,
-                            caller,
+                            caller_key,
                             group_id,
                         );
                         if !authorized {
                             warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
                         }
                         authorized
+                    })
+                    .collect();
+                let admin_groups: Vec<_> = subscribed_groups
+                    .iter()
+                    .copied()
+                    .filter(|group_id| {
+                        crate::ws::caller_may_observe_group_as_admin(
+                            &state.ctx_client,
+                            state.auth_enabled,
+                            node_owner,
+                            caller_key,
+                            group_id,
+                        )
                     })
                     .collect();
 
@@ -264,6 +279,9 @@ pub async fn handle_subscription(
                     }
                     for gid in &subscribed_groups {
                         let _ = inner.group_subscriptions.insert(*gid);
+                    }
+                    for gid in &admin_groups {
+                        let _ = inner.admin_group_subscriptions.insert(*gid);
                     }
                     inner.touch();
                     inner.to_persisted()
@@ -330,6 +348,7 @@ pub async fn handle_subscription(
                     }
                     for gid in &ctxs.group_ids {
                         let _ = inner.group_subscriptions.remove(gid);
+                        let _ = inner.admin_group_subscriptions.remove(gid);
                     }
                     inner.touch();
                     inner.to_persisted()

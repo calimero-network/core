@@ -38,7 +38,10 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
-pub(crate) use subscribe::{caller_may_observe_group, may_observe_context};
+pub(crate) use subscribe::{
+    caller_may_observe_group, caller_may_observe_group_as_admin, may_deliver_group_event,
+    may_observe_context,
+};
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
@@ -94,6 +97,9 @@ pub(crate) struct ConnectionStateInner {
     /// Group ids observed for group-keyed events (membership, migration),
     /// routed independently from `subscriptions`.
     group_subscriptions: HashSet<Hash>,
+    /// The subset of `group_subscriptions` this connection holds admin
+    /// authority over. Admin-only payloads route against this set alone.
+    admin_group_subscriptions: HashSet<Hash>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
     /// The verified public key of the authenticated client that opened this
     /// connection, or `None` when the auth method does not provide a
@@ -112,6 +118,7 @@ impl ConnectionStateInner {
         Self {
             subscriptions: HashSet::default(),
             group_subscriptions: HashSet::default(),
+            admin_group_subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
@@ -392,7 +399,13 @@ async fn handle_socket(
 #[derive(Clone, Copy)]
 enum EventRoute {
     Context(ContextId),
-    Group(Hash),
+    /// `admin_only` payloads route against the admin subset of the group
+    /// subscriptions; resolved here because the event is consumed before the
+    /// per-connection match runs.
+    Group {
+        id: Hash,
+        admin_only: bool,
+    },
 }
 
 async fn fan_out_node_events(state: Arc<ServiceState>) {
@@ -405,12 +418,14 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
         // migration events by group_id.
         let route = match &event {
             NodeEvent::Context(context_event) => EventRoute::Context(context_event.context_id),
-            NodeEvent::GroupMembership(membership_event) => {
-                EventRoute::Group(membership_event.group_id)
-            }
-            NodeEvent::GroupMigration(migration_event) => {
-                EventRoute::Group(migration_event.group_id)
-            }
+            NodeEvent::GroupMembership(membership_event) => EventRoute::Group {
+                id: membership_event.group_id,
+                admin_only: false,
+            },
+            NodeEvent::GroupMigration(migration_event) => EventRoute::Group {
+                id: migration_event.group_id,
+                admin_only: migration_event.payload.requires_group_admin(),
+            },
         };
 
         debug!("Received node event: {:?}", event);
@@ -447,7 +462,12 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
                 let inner = connection.inner.read().await;
                 let matched = match route {
                     EventRoute::Context(context_id) => inner.subscriptions.contains(&context_id),
-                    EventRoute::Group(group_id) => inner.group_subscriptions.contains(&group_id),
+                    EventRoute::Group { id, admin_only } => may_deliver_group_event(
+                        admin_only,
+                        &id,
+                        &inner.group_subscriptions,
+                        &inner.admin_group_subscriptions,
+                    ),
                 };
                 if matched {
                     targets.push((*connection_id, connection.commands.clone()));
@@ -1165,6 +1185,195 @@ mod tests {
         assert_eq!(
             pushed["result"]["groupId"], group_hex,
             "the delivered groupId must equal the hex the client subscribed with: {pushed}"
+        );
+    }
+
+    fn cascade_progress_event(group: Hash, subgroup: Hash) -> NodeEvent {
+        NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: group,
+            payload: GroupMigrationPayload::CascadeProgress {
+                subgroup_id: subgroup,
+                completed: 1,
+                total: 2,
+            },
+        })
+    }
+
+    fn migration_progress_event(group: Hash) -> NodeEvent {
+        NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: group,
+            payload: GroupMigrationPayload::MigrationProgress {
+                migrated: 1,
+                in_progress: 1,
+                unknown: 0,
+                failed: 0,
+                total: 2,
+            },
+        })
+    }
+
+    /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
+    /// returning the namespace and subgroup ids as wire hashes.
+    fn seed_namespace_with_restricted_subgroup(
+        store: &Store,
+        caller: PublicKey,
+        role: calimero_primitives::context::GroupMemberRole,
+    ) -> (Hash, Hash) {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::VisibilityMode;
+        use calimero_governance_store::{
+            CapabilitiesRepository, MembershipRepository, NamespaceRepository,
+        };
+
+        let ns = ContextGroupId::from([0xC0u8; 32]);
+        let subgroup = ContextGroupId::from([0xC1u8; 32]);
+
+        MembershipRepository::new(store)
+            .add_member(&ns, &caller, role)
+            .unwrap();
+        NamespaceRepository::new(store)
+            .nest(&ns, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+
+        (Hash::from(ns.to_bytes()), Hash::from(subgroup.to_bytes()))
+    }
+
+    // `CascadeProgress` names a descendant subgroup id, so a plain member of the
+    // namespace must not receive it while still receiving the counter-only
+    // progress frames. The cascade frame is broadcast FIRST: if the gate were
+    // missing, it would be the frame this subscriber reads.
+    #[tokio::test]
+    async fn cascade_progress_withheld_from_non_admin_group_subscriber() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let member_pk =
+            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let server = spawn_test_ws_authed(member_pk).await;
+        let store = server.state.ctx_client.datastore();
+        let (group, subgroup) =
+            seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
+
+        let membership = MembershipRepository::new(store);
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+        let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
+        assert!(
+            membership
+                .effective_capabilities(&ns_gid, &member_pk)
+                .unwrap()
+                .is_some(),
+            "precondition: the caller subscribes as a genuine namespace member"
+        );
+        assert!(
+            !membership.is_admin(&ns_gid, &member_pk).unwrap(),
+            "precondition: the caller is not an admin of the namespace"
+        );
+        assert!(
+            membership
+                .effective_capabilities(&sub_gid, &member_pk)
+                .unwrap()
+                .is_none(),
+            "precondition: the Restricted subgroup is invisible to it - its id is what the cascade frame would disclose"
+        );
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(
+            resp["result"]["groupIds"],
+            json!([hex::encode(group.as_bytes())]),
+            "the member must be admitted to the namespace stream: {resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(cascade_progress_event(group, subgroup))
+            .unwrap();
+        server
+            .event_sender
+            .send(migration_progress_event(group))
+            .unwrap();
+
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the member should still receive the counter-only frame");
+        assert_eq!(
+            pushed["result"]["type"], "MigrationProgress",
+            "the cascade frame must have been dropped, leaving the progress frame first: {pushed}"
+        );
+
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "no further frame should reach a non-admin member: {leaked:?}"
+        );
+    }
+
+    // The other half of the gate: an admin of the namespace root does receive
+    // the cascade frame. Re-keying the event to the Restricted subgroup would
+    // fail here - `check_path` bails on visibility before its ancestor-admin
+    // arm, so the root admin resolves to no membership on that subgroup.
+    #[tokio::test]
+    async fn cascade_progress_reaches_the_namespace_admin() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let admin_pk =
+            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let server = spawn_test_ws_authed(admin_pk).await;
+        let store = server.state.ctx_client.datastore();
+        let (group, subgroup) =
+            seed_namespace_with_restricted_subgroup(store, admin_pk, GroupMemberRole::Admin);
+
+        let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
+        assert!(
+            MembershipRepository::new(store)
+                .effective_capabilities(&sub_gid, &admin_pk)
+                .unwrap()
+                .is_none(),
+            "the root admin has no membership on the Restricted subgroup, so the gate must key on the root"
+        );
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let _ = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(cascade_progress_event(group, subgroup))
+            .unwrap();
+
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the namespace admin should receive the cascade frame");
+        assert_eq!(
+            pushed["result"]["type"], "CascadeProgress",
+            "the admin must keep the per-subgroup detail: {pushed}"
         );
     }
 
