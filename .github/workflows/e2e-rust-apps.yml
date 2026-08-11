@@ -54,14 +54,17 @@ jobs:
   # `account` / `memberAccount` fields the fixtures capture to address members.
   #
   # So build merobox once from calimero-network/merobox#319 — which pins
-  # client-py to the branch that tracks this one — and hand every job below the
-  # binary as an artifact. Building it per job is not an option: `pip install`
-  # compiles client-py with maturin, which drags in the whole core dependency
-  # tree, and the matrix is ~70 jobs wide.
+  # client-py to calimero-client-py#78, where member ids are passed through as
+  # the node writes them — and hand every job below the binary as an artifact.
+  # Building it per job is not an option: `pip install` compiles client-py with
+  # maturin, which drags in the whole core dependency tree, and the matrix is
+  # ~70 jobs wide.
   #
-  # Delete this job, drop `artifact:` from the setup-merobox calls, and drop it
-  # from the two `needs:` lists once merobox#319 merges and a release carries the
-  # new client.
+  # This is scaffolding for the ordering only, not for the fix. client-py#78 is
+  # version-agnostic, so once it releases and merobox picks it up as a plain
+  # version floor, the published binary works here with nothing pinned: delete
+  # this job, drop `artifact:` from the setup-merobox calls, and drop it from the
+  # two `needs:` lists.
   build-merobox:
     name: Build merobox (branch client)
     runs-on: ubuntu-24.04-8cpu
