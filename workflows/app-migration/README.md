@@ -79,11 +79,11 @@ independently. This is deliberate, not a workaround:
   therefore *not* propagated over sync — a peer cannot receive another
   node's migrated state, because merging a v1 root entry with a v2 root
   entry at the shared fixed `ROOT_ENTRY_ID` would corrupt it.
-* Under `LazyOnAccess` (the SDK default — *"upgrade each context
-  transparently on its next execution"*) each node re-derives v2 by
-  running the migrate fn on its **own already-synced, byte-identical v1
-  state** on the first context access after the upgrade op gossips in.
-  Determinism guarantees every node lands on the same v2 root.
+* Every context upgrades transparently on its next execution: each node
+  re-derives v2 by running the migrate fn on its **own already-synced,
+  byte-identical v1 state** on the first context access after the
+  upgrade op gossips in. Determinism guarantees every node lands on the
+  same v2 root.
 * The upgrade op (`TargetApplicationSet` + `GroupMigrationSet`, or their
   cascade equivalents) sets both `target_application_id` and the
   `migration` method on the group's `GroupMeta`; each receiver's

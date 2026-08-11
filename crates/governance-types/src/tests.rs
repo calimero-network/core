@@ -81,7 +81,7 @@ const GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET: &[u8] = &[
     0, 0, 0, 0, // capabilities u32 = 0
 ];
 
-/// GroupOp ordinal 7 — TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
+/// GroupOp ordinal 7 - TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     7, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -90,7 +90,7 @@ const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     0, // target_application_id [0u8;32]
 ];
 
-/// GroupOp ordinal 8 — ContextRegistered (all empty/zero fields)
+/// GroupOp ordinal 8 - ContextRegistered (all empty/zero fields)
 const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
     8, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -103,27 +103,27 @@ const GOLDEN_GROUP_OP_CONTEXT_REGISTERED: &[u8] = &[
     0, // service_name = None
 ];
 
-/// GroupOp ordinal 9 — ContextDetached { context_id: [0;32] }
+/// GroupOp ordinal 9 - ContextDetached { context_id: [0;32] }
 const GOLDEN_GROUP_OP_CONTEXT_DETACHED: &[u8] = &[
     9, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // context_id
 ];
 
-/// GroupOp ordinal 10 — SubgroupVisibilitySet { mode: 0 }
+/// GroupOp ordinal 10 - SubgroupVisibilitySet { mode: 0 }
 const GOLDEN_GROUP_OP_SUBGROUP_VISIBILITY_SET: &[u8] = &[
     10, // discriminant
     0,  // mode = 0
 ];
 
-/// GroupOp ordinal 11 — GroupMetadataSet { name: None, data: {} }
+/// GroupOp ordinal 11 - GroupMetadataSet { name: None, data: {} }
 const GOLDEN_GROUP_OP_GROUP_METADATA_SET: &[u8] = &[
     11, // discriminant
     0,  // name = None
     0, 0, 0, 0, // data BTreeMap len = 0
 ];
 
-/// GroupOp ordinal 12 — MemberMetadataSet { member: [0;32], name: None, data: {} }
+/// GroupOp ordinal 12 - MemberMetadataSet { member: [0;32], name: None, data: {} }
 const GOLDEN_GROUP_OP_MEMBER_METADATA_SET: &[u8] = &[
     12, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -132,7 +132,7 @@ const GOLDEN_GROUP_OP_MEMBER_METADATA_SET: &[u8] = &[
     0, 0, 0, 0, // data len = 0
 ];
 
-/// GroupOp ordinal 13 — ContextMetadataSet { context_id: [0;32], name: None, data: {} }
+/// GroupOp ordinal 13 - ContextMetadataSet { context_id: [0;32], name: None, data: {} }
 const GOLDEN_GROUP_OP_CONTEXT_METADATA_SET: &[u8] = &[
     13, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -141,16 +141,16 @@ const GOLDEN_GROUP_OP_CONTEXT_METADATA_SET: &[u8] = &[
     0, 0, 0, 0, // data len = 0
 ];
 
-/// GroupOp ordinal 14 — GroupDelete (no fields; full encoding = discriminant only)
+/// GroupOp ordinal 14 - GroupDelete (no fields; full encoding = discriminant only)
 const GOLDEN_GROUP_OP_GROUP_DELETE: &[u8] = &[14];
 
-/// GroupOp ordinal 15 — GroupMigrationSet { migration: None }
+/// GroupOp ordinal 15 - GroupMigrationSet { migration: None }
 const GOLDEN_GROUP_OP_GROUP_MIGRATION_SET: &[u8] = &[
     15, // discriminant
     0,  // migration = None
 ];
 
-/// GroupOp ordinal 16 — ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
+/// GroupOp ordinal 16 - ContextCapabilityGranted { context_id: [0;32], member: [0;32], capability: 1 }
 const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
     16, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -160,7 +160,7 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_GRANTED: &[u8] = &[
     1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
-/// GroupOp ordinal 17 — ContextCapabilityRevoked (same shape as Granted)
+/// GroupOp ordinal 17 - ContextCapabilityRevoked (same shape as Granted)
 const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
     17, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -170,7 +170,7 @@ const GOLDEN_GROUP_OP_CONTEXT_CAPABILITY_REVOKED: &[u8] = &[
     1, // capability (must be non-zero: ContextCapabilityBits rejects 0 on the wire)
 ];
 
-/// GroupOp ordinal 18 — TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
+/// GroupOp ordinal 18 - TeeAdmissionPolicySet (6 empty Vec<String> + accept_mock=false)
 const GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET: &[u8] = &[
     18, // discriminant
     0, 0, 0, 0, // allowed_mrtd vec len = 0
@@ -182,7 +182,7 @@ const GOLDEN_GROUP_OP_TEE_ADMISSION_POLICY_SET: &[u8] = &[
     0, // accept_mock = false
 ];
 
-/// GroupOp ordinal 19 — MemberJoinedViaTeeAttestation (all empty/zero)
+/// GroupOp ordinal 19 - MemberJoinedViaTeeAttestation (all empty/zero)
 const GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     19, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -198,7 +198,7 @@ const GOLDEN_GROUP_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     1, // role = Member (ordinal 1)
 ];
 
-/// GroupOp ordinal 20 — MemberSetAutoFollow { target: [0;32], auto_follow_contexts: false, auto_follow_subgroups: false }
+/// GroupOp ordinal 20 - MemberSetAutoFollow { target: [0;32], auto_follow_contexts: false, auto_follow_subgroups: false }
 const GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW: &[u8] = &[
     20, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -207,7 +207,7 @@ const GOLDEN_GROUP_OP_MEMBER_SET_AUTO_FOLLOW: &[u8] = &[
     0, // auto_follow_subgroups = false
 ];
 
-/// GroupOp ordinal 21 — TransferOwnership { new_owner: [0;32] }
+/// GroupOp ordinal 21 - TransferOwnership { new_owner: [0;32] }
 const GOLDEN_GROUP_OP_TRANSFER_OWNERSHIP: &[u8] = &[
     21, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -246,7 +246,7 @@ fn hlc_zero_golden_bytes_are_self_consistent() {
     );
 }
 
-/// GroupOp ordinal 24 — AccountDeviceLinked (genesis + empty chain + cert + endorsement)
+/// GroupOp ordinal 24 - AccountDeviceLinked (genesis + empty chain + cert + endorsement)
 const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
     24, // discriminant
     1,  // genesis.version
@@ -276,7 +276,7 @@ const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_LINKED: &[u8] = &[
     0, // endorsement.signature
 ];
 
-/// GroupOp ordinal 25 — AccountDeviceUnlinked { account: [0;32], device: [0;32], proof: None }
+/// GroupOp ordinal 25 - AccountDeviceUnlinked { account: [0;32], device: [0;32], proof: None }
 const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED: &[u8] = &[
     25, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -289,7 +289,7 @@ const GOLDEN_GROUP_OP_ACCOUNT_DEVICE_UNLINKED: &[u8] = &[
     0, // proof: None
 ];
 
-/// GroupOp ordinal 26 — AccountKeysRotated { handoff }
+/// GroupOp ordinal 26 - AccountKeysRotated { handoff }
 const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
     26, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -302,14 +302,14 @@ const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
     0, // handoff.signature
 ];
 
-/// GroupOp ordinal 23 — GroupKeyRotated { departed: [0;32] }
+/// GroupOp ordinal 23 - GroupKeyRotated { departed: [0;32] }
 const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
     23, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // departed
 ];
 
-/// GroupOp ordinal 22 — CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
+/// GroupOp ordinal 22 - CascadeUpgrade (all zero fields; HybridTimestamp::zero() via GOLDEN_HLC_ZERO)
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     22, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

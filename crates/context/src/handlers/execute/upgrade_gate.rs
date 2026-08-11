@@ -62,8 +62,7 @@ pub(super) enum LazyUpgradeAction {
 }
 
 /// Whether this context needs an upgrade or migration, and via which mode.
-/// The caller must load bytecode by blob key (bundle ids are version-stable)
-/// — the application row may still hold the OLD wasm.
+/// Caller loads bytecode by blob key, not app id - the application row may still hold OLD wasm.
 pub(super) fn maybe_lazy_upgrade(
     datastore: &Store,
     context_id: &ContextId,

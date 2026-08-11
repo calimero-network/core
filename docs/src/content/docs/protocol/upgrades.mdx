@@ -475,7 +475,7 @@ is stamped **once** by the initiator so every node records an identical fence bo
     { from: 1, to: 1, label: 'emit CascadeUpgrade { from_app_key, app_key, target, migration, cascade_hlc }' },
     { from: 1, to: 2, label: 'op replicates to every member node' },
     { from: 2, to: 2, label: 'apply: set target + app_key + migration atomically; record cascade_hlc fence' },
-    { type: 'divider', label: 'nothing migrates yet — state is reshaped on first access' },
+    { type: 'divider', label: 'nothing migrates yet - state is reshaped on first access' },
     { from: 2, to: 2, label: 'first context access → run migrate (independently, deterministically)' },
     { from: 2, to: 2, label: 'migration_check passes → commit v2 root; emit AppVersionChanged' },
     { from: 2, to: 1, label: 'fence: reject deltas with stale producing_app_key / pre-cascade_hlc' },
@@ -522,8 +522,8 @@ it to prompt owners to run `migrate_my_entries()` and to avoid bundle skew.
 
 A cascade upgrade spawns a propagator on the initiating node that walks each matched
 descendant group's contexts, migrating them one at a time. While that walk is mid-flight
-the group's upgrade row is `GroupUpgradeStatus::InProgress`, and a second fence — the
-execute write-gate — keeps a not-yet-migrated context from committing a write that would
+the group's upgrade row is `GroupUpgradeStatus::InProgress`, and a second fence - the
+execute write-gate - keeps a not-yet-migrated context from committing a write that would
 drift against group-mates already on the new schema.
 
 Only `InProgress` blocks, and the gate is deliberately narrow so it cannot deadlock the
@@ -532,7 +532,7 @@ machinery that clears it:
 - **A direct (non-cascade) group upgrade** writes `Completed` immediately and never passes
   through `InProgress`; its contexts migrate lazily on next access instead, so the group is
   never write-frozen.
-- **The cascade propagator** — the task doing the migrating — **bypasses the execute gate**, so
+- **The cascade propagator** - the task doing the migrating - **bypasses the execute gate**, so
   the migration commits that retire `InProgress` are never blocked by it.
 
 (`upgrade_blocks_write`, `crates/context/src/handlers/execute/upgrade_gate.rs`.)
@@ -549,7 +549,7 @@ write-intent is derived **post-execution**:
   `crates/context/src/handlers/execute/mod.rs`).
 
 So while a cascade propagator's walk is in flight, a context still serves reads from its old
-state and only side-effecting calls are turned away — for exactly as long as the `InProgress`
+state and only side-effecting calls are turned away - for exactly as long as the `InProgress`
 window lasts.
 
 ## Lazy upgrades: replaying the ladder hop by hop

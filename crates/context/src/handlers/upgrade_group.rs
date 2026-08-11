@@ -215,7 +215,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     // ladder behind contexts replay. The migration set is
                     // unconditional per rung: a code-only rung (migration
                     // None) must CLEAR any method left by an earlier
-                    // migration upgrade — a stale Some(method) makes the
+                    // migration upgrade - a stale Some(method) makes the
                     // same-id lazy trigger take the migration arm and
                     // short-circuit on its applied marker, so the new
                     // bytecode would never activate.
