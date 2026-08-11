@@ -92,6 +92,7 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 0,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
         },

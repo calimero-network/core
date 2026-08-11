@@ -375,8 +375,8 @@ mod tests {
     }
 
     /// **Cascade abort.** A namespace mid-*cascade* migration applies the same
-    /// pending migration to descendant subgroups (`GroupOp::CascadeUpgrade` /
-    /// `CascadeGroupMigrationSet` walks the subtree and sets each matched
+    /// pending migration to descendant subgroups (`GroupOp::CascadeUpgrade`
+    /// walks the subtree and sets each matched
     /// descendant's `migration` marker + v2 target). Aborting the ROOT must
     /// therefore also abort every descendant carrying the same pending migration
     /// — otherwise the descendants keep lazy-migrating and the abort is

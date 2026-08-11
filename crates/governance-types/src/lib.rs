@@ -31,7 +31,7 @@ use calimero_account::{
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::HybridTimestamp;
 use ed25519_dalek::SignatureError;
@@ -163,7 +163,14 @@ id_newtype! {
 /// the signed bytes. Removing it changes every op's content hash (the op id),
 /// hence the version bump — and, because old-shape ops are rejected rather than
 /// migrated, a re-bootstrap of every node.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 9;
+///
+/// v10: removed `GroupOp::UpgradePolicySet` (the policy concept is gone; lazy
+/// on access is the only behaviour) and the two deprecated cascade tombstones
+/// `CascadeTargetApplicationSet` / `CascadeGroupMigrationSet`, which renumbers
+/// every later variant, and added `to_state_version` to `CascadeUpgrade` so a
+/// non-initiator's upgrade record can carry the target ABI state version the
+/// rollup compares against.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 10;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -355,8 +362,6 @@ pub enum GroupOp {
     },
     /// Default capability bitmask for new members.
     DefaultCapabilitiesSet { capabilities: MemberCapabilities },
-    /// Update group upgrade policy in [`GroupMetaValue`].
-    UpgradePolicySet { policy: UpgradePolicy },
     /// Update target application and app key in group metadata.
     TargetApplicationSet {
         app_key: AppKey,
@@ -458,56 +463,16 @@ pub enum GroupOp {
     /// `GroupMetaValue.owner_identity`. The previous owner remains a
     /// regular admin (no automatic role change beyond the owner field).
     TransferOwnership { new_owner: PublicKey },
-    /// Cascade variant of [`Self::TargetApplicationSet`]: update the
-    /// target application on the signed group AND on every descendant
-    /// subgroup whose current `app_key` equals `from_app_key`. Walked at
-    /// apply time against the receiver's local tree state, bounded by
-    /// the namespace tree's maximum nesting depth (enforced in the
-    /// apply handler in `calimero-context`). Same `manage_application`
-    /// permission as the non-cascade variant on the signed group.
-    /// Descendants that run a different application (different
-    /// `app_key`) are skipped -- heterogeneous deployments stay untouched.
-    ///
-    /// `from_app_key` is the matching predicate, snapshotted at the
-    /// emission peer's RPC-handling time. Carried in the op itself so
-    /// every receiver applies the same filter against its own tree
-    /// state -- ensures cross-peer convergence even when local stores
-    /// have diverged between the emission peer's snapshot and a remote
-    /// peer's apply time.
-    ///
-    /// Operationally invoked by an `upgrade_group` RPC with `cascade:
-    /// true`. See `docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md`.
-    ///
-    /// DEPRECATED: superseded by [`Self::CascadeUpgrade`], which applies the
-    /// target + app_key + migration atomically in one op (no inter-op ordering
-    /// window). Do NOT emit this; the apply arm is retained for one release so
-    /// in-flight / replayed ops from pre-upgrade peers still apply. (Not marked
-    /// `#[deprecated]` because the enum's derived borsh/Debug impls reference
-    /// every variant and would warn at the derive site.)
-    CascadeTargetApplicationSet {
-        from_app_key: AppKey,
-        app_key: AppKey,
-        target_application_id: ApplicationId,
-    },
-    /// Cascade variant of [`Self::GroupMigrationSet`]: emitted alongside
-    /// [`Self::CascadeTargetApplicationSet`] when the operator requested
-    /// cascade-with-migration. Updates the migration bytes on the signed
-    /// group AND on every descendant subgroup whose current `app_key`
-    /// equals `from_app_key`. Same matching-predicate semantics as the
-    /// target variant.
-    ///
-    /// DEPRECATED: superseded by [`Self::CascadeUpgrade`] (see that variant).
-    /// Do NOT emit; apply arm retained for one release for wire-compat.
-    CascadeGroupMigrationSet {
-        from_app_key: AppKey,
-        migration: Option<Vec<u8>>,
-    },
     /// Atomic namespace cascade upgrade. Applies target_application_id, app_key,
     /// and migration in a SINGLE op per matched descendant (the
     /// `from_app_key == descendant.app_key` walk predicate), so receivers cannot
     /// reproduce the out-of-order apply bug. `cascade_hlc` is stamped once by the
-    /// initiator so every node records an identical fence boundary. Lockstep
-    /// wire addition (schema v7).
+    /// initiator so every node records an identical fence boundary.
+    ///
+    /// `from_app_key` is the matching predicate, snapshotted at the emission
+    /// peer's RPC-handling time and carried in the op so every receiver filters
+    /// its own tree state identically. Descendants on a different `app_key` are
+    /// skipped, so heterogeneous deployments stay untouched.
     ///
     /// `cascade_hlc` is the fence boundary read by the receive-path HLC fence
     /// (`calimero_context::hlc_fence`): any context-state delta whose HLC
@@ -517,6 +482,9 @@ pub enum GroupOp {
         from_app_key: AppKey,
         app_key: AppKey,
         target_application_id: ApplicationId,
+        /// Max ABI state version across the target's services. `0` when
+        /// unresolvable, which the rollup pins to an unsatisfiable target.
+        to_state_version: u32,
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
     },
@@ -638,7 +606,6 @@ impl GroupOp {
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
-            GroupOp::UpgradePolicySet { .. } => "upgrade_policy_set",
             GroupOp::TargetApplicationSet { .. } => "target_application_set",
             GroupOp::ContextRegistered { .. } => "context_registered",
             GroupOp::ContextDetached { .. } => "context_detached",
@@ -654,8 +621,6 @@ impl GroupOp {
             GroupOp::TeeAdmissionPolicySet { .. } => "tee_admission_policy_set",
             GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
-            GroupOp::CascadeTargetApplicationSet { .. } => "cascade_target_application_set",
-            GroupOp::CascadeGroupMigrationSet { .. } => "cascade_group_migration_set",
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
         }
     }
@@ -1480,9 +1445,6 @@ impl GroupOp {
                 bounds::MAX_ID_LIST,
             ),
             Self::GroupMigrationSet {
-                migration: Some(m), ..
-            }
-            | Self::CascadeGroupMigrationSet {
                 migration: Some(m), ..
             }
             | Self::CascadeUpgrade {

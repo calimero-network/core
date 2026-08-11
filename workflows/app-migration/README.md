@@ -12,7 +12,7 @@ and the namespace-cascade additions designed in
 | File | What it proves |
 |---|---|
 | `00-single-group-migration-baseline.yml` | 2-node, single subgroup + one context, `v1 → v2` via `upgrade_group(cascade=false)`. **Regression guard for [#2433](https://github.com/calimero-network/core/pull/2433)** — the per-context migration write path that #2433 silently broke and PR-1 of the cascade train repairs. |
-| `01-namespace-cascade-migration.yml` | 2-node, namespace + one Open subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the full `app_key` fix triangle** (originator derivation, remote-peer `GroupCreated` inheritance, joiner-side bootstrap) AND cross-node cascade convergence: asserts node 2's `GroupMeta` flips on both layers, the receiver-side `CascadeTargetApplicationSet: applied` log fires, and node 2 self-migrates via the lazy path. |
+| `01-namespace-cascade-migration.yml` | 2-node, namespace + one Open subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the full `app_key` fix triangle** (originator derivation, remote-peer `GroupCreated` inheritance, joiner-side bootstrap) AND cross-node cascade convergence: asserts node 2's `GroupMeta` flips on both layers, the receiver-side `CascadeUpgrade: applied` log fires, and node 2 self-migrates via the lazy path. |
 
 ### Per-scenario migration matrix (`apps/migrations/migration-suite-v{1..5}` chain)
 

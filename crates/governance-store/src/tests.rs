@@ -8582,6 +8582,7 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
                 from_app_key: from_app_key.into(),
                 app_key: to_app_key.into(),
                 target_application_id: app_v2,
+                to_state_version: 0,
                 migration: None,
                 cascade_hlc: HybridTimestamp::zero(),
             },
@@ -8634,6 +8635,94 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             up.cascade_hlc,
             Some(HybridTimestamp::zero()),
             "descendant must carry the signed cascade_hlc fence on the {label} replica"
+        );
+    }
+}
+
+/// PR A's rollup fix compares each member's loaded ABI state version against
+/// the record's `to_state_version`. On a non-initiator that number arrives
+/// only through the op, so a `CascadeUpgrade` that does not carry it leaves
+/// the receiver's record at 0 (pinned red) or stale (falsely green).
+#[test]
+fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let root = ContextGroupId::from([0xE1; 32]);
+    let descendant = ContextGroupId::from([0xE2; 32]);
+    let from_app_key = [0x11u8; 32];
+    let to_app_key = [0x22u8; 32];
+    let app_v2 = ApplicationId::from([0x33u8; 32]);
+
+    // `with_prior_record` picks which apply branch runs: `false` exercises the
+    // load-or-default create, `true` the existing-record update.
+    let build = |with_prior_record: bool| {
+        let store = test_store();
+        for gid in [&root, &descendant] {
+            let mut meta = sample_meta_with_admin(admin_pk);
+            meta.app_key = from_app_key;
+            MetaRepository::new(&store).save(gid, &meta).unwrap();
+        }
+        MembershipRepository::new(&store)
+            .add_member(&root, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &root, &descendant);
+
+        if with_prior_record {
+            UpgradesRepository::new(&store)
+                .save(
+                    &descendant,
+                    &GroupUpgradeValue {
+                        from_version: "10.0.0".to_owned(),
+                        to_version: "10.1.0".to_owned(),
+                        migration: None,
+                        initiated_at: 0,
+                        initiated_by: admin_pk,
+                        status: GroupUpgradeStatus::Completed { completed_at: None },
+                        cascade_hlc: None,
+                        cascade_seq: None,
+                        // The stale value the false green came from.
+                        to_state_version: 1,
+                    },
+                )
+                .unwrap();
+        }
+        store
+    };
+
+    for with_prior_record in [false, true] {
+        let store = build(with_prior_record);
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            root.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::CascadeUpgrade {
+                from_app_key: from_app_key.into(),
+                app_key: to_app_key.into(),
+                target_application_id: app_v2,
+                to_state_version: 2,
+                migration: None,
+                cascade_hlc: HybridTimestamp::zero(),
+            },
+        )
+        .expect("sign CascadeUpgrade");
+
+        apply_local_signed_group_op(&store, &op).expect("cascade applies");
+
+        let record = UpgradesRepository::new(&store)
+            .load(&descendant)
+            .unwrap()
+            .expect("descendant upgrade record");
+        assert_eq!(
+            record.to_state_version, 2,
+            "receiver must record the initiator's target state version \
+             (with_prior_record = {with_prior_record})"
         );
     }
 }

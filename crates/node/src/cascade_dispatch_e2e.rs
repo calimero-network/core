@@ -6,8 +6,7 @@
 //! (`cascade_apply_walk.rs`) and concurrent-safety properties
 //! (`cascade_concurrent_safety.rs`) in isolation, but not the
 //! emitter-side RPC flow as a whole — walk → permission pre-scan →
-//! publish (cleartext `GroupOp::CascadeTargetApplicationSet` +
-//! optional `CascadeGroupMigrationSet`) → local apply → per-descendant
+//! publish (cleartext `GroupOp::CascadeUpgrade`) → local apply → per-descendant
 //! `UpgradesRepository::new(InProgress).save()` → propagator spawn.
 //!
 //! Cross-peer convergence via real gossip is intentionally out of
@@ -370,7 +369,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     // Apply-arm side effect: every matched descendant flipped to
     // (APP_KEY_V2, app_id_v2). The cleartext publish path inside
     // `dispatch_cascade` calls `sign_apply_local_group_op_borsh`,
-    // which runs the `CascadeTargetApplicationSet` apply arm before
+    // which runs the `CascadeUpgrade` apply arm before
     // the publish gate.
     for gid in [&fx.ns, &fx.g1, &fx.g2] {
         let meta = MetaRepository::new(&node.store)

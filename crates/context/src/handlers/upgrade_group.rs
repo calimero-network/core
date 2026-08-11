@@ -1500,7 +1500,8 @@ fn dispatch_cascade(
         )
         .await?;
         // Every matched descendant lands on the same target blob, so one
-        // resolution covers the whole cascade.
+        // resolution covers the whole cascade. It rides the op, so the
+        // initiator's records and every receiver's hold the same number.
         let target_state_version = blob_max_state_version(&node_client_for_publish, new_app_key)
             .await
             .unwrap_or_default();
@@ -1533,6 +1534,7 @@ fn dispatch_cascade(
                 from_app_key: from_app_key.into(),
                 app_key: new_app_key.into(),
                 target_application_id,
+                to_state_version: target_state_version,
                 migration: migration_bytes_for_publish.clone(),
                 cascade_hlc,
             },

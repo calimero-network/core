@@ -1,5 +1,5 @@
 //! End-to-end apply-handler test for the cascade engine
-//! (`GroupOp::CascadeTargetApplicationSet`).
+//! (`GroupOp::CascadeUpgrade`).
 //!
 //! This exercises the store-level apply path
 //! [`apply_local_signed_group_op`] — i.e. what a peer receiving the
@@ -69,7 +69,7 @@ fn create_group(
 }
 
 #[test]
-fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sibling_namespace() {
+fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -119,13 +119,16 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
         r.to_bytes().into(),
         vec![],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: calimero_storage::logical_clock::HybridTimestamp::zero(),
         },
     )
-    .expect("sign CascadeTargetApplicationSet");
+    .expect("sign CascadeUpgrade");
 
     // Apply must succeed (i.e. `apply_group_op_mutations` returns
     // `Ok((true, _))`). A `false` (variant-not-handled) return would

@@ -1,6 +1,4 @@
-//! Cascade-engine helpers used by the `CascadeTargetApplicationSet` and
-//! `CascadeGroupMigrationSet` apply paths (see PR-2 of the namespace-
-//! cascade-migration train).
+//! Cascade-engine helpers used by the `CascadeUpgrade` apply path.
 //!
 //! The cascade engine fans one signed group op out to every descendant
 //! subgroup whose current `app_key` matches the op's `from_app_key`

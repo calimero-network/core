@@ -24,7 +24,7 @@
 //! See `docs/superpowers/plans/2026-05-26-pr2-cascade-engine.md` Task 9
 //! and the comment in
 //! `crates/context/src/group_store/mod.rs::apply_group_op_mutations`
-//! `CascadeTargetApplicationSet` arm (the `divergence = None;
+//! `CascadeUpgrade` arm (the `divergence = None;
 //! /* fall-through */` block).
 //!
 //! ## Replica-convergence design
@@ -50,6 +50,7 @@ use calimero_dag::DagStore;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -132,10 +133,13 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         root.to_bytes().into(),
         vec![[0u8; 32]],
         1,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_2.into(),
             target_application_id: app_id_2(),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign op_a");
@@ -150,10 +154,13 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         root.to_bytes().into(),
         vec![op_a_hash],
         2,
-        GroupOp::CascadeTargetApplicationSet {
+        GroupOp::CascadeUpgrade {
             from_app_key: APP_KEY_1.into(),
             app_key: APP_KEY_3.into(),
             target_application_id: app_id_3(),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign op_b");
