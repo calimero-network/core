@@ -105,6 +105,10 @@ pub async fn handle_node_events(
                 NodeEvent::GroupMembership(event)
             }
             NodeEvent::GroupMembership(_) => continue,
+            NodeEvent::GroupMigration(event) if group_subscriptions.contains(&event.group_id) => {
+                NodeEvent::GroupMigration(event)
+            }
+            NodeEvent::GroupMigration(_) => continue,
         };
 
         let body = match to_json_value(event) {

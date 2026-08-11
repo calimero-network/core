@@ -12,6 +12,9 @@ pub enum NodeEvent {
     /// A group's membership changed (join/add/remove/leave). Keyed by `groupId`,
     /// disjoint from `contextId`, so untagged still round-trips.
     GroupMembership(GroupMembershipEvent),
+    /// A namespace migration changed phase. Keyed by `groupId` like
+    /// [`GroupMembershipEvent`]; the payload tags are disjoint from that enum's.
+    GroupMigration(GroupMigrationEvent),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -47,6 +50,63 @@ pub struct MembershipChange {
     pub member: PublicKey,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<GroupMemberRole>,
+}
+
+/// Mirrors [`GroupMembershipEvent`] so both route through the same
+/// group-subscription filter - that filter is this event's authorization.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMigrationEvent {
+    /// The namespace root the migration runs under, never a descendant
+    /// subgroup: it is the id a client subscribes with. Hex, like `groupId`
+    /// everywhere else.
+    #[serde(with = "crate::hash::hex_repr")]
+    pub group_id: Hash,
+    #[serde(flatten)]
+    pub payload: GroupMigrationPayload,
+}
+
+/// The phase a migration reached, tagged like [`MembershipChangePayload`]. The
+/// per-variant `rename_all` is load-bearing: the enum-level one renames the
+/// variants, not their fields.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "PascalCase")]
+pub enum GroupMigrationPayload {
+    /// A migration was accepted and its target ABI state version resolved.
+    /// `total` is the emitting node's own context count, not a fleet number.
+    #[serde(rename_all = "camelCase")]
+    MigrationStarted {
+        from_version: String,
+        to_version: String,
+        to_state_version: u32,
+        total: u32,
+    },
+    /// Fleet rollup counters, recomputed when a peer's heartbeat facts change.
+    /// Counters only - per-member detail comes from `migration-status`, which
+    /// the same membership gate governs.
+    #[serde(rename_all = "camelCase")]
+    MigrationProgress {
+        migrated: usize,
+        in_progress: usize,
+        unknown: usize,
+        failed: usize,
+        total: usize,
+    },
+    /// One subgroup's local context swaps advanced on the emitting node.
+    #[serde(rename_all = "camelCase")]
+    CascadeProgress {
+        #[serde(with = "crate::hash::hex_repr")]
+        subgroup_id: Hash,
+        completed: u32,
+        total: u32,
+    },
+    /// Every pinned-cohort member reported the target. This is the moment
+    /// `completed_at` becomes knowable under lazy upgrades.
+    #[serde(rename_all = "camelCase")]
+    MigrationCompleted {
+        to_version: String,
+        completed_at: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -255,9 +315,57 @@ mod tests {
         assert!(v["data"].get("role").is_none(), "None role omitted");
     }
 
-    // The untagged NodeEvent still round-trips with a second variant.
+    // groupId on the wrapper (hex, matching the id a client subscribes with),
+    // PascalCase type tag, camelCase data fields.
     #[test]
-    fn node_event_untagged_round_trips_both_variants() {
+    fn group_migration_tag_and_shape() {
+        let event = NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: Hash::from([0x21; 32]),
+            payload: GroupMigrationPayload::MigrationStarted {
+                from_version: "10.1.3".to_owned(),
+                to_version: "10.2.0".to_owned(),
+                to_state_version: 2,
+                total: 7,
+            },
+        });
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "MigrationStarted");
+        assert_eq!(v["groupId"], hex::encode([0x21; 32]), "groupId is hex");
+        assert!(v.get("contextId").is_none(), "no contextId leaks in");
+        assert_eq!(v["data"]["fromVersion"], "10.1.3");
+        assert_eq!(v["data"]["toStateVersion"], 2);
+        assert_eq!(v["data"]["total"], 7);
+    }
+
+    #[test]
+    fn cascade_progress_carries_a_hex_subgroup_id() {
+        let v = serde_json::to_value(GroupMigrationPayload::CascadeProgress {
+            subgroup_id: Hash::from([0x31; 32]),
+            completed: 3,
+            total: 5,
+        })
+        .expect("serialize");
+        assert_eq!(v["type"], "CascadeProgress");
+        assert_eq!(v["data"]["subgroupId"], hex::encode([0x31; 32]));
+        assert_eq!(v["data"]["completed"], 3);
+    }
+
+    // The untagged NodeEvent resolves each variant by its payload tag. The two
+    // group-keyed variants are the hazard: a payload tag shared between them
+    // would let the first-declared one swallow the other's events.
+    #[test]
+    fn node_event_untagged_round_trips_every_variant() {
+        let migration = NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: Hash::from([0x41; 32]),
+            payload: GroupMigrationPayload::MigrationCompleted {
+                to_version: "10.2.0".to_owned(),
+                completed_at: 1_700_000_000,
+            },
+        });
+        let json = serde_json::to_string(&migration).expect("to_string");
+        let back: NodeEvent = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back, NodeEvent::GroupMigration(_)), "got {back:?}");
+
         let group = NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: Hash::from([0x11; 32]),
             payload: MembershipChangePayload::MemberAdded(MembershipChange {

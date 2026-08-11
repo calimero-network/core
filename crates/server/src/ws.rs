@@ -91,8 +91,8 @@ impl WsConfig {
 #[derive(Debug)]
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
-    /// Group ids observed for `GroupMembership` events, routed independently
-    /// from `subscriptions`.
+    /// Group ids observed for group-keyed events (membership, migration),
+    /// routed independently from `subscriptions`.
     group_subscriptions: HashSet<Hash>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
     /// The verified public key of the authenticated client that opened this
@@ -401,11 +401,15 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
     let mut events = pin!(events);
 
     while let Some(event) = events.next().await {
-        // Route by id-space: context events by context_id, membership events by group_id.
+        // Route by id-space: context events by context_id, membership and
+        // migration events by group_id.
         let route = match &event {
             NodeEvent::Context(context_event) => EventRoute::Context(context_event.context_id),
             NodeEvent::GroupMembership(membership_event) => {
                 EventRoute::Group(membership_event.group_id)
+            }
+            NodeEvent::GroupMigration(migration_event) => {
+                EventRoute::Group(migration_event.group_id)
             }
         };
 
@@ -804,8 +808,9 @@ mod tests {
     use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_primitives::context::ContextId;
     use calimero_primitives::events::{
-        ContextEvent, ContextEventPayload, GroupMembershipEvent, MembershipChange,
-        MembershipChangePayload, NodeEvent, StateMutationPayload,
+        ContextEvent, ContextEventPayload, GroupMembershipEvent, GroupMigrationEvent,
+        GroupMigrationPayload, MembershipChange, MembershipChangePayload, NodeEvent,
+        StateMutationPayload,
     };
     use calimero_primitives::hash::Hash;
     use calimero_primitives::identity::PublicKey;
@@ -1027,6 +1032,73 @@ mod tests {
         assert!(
             pushed["result"].get("groupId").is_some(),
             "the frame should carry the groupId: {pushed}"
+        );
+
+        let leaked = next_json(&mut read_b, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a non-group-subscriber must not receive the event: {leaked:?}"
+        );
+    }
+
+    fn group_migration_event(group: Hash) -> NodeEvent {
+        NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: group,
+            payload: GroupMigrationPayload::MigrationStarted {
+                from_version: "10.1.3".to_owned(),
+                to_version: "10.2.0".to_owned(),
+                to_state_version: 2,
+                total: 3,
+            },
+        })
+    }
+
+    // The migration event rides the group subscription that already existed: a
+    // subscriber to the namespace gets it, an unsubscribed connection does not.
+    #[tokio::test]
+    async fn group_migration_events_only_reach_group_subscribers() {
+        let server = spawn_test_ws().await;
+        let group = Hash::from([78u8; 32]);
+
+        let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
+        let (_write_b, mut read_b) = connect_async(&server.url).await.unwrap().0.split();
+
+        write_a.send(subscribe_group_msg(1, group)).await.unwrap();
+        let sub_resp = next_json(&mut read_a, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(sub_resp["id"], json!(1));
+        assert_eq!(
+            sub_resp["result"]["groupIds"],
+            json!([hex::encode(group.as_bytes())]),
+            "the group id should be echoed as subscribed, hex-encoded like the admin API"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(group_migration_event(group))
+            .unwrap();
+
+        let pushed = next_json(&mut read_a, Duration::from_secs(5))
+            .await
+            .expect("group subscriber should receive the event");
+        assert_eq!(
+            pushed["result"]["type"], "MigrationStarted",
+            "the frame should carry the migration-phase discriminant: {pushed}"
+        );
+        assert_eq!(
+            pushed["result"]["groupId"],
+            hex::encode(group.as_bytes()),
+            "the frame should carry the groupId the client subscribed with: {pushed}"
         );
 
         let leaked = next_json(&mut read_b, Duration::from_millis(500)).await;

@@ -23,7 +23,7 @@ use super::config::SESSION_EXPIRY_SECS;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSessionData {
     pub subscriptions: HashSet<ContextId>,
-    /// Group ids observed for `GroupMembership` events. `#[serde(default)]` so
+    /// Group ids observed for group-keyed events. `#[serde(default)]` so
     /// records persisted before group subscriptions existed still deserialize.
     #[serde(default)]
     pub group_subscriptions: HashSet<Hash>,

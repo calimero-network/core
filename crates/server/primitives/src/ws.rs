@@ -76,8 +76,8 @@ pub enum ServerResponseError {
 pub struct SubscribeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,
-    /// Groups to observe for `GroupMembership` events. Hex-encoded, matching the
-    /// group/namespace admin API's id representation.
+    /// Groups to observe for group-keyed events (membership, migration).
+    /// Hex-encoded, matching the group/namespace admin API's id representation.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
