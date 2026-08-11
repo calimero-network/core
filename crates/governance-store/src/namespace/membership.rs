@@ -63,7 +63,27 @@ impl<'a> NamespaceMembershipService<'a> {
         // None case explicitly.
 
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-        self.require_inviter_permission(&group_id, &inviter_pk)?;
+        // Skipped on the node that authored this op — the joiner itself.
+        //
+        // The question the check asks ("does this inviter hold
+        // CAN_INVITE_MEMBERS in this group?") is answerable only from the
+        // group's membership state, and a joiner has none of it at the moment
+        // it must answer: it applies its own `MemberJoined` before any genesis,
+        // membership row or binding has reached it. So on the author the check
+        // is not a control that passes or fails on the merits, it is one that
+        // cannot be evaluated at all — and it refused every offline join, which
+        // left the op unapplied, hence unpublished, hence nothing to converge on
+        // once the partition healed.
+        //
+        // Nothing is granted by skipping it. The joiner's row is local, and
+        // every PEER applying the same op does hold the state, runs the check
+        // below, and rejects an invitation whose inviter lacked permission. A
+        // joiner handed a bad invitation ends up believing a join that no peer
+        // honours — which is what any other unaccepted join already looks like.
+        let self_authored = self.op_authored_by_this_node(signer)?;
+        if !self_authored {
+            self.require_inviter_permission(&group_id, &inviter_pk)?;
+        }
 
         // Direct-row dedup: a `MemberJoined` op materializes the joiner's
         // direct membership row. An identity that already inherits
@@ -108,9 +128,11 @@ impl<'a> NamespaceMembershipService<'a> {
         reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
         let role = role_from_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin {
+        if role == GroupMemberRole::Admin && !self_authored {
             // Same key→account resolution as `require_inviter_permission`, and
-            // the same refusal when the inviter names no account here.
+            // the same refusal when the inviter names no account here — and
+            // skipped on the author for the same reason, or an admin invitation
+            // would be the one kind that still cannot be accepted offline.
             let inviter = crate::member_account_in_namespace(self.store, &group_id, &inviter_pk)?;
             let is_admin = match inviter {
                 Some(inviter) => {
@@ -250,6 +272,23 @@ impl<'a> NamespaceMembershipService<'a> {
             .verify_raw_signature(&hash, &sig_arr)
             .map_err(|e| eyre::eyre!("invalid invitation signature: {e}"))?;
         Ok(())
+    }
+
+    /// Whether this node signed the op being applied — i.e. it is the joiner,
+    /// not a peer replaying its op.
+    ///
+    /// Compared against the namespace signing key rather than against any
+    /// account, deliberately: an account is resolved through a binding, and the
+    /// whole reason this distinction exists is that a fresh joiner has no
+    /// bindings yet. The key is stored before the first op is signed, so it is
+    /// the one identity available at this point. `signer` is authenticated —
+    /// the signature over the op was verified before this — so it cannot be
+    /// claimed by another node.
+    fn op_authored_by_this_node(&self, signer: &PublicKey) -> EyreResult<bool> {
+        let ns_gid = ContextGroupId::from(*self.namespace_id.as_bytes());
+        Ok(NamespaceRepository::new(self.store)
+            .identity(&ns_gid)?
+            .is_some_and(|(local_pk, ..)| local_pk == *signer))
     }
 
     /// The inviter named on an invitation must hold `CAN_INVITE_MEMBERS`.

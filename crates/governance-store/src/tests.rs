@@ -5722,6 +5722,91 @@ fn apply_member_joined(
     apply_signed_namespace_op(store, &signed).map(|_result| ())
 }
 
+/// The inviter-permission check is skipped on the node that authored the join,
+/// because a joiner has no namespace state to evaluate it against. These two pin
+/// the boundary of that exemption from both sides — it is what keeps the skip
+/// from quietly becoming "nobody checks".
+#[test]
+fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_pk);
+
+    // This node is the admin — a peer applying someone else's join op, which is
+    // the side that holds the state and therefore owes the check.
+    let node_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let node_sk = PrivateKey::from(node_sk_bytes);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    // Signed by a stranger who is no member of the group, let alone one with
+    // CAN_INVITE_MEMBERS.
+    let stranger_sk = PrivateKey::random(&mut rng);
+    let invitation = signed_invitation_for(&stranger_sk, subgroup, [0x81; 32]);
+
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let err = apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1)
+        .expect_err("a peer must refuse an invitation from an inviter with no permission");
+
+    assert!(
+        format!("{err:#}").contains("lacks permission"),
+        "expected an inviter-permission refusal, got: {err:#}"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .has_direct_member(
+                &subgroup,
+                &crate::test_fixtures::account_for(&joiner_sk.public_key())
+            )
+            .unwrap(),
+        "a refused join must not materialize a member row"
+    );
+}
+
+#[test]
+fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
+    use rand::rngs::OsRng;
+
+    // The offline joiner: it holds none of the group's state — no genesis, no
+    // membership rows, no bindings — so the inviter lookup can only ever fail,
+    // whatever the invitation. Refusing there left the op unapplied and so never
+    // published, and the join could not converge once peers were reachable.
+    let mut rng = OsRng;
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_pk);
+
+    let joiner_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let joiner_sk = PrivateKey::from(joiner_sk_bytes);
+    let joiner_pk = joiner_sk.public_key();
+
+    // This node IS the joiner — the op below is its own.
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    // The same invitation the peer test refuses, from an inviter this node
+    // cannot resolve. It applies here, and peers remain free to reject it.
+    let stranger_sk = PrivateKey::random(&mut rng);
+    let invitation = signed_invitation_for(&stranger_sk, subgroup, [0x82; 32]);
+
+    apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1)
+        .expect("the joiner must be able to apply its own join op");
+
+    assert!(
+        MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &crate::test_fixtures::account_for(&joiner_pk))
+            .unwrap(),
+        "the joiner's own row must exist, or it reads as a non-member of the group it just joined"
+    );
+}
+
 #[test]
 fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
     use rand::rngs::OsRng;
