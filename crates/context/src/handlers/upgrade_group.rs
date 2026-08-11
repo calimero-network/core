@@ -975,6 +975,85 @@ const MAX_AUTO_RETRIES: u32 = 3;
 /// Base delay between retry rounds (doubles each round: 5s, 10s, 20s).
 const RETRY_BASE_DELAY_SECS: u64 = 5;
 
+/// The blob a context actually executes: its activation marker, else the
+/// bytecode of the application row it is registered under. Deliberately not
+/// `hlc_fence::loaded_reader_app_key`, whose last resort is `GroupMeta.app_key`:
+/// mid-upgrade that IS the target, so an unresolvable context would read as
+/// already-on-target and be skipped while `propagate_upgrade` (which skips on
+/// application id, not blob) swaps it anyway.
+fn executing_blob(
+    datastore: &calimero_store::Store,
+    context_id: &ContextId,
+) -> eyre::Result<[u8; 32]> {
+    if let Some(blob) = crate::activation::activated_blob(datastore, context_id) {
+        return Ok(blob);
+    }
+    let handle = datastore.handle();
+    let context = handle
+        .get(&key::ContextMeta::new(*context_id))?
+        .ok_or_else(|| eyre::eyre!("context {context_id} has no meta row"))?;
+    let application = handle
+        .get(&context.application)?
+        .ok_or_else(|| eyre::eyre!("context {context_id}'s application row is missing"))?;
+    Ok(*application.bytecode.blob_id().as_ref())
+}
+
+/// The migration a RESUMED propagation must carry (crash recovery, operator
+/// retry), resolved from the apps' embedded ABIs.
+///
+/// The `GroupUpgradeValue` record cannot answer this: the lazy path persists it
+/// synchronously as a concurrency mutex, before an async blob read could
+/// resolve the target's ABI, so its `migration` is `None` by construction, and
+/// `update_upgrade_status` only ever rewrites the counters, so the hollow value
+/// survives every later write.
+///
+/// Contexts already on the target blob are skipped; the rest must agree, for
+/// the same reason services must in [`resolve_upgrade_from_abis`]: the wire
+/// carries ONE method for the whole group, so letting whichever context sorts
+/// first decide would silently apply its answer to the others.
+pub(crate) async fn resolve_resumed_migration(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    datastore: &calimero_store::Store,
+    group_id: &ContextGroupId,
+    target_application_id: &ApplicationId,
+) -> eyre::Result<Option<MigrationParams>> {
+    let target_blob = datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(*target_application_id))?
+        .map(|app| *app.bytecode.blob_id().as_ref())
+        .ok_or_else(|| eyre::eyre!("target application not found"))?;
+
+    let mut resolved: Option<Option<String>> = None;
+    for context_id in
+        calimero_governance_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?
+    {
+        let current = executing_blob(datastore, &context_id)?;
+        if current == target_blob {
+            continue;
+        }
+        // `force_code_only` is not persisted on the record, so a resumed
+        // propagation takes the strict branch.
+        let method = resolve_upgrade_from_abis(node_client, current, target_blob, false)
+            .await?
+            .map(|m| m.method);
+        match &resolved {
+            None => {}
+            Some(agreed) if *agreed == method => continue,
+            Some(agreed) => bail!(
+                "contexts in this group resolve DIFFERENT migrations for the same target \
+                 ('{}' vs '{}'); they are not on a common bytecode, so one propagation cannot \
+                 carry both - upgrade them separately",
+                agreed.as_deref().unwrap_or("<code-only>"),
+                method.as_deref().unwrap_or("<code-only>"),
+            ),
+        }
+        resolved = Some(method);
+    }
+
+    // `None` only when every context already runs the target: nothing to migrate.
+    Ok(resolved.flatten().map(|method| MigrationParams { method }))
+}
+
 pub(crate) async fn propagate_upgrade(
     context_client: calimero_context_client::client::ContextClient,
     datastore: calimero_store::Store,

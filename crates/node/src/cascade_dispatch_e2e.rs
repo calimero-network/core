@@ -23,7 +23,9 @@ use calimero_governance_store::{
 };
 use std::time::Duration;
 
-use calimero_context_client::group::UpgradeGroupRequest;
+use calimero_context_client::group::{
+    GetGroupUpgradeStatusRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::register_context_in_group;
 use calimero_primitives::application::ApplicationId;
@@ -1116,5 +1118,131 @@ async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
         app_id_v1(),
         "recovery trusted the record's `migration: None` and swapped the bytecode \
          without migrating - the migration must be re-resolved from the target's ABI"
+    );
+}
+
+/// Retry is the sibling of crash recovery and the SAME hollow record reaches
+/// it, one step further along: recovery re-resolves the migration, a context
+/// fails it, and `update_upgrade_status` rewrites only the counters - so the
+/// record still reads `migration: None` while `failed > 0`, which is exactly
+/// retry's precondition. Trusting the record here hands an operator the
+/// code-only swap of a MIGRATING upgrade that recovery just refused.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
+    use actix::Actor;
+
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let blobs = seed_app_blobs(&node).await;
+
+    let gid = ContextGroupId::from([0xF1; 32]);
+    let ctx = ContextId::from([0xF2; 32]);
+
+    install_application(&node.store, app_id_v1(), blobs.v1, "0.1.0", 1);
+    // The target declares state v2 plus a v1->v2 edge: a MIGRATING upgrade.
+    install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
+
+    provision_group(
+        &node.store,
+        &gid,
+        admin_pk,
+        blobs.v2_migrating,
+        app_id_v2(),
+        UpgradePolicy::LazyOnAccess,
+    );
+    register_context_for(&node.store, &gid, ctx, app_id_v1());
+    provision_local_context_identity(&node.store, ctx, &admin_sk);
+
+    let progressed = tokio::task::LocalSet::new()
+        .run_until(async {
+            let manager = calimero_context::ContextManager::new(
+                node.store.clone(),
+                node.node_client.clone(),
+                node.context_client.clone(),
+                None,
+            )
+            .start();
+
+            // `Actor::started` runs its recovery scan before the first message
+            // is handled, so this round-trip is the barrier that lets the
+            // record be seeded without recovery claiming the group: the
+            // operator command is the subject here, not the restart.
+            let _ = manager
+                .send(GetGroupUpgradeStatusRequest { group_id: gid })
+                .await
+                .expect("status mailbox");
+
+            UpgradesRepository::new(&node.store)
+                .save(
+                    &gid,
+                    &GroupUpgradeValue {
+                        from_version: "0.1.0".to_owned(),
+                        to_version: "0.2.0".to_owned(),
+                        // Still the lazy path's synchronous mutex write: nothing
+                        // on the recovery or propagation path ever fills it in.
+                        migration: None,
+                        initiated_at: 1_700_000_000,
+                        initiated_by: admin_pk,
+                        // Where recovery leaves the group once a context fails.
+                        status: GroupUpgradeStatus::InProgress {
+                            total: 1,
+                            completed: 0,
+                            failed: 1,
+                        },
+                        cascade_hlc: None,
+                        cascade_seq: None,
+                        to_state_version: 0,
+                    },
+                )
+                .expect("seed post-recovery failed record");
+
+            manager
+                .send(RetryGroupUpgradeRequest {
+                    group_id: gid,
+                    requester: Some(admin_pk),
+                })
+                .await
+                .expect("retry mailbox")
+                .expect("retry should be accepted");
+
+            // Retry resets the counters to (0, 0) before it answers, so this
+            // waits for the propagator's decision rather than a fixed delay.
+            wait_until(|| {
+                !matches!(
+                    UpgradesRepository::new(&node.store)
+                        .load(&gid)
+                        .expect("load upgrade record")
+                        .expect("record exists")
+                        .status,
+                    GroupUpgradeStatus::InProgress {
+                        completed: 0,
+                        failed: 0,
+                        ..
+                    }
+                )
+            })
+            .await
+        })
+        .await;
+
+    assert!(progressed, "retry must have processed the group");
+
+    // Same observable as the recovery fixture: the target's migrate export
+    // cannot load here, so a resolved migration necessarily leaves the context
+    // on v1, while a code-only swap flips it to v2.
+    let application = node
+        .context_client
+        .get_context(&ctx)
+        .expect("load context")
+        .expect("context exists")
+        .application_id;
+    assert_eq!(
+        application,
+        app_id_v1(),
+        "retry trusted the record's `migration: None` and swapped the bytecode \
+         without migrating - it must re-resolve the migration from the target's ABI"
     );
 }
