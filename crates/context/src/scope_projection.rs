@@ -1972,7 +1972,13 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<GroupMemberRole> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        match view.member_path_at_cut(group, &legacy_account_id(member), root, default_cap_base) {
+        // Resolved exactly as `member_at_cut` resolves it. Deriving the account
+        // from the key here instead made the two disagree: membership said the
+        // key was a member and the role lookup found nobody, which is the
+        // "member at cut but role unresolved" the caller then logged before
+        // guessing `Member`.
+        let account = account_for_author(&view, member, root);
+        match view.member_path_at_cut(group, &account, root, default_cap_base) {
             calimero_authz::MemberPathAtCut::None => None,
             calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
             calimero_authz::MemberPathAtCut::Inherited {
@@ -1989,7 +1995,7 @@ impl ScopeProjections {
             } => view
                 .groups
                 .get(&anchor)
-                .and_then(|m| m.get(&legacy_account_id(member)))
+                .and_then(|m| m.get(&account))
                 .cloned(),
         }
     }
@@ -2000,18 +2006,22 @@ impl ScopeProjections {
     /// equal-`hlc` governance ops (use [`Self::role_at_cut`] when causal
     /// resolution matters).
     #[must_use]
+    /// `member` is an ACCOUNT — the id the fold keys membership by. Callers
+    /// holding a signing key resolve it first (see
+    /// [`account_for_author`]); doing it here from the key alone would answer
+    /// about a principal the fold has never recorded.
     pub fn role_of(
         &self,
         scope: &ScopeId,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> Option<GroupMemberRole> {
         self.states
             .get(scope)?
             .acl_view()
             .groups
             .get(group)?
-            .get(&legacy_account_id(member))
+            .get(member)
             .cloned()
     }
 }
@@ -2460,16 +2470,23 @@ mod tests {
 
         let mut reg = ScopeProjections::new();
         // Before the join: nothing recorded.
-        assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
+        assert_eq!(
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            None
+        );
         reg.ingest_op(&join);
         // After: the member is recorded for the group, under the namespace scope.
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &member),
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
             Some(GroupMemberRole::Member),
         );
         // A different namespace's scope is unaffected (isolation across namespaces).
         assert_eq!(
-            reg.role_of(&ScopeId::from([0xEE; 32]), &group, &member),
+            reg.role_of(
+                &ScopeId::from([0xEE; 32]),
+                &group,
+                &legacy_account_id(&member)
+            ),
             None,
         );
     }
@@ -2504,7 +2521,7 @@ mod tests {
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &member),
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
             Some(GroupMemberRole::Admin),
         );
 
@@ -2521,7 +2538,10 @@ mod tests {
             &[[0xAB; 32]],
         );
         reg.ingest_op(&remove);
-        assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
+        assert_eq!(
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            None
+        );
 
         // A truly out-of-model group op folds as a Noop node (still recorded).
         let other = op_from_namespace_op(
