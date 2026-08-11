@@ -41,7 +41,6 @@ mod subgroup_visibility_set;
 mod target_application_set;
 mod tee_admission_policy_set;
 mod transfer_ownership;
-mod upgrade_policy_set;
 
 pub(crate) use context::GroupApplyCtx;
 
@@ -100,7 +99,6 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
             default_capabilities_set::apply(ctx, &capabilities.bits())?
         }
-        GroupOp::UpgradePolicySet { policy } => upgrade_policy_set::apply(ctx, policy)?,
         GroupOp::TargetApplicationSet {
             app_key,
             target_application_id,

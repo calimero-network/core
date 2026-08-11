@@ -43,7 +43,6 @@ use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetSubgroupVisibilityApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::UpdateContextApplicationRequest;
-use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use calimero_server_primitives::admin::UpgradeGroupApiRequest;
 
@@ -158,29 +157,6 @@ async fn delete_group() {
         .unwrap();
 
     assert!(resp.data.is_deleted);
-}
-
-#[tokio::test]
-async fn update_group_settings() {
-    let server = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path(format!("/admin-api/groups/{GID}")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    client
-        .update_group_settings(
-            GID,
-            UpdateGroupSettingsApiRequest {
-                requester: None,
-                upgrade_policy: UpgradePolicy::Automatic,
-            },
-        )
-        .await
-        .unwrap();
 }
 
 // ---- Members ----

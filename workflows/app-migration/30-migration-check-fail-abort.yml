@@ -127,13 +127,6 @@ steps:
     statements:
       - 'json_equal({{count_before}}, {"output": 3})'
 
-  # LazyOnAccess: the context attempts to self-migrate on next access.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-check-fail-1
-    group_id: "{{namespace_id}}"
-    upgrade_policy: lazy_on_access
-
   - name: Install scenario-migration-check-fail-v2
     type: install_application
     node: app-migration-check-fail-1

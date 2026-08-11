@@ -35,7 +35,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | Group | Handlers |
 | --- | --- |
 | Context lifecycle | `create_context`, `delete_context`, `join_context`, `leave_context`, `resync_context`, `execute` (+ `execute/{signing,storage,governance_position,upgrade_gate}`), `sync`, `get_context_metadata`, `set_context_metadata`, `acquire_context_lock` |
-| Group lifecycle | `create_group`, `delete_group`, `join_group`, `leave_group`, `add_group_members`, `remove_group_members`, `update_group_settings`, `update_member_role`, `set_member_auto_follow`, `rotate_group_key`, `create_group_invitation` |
+| Group lifecycle | `create_group`, `delete_group`, `join_group`, `leave_group`, `add_group_members`, `remove_group_members`, `update_member_role`, `set_member_auto_follow`, `rotate_group_key`, `create_group_invitation` |
 | Group upgrades | `upgrade_group`, `retry_group_upgrade`, `get_group_upgrade_status`, `get_migration_status`, `abort_migration` |
 | Namespace / subgroup governance | `delete_namespace`, `leave_namespace`, `list_namespaces`, `list_namespaces_for_application`, `detach_context_from_group`, `join_subgroup_inheritance`, `set_subgroup_visibility`, `get_namespace_identity`, `namespace_pending_op_count` |
 | Signed-op apply (peer-to-peer) | `apply_signed_group_op`, `apply_signed_namespace_op`, `broadcast_group_local_state`, `sync_group` |

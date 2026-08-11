@@ -12,7 +12,7 @@ use calimero_server_primitives::admin::{
     RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
     RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
     SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -336,15 +336,6 @@ impl Report for DeleteGroupApiResponse {
             "Successfully deleted group (deleted: {})",
             self.data.is_deleted
         )]);
-        println!("{table}");
-    }
-}
-
-impl Report for UpdateGroupSettingsApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Group Settings Updated").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully updated group settings"]);
         println!("{table}");
     }
 }

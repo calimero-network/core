@@ -89,15 +89,6 @@ steps:
       key: "hello"
       value: "world"
 
-  # LazyOnAccess is required for migration-carrying upgrades (see
-  # ensure_migration_policy_supported). The L1 gate check runs inside the
-  # LazyOnAccess branch of upgrade_group before any op is emitted.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-iddowngrade-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
-
   # Phase 4: Attempt the forbidden upgrade.
   #
   # The emitter-side gate (verify_no_identity_downgrade) detects

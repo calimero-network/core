@@ -334,17 +334,6 @@ pub struct GroupSummary {
 }
 
 #[derive(Debug)]
-pub struct UpdateGroupSettingsRequest {
-    pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
-    pub upgrade_policy: UpgradePolicy,
-}
-
-impl Message for UpdateGroupSettingsRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
 pub struct UpdateMemberRoleRequest {
     pub group_id: ContextGroupId,
     pub identity: PublicKey,

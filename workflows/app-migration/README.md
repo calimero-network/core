@@ -69,9 +69,8 @@ and the namespace-cascade additions designed in
 
 ## Cross-node migration model (why `lazy_on_access`)
 
-Every scenario sets `upgrade_policy: lazy_on_access` and relies on each
-node migrating its **own** state independently. This is deliberate, not
-a workaround:
+Every scenario relies on each node migrating its **own** state
+independently. This is deliberate, not a workaround:
 
 * Migration is a **full root-state replacement**, not a CRDT-mergeable
   delta. The migrate fn produces fully-resolved v2-shaped state, so

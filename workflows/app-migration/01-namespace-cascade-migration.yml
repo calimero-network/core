@@ -192,24 +192,6 @@ steps:
     statements:
       - 'json_subset({{v1_schema_node2}}, {"output": {"schema_version": "1.0.0", "description": "set-before-cascade", "counter": "1"}})'
 
-  # LazyOnAccess is the cross-node migration model: each node
-  # migrates its OWN (already-synced, byte-identical) v1 state on its
-  # next context access. The migration write path deliberately emits
-  # no DAG delta (it's a full root replacement, not a CRDT-mergeable
-  # change — see `clear_pending_delta` in update_application), so the
-  # migrated bytes do NOT propagate over sync; each node must
-  # re-derive v2 state locally. Under `coordinated` only the emitter
-  # migrates and receivers are left with v1 bytes behind a v2 app
-  # pointer → "Not all bytes read" panic on first read. The cascade
-  # ops set both `target_application_id` AND the `migration` method
-  # on every descendant's GroupMeta, which is what each receiver's
-  # `maybe_lazy_upgrade` reads to self-migrate.
-  - name: Set upgrade policy to lazy-on-access on node 1
-    type: update_group_settings
-    node: app-migration-cascade-1
-    group_id: "{{namespace_id}}"
-    upgrade_policy: lazy_on_access
-
   # Phase 6: ONE cascade call from node 1 against the namespace root.
   # The cascade engine emits a single atomic CascadeUpgrade op on the
   # namespace DAG; the apply path runs on every peer subscribed to the

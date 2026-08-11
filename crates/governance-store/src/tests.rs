@@ -922,7 +922,7 @@ fn apply_local_context_alias_admin_or_creator() {
 }
 
 #[test]
-fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
+fn apply_local_signed_group_op_capabilities_and_delete() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -969,28 +969,8 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
         0x7
     );
 
-    let op_policy = SignedGroupOp::sign(
-        &admin_sk,
-        gid_bytes.into(),
-        vec![],
-        2,
-        GroupOp::UpgradePolicySet {
-            policy: UpgradePolicy::Automatic,
-        },
-    )
-    .unwrap();
-    apply_local_signed_group_op(&store, &op_policy).unwrap();
-    assert_eq!(
-        MetaRepository::new(&store)
-            .load(&gid)
-            .unwrap()
-            .unwrap()
-            .upgrade_policy,
-        UpgradePolicy::Automatic
-    );
-
     let op_del =
-        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 3, GroupOp::GroupDelete).unwrap();
+        SignedGroupOp::sign(&admin_sk, gid_bytes.into(), vec![], 2, GroupOp::GroupDelete).unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
@@ -4851,55 +4831,6 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
     );
 }
 
-#[test]
-fn set_upgrade_policy_admin_gated_and_blocks_flip_while_migration_pending() {
-    use calimero_primitives::context::UpgradePolicy;
-
-    use super::group_settings::GroupSettingsService;
-    use crate::test_fixtures::sample_meta_with_admin;
-    use crate::MetaRepository;
-
-    let store = test_store();
-    let gid = ContextGroupId::from([0xC1; 32]);
-    let admin = PublicKey::from([0x01; 32]);
-    let member = PublicKey::from([0x02; 32]);
-
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &member, GroupMemberRole::Member)
-        .unwrap();
-
-    let mut meta = sample_meta_with_admin(admin);
-    meta.upgrade_policy = UpgradePolicy::LazyOnAccess;
-    MetaRepository::new(&store).save(&gid, &meta).unwrap();
-
-    let svc = GroupSettingsService::new(&store, gid);
-
-    // Admin-gate (#27): a non-admin signer is rejected.
-    assert!(svc
-        .set_upgrade_policy(&member, &UpgradePolicy::Automatic)
-        .is_err());
-
-    // No migration pending: an admin may flip in either direction.
-    svc.set_upgrade_policy(&admin, &UpgradePolicy::Automatic)
-        .unwrap();
-    svc.set_upgrade_policy(&admin, &UpgradePolicy::LazyOnAccess)
-        .unwrap();
-
-    // Pending migration (#6): flipping AWAY from LazyOnAccess is rejected (it
-    // would strand un-accessed contexts), but staying LazyOnAccess is allowed.
-    meta.upgrade_policy = UpgradePolicy::LazyOnAccess;
-    meta.migration = Some(vec![1, 2, 3]);
-    MetaRepository::new(&store).save(&gid, &meta).unwrap();
-    assert!(svc
-        .set_upgrade_policy(&admin, &UpgradePolicy::Automatic)
-        .is_err());
-    svc.set_upgrade_policy(&admin, &UpgradePolicy::LazyOnAccess)
-        .unwrap();
-}
-
 // ---------------------------------------------------------------------
 // Fast-path integration tests for `membership_status_at`
 //
@@ -8713,8 +8644,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
 // receiver's live rows.
 //
 // The settings ops (`TargetApplicationSet`, `GroupMigrationSet`,
-// `UpgradePolicySet`, `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`) run
-// their gates through `GroupSettingsService`, which used to build a LIVE
+// `DefaultCapabilitiesSet`, `SubgroupVisibilitySet`) run their gates
+// through `GroupSettingsService`, which used to build a LIVE
 // `PermissionChecker` regardless of the apply context. That made the verdict a
 // function of each replica's fold progress: a replica that had folded a
 // concurrent capability revoke rejected the op (and, because the reject path

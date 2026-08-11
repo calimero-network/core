@@ -2393,27 +2393,6 @@ pub struct GroupSummaryApiData {
     pub name: Option<String>,
 }
 
-// ---- Update Group Settings ----
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateGroupSettingsApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-    pub upgrade_policy: UpgradePolicy,
-}
-
-impl Validate for UpdateGroupSettingsApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-// ---- Update Group Settings ----
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct UpdateGroupSettingsApiResponse {}
-
 // ---- Update Member Role ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

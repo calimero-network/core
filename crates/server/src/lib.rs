@@ -307,9 +307,8 @@ fn build_cors_layer(cors: &crate::config::CorsConfig) -> CorsLayer {
             Method::GET,
             Method::DELETE,
             Method::PUT,
-            // PATCH backs `updateGroupSettings` (PATCH /admin-api/groups/:id);
-            // omitting it fails the browser preflight as a status-0 network
-            // error while curl/CLI clients work fine.
+            // Preflight allowance for PATCH-shaped admin routes. Omitting it
+            // fails the browser preflight as a status-0 network error.
             Method::PATCH,
             Method::OPTIONS,
         ])
@@ -402,10 +401,9 @@ mod cors_tests {
             .layer(build_cors_layer(&crate::config::CorsConfig::default()))
     }
 
-    /// Browser preflight for the PATCH-backed admin routes (e.g.
-    /// `PATCH /admin-api/groups/:id` = updateGroupSettings): the allow-methods
+    /// Browser preflight for PATCH-shaped admin routes: the allow-methods
     /// list must include PATCH, otherwise web apps see a status-0 network
-    /// error while curl/CLI clients (no CORS) work — which is how the gap
+    /// error while curl/CLI clients (no CORS) work - which is how the gap
     /// originally shipped unnoticed.
     #[tokio::test]
     async fn cors_preflight_allows_patch() {
@@ -433,8 +431,8 @@ mod cors_tests {
             .expect("allow-methods should be ASCII");
         assert!(
             allowed.contains("PATCH"),
-            "PATCH missing from Access-Control-Allow-Methods ({allowed}) — \
-             browser clients cannot call updateGroupSettings"
+            "PATCH missing from Access-Control-Allow-Methods ({allowed}) - \
+             browser clients cannot make PATCH-shaped admin calls"
         );
     }
 

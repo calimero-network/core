@@ -93,14 +93,6 @@ steps:
     args:
       description: "set-before-upgrade"
 
-  # LazyOnAccess routes the upgrade through plan_emit_ladder ->
-  # resolve_upgrade_from_abis, where the missing-ABI refusal fires.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-missing-abi-1
-    group_id: "{{group_id}}"
-    upgrade_policy: lazy_on_access
-
   # Phase 4: Install the UNEMBEDDED v2 build (distinct package -> distinct
   # application id; its wasm has no calimero_abi_v1 section).
   - name: Install unembedded migration-suite-v2 (no ABI) on node 1

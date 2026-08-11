@@ -47,8 +47,8 @@ use crate::group::{
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
     StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
     StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -2032,12 +2032,6 @@ impl ContextClient {
         ListAllGroups,
         ListAllGroupsRequest,
         eyre::Result<Vec<GroupSummary>>
-    );
-    forward_to_actor!(
-        update_group_settings,
-        UpdateGroupSettings,
-        UpdateGroupSettingsRequest,
-        eyre::Result<()>
     );
     forward_to_actor!(
         update_member_role,

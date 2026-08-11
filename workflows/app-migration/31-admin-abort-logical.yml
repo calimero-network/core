@@ -113,15 +113,6 @@ steps:
       key: "bravo"
       value: "b"
 
-  # LazyOnAccess defers application on non-initiating nodes only; the node that
-  # fires the cascade still applies eagerly. We set it for parity with the other
-  # lazy scenarios — it does not create a pre-commit window on this single node.
-  - name: Set upgrade policy to lazy-on-access
-    type: update_group_settings
-    node: app-migration-admin-abort-1
-    group_id: "{{namespace_id}}"
-    upgrade_policy: lazy_on_access
-
   # Fire the cascade. On the initiating node this applies the migration eagerly
   # (the context commits to v2 here) and records a pending migration marker for
   # the group — the marker the abort below drops.
