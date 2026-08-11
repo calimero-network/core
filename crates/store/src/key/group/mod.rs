@@ -1756,6 +1756,20 @@ impl NamespaceGovOp {
         id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..65]);
         id
     }
+
+    /// Is this row actually a namespace gov-op row?
+    ///
+    /// [`GroupDeviceBinding`] has the IDENTICAL key layout — same prefix width,
+    /// same two 32-byte components — so a walk that seeks into this family and
+    /// stops only on a key that fails to *parse* runs straight into the binding
+    /// rows, whose group id sits in the same bytes this type reads as the
+    /// namespace id. For a namespace root those ids are equal, so the walk
+    /// accepts the row and decodes a binding value as op bytes: "Not all bytes
+    /// read". Bound such a walk on this predicate, never on width plus id.
+    #[must_use]
+    pub fn is_gov_op_row(&self) -> bool {
+        AsRef::<[_; 65]>::as_ref(&self.0)[0] == NAMESPACE_GOV_OP_PREFIX
+    }
 }
 
 impl AsKeyParts for NamespaceGovOp {
@@ -2995,6 +3009,46 @@ impl Debug for PendingSelfPurge {
 
 #[cfg(test)]
 mod tests {
+
+    /// The 65-byte families in `Column::Group` are byte-indistinguishable by
+    /// layout alone, so every scan must stop on its own prefix.
+    ///
+    /// Three walks in this repo learned that the hard way — the group keyring,
+    /// the migration cohort, and the namespace gov-op log all read a neighbour's
+    /// rows because "same width, same id in the same place" looked like a match.
+    /// On a namespace ROOT the ids really are equal, so the id check cannot
+    /// separate them and the predicate is the only thing that can.
+    #[test]
+    fn same_width_group_families_are_only_separable_by_prefix() {
+        let id = [0x77u8; 32];
+        let gov = NamespaceGovOp::new(id, [0x01; 32]);
+        let binding = GroupDeviceBinding::new(id, [0x01; 32]);
+
+        // Same width, and the id lands in the same bytes...
+        assert_eq!(
+            gov.as_key().as_bytes().len(),
+            binding.as_key().as_bytes().len(),
+            "these two families are the same width, which is why a walk confuses them"
+        );
+        assert_eq!(
+            &gov.as_key().as_bytes()[1..33],
+            &binding.as_key().as_bytes()[1..33],
+            "...and carry the same id in the same position, so an id check cannot \
+             tell them apart"
+        );
+
+        // ...so only the family byte separates them, and the predicate reads it.
+        assert!(gov.is_gov_op_row());
+        let binding_as_gov = NamespaceGovOp::try_from_parts(Key(*GenericArray::from_slice(
+            binding.as_key().as_bytes(),
+        )))
+        .expect("a binding row parses as a gov-op key: identical layout");
+        assert!(
+            !binding_as_gov.is_gov_op_row(),
+            "a walk bounded on this predicate stops before reading a binding's \
+             value as op bytes"
+        );
+    }
     use super::*;
 
     #[test]

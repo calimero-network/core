@@ -410,6 +410,13 @@ impl SyncManager {
                     Ok(k) => k,
                     Err(_) => break,
                 };
+                // `GroupDeviceBinding` shares this key's exact layout, so a
+                // binding row parses here and — on a namespace root, where the
+                // group id IS the namespace id — passes the id check too. Stop
+                // on the family, never on width plus id.
+                if !key.is_gov_op_row() {
+                    break;
+                }
                 if key.namespace_id() != namespace_id {
                     break;
                 }
@@ -974,6 +981,11 @@ impl SyncManager {
                 Ok(k) => k,
                 Err(_) => break,
             };
+            // See the sibling walk above: a same-layout binding row would
+            // otherwise be read as a gov op.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != namespace_id {
                 break;
             }
