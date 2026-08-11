@@ -73,13 +73,14 @@ pub struct GroupMigrationEvent {
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
 pub enum GroupMigrationPayload {
     /// A migration was accepted and its target ABI state version resolved.
-    /// `total` is the emitting node's own context count, not a fleet number.
+    /// `local_contexts_total` is the emitting node's own context count, not a
+    /// fleet number - distinct from `MigrationProgress.total`, the cohort size.
     #[serde(rename_all = "camelCase")]
     MigrationStarted {
         from_version: String,
         to_version: String,
         to_state_version: u32,
-        total: u32,
+        local_contexts_total: u32,
     },
     /// Fleet rollup counters, recomputed when a peer's heartbeat facts change.
     /// Counters only - per-member detail comes from `migration-status`, which
@@ -325,7 +326,7 @@ mod tests {
                 from_version: "10.1.3".to_owned(),
                 to_version: "10.2.0".to_owned(),
                 to_state_version: 2,
-                total: 7,
+                local_contexts_total: 7,
             },
         });
         let v = serde_json::to_value(&event).expect("serialize");
@@ -334,7 +335,7 @@ mod tests {
         assert!(v.get("contextId").is_none(), "no contextId leaks in");
         assert_eq!(v["data"]["fromVersion"], "10.1.3");
         assert_eq!(v["data"]["toStateVersion"], 2);
-        assert_eq!(v["data"]["total"], 7);
+        assert_eq!(v["data"]["localContextsTotal"], 7);
     }
 
     #[test]

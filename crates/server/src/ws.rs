@@ -1048,7 +1048,7 @@ mod tests {
                 from_version: "10.1.3".to_owned(),
                 to_version: "10.2.0".to_owned(),
                 to_state_version: 2,
-                total: 3,
+                local_contexts_total: 3,
             },
         })
     }

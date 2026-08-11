@@ -29,6 +29,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::register_context_in_group;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
+use calimero_primitives::events::{GroupMigrationEvent, GroupMigrationPayload, NodeEvent};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
@@ -36,6 +37,8 @@ use calimero_store::key::{
 };
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
+use core::pin::pin;
+use futures_util::StreamExt;
 use rand::rngs::OsRng;
 use serial_test::serial;
 use tokio::time::sleep;
@@ -323,6 +326,24 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
     cond()
 }
 
+/// Poll `events` for the next `NodeEvent::GroupMigration`, skipping every
+/// other variant, until `timeout` elapses. Shared by every test in this
+/// module (and Tasks 3, 6, 8) that observes a migration announcement.
+async fn next_migration_event(
+    events: &mut (impl futures_util::Stream<Item = NodeEvent> + Unpin),
+    timeout: Duration,
+) -> Option<GroupMigrationEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, events.next()).await {
+            Ok(Some(NodeEvent::GroupMigration(event))) => return Some(event),
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return None,
+        }
+    }
+}
+
 /// Test 1 — emitter happy path on a single node.
 ///
 /// Drives a real `ContextManager` actor through `UpgradeGroupRequest {
@@ -442,6 +463,61 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
         }
         assert_eq!(upgrade.initiated_by, fx.admin_pk, "initiated_by mismatch");
     }
+}
+
+/// A cascade announces itself once, keyed on the namespace root a client
+/// subscribes with, carrying the resolved target state version - not the `0`
+/// the synchronous InProgress record holds.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn cascade_emits_migration_started_on_the_namespace_root() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
+
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
+    let _response = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: fx.ns,
+            target_application_id: app_id_v2(),
+            requester: Some(fx.admin_pk),
+            cascade: true,
+            force_code_only: false,
+        })
+        .await
+        .expect("cascade upgrade should succeed");
+
+    let event = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("a MigrationStarted must reach subscribers");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            to_state_version,
+            local_contexts_total,
+            ..
+        } => {
+            assert_eq!(
+                to_state_version, 2,
+                "the resolved target, never the 0 sentinel"
+            );
+            assert!(
+                local_contexts_total > 0,
+                "local_contexts_total is this node's own context count"
+            );
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert_eq!(
+        event.group_id.as_bytes(),
+        &fx.ns.to_bytes(),
+        "routed on the namespace root, not a descendant"
+    );
 }
 
 /// Test 2 — write-gate refuses a state-op `ExecuteRequest` against a
