@@ -427,9 +427,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 }
                 // Finish the record the synchronous section wrote: without the
                 // target's state version the rollup can never call this satisfied.
-                let to_state_version = blob_max_state_version(&node_client, target_blob)
-                    .await
-                    .unwrap_or_default();
+                let to_state_version = recorded_state_version(
+                    blob_max_state_version(&node_client, target_blob).await,
+                    target_blob,
+                );
                 let repo = UpgradesRepository::new(&datastore_for_canary);
                 if let Some(mut value) = repo.load(&group_id)? {
                     value.to_state_version = to_state_version;
@@ -743,6 +744,20 @@ async fn blob_max_state_version(
     max_sv
 }
 
+/// Records an unreadable target ABI as the `0` sentinel, which the rollup pins
+/// to `u32::MAX` — status stays red rather than falsely green.
+fn recorded_state_version(resolved: Option<u32>, blob: [u8; 32]) -> u32 {
+    resolved.unwrap_or_else(|| {
+        warn!(
+            blob = %calimero_primitives::blobs::BlobId::from(blob),
+            "no readable ABI state version for the upgrade target; recording the 0 \
+             (unresolvable) sentinel — migration status stays incomplete until a \
+             record with a resolvable target replaces it"
+        );
+        0
+    })
+}
+
 /// The blob's embedded schema (single/first service), for the per-rung
 /// identity-downgrade gate. `Absent` when the blob is missing/unreadable.
 async fn resolve_blob_schema(
@@ -779,7 +794,7 @@ async fn plan_emit_ladder(
 ) -> eyre::Result<(Vec<EmitRung>, u32)> {
     let from_sv = blob_max_state_version(node_client, current_app_key).await;
     let to_sv = blob_max_state_version(node_client, target_blob).await;
-    let target_state_version = to_sv.unwrap_or_default();
+    let target_state_version = recorded_state_version(to_sv, target_blob);
     let multi_hop = matches!((from_sv, to_sv), (Some(f), Some(t)) if t > f + 1);
     if !multi_hop {
         let migration =
@@ -1761,9 +1776,10 @@ fn dispatch_cascade(
         };
         // Every matched descendant lands on the same target blob, so one
         // resolution covers the whole cascade.
-        let target_state_version = blob_max_state_version(&node_client_for_publish, new_app_key)
-            .await
-            .unwrap_or_default();
+        let target_state_version = recorded_state_version(
+            blob_max_state_version(&node_client_for_publish, new_app_key).await,
+            new_app_key,
+        );
         let migration_bytes_for_publish = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
         let has_migration = migration.is_some();
         // L1 identity-downgrade gate: refuse a migration cascade that strips
