@@ -9,7 +9,7 @@ use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, UpgradePolicy};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_wasm_abi::downgrade::identity_downgrades;
@@ -1362,28 +1362,6 @@ fn dispatch_cascade(
         )));
     }
 
-    // Migration-policy gate for cascade. Each matched descendant runs the
-    // migrate under its OWN policy on receivers (`maybe_lazy_upgrade` reads the
-    // descendant's group meta, not the signed root's), so the gate is
-    // per-descendant — not the signed group's policy. Collected here (sync);
-    // the publish task resolves the migration from ABIs and checks these
-    // policies before emitting `CascadeUpgrade`.
-    let descendant_policies = {
-        let mut descendant_policies = Vec::with_capacity(matched_descendants.len());
-        for gid in &matched_descendants {
-            match MetaRepository::new(&actor.datastore).load(gid) {
-                Ok(Some(m)) => descendant_policies.push((*gid, m.upgrade_policy)),
-                Ok(None) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "matched cascade descendant {gid:?} has no group meta"
-                    )))
-                }
-                Err(err) => return ActorResponse::reply(Err(err)),
-            }
-        }
-        descendant_policies
-    };
-
     info!(
         ?group_id,
         %target_application_id,
@@ -1435,22 +1413,13 @@ fn dispatch_cascade(
     let cascade_hlc = calimero_storage::env::hlc_timestamp();
 
     let publish_task = async move {
-        // Resolve the migration from the bundle's embedded ABIs (all
-        // services) and re-run the per-descendant policy gate that the sync
-        // section could not (resolution is async).
-        let migration = {
-            let resolved = resolve_upgrade_from_abis(
-                &node_client_for_publish,
-                from_app_key,
-                new_app_key,
-                force_code_only,
-            )
-            .await?;
-            if resolved.is_some() {
-                ensure_cascade_migration_policies_supported(&descendant_policies)?;
-            }
-            resolved
-        };
+        let migration = resolve_upgrade_from_abis(
+            &node_client_for_publish,
+            from_app_key,
+            new_app_key,
+            force_code_only,
+        )
+        .await?;
         // Every matched descendant lands on the same target blob, so one
         // resolution covers the whole cascade.
         let target_state_version = blob_max_state_version(&node_client_for_publish, new_app_key)
@@ -1653,45 +1622,10 @@ fn spawn_propagator_for(
     }));
 }
 
-/// Cascade migration-policy gate.
-///
-/// Call this only when the cascade carries a migration — the caller gates on
-/// that before loading each descendant's meta, so no work is done for code-only
-/// cascades (hence, unlike the single-group variant, this takes no
-/// `has_migration` flag and assumes a migration is present).
-///
-/// A cascade fans out to every matched descendant, and on receivers each
-/// descendant runs the migrate under its OWN policy — `maybe_lazy_upgrade` reads
-/// the *descendant's* group meta, not the signed root's. So the gate is
-/// per-descendant: reject if any matched descendant is not `LazyOnAccess`. The
-/// signed (root) group's own policy is irrelevant here (it is often a
-/// context-less namespace root carrying the default `Automatic`, which would
-/// otherwise both false-reject all-Lazy cascades and false-pass a non-Lazy
-/// descendant straight into silent corruption).
-fn ensure_cascade_migration_policies_supported(
-    descendants: &[(ContextGroupId, UpgradePolicy)],
-) -> eyre::Result<()> {
-    for (group_id, policy) in descendants {
-        if !matches!(policy, UpgradePolicy::LazyOnAccess) {
-            bail!(
-                "cascade migration is only supported when every matched descendant uses the \
-                 LazyOnAccess upgrade policy; descendant group {group_id:?} uses {policy:?}, \
-                 which would swap the application without running the migration on its receivers \
-                 (silent state corruption). Set that subgroup's upgrade policy to LazyOnAccess \
-                 before migrating."
-            );
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        ensure_cascade_migration_policies_supported, select_intermediate_rungs, ChainCandidate,
-    };
+    use super::{select_intermediate_rungs, ChainCandidate};
     use calimero_context_config::types::ContextGroupId;
-    use calimero_primitives::context::UpgradePolicy;
     use calimero_wasm_abi::embed::EmbeddedSchema;
 
     /// Wrap a downgrade-test manifest as a supported embedded schema.
@@ -1804,38 +1738,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cascade_migration_all_lazy_descendants_is_allowed() {
-        let descendants = [
-            (gid(1), UpgradePolicy::LazyOnAccess),
-            (gid(2), UpgradePolicy::LazyOnAccess),
-        ];
-        ensure_cascade_migration_policies_supported(&descendants)
-            .expect("cascade migration with all-LazyOnAccess descendants must be allowed");
-    }
-
-    #[test]
-    fn cascade_migration_rejected_when_any_descendant_not_lazy() {
-        // A single non-Lazy descendant (root policy is irrelevant) must reject.
-        let descendants = [
-            (gid(1), UpgradePolicy::LazyOnAccess),
-            (gid(2), UpgradePolicy::Automatic),
-        ];
-        let err = ensure_cascade_migration_policies_supported(&descendants)
-            .expect_err("a non-LazyOnAccess matched descendant must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("LazyOnAccess"),
-            "error should name the required policy, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn cascade_migration_empty_descendants_is_allowed() {
-        ensure_cascade_migration_policies_supported(&[])
-            .expect("an empty descendant set is vacuously allowed");
-    }
-
     fn cand(sv: u32, ver: &str, byte: u8) -> ChainCandidate {
         ChainCandidate {
             state_version: sv,
@@ -1896,7 +1798,7 @@ mod tests {
         use std::sync::Arc;
 
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};

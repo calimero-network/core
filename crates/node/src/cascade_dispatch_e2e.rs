@@ -488,8 +488,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
-    // Code-only path (no migration), so descendant policy is irrelevant to
-    // the gate; keep Automatic.
+    // Code-only path: the write gate reads the upgrade row, not the app pair.
     let blobs = seed_app_blobs(&node).await;
     let fx = provision_namespace(
         &node.store,
@@ -645,71 +644,6 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     // iteration land before `TestNode` drops the arbiter underneath
     // it — keeps the test's tail-end logs benign.
     sleep(Duration::from_millis(25)).await;
-}
-
-/// Test 4 — migrating cascade is rejected when a matched descendant is not
-/// `LazyOnAccess`, validating the per-descendant policy gate through the real
-/// `dispatch_cascade` path (the unit tests cover the pure helper).
-///
-/// Descendants are provisioned `Automatic` and the target blob's embedded
-/// ABI declares a v1→v2 migration edge; the cascade must fail with the
-/// policy error BEFORE any op is emitted — so no descendant's `app_key`
-/// rotates and no `GroupUpgradeValue` row is written.
-#[tokio::test]
-#[serial(boot_test_node)]
-async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
-    let node = boot_test_node().await;
-    let mut rng = OsRng;
-    let admin_sk = PrivateKey::random(&mut rng);
-    let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        false,
-        UpgradePolicy::Automatic,
-        blobs.v2_migrating,
-    );
-
-    let result = node
-        .context_client
-        .upgrade_group(UpgradeGroupRequest {
-            group_id: fx.ns,
-            target_application_id: app_id_v2(),
-            requester: Some(fx.admin_pk),
-            cascade: true,
-            force_code_only: false,
-        })
-        .await;
-
-    let err = result.expect_err("migrating cascade under Automatic descendants must be rejected");
-    assert!(
-        err.to_string().contains("LazyOnAccess"),
-        "error should name the required policy, got: {err}"
-    );
-
-    // No op emitted: every group keeps its original app_key and target, and no
-    // GroupUpgradeValue row exists.
-    for gid in [&fx.ns, &fx.g1, &fx.g2] {
-        let meta = MetaRepository::new(&node.store)
-            .load(gid)
-            .expect("load_group_meta")
-            .expect("meta exists");
-        assert_eq!(
-            meta.app_key,
-            blobs.v1,
-            "group {} must NOT rotate app_key on a rejected cascade",
-            hex::encode(gid.to_bytes())
-        );
-        assert!(
-            UpgradesRepository::new(&node.store)
-                .load(gid)
-                .expect("load_group_upgrade")
-                .is_none(),
-            "group {} must have no GroupUpgradeValue row on a rejected cascade",
-            hex::encode(gid.to_bytes())
-        );
-    }
 }
 
 /// Minimal in-memory bundle: gz tar with a signed manifest.json and one
