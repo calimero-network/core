@@ -23,6 +23,38 @@ use tracing::{debug, info, warn};
 use super::SyncManager;
 use crate::sync::MAX_BACKFILL_OPS;
 
+/// The op kinds in a backfill response, for logging.
+///
+/// Decodes only far enough to name each op — an undecodable entry is reported
+/// as such rather than dropped, since "the responder sent something this build
+/// cannot read" is itself the answer when a backfill looks complete but leaves
+/// the receiver missing an op.
+fn backfill_op_kinds(deltas: &[([u8; 32], Vec<u8>)]) -> String {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let mut kinds = Vec::with_capacity(deltas.len());
+    for (_delta_id, bytes) in deltas {
+        kinds.push(match borsh::from_slice::<SignedNamespaceOp>(bytes) {
+            Ok(op) => match op.op {
+                NamespaceOp::Root(root) => {
+                    let named = format!("{root:?}");
+                    named
+                        .split(|c: char| c == '{' || c == '(' || c.is_whitespace())
+                        .next()
+                        .unwrap_or("Root")
+                        .to_owned()
+                }
+                // Encrypted; the inner kind is not readable without the key,
+                // which is frequently the very thing that is missing.
+                NamespaceOp::Group { .. } => "Group(encrypted)".to_owned(),
+                _ => "Unknown".to_owned(),
+            },
+            Err(_) => "undecodable".to_owned(),
+        });
+    }
+    kinds.join(",")
+}
+
 /// What one walk over the mesh learned about who holds a subgroup key.
 ///
 /// The two failure variants exist to keep a distinction the old single-pass code
@@ -1272,6 +1304,18 @@ impl SyncManager {
                 ..
             })) => {
                 let ops_received = deltas.len();
+                // The kinds, not just the count. A backfill that returns the
+                // same tally every time is ambiguous in exactly the way that
+                // matters: an op the responder never had looks identical to one
+                // it served and this node dropped, and telling those apart
+                // otherwise means correlating two nodes' logs by timestamp and
+                // guessing. A device waiting on a `KeyDelivery` it missed on
+                // gossip is the case that made this worth logging.
+                debug!(
+                    namespace_id = %hex::encode(namespace_id),
+                    kinds = %backfill_op_kinds(&deltas),
+                    "namespace backfill contents"
+                );
                 info!(
                     namespace_id = %hex::encode(namespace_id),
                     ops = ops_received,
