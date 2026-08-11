@@ -117,6 +117,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
             let propagator = super::upgrade_group::propagate_upgrade(
                 act.context_client.clone(),
+                act.node_client.clone(),
                 act.datastore.clone(),
                 group_id,
                 target_application_id,

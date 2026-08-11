@@ -30,6 +30,7 @@ use calimero_governance_store::register_context_in_group;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::events::{GroupMigrationEvent, GroupMigrationPayload, NodeEvent};
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
@@ -518,6 +519,103 @@ async fn cascade_emits_migration_started_on_the_namespace_root() {
         &fx.ns.to_bytes(),
         "routed on the namespace root, not a descendant"
     );
+}
+
+/// The propagator's per-context persist and the event a subscriber sees are
+/// the same number: a client can render "3 of 5" without polling.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn cascade_progress_mirrors_the_persisted_counters() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
+
+    // G1 gets a second context so its cascade run reports more than a
+    // trivial "1 of 1". Both need a local signing identity, or
+    // `propagate_upgrade` marks them failed instead of completed.
+    let ctx_g1b = ContextId::from([0xB1; 32]);
+    register_context_for(&node.store, &fx.g1, ctx_g1b, app_id_v1());
+    provision_local_context_identity(&node.store, fx.ctx_g1, &admin_sk);
+    provision_local_context_identity(&node.store, ctx_g1b, &admin_sk);
+
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
+    let _response = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: fx.ns,
+            target_application_id: app_id_v2(),
+            requester: Some(fx.admin_pk),
+            cascade: true,
+            force_code_only: false,
+        })
+        .await
+        .expect("cascade upgrade should succeed");
+
+    // NS and G2's contexts have no local signing identity in this fixture,
+    // so their propagators churn through retries in the background; only G1
+    // is set up to actually complete, and only G1's frames are asserted on.
+    let g1_subgroup = Hash::from(fx.g1.to_bytes());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut final_frame = None;
+    while final_frame.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Some(event) = next_migration_event(&mut events, remaining).await else {
+            break;
+        };
+        let GroupMigrationPayload::CascadeProgress {
+            subgroup_id,
+            completed,
+            total,
+        } = event.payload
+        else {
+            continue;
+        };
+        if subgroup_id == g1_subgroup && completed == total {
+            final_frame = Some((completed, total));
+        }
+    }
+
+    let (completed, total) =
+        final_frame.expect("must observe a CascadeProgress frame reaching completed == total");
+
+    // Not a literal: the propagator's own authoritative total, re-derived the
+    // same way `propagate_upgrade` does (`enumerate_group_contexts().len()`).
+    let expected_total = MetadataRepository::new(&node.store)
+        .count_contexts(&fx.g1)
+        .expect("count_group_contexts") as u32;
+    assert_eq!(
+        total, expected_total,
+        "the event's total must be the number the propagator itself persists"
+    );
+    assert_eq!(
+        completed, total,
+        "the final frame settles at completed == total"
+    );
+
+    // The propagator's terminal write is the record this event mirrors: once
+    // every context completes, `update_upgrade_status` replaces the InProgress
+    // counters with `Completed`, so a settled `Completed` row confirms the
+    // numbers on the wire weren't floated without a matching persist.
+    let settled = wait_until(|| {
+        matches!(
+            UpgradesRepository::new(&node.store)
+                .load(&fx.g1)
+                .ok()
+                .flatten()
+                .map(|v| v.status),
+            Some(GroupUpgradeStatus::Completed { .. })
+        )
+    })
+    .await;
+    assert!(settled, "g1's propagation must have persisted Completed");
 }
 
 /// Test 2 — write-gate refuses a state-op `ExecuteRequest` against a
