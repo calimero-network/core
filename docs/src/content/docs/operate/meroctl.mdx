@@ -147,7 +147,6 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `get <GROUP_ID>`                   | Get information about a group.                    | `GROUP_ID`                                                    |
 | `delete` (`del`) `<GROUP_ID>`      | Delete a group.                                   | `GROUP_ID`, `--requester`                                    |
-| `update <GROUP_ID>`                | Update group settings.                            | `GROUP_ID`, `--upgrade-policy`, `--requester`                |
 | `members`                          | Manage group members (see below).                 | subcommand                                                    |
 | `contexts`                         | List (`list`/`ls`) or `detach` contexts in a group. | subcommand                                                  |
 | `metadata`                         | Show / update a group's metadata record.          | subcommand                                                    |
@@ -197,7 +196,7 @@ Alias: `ns`. Namespaces are root groups (application instances).
 
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `create`                           | Create a new namespace.                           | `--application-id`, `--upgrade-policy`, `--name`, `--app-key` |
+| `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--app-key`                    |
 | `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
 | `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`, `--requester`                                |
 | `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--requester`, `--expiration-timestamp`, `--recursive` |

@@ -13,7 +13,7 @@ use calimero_governance_store::{
     apply_local_signed_group_op, MembershipRepository, MetaRepository, NamespaceRepository,
 };
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
@@ -39,7 +39,6 @@ fn meta(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMeta
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,

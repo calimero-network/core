@@ -2745,7 +2745,6 @@ mod tests {
         use calimero_context_config::types::ContextGroupId;
         use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key;
@@ -2763,7 +2762,6 @@ mod tests {
                 &key::GroupMetaValue {
                     app_key: APP_KEY,
                     target_application_id: ApplicationId::from([0xAA; 32]),
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 0,
                     admin_identity: PublicKey::from([0x07; 32]),
                     owner_identity: PublicKey::from([0x07; 32]),
@@ -2821,7 +2819,6 @@ mod tests {
         use calimero_context_config::types::ContextGroupId;
         use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key;
@@ -2836,7 +2833,6 @@ mod tests {
                 &key::GroupMetaValue {
                     app_key: [0x2B; 32],
                     target_application_id: ApplicationId::from([0xAB; 32]),
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 0,
                     admin_identity: PublicKey::from([0x08; 32]),
                     owner_identity: PublicKey::from([0x08; 32]),
@@ -2892,7 +2888,6 @@ mod tests {
         use calimero_context_config::types::ContextGroupId;
         use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key;
@@ -2907,7 +2902,6 @@ mod tests {
                 &key::GroupMetaValue {
                     app_key: [0x2B; 32],
                     target_application_id: ApplicationId::from([0xAB; 32]),
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 0,
                     admin_identity: PublicKey::from([0x07; 32]),
                     owner_identity: PublicKey::from([0x07; 32]),
@@ -2937,7 +2931,6 @@ mod tests {
         use calimero_context_config::types::ContextGroupId;
         use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key;
@@ -2954,7 +2947,6 @@ mod tests {
                 &key::GroupMetaValue {
                     app_key: TARGET_KEY,
                     target_application_id: ApplicationId::from([0xAC; 32]),
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 0,
                     admin_identity: PublicKey::from([0x07; 32]),
                     owner_identity: PublicKey::from([0x07; 32]),
@@ -2986,7 +2978,6 @@ mod tests {
         use calimero_context_config::types::ContextGroupId;
         use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::UpgradePolicy;
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key;
@@ -3005,7 +2996,6 @@ mod tests {
                 &key::GroupMetaValue {
                     app_key: TARGET_KEY,
                     target_application_id: target_app,
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 0,
                     admin_identity: PublicKey::from([0x07; 32]),
                     owner_identity: PublicKey::from([0x07; 32]),

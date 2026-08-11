@@ -23,7 +23,6 @@ use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
@@ -391,7 +390,6 @@ async fn create_namespace() {
     let resp = client
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             name: None,
             app_key: None,
         })
@@ -985,7 +983,6 @@ async fn create_namespace_returns_err_on_server_error() {
     let result = client
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
             name: None,
             app_key: None,
         })

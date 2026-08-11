@@ -29,7 +29,7 @@ use calimero_context_client::group::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::register_context_in_group;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
@@ -117,16 +117,10 @@ fn app_id_other() -> ApplicationId {
 /// and `admin` as both owner and admin identity (so cascade's
 /// per-descendant `can_manage_application` pre-scan passes for every
 /// matched group).
-fn meta_for(
-    admin: PublicKey,
-    app_key: [u8; 32],
-    target: ApplicationId,
-    upgrade_policy: UpgradePolicy,
-) -> GroupMetaValue {
+fn meta_for(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -145,10 +139,9 @@ fn provision_group(
     admin: PublicKey,
     app_key: [u8; 32],
     target: ApplicationId,
-    policy: UpgradePolicy,
 ) {
     MetaRepository::new(store)
-        .save(gid, &meta_for(admin, app_key, target, policy))
+        .save(gid, &meta_for(admin, app_key, target))
         .expect("save_group_meta");
     MembershipRepository::new(store)
         .add_member(gid, &admin, GroupMemberRole::Admin)
@@ -243,7 +236,6 @@ fn provision_namespace(
     admin_sk: &PrivateKey,
     blobs: &AppBlobs,
     g2_on_other: bool,
-    policy: UpgradePolicy,
     target_v2_key: [u8; 32],
 ) -> CascadeFixture {
     let admin_pk = admin_sk.public_key();
@@ -251,15 +243,15 @@ fn provision_namespace(
     let g1 = ContextGroupId::from([0xA1; 32]);
     let g2 = ContextGroupId::from([0xA2; 32]);
 
-    provision_group(store, &ns, admin_pk, blobs.v1, app_id_v1(), policy.clone());
-    provision_group(store, &g1, admin_pk, blobs.v1, app_id_v1(), policy.clone());
+    provision_group(store, &ns, admin_pk, blobs.v1, app_id_v1());
+    provision_group(store, &g1, admin_pk, blobs.v1, app_id_v1());
     // G2 may be on a different app_key for the heterogeneous test.
     let (g2_app_key, g2_target) = if g2_on_other {
         (blobs.other, app_id_other())
     } else {
         (blobs.v1, app_id_v1())
     };
-    provision_group(store, &g2, admin_pk, g2_app_key, g2_target, policy);
+    provision_group(store, &g2, admin_pk, g2_app_key, g2_target);
 
     NamespaceRepository::new(store)
         .nest(&ns, &g1)
@@ -359,14 +351,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        false,
-        UpgradePolicy::LazyOnAccess,
-        blobs.v2,
-    );
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
 
     let response = node
         .context_client
@@ -492,14 +477,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let admin_sk = PrivateKey::random(&mut rng);
     // Code-only path: the write gate reads the upgrade row, not the app pair.
     let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        false,
-        UpgradePolicy::Automatic,
-        blobs.v2,
-    );
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
 
     // Directly pin G1's status to InProgress — no cascade dispatch,
     // no propagator involvement. The gate reads this row at
@@ -571,14 +549,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
-    let fx = provision_namespace(
-        &node.store,
-        &admin_sk,
-        &blobs,
-        true,
-        UpgradePolicy::LazyOnAccess,
-        blobs.v2,
-    );
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, true, blobs.v2);
 
     node.context_client
         .upgrade_group(UpgradeGroupRequest {
@@ -774,26 +745,12 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
     install_application(&node.store, app_id, blobs.v3, "0.3.0", 3);
 
     let gid = ContextGroupId::from([0x71; 32]);
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v1,
-        app_id,
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v1, app_id);
     register_context_for(&node.store, &gid, ContextId::from([0xC5; 32]), app_id);
     // A sibling group still running 0.2.0 keeps the intermediate blob
     // referenced — that's what makes it discoverable as a rung.
     let sibling = ContextGroupId::from([0x72; 32]);
-    provision_group(
-        &node.store,
-        &sibling,
-        admin_pk,
-        blobs.v2,
-        app_id,
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &sibling, admin_pk, blobs.v2, app_id);
     SigningKeysRepository::new(&node.store)
         .store_key(&gid, &admin_pk, admin_sk.as_bytes())
         .expect("store signing key");
@@ -852,14 +809,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     install_application(&node.store, app_id, blobs.v3, "0.3.0", 3);
 
     let gid = ContextGroupId::from([0x73; 32]);
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v1,
-        app_id,
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v1, app_id);
     register_context_for(&node.store, &gid, ContextId::from([0xC6; 32]), app_id);
     SigningKeysRepository::new(&node.store)
         .store_key(&gid, &admin_pk, admin_sk.as_bytes())
@@ -920,14 +870,7 @@ async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
     let ctx = ContextId::from([0xD2; 32]);
     install_application(&node.store, app_id_v2(), blobs.v2, "0.2.0", 1);
     // The descendant already reached the target; only its record is stranded.
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v2,
-        app_id_v2(),
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v2, app_id_v2());
     register_context_for(&node.store, &gid, ctx, app_id_v2());
 
     UpgradesRepository::new(&node.store)
@@ -1037,14 +980,7 @@ async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     // Mid-window: `TargetApplicationSet` already applied, so the group's meta
     // names the new application AND its app_key advanced - but the context is
     // still on v1 and the record was never overwritten.
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v2_migrating,
-        app_id_v2(),
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
 
@@ -1145,14 +1081,7 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     // The target declares state v2 plus a v1->v2 edge: a MIGRATING upgrade.
     install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
 
-    provision_group(
-        &node.store,
-        &gid,
-        admin_pk,
-        blobs.v2_migrating,
-        app_id_v2(),
-        UpgradePolicy::LazyOnAccess,
-    );
+    provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
 

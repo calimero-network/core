@@ -4165,7 +4165,7 @@ mod pending_upgrade_tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{register_context_in_group, MetaRepository};
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{
@@ -4191,7 +4191,6 @@ mod pending_upgrade_tests {
         let meta = GroupMetaValue {
             app_key: [0x11; 32],
             target_application_id: target,
-            upgrade_policy: UpgradePolicy::LazyOnAccess,
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,

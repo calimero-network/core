@@ -6,8 +6,6 @@
 use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-#[cfg(test)]
-use calimero_primitives::context::UpgradePolicy;
 use calimero_store::Store;
 use tracing::{debug, info};
 
@@ -212,7 +210,6 @@ mod tests {
                 &GroupMetaValue {
                     app_key: APP_KEY_NEW,
                     target_application_id: target_app(),
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 0,
                     admin_identity: admin,
                     owner_identity: admin,

@@ -25,7 +25,6 @@ use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceR
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -190,7 +189,6 @@ pub async fn join_namespace(
             owner_identity: admin_identity,
             target_application_id: ApplicationId::from([0u8; 32]),
             app_key: [0u8; 32],
-            upgrade_policy: UpgradePolicy::default(),
             migration: None,
             created_at: 0,
             auto_join: true,

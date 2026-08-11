@@ -5,7 +5,7 @@ use super::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
@@ -2658,7 +2658,6 @@ fn auto_group_node_identity_is_admin_member() {
             &GroupMetaValue {
                 app_key: [0u8; 32],
                 target_application_id: ApplicationId::from([0xCC; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: node_pk,
                 owner_identity: node_pk,

@@ -14,7 +14,7 @@ use crate::{
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
 
@@ -1611,7 +1611,6 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -1640,7 +1639,6 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -1770,7 +1768,6 @@ fn trusted_anchors_includes_owner_distinct_from_legacy_admin() {
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
-        upgrade_policy: calimero_primitives::context::UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: creator,
         owner_identity: new_owner,
@@ -1896,7 +1893,6 @@ fn trusted_anchors_mixed_roles() {
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
-        upgrade_policy: calimero_primitives::context::UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: legacy_admin,
         owner_identity: owner,
@@ -2413,7 +2409,6 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: owner,
         owner_identity: owner,

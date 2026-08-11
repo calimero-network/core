@@ -4,9 +4,7 @@ use core::fmt::{self, Debug, Formatter};
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{
-    ContextId as PrimitiveContextId, GroupMemberRole, UpgradePolicy,
-};
+use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 use generic_array::sequence::Concat;
@@ -1177,7 +1175,6 @@ pub struct GroupOpHeadValue {
 pub struct GroupMetaValue {
     pub app_key: [u8; 32],
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     pub admin_identity: PrimitivePublicKey,
     /// Single-instance Owner of this group. Distinct from the legacy
@@ -3218,7 +3215,7 @@ mod tests {
     mod value_roundtrips {
         use borsh::{from_slice, to_vec};
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+        use calimero_primitives::context::GroupMemberRole;
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
         use super::super::{
@@ -3231,7 +3228,6 @@ mod tests {
             let value = GroupMetaValue {
                 app_key: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0xCC; 32]),
                 owner_identity: PrimitivePublicKey::from([0xCC; 32]),
@@ -3246,18 +3242,15 @@ mod tests {
             assert_eq!(decoded.target_application_id, value.target_application_id);
             assert_eq!(decoded.created_at, value.created_at);
             assert_eq!(decoded.admin_identity, value.admin_identity);
-            assert!(matches!(decoded.upgrade_policy, UpgradePolicy::Automatic));
         }
 
         #[test]
-        // The removed `Coordinated` policy used borsh tag 2. A persisted
-        // GroupMetaValue carrying that tag must now fail to decode (loud
-        // failure) rather than being silently reinterpreted as another policy.
-        fn group_meta_value_with_legacy_coordinated_tag_is_rejected() {
-            let make = |policy| GroupMetaValue {
+        // `upgrade_policy` was dropped with no store-version gate, so a record
+        // written before the removal must fail loudly, never shift into garbage.
+        fn group_meta_value_with_legacy_policy_tag_is_rejected() {
+            let value = GroupMetaValue {
                 app_key: [0x11; 32],
                 target_application_id: ApplicationId::from([0x22; 32]),
-                upgrade_policy: policy,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
                 owner_identity: PrimitivePublicKey::from([0x33; 32]),
@@ -3265,34 +3258,18 @@ mod tests {
                 auto_join: true,
             };
 
-            // Locate the upgrade-policy tag byte without hardcoding an offset:
-            // serialize two values that differ ONLY in `upgrade_policy`
-            // (Automatic = tag 0, LazyOnAccess = tag 1) and find the single
-            // differing byte. This stays correct even if fields before
-            // `upgrade_policy` change size or order.
-            let automatic = to_vec(&make(UpgradePolicy::Automatic)).expect("serialize");
-            let lazy = to_vec(&make(UpgradePolicy::LazyOnAccess)).expect("serialize");
-            let diffs: Vec<usize> = automatic
-                .iter()
-                .zip(&lazy)
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(i))
-                .collect();
-            assert_eq!(
-                diffs.len(),
-                1,
-                "the two values must differ in exactly the policy tag byte"
-            );
-            let tag_offset = diffs[0];
+            // Re-create the old layout: the policy tag sat between
+            // `target_application_id` and `created_at`.
+            let mut bytes = to_vec(&value).expect("serialize");
+            let tag_offset = to_vec(&value.app_key).expect("serialize").len()
+                + to_vec(&value.target_application_id)
+                    .expect("serialize")
+                    .len();
+            bytes.insert(tag_offset, 0);
 
-            // Patch that byte to the removed Coordinated tag (2) and assert the
-            // whole value now fails to decode.
-            let mut bytes = automatic;
-            bytes[tag_offset] = 2;
-            let decoded = from_slice::<GroupMetaValue>(&bytes);
             assert!(
-                decoded.is_err(),
-                "a stored GroupMetaValue with the removed Coordinated tag must be rejected"
+                from_slice::<GroupMetaValue>(&bytes).is_err(),
+                "a stored GroupMetaValue still carrying an upgrade-policy tag must be rejected"
             );
         }
 

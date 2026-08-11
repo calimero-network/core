@@ -112,7 +112,6 @@ pub(crate) fn apply(
             owner_identity: op.signer,
             target_application_id: parent_meta.target_application_id,
             app_key: parent_meta.app_key,
-            upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
             migration: None,
             created_at: 0,
             auto_join: false,

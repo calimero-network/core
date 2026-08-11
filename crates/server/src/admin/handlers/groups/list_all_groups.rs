@@ -40,7 +40,6 @@ pub async fn handler(
                     group_id: hex::encode(g.group_id.to_bytes()),
                     app_key: hex::encode(g.app_key.to_bytes()),
                     target_application_id: g.target_application_id,
-                    upgrade_policy: g.upgrade_policy,
                     created_at: g.created_at,
                     name: g.name,
                 })

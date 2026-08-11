@@ -18,7 +18,7 @@ use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
@@ -41,7 +41,6 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
-        upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -454,7 +453,6 @@ async fn create_restricted_subgroup(
             group_id: Some(sub_gid),
             app_key: None,
             application_id: app_id,
-            upgrade_policy: UpgradePolicy::Automatic,
             name: Some("restricted-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
             restricted: true,
@@ -552,7 +550,6 @@ async fn create_born_open_subgroup(
             group_id: Some(sub_gid),
             app_key: None,
             application_id: app_id,
-            upgrade_policy: UpgradePolicy::Automatic,
             name: Some("born-open-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
             // Born-Open: visibility carried atomically on GroupCreated (#2771).

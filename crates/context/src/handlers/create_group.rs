@@ -29,7 +29,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
             group_id,
             app_key,
             application_id,
-            upgrade_policy,
             name,
             parent_group_id,
             restricted,
@@ -165,7 +164,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // final, verified `app_key` on success.
             app_key: row_blob,
             target_application_id: effective_application_id,
-            upgrade_policy: upgrade_policy.clone(),
             created_at: reservation_now,
             admin_identity,
             owner_identity: admin_identity,
@@ -194,7 +192,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 let meta = GroupMetaValue {
                     app_key: app_key.to_bytes(),
                     target_application_id: effective_application_id,
-                    upgrade_policy,
                     created_at: reservation_now,
                     admin_identity,
                     // Creator is the initial Owner. Transferable via
@@ -649,7 +646,7 @@ mod tests {
         MetadataRepository, SigningKeysRepository,
     };
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
     use calimero_primitives::metadata::MetadataRecord;
     use calimero_store::db::InMemoryDB;
@@ -675,7 +672,6 @@ mod tests {
                 &GroupMetaValue {
                     app_key: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
-                    upgrade_policy: UpgradePolicy::Automatic,
                     created_at: 1_700_000_000,
                     admin_identity: *admin,
                     owner_identity: *admin,
@@ -830,7 +826,6 @@ mod tests {
                 &GroupMetaValue {
                     app_key: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
-                    upgrade_policy: UpgradePolicy::Automatic,
                     created_at: 1,
                     admin_identity: admin,
                     owner_identity: admin,

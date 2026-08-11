@@ -5,7 +5,7 @@ use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey, Signed
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::MetadataRecord;
 use calimero_storage::logical_clock::HybridTimestamp;
@@ -40,7 +40,6 @@ pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
     pub app_key: Option<AppKey>,
     pub application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
     /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
@@ -133,7 +132,6 @@ pub struct GroupInfoResponse {
     pub group_id: ContextGroupId,
     pub app_key: AppKey,
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub member_count: u64,
     pub context_count: u64,
     pub active_upgrade: Option<GroupUpgradeInfo>,
@@ -328,7 +326,6 @@ pub struct GroupSummary {
     pub group_id: ContextGroupId,
     pub app_key: AppKey,
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     pub name: Option<String>,
 }
@@ -1166,7 +1163,6 @@ pub struct NamespaceSummary {
     pub namespace_id: ContextGroupId,
     pub app_key: AppKey,
     pub target_application_id: ApplicationId,
-    pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     pub name: Option<String>,
     pub member_count: usize,

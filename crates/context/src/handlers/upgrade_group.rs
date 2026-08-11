@@ -1877,7 +1877,7 @@ mod tests {
         use std::sync::Arc;
 
         use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::{GroupMemberRole, UpgradePolicy};
+        use calimero_primitives::context::GroupMemberRole;
         use calimero_primitives::identity::PublicKey;
         use calimero_store::db::InMemoryDB;
         use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
@@ -1897,7 +1897,6 @@ mod tests {
                 &GroupMetaValue {
                     app_key: [0x11; 32],
                     target_application_id: current_app,
-                    upgrade_policy: UpgradePolicy::LazyOnAccess,
                     created_at: 1_700_000_000,
                     admin_identity: requester,
                     owner_identity: requester,

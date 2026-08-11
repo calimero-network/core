@@ -168,7 +168,7 @@ mod tests {
         register_context_in_group, MetaRepository, NamespaceRepository, UpgradesRepository,
     };
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{self, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
@@ -202,7 +202,6 @@ mod tests {
         GroupMetaValue {
             app_key,
             target_application_id: ApplicationId::from(target),
-            upgrade_policy: UpgradePolicy::LazyOnAccess,
             created_at: 1_700_000_000,
             admin_identity: pk,
             owner_identity: pk,

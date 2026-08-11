@@ -39,7 +39,6 @@ pub async fn handler(
                         group_id: hex::encode(info.group_id.to_bytes()),
                         app_key: hex::encode(info.app_key.to_bytes()),
                         target_application_id: info.target_application_id,
-                        upgrade_policy: info.upgrade_policy,
                         member_count: info.member_count,
                         context_count: info.context_count,
                         active_upgrade,
