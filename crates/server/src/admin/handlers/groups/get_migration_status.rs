@@ -18,8 +18,8 @@ use super::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// `GET /admin-api/groups/{namespace_id}/migration-status` — the operator-facing
-/// "have all peers migrated?" rollup (Task 6c.10).
+/// `GET /admin-api/groups/{namespace_id}/migration-status` — the
+/// namespace-member-visible "have all peers migrated?" rollup.
 ///
 /// Mirrors [`super::get_cascade_status::handler`]: parse the namespace id,
 /// dispatch the read to the context actor, map the typed result into the admin
