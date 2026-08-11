@@ -203,9 +203,9 @@ pub enum ExecuteError {
     /// This is acceptable because:
     ///   * Eager upgrades complete in bounded time (one execute per
     ///     context, serialised).
-    ///   * `LazyOnAccess` groups hold `InProgress` only while the target-set
-    ///     emission runs; the per-context upgrade itself happens later, inside
-    ///     `maybe_lazy_upgrade`, with no record held.
+    ///   * A direct `LazyOnAccess` upgrade holds `InProgress` only across the
+    ///     target-set emission, then overwrites `Completed`; a cascade
+    ///     descendant holds `InProgress` for its whole `propagate_upgrade` walk.
     ///   * The alternative (no gate) lets a pre-migration call land on a
     ///     context whose neighbours already migrated, creating exactly the
     ///     cross-version drift the cascade is meant to prevent.

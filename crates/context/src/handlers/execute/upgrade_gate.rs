@@ -12,9 +12,9 @@ use calimero_store::Store;
 use tracing::{debug, info};
 
 /// `true` when a group-upgrade status blocks ALL writes (user calls and
-/// state-ops alike): only `GroupUpgradeStatus::InProgress` blocks. Lazy
-/// upgrades write `Completed` directly and the eager propagator bypasses the
-/// execute gate, so neither can deadlock on this.
+/// state-ops alike): only `GroupUpgradeStatus::InProgress` blocks. Both
+/// the direct-lazy and cascade propagators write via `update_application`,
+/// bypassing this gate, so a held `InProgress` record can't self-deadlock.
 pub(super) fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> bool {
     matches!(
         status,

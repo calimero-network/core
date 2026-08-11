@@ -234,7 +234,8 @@ impl Handler<ExecuteRequest> for ContextManager {
         // pre-migration root. Read-vs-write intent isn't known upstream, so
         // user-call writes are caught post-execution in `internal_execute` (we
         // only record the group here); state-ops are known writes, refused now.
-        // `LazyOnAccess` upgrades write `Completed`, never `InProgress`.
+        // This gate is policy-agnostic: a cascade descendant (`LazyOnAccess`)
+        // holds `InProgress` for its whole propagation walk, same as an eager group.
         let mut block_writes_for_group = None;
         match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
             Ok(Some(group_id)) => {
