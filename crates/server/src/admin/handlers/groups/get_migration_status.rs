@@ -86,6 +86,7 @@ pub async fn handler(
                     report: m.report.map(|r| MemberMigrationReportApiData {
                         schema_version: r.schema_version,
                         residue_auto: r.residue_auto,
+                        residue_identity: 0,
                         synced_up_to_hlc: r.synced_up_to_hlc,
                         reported_at: r.reported_at,
                         authored_remaining: r.authored_remaining,

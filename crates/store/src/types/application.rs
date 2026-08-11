@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::Borsh;
@@ -14,7 +12,7 @@ pub struct ServiceMeta {
     pub compiled: key::BlobMeta,
 }
 
-#[derive(BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ApplicationMeta {
     pub bytecode: key::BlobMeta,
@@ -31,50 +29,6 @@ pub struct ApplicationMeta {
     /// Max ABI state version across this application's services, `0` when none
     /// exposes a readable ABI. What the migration rollup compares, not `version`.
     pub state_version: u32,
-}
-
-// Custom deserialization: the services EOF-branch is retained for shape only;
-// old records lacking `services` fail hard at the state_version read (clean break).
-impl BorshDeserialize for ApplicationMeta {
-    fn deserialize_reader<R: Read>(reader: &mut R) -> std::io::Result<Self> {
-        let bytecode = key::BlobMeta::deserialize_reader(reader)?;
-        let size = u64::deserialize_reader(reader)?;
-        let source = Box::<str>::deserialize_reader(reader)?;
-        let metadata = Box::<[u8]>::deserialize_reader(reader)?;
-        let compiled = key::BlobMeta::deserialize_reader(reader)?;
-        let package = Box::<str>::deserialize_reader(reader)?;
-        let version = Box::<str>::deserialize_reader(reader)?;
-        let signer_id = Box::<str>::deserialize_reader(reader)?;
-
-        // `services` was added after the initial schema; try to read it.
-        // Missing it does not gracefully degrade — the following state_version read fails.
-        let services = match Vec::<ServiceMeta>::deserialize_reader(reader) {
-            Ok(v) => v,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Vec::new(),
-            Err(e)
-                if e.kind() == std::io::ErrorKind::InvalidData
-                    && e.to_string().contains("Unexpected length") =>
-            {
-                Vec::new()
-            }
-            Err(e) => return Err(e),
-        };
-
-        let state_version = u32::deserialize_reader(reader)?;
-
-        Ok(Self {
-            bytecode,
-            size,
-            source,
-            metadata,
-            compiled,
-            package,
-            version,
-            signer_id,
-            services,
-            state_version,
-        })
-    }
 }
 
 /// Identifying fields of an [`ApplicationMeta`]: who published it, what semver
@@ -173,11 +127,8 @@ mod application_meta_tests {
     use super::ApplicationMeta;
     use crate::key;
 
-    // `state_version` is read by the hand-written reader, not derived, so the
-    // round trip is what proves the two halves agree.
-    #[test]
-    fn application_meta_roundtrips_state_version() {
-        let meta = ApplicationMeta {
+    fn sample() -> ApplicationMeta {
+        ApplicationMeta {
             bytecode: key::BlobMeta::new(BlobId::from([1; 32])),
             size: 10,
             source: "test".into(),
@@ -188,7 +139,12 @@ mod application_meta_tests {
             signer_id: "did:key:zTest".into(),
             services: Vec::new(),
             state_version: 2,
-        };
+        }
+    }
+
+    #[test]
+    fn application_meta_roundtrips_state_version() {
+        let meta = sample();
 
         let bytes = borsh::to_vec(&meta).expect("serialize");
         let back = ApplicationMeta::try_from_slice(&bytes).expect("deserialize");
@@ -198,5 +154,18 @@ mod application_meta_tests {
             "state_version must survive a round trip"
         );
         assert_eq!(back.version.as_ref(), "10.1.3");
+    }
+
+    /// Pre-`state_version` records must fail loud rather than decode a default.
+    /// Both legacy shapes: missing the trailing `u32`, and missing `services` too.
+    #[test]
+    fn rejects_records_written_before_state_version() {
+        let bytes = borsh::to_vec(&sample()).expect("serialize");
+
+        for drop in [4, 8] {
+            let truncated = &bytes[..bytes.len() - drop];
+            let _err = ApplicationMeta::try_from_slice(truncated)
+                .expect_err("a record short of the full layout must not decode");
+        }
     }
 }

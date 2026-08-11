@@ -1727,6 +1727,10 @@ pub struct GetCascadeStatusApiResponse {
 pub struct MemberMigrationReportApiData {
     pub schema_version: u32,
     pub residue_auto: u64,
+    /// Always 0. Held on the wire only because the released calimero-client-py
+    /// the e2e suite runs still requires it; drop once that floor moves.
+    #[serde(default)]
+    pub residue_identity: u64,
     pub synced_up_to_hlc: u64,
     pub reported_at: u64,
     /// Member's self-reported pending-authored count (best-effort; 6f).
@@ -3091,6 +3095,9 @@ mod tests {
         assert_eq!(members[0]["report"]["schemaVersion"], 2);
         assert_eq!(members[0]["report"]["syncedUpToHlc"], 7);
         assert_eq!(members[0]["report"]["authoredRemaining"], 3);
+        // Released calimero-client-py (which the e2e suite runs) still requires
+        // this key; omitting it fails its deserialize before any assert runs.
+        assert_eq!(members[0]["report"]["residueIdentity"], 0);
         // A migrated member carries no failure reason — `migrationFailed` omitted.
         assert!(members[0]["report"].get("migrationFailed").is_none());
         // The unknown member has no fresh report — `report` is omitted.
