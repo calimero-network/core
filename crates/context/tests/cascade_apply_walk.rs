@@ -19,6 +19,7 @@ use calimero_governance_store::apply_local_signed_group_op;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -125,7 +126,7 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
             target_application_id: app_id_2(),
             to_state_version: 0,
             migration: None,
-            cascade_hlc: calimero_storage::logical_clock::HybridTimestamp::zero(),
+            cascade_hlc: HybridTimestamp::zero(),
         },
     )
     .expect("sign CascadeUpgrade");

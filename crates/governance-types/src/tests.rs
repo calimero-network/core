@@ -326,6 +326,14 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
 
 #[test]
 fn group_op_discriminants_are_golden() {
+    // Ties the ordinals frozen below to the schema version they describe, so a
+    // rebase that drops the version bump while keeping the enum deletions fails
+    // here instead of shipping a silent variant confusion on the wire.
+    assert_eq!(
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 10,
+        "the ordinals frozen below are the v10 layout; bump them together"
+    );
+
     // Decode each frozen byte vector and verify the correct variant is returned.
     // A mid-enum insertion shifts ordinals so the wrong variant is decoded (or
     // decoding fails). Failures are accumulated so ALL mismatches are reported
@@ -1392,9 +1400,9 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
 #[test]
 fn pre_flag_day_group_op_version_is_rejected() {
     let signer = PrivateKey::random(&mut OsRng).public_key();
-    // A struct-shaped op carrying a prior schema version (here v7, the last version
-    // that still had `state_hash`). `verify_signature` must reject on the version
-    // check alone — before touching the (here bogus) signature.
+    // A struct-shaped op carrying the immediately-previous schema version.
+    // `verify_signature` must reject on the version check alone - before
+    // touching the (here bogus) signature.
     let stale = SignedGroupOp {
         version: SIGNED_GROUP_OP_SCHEMA_VERSION - 1,
         group_id: sample_group_id(),
