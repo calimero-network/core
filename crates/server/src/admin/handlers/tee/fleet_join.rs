@@ -313,13 +313,25 @@ pub async fn handler(
                 let our_sk_typed = calimero_primitives::identity::PrivateKey::from(our_sk);
                 // The op names the account this replica acts as; admission wrote
                 // its binding, so it resolves by the time we get here.
+                // A read that FAILED is not "bound to no account". The warning
+                // below tells an operator to wait for a binding that may already
+                // exist, and the retry guidance above is written for a state this
+                // would not actually be in.
                 let our_account = calimero_governance_store::member_account_in_namespace(
                     &state.store,
                     &group_id,
                     &our_public_key,
                 )
-                .ok()
-                .flatten();
+                .unwrap_or_else(|err| {
+                    warn!(
+                        ?err,
+                        %our_public_key,
+                        "fleet-join: could not read this replica's account binding; skipping \
+                         auto-follow self-enable. This is a store fault, not a missing \
+                         binding — retrying the join will not help until it is resolved."
+                    );
+                    None
+                });
                 match our_account {
                     None => warn!(
                         %our_public_key,
