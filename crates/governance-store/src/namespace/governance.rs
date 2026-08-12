@@ -1269,6 +1269,29 @@ impl<'a> NamespaceGovernance<'a> {
             }
         };
         if !addressed_to_us {
+            // Say so. This is the one path where a key that was delivered,
+            // authenticated and decodable is dropped on the floor, and it left
+            // no trace at all — a node waiting on a scope key it was actually
+            // sent looked identical to one nobody sent a key to, which is two
+            // different bugs in two different subsystems.
+            //
+            // Ids only. The addressing is what is in question, never the key.
+            match envelope.recipient {
+                EnvelopeRecipient::Member { identity, .. } => tracing::debug!(
+                    group_id = %hex::encode(group_id),
+                    addressed_to = %identity,
+                    our_identity = %recipient_sk.public_key(),
+                    "group key envelope addresses another member; ignoring"
+                ),
+                EnvelopeRecipient::Device { device, .. } => tracing::debug!(
+                    group_id = %hex::encode(group_id),
+                    addressed_to = %hex::encode(device.as_bytes()),
+                    our_device = %node_device
+                        .as_ref()
+                        .map_or_else(|| "<none>".to_owned(), |own| hex::encode(own.device.as_bytes())),
+                    "group key envelope addresses another device; ignoring"
+                ),
+            }
             return Ok(None);
         }
 
