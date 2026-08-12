@@ -64,14 +64,21 @@ pub(crate) fn sign_authorized_actions(
         // (NLL), freeing `action` for the immutable `payload_for_signing` below.
         let should_sign = match &mut metadata.storage_type {
             StorageType::User {
-                owner,
                 signature_data: Some(sig_data),
+                ..
             } => {
-                let ours = *owner == executor_pk && sig_data.signature == [0; 64];
-                if ours {
+                // Placeholder-only, exactly like the two arms below, and for the
+                // same reason: the authorization decision was already made at
+                // write time (storage stamps a placeholder only for the owner's
+                // own entries). `owner` is an account now, so it cannot be
+                // compared against the executor's key here — and the key it CAN
+                // be compared against is `sig_data.signer`, which storage
+                // stamped with this same device.
+                let placeholder = sig_data.signature == [0; 64];
+                if placeholder {
                     sig_data.nonce = nonce;
                 }
-                ours
+                placeholder
             }
             StorageType::Shared {
                 signature_data: Some(sig_data),

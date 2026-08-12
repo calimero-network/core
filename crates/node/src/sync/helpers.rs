@@ -180,7 +180,10 @@ pub fn wire_authorization_for(
 /// Extract the claimed author of a sync'd leaf from its wire-carried
 /// authorization, when the storage type admits one.
 ///
-/// * `User { owner, .. }` → `owner` is the author by definition.
+/// * `User` → the author is `signature_data.signer`, same as the two below.
+///   Its `owner` names the ACCOUNT allowed to change the entry, and an account
+///   is not a key this membership check can use — the device that actually
+///   wrote it is the signer.
 /// * `Shared { signature_data: Some(SignatureData { signer: Some(pk), .. }), .. }`
 ///   → the signature names its signer, which is the author. When `signer`
 ///   is `None` there is no author to name, so this returns `None` and the
@@ -193,12 +196,59 @@ fn extract_author_from_leaf_authorization(
     authorization: Option<&StorageType>,
 ) -> Option<PublicKey> {
     match authorization? {
-        StorageType::User { owner, .. } => Some(*owner),
-        StorageType::Shared { signature_data, .. }
+        StorageType::User { signature_data, .. }
+        | StorageType::Shared { signature_data, .. }
         | StorageType::SharedMember { signature_data, .. } => {
             signature_data.as_ref().and_then(|sd| sd.signer)
         }
         StorageType::Public | StorageType::Frozen => None,
+    }
+}
+
+/// Does a `User` leaf's author actually own it?
+///
+/// The ownership half of the authored-entry gate, and it lives here rather than
+/// in `calimero-storage` because it is the half that needs device→account
+/// bindings — which this crate can read and that one cannot. On the delta path
+/// storage answers it itself, from the account the node resolved at the action's
+/// causal cut. The sync repair paths (HashComparison, snapshot, level-wise)
+/// carry no cut, so storage defers there and this runs instead; see
+/// `Interface::user_action_authorized`.
+///
+/// Without it the account flip would have been a straight downgrade on those
+/// paths: `owner` used to BE the key the signature verified against, so a
+/// repaired leaf was cryptographically bound to its owner even with no bindings
+/// in hand. Once `owner` is an account that binding has to be re-made by
+/// resolving the signer, and any context member could otherwise overwrite
+/// another member's authored entry by pushing it over HC.
+///
+/// Non-`User` leaves pass straight through — they have no owner to check. So
+/// does a leaf whose group or binding cannot be resolved: that is this node not
+/// having folded the author's enrolment yet, not a claim that the author is an
+/// impostor, and the membership check above has already run.
+fn user_leaf_author_is_its_owner(
+    store: &Store,
+    context_id: &ContextId,
+    leaf: &TreeLeafData,
+    author: &PublicKey,
+) -> bool {
+    let Some(StorageType::User { owner, .. }) = leaf.metadata.authorization.as_ref() else {
+        return true;
+    };
+    let Ok(Some(group_id)) = calimero_governance_store::get_group_for_context(store, context_id)
+    else {
+        return true;
+    };
+    match calimero_governance_store::member_account_in_namespace(store, &group_id, author) {
+        Ok(Some(account)) => {
+            let owns = account == *owner;
+            if !owns {
+                crate::node_metrics::record_hc_leaf_drop("not-entry-owner");
+            }
+            owns
+        }
+        // Unresolvable, not disproven — see the doc above.
+        Ok(None) | Err(_) => true,
     }
 }
 
@@ -253,7 +303,7 @@ pub fn is_leaf_currently_authorized(
     };
     match calimero_governance_store::is_currently_authorized_for_context(store, context_id, &author)
     {
-        Ok(true) => true,
+        Ok(true) => user_leaf_author_is_its_owner(store, context_id, leaf, &author),
         Ok(false) => {
             // Expected outcome under churn (post-removal authorship,
             // ReadOnly role); track separately from lookup errors so
@@ -1131,16 +1181,37 @@ mod tests {
     }
 
     #[test]
-    fn extract_author_user_returns_owner() {
-        let owner = PublicKey::from([7u8; 32]);
+    fn extract_author_user_returns_the_signer_not_the_owner() {
+        // `owner` names the ACCOUNT allowed to change the entry; the author this
+        // gate needs is the KEY that wrote it, because membership is checked per
+        // key. The two are deliberately unrelated here — returning the owner
+        // would hand a 32-byte account id to a membership lookup that expects a
+        // signing key, and it would silently answer "not a member".
+        let signer = PublicKey::from([7u8; 32]);
         let st = StorageType::User {
-            owner,
-            signature_data: None,
+            owner: calimero_account::AccountId::from([0x7A; 32]),
+            signature_data: Some(SignatureData {
+                signer: Some(signer),
+                signature: [0u8; 64],
+                nonce: 0,
+            }),
         };
         assert_eq!(
             extract_author_from_leaf_authorization(Some(&st)),
-            Some(owner),
+            Some(signer),
         );
+    }
+
+    #[test]
+    fn extract_author_user_without_a_signer_returns_none() {
+        // Same deferral as the `Shared` arm below: an authorization naming no
+        // signer yields no author, and `apply_action`'s signature check is what
+        // refuses it.
+        let st = StorageType::User {
+            owner: calimero_account::AccountId::from([0x7A; 32]),
+            signature_data: None,
+        };
+        assert_eq!(extract_author_from_leaf_authorization(Some(&st)), None);
     }
 
     #[test]
