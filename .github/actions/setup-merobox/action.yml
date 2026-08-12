@@ -1,40 +1,20 @@
 name: Setup Merobox
 description: "Install the merobox release binary (Linux only)"
 
-inputs:
-  artifact:
-    description: >
-      Name of a same-repo artifact holding a prebuilt `merobox` binary. When set,
-      that binary is installed instead of the published release, which is how the
-      suite runs against a merobox that has not shipped yet. The floor check below
-      is skipped with it: an unreleased build has no meaningful version to compare,
-      and the point of passing it is that the release is not good enough.
-    required: false
-    default: ""
+# There is deliberately no "install a prebuilt artifact instead" input. Pointing
+# the suite at an unreleased merobox is occasionally useful while a fix is in
+# flight, but an artifact installed by name is a binary every downstream step
+# then executes with full access to node data dirs, and a same-repo artifact name
+# is not an authenticated identity — any job that can upload under that name
+# substitutes it. The release path below is verified against its published
+# `.sha256`, and that guarantee is the reason this is the only path. Testing
+# against an unshipped merobox means shipping it first, to a pre-release if need
+# be; the floor below is a floor precisely so that is cheap.
 
 runs:
   using: "composite"
   steps:
-    - name: Download prebuilt merobox
-      if: inputs.artifact != ''
-      uses: actions/download-artifact@v8
-      with:
-        name: ${{ inputs.artifact }}
-        path: /tmp/merobox-prebuilt
-
-    - name: Install prebuilt merobox
-      if: inputs.artifact != ''
-      shell: bash
-      run: |
-        set -euo pipefail
-        mkdir -p "$HOME/.local/bin"
-        install -m 0755 /tmp/merobox-prebuilt/merobox "$HOME/.local/bin/merobox"
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-        export PATH="$HOME/.local/bin:$PATH"
-        merobox --version
-
     - name: Install merobox
-      if: inputs.artifact == ''
       shell: bash
       run: |
         set -euo pipefail

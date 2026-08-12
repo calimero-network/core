@@ -90,9 +90,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     // From the invitation ENVELOPE, and optional there: it is a
-                    // bootstrap hint, not authority. `None` simply skips the
-                    // admin seeding — the state before the field existed, which
-                    // `NamespaceCreated` genesis repairs on arrival anyway.
+                    // bootstrap hint, and it is treated as one — recorded in a
+                    // node-local row below, never seeded as this group's admin.
+                    // See the seeding site for why "genesis repairs it anyway"
+                    // is not true.
                     let inviter_account = invitation.inviter_account;
                     // The invitation carries the application id so joiners
                     // pre-populate `GroupMetaValue` with the real value:
@@ -136,11 +137,28 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             _ => [0u8; 32],
                         }
                     });
-                    // The joiner has synced nothing yet, so it cannot resolve the
-                    // inviter's key to an account itself. Absent the hint, the
-                    // placeholder stands until genesis arrives and overwrites it.
-                    let seeded_admin =
-                        inviter_account.unwrap_or_else(calimero_governance_store::placeholder_admin_identity);
+                    // The placeholder, never `invitation.inviter_account`.
+                    //
+                    // That hint rides in the UNSIGNED envelope —
+                    // `inviter_signature` covers the inner
+                    // `GroupInvitationFromAdmin` only — so anything that can
+                    // relay an invitation can choose it. Seeding it made it this
+                    // node's `admin_identity`, the local root of trust for
+                    // `is_admin` and for beacon, ack and heartbeat verification.
+                    //
+                    // The field's own docs called that safe because genesis
+                    // overwrites a wrong value. It does not: `namespace_created`
+                    // keys its established-check on
+                    // `admin_identity != placeholder` and is a no-op once one is
+                    // set, so an attacker-chosen account would have been
+                    // permanent on this node rather than reconciled.
+                    //
+                    // The head start the hint exists for is kept, in the
+                    // node-local bootstrap row written below — which confers no
+                    // authority and stops being read the moment a real admin
+                    // exists. This mirrors `join_namespace` in `calimero-node`,
+                    // the other entry point into this same cold-start window.
+                    let seeded_admin = calimero_governance_store::placeholder_admin_identity();
                     let meta = calimero_store::key::GroupMetaValue {
                         admin_identity: seeded_admin,
                         owner_identity: seeded_admin,
@@ -152,23 +170,24 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     };
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
-                    // Add the namespace admin to the member list so joining
-                    // nodes see the creator in /admin-api/groups/:id/members.
-                    // Direct-row check: see joiner-side guard below for
-                    // why inheritance-aware `check_group_membership`
-                    // would be unsafe here.
-                    // Only when the hint named someone: seeding a member row for
-                    // the placeholder would invent a principal.
-                    if let Some(inviter_account) = inviter_account {
-                        if !MembershipRepository::new(&datastore)
-                            .has_direct_member(&group_id, &inviter_account)?
-                        {
-                            MembershipRepository::new(&datastore).add_member(
-                                &group_id,
-                                &inviter_account,
-                                calimero_primitives::context::GroupMemberRole::Admin,
-                            )?;
-                        }
+                    // The hint goes to its own node-local row, not to a
+                    // membership row.
+                    //
+                    // Recorded at all because a joiner that has applied no DAG
+                    // ops verifies nothing it receives — including the inviter's
+                    // readiness beacons, which are the trigger that would fetch
+                    // the state ending that condition. `namespace_accounts`
+                    // admits this hint while the admin is still the placeholder,
+                    // which is exactly the cold-start window and no longer.
+                    //
+                    // An earlier version wrote an Admin MEMBERSHIP row from it
+                    // instead. That row outlives the window — nothing retracts
+                    // it once genesis names the real admin — so an unsigned
+                    // field chosen by whoever relayed the invitation became a
+                    // durable grant.
+                    if let Some(hint) = inviter_account {
+                        MembershipRepository::new(&datastore)
+                            .set_bootstrap_inviter(group_id.to_bytes().into(), hint)?;
                     }
                 }
 

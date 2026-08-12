@@ -9489,6 +9489,59 @@ mod undecidable_authority_parks {
         );
     }
 
+    /// The self-branch of `require_admin_or_self` resolves the signer's account,
+    /// and binding rows fold like any other projected state — so at a cut this
+    /// replica cannot resolve, reading them live would let it answer `is_self`
+    /// differently from a peer at another fold depth, for one signed op. Park
+    /// instead: a park is retried when the ancestry lands, a denial is forever.
+    #[test]
+    fn unresolvable_cut_parks_the_self_branch_instead_of_denying_it() {
+        let signer_pk = PublicKey::from([0x11; 32]);
+        let store = test_store();
+        let gid = test_group_id();
+        // A real member acting on their own row — the live rows would GRANT, and
+        // the pre-fix code returned that verdict without checking whether the
+        // cut it was answering for could be resolved at all.
+        let signer = enrol_member(&store, &gid, &signer_pk);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &signer, GroupMemberRole::Member)
+            .unwrap();
+
+        let err = PermissionChecker::new(&store, gid)
+            .with_apply_auth(&CUT, &UnresolvableAuthorizer)
+            .require_admin_or_self(&signer_pk, &signer)
+            .expect_err("an unresolvable cut must not be answered from live bindings");
+        assert_undecidable(&err);
+
+        // Same store, same rows, same signer: only the cut differs. This pins
+        // that the park is about the CUT and not about the gate having become
+        // unreachable — a fix that simply broke self-service would also make the
+        // assertion above pass.
+        PermissionChecker::new(&store, gid)
+            .require_admin_or_self(&signer_pk, &signer)
+            .expect("a resolvable cut still admits the member acting on themselves");
+    }
+
+    /// An admin never reaches the resolution at all: `is_admin` answers from the
+    /// projection at the cut, so the gate is decided before any binding row is
+    /// read. Pinning it keeps the branch order load-bearing — reversing it would
+    /// park admins behind a lookup whose answer cannot change the verdict.
+    #[test]
+    fn admin_passes_admin_or_self_at_cut_without_resolving_bindings() {
+        let admin_pk = PublicKey::from([0x12; 32]);
+        let store = test_store();
+        let gid = test_group_id();
+        // Deliberately NOT enrolled: with no binding, the signer's account is
+        // unresolvable, so a gate that consulted it before asking the authorizer
+        // could only park or deny.
+        let target = AccountId::from([0x99; 32]);
+
+        PermissionChecker::new(&store, gid)
+            .with_apply_auth(&CUT, &FixedAuthorizer(true))
+            .require_admin_or_self(&admin_pk, &target)
+            .expect("an at-cut admin verdict decides the gate on its own");
+    }
+
     #[test]
     fn unresolvable_cut_refuses_rather_than_denying_from_live() {
         // The load-bearing direction. Live rows would DENY, and the old code turned
