@@ -46,60 +46,6 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  # ── Build merobox against this branch's client (TEMPORARY) ──
-  # Governance principals are named by account on this branch, and an AccountId
-  # renders as 64 hex where a signing key renders as bs58. The published merobox
-  # bundles a client-py built from core master, which therefore cannot decode a
-  # member listing at all (`list_group_members failed`) and silently drops the
-  # `account` / `memberAccount` fields the fixtures capture to address members.
-  #
-  # So build merobox once from calimero-network/merobox#319 — which pins
-  # client-py to calimero-client-py#78, where member ids are passed through as
-  # the node writes them — and hand every job below the binary as an artifact.
-  # Building it per job is not an option: `pip install` compiles client-py with
-  # maturin, which drags in the whole core dependency tree, and the matrix is
-  # ~70 jobs wide.
-  #
-  # This is scaffolding for the ordering only, not for the fix. client-py#78 is
-  # version-agnostic, so once it releases and merobox picks it up as a plain
-  # version floor, the published binary works here with nothing pinned: delete
-  # this job, drop `artifact:` from the setup-merobox calls, and drop it from the
-  # two `needs:` lists.
-  build-merobox:
-    name: Build merobox (branch client)
-    runs-on: ubuntu-24.04-8cpu
-    env:
-      # Mirrors merobox's own CI: the maturin build of calimero-client-py trips
-      # over transient crates.io HTTP/2 framing errors without these.
-      CARGO_NET_RETRY: "10"
-      CARGO_HTTP_MULTIPLEXING: "false"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: calimero-network/merobox
-          ref: chore/account-principals-client
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Build executable
-        run: pyinstaller merobox.spec
-
-      - name: Smoke-test the binary
-        run: ./dist/merobox --version
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: merobox-branch-binary
-          path: dist/merobox
-          retention-days: 1
-
   # ── Build merod Docker image (heaviest step) ──
   # Reusable build-merod-image.yml, shared verbatim with app-migration-e2e.yml
   # so the identical merod build lives in one place and both suites ride the
@@ -145,7 +91,7 @@ jobs:
   # scripts/e2e-auth-seam.sh, invoked as the workflow's script step.
   auth-seam:
     name: Auth seam (client-token e2e)
-    needs: [build-image, build-merobox]
+    needs: build-image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -169,8 +115,6 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
-        with:
-          artifact: merobox-branch-binary
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         env:
@@ -265,7 +209,7 @@ jobs:
   # ── Test phase: run each workflow in parallel ──
   test:
     name: Test (${{ matrix.workflow }})
-    needs: [build-image, build-apps, build-merobox]
+    needs: [build-image, build-apps]
     runs-on: ubuntu-24.04-8cpu
     strategy:
       fail-fast: false
@@ -585,8 +529,6 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
-        with:
-          artifact: merobox-branch-binary
 
       # Only the size sweep needs these, and they are 416 MiB of /dev/urandom —
       # not worth generating for every other workflow in the matrix
