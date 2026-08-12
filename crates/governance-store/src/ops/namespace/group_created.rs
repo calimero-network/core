@@ -106,7 +106,18 @@ pub(crate) fn apply(
     // Resolved once for both the meta pin and the Admin row below. They must
     // agree — same signer, same parent — and each resolution is a binding-column
     // scan, so doing it twice bought nothing but the chance of drifting apart.
-    let Some(creator) = crate::member_account_in_namespace(store, &parent_gid, &op.signer)? else {
+    //
+    // Resolved through the permission checker, not off live binding rows: those
+    // rows are folded state like any other, so a bare live read would let a
+    // replica that has not yet folded the creator's device-link op answer
+    // `NotMember` for an op its peer admitted — a permanent, fold-order-dependent
+    // divergence in projected state. The checker parks instead, and the op is
+    // retried when the ancestry arrives. It resolves against the parent, which is
+    // where the authority that admitted this op lives.
+    let Some(creator) = ctx
+        .permissions_for(parent_gid)
+        .account_for_signer(&op.signer)?
+    else {
         bail!(crate::MembershipError::NotMember {
             group_id: hex::encode(parent_gid.to_bytes()),
             identity: format!("{}", op.signer),

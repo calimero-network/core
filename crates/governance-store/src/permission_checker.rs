@@ -161,6 +161,27 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
+    /// The account `signer` speaks for, for an apply path that must NAME the
+    /// signer rather than merely judge it — and must reach the same name on
+    /// every replica.
+    ///
+    /// The public form of [`live_account_or_park`](Self::live_account_or_park),
+    /// with the soundness gate the authority checks put in front of their own
+    /// live fallbacks. Both parks matter and they cover different gaps: the gate
+    /// refuses to answer at a cut the projection cannot resolve, and the inner
+    /// park refuses to call an unresolvable signer a stranger before this
+    /// namespace has any authority to have been a stranger to. What survives
+    /// both is a `None` that means genuinely unbound, which a caller may safely
+    /// turn into a rejection.
+    ///
+    /// A caller that only asks "is this signer authorized" wants
+    /// [`is_admin`](Self::is_admin) instead — it answers from the projection
+    /// without resolving a name at all.
+    pub fn account_for_signer(&self, signer: &PublicKey) -> EyreResult<Option<AccountId>> {
+        self.ensure_live_fallback_is_sound(signer)?;
+        self.live_account_or_park(signer)
+    }
+
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
         // Decide from the PROJECTION at the op's causal cut — admin authority as of the
         // op's own parents, which is the same answer on every replica.
@@ -448,9 +469,22 @@ impl<'a> PermissionChecker<'a> {
     /// which kept compiling after the flip because both ids are 32 bytes: the
     /// comparison simply stopped ever being true, silently narrowing this gate
     /// to admins only.
+    /// Admin is asked FIRST, and not for style: it answers from the projection at
+    /// the op's own cut, so an admin never reaches the resolution below at all.
+    /// Only a signer with no admin authority needs naming, and that naming is
+    /// held to the same soundness gate every other branch in this file uses —
+    /// binding rows fold like any other projected state, so resolving `signer`
+    /// off live rows at an unresolvable cut lets two replicas at different fold
+    /// depths disagree about `is_self` for one signed op: one accepts the
+    /// self-service change, the other rejects it as neither admin nor self.
+    /// [`account_for_signer`](Self::account_for_signer) parks that op instead,
+    /// and a parked op is retried once the ancestry lands.
     pub fn require_admin_or_self(&self, signer: &PublicKey, member: &AccountId) -> EyreResult<()> {
-        let is_self = self.live_account(signer)?.as_ref() == Some(member);
-        if !is_self && !self.is_admin(signer)? {
+        if self.is_admin(signer)? {
+            return Ok(());
+        }
+        let is_self = self.account_for_signer(signer)?.as_ref() == Some(member);
+        if !is_self {
             bail!(CapabilitiesError::Unauthorized {
                 group_id: format!("{:?}", self.group_id),
                 operation: "set member alias (admin or self only)".into(),

@@ -113,8 +113,16 @@ impl<'a> GroupApplyCtx<'a> {
     ///
     /// `None` is always a refusal, never a fallback. A key bound to no account
     /// here is not the member it claims to be, so it cannot act as them.
+    ///
+    /// Resolved through the checker rather than off the binding rows directly,
+    /// because those rows fold like any other projected state. A bare live read
+    /// makes the answer depend on how far THIS replica has folded, so a peer
+    /// that has the signer's device-link op and one that does not would reach
+    /// opposite verdicts on the same signed self-op — one applies it, the other
+    /// refuses it, and nothing later reconciles them. The checker parks that op
+    /// instead, and a park is retried once the ancestry arrives.
     pub(crate) fn signer_account(&self) -> EyreResult<Option<AccountId>> {
-        crate::member_account_in_namespace(self.store, self.group_id, self.signer)
+        self.permissions.account_for_signer(self.signer)
     }
 
     /// Whether the op's signer is acting on their own behalf — the shared
