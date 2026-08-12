@@ -678,12 +678,57 @@ impl<'a> MembershipRepository<'a> {
         let group_id = ContextGroupId::from(namespace_id.to_bytes());
         let members = self.list(&group_id, 0, usize::MAX)?;
         let mut accounts: Vec<AccountId> = members.into_iter().map(|(acct, _role)| acct).collect();
-        if let Some(meta) = MetaRepository::new(self.store).load(&group_id)? {
-            if !accounts.contains(&meta.admin_identity) {
-                accounts.push(meta.admin_identity);
+        let admin = MetaRepository::new(self.store)
+            .load(&group_id)?
+            .map(|meta| meta.admin_identity);
+        if let Some(admin) = admin {
+            if !accounts.contains(&admin) {
+                accounts.push(admin);
+            }
+        }
+
+        // Cold start only: before any admin is established, a joiner has applied
+        // no DAG ops and knows nobody, so nothing it receives verifies — including
+        // the inviter's readiness beacons, which are the trigger that would fetch
+        // the governance state that ends this state. The invitation's inviter hint
+        // breaks that circle.
+        //
+        // Gated on the admin still being the placeholder, and that gate is the
+        // whole safety argument. The hint is unsigned, so anything relaying an
+        // invitation can choose it; admitting it here lets a wrong value have one
+        // bogus beacon accepted before genesis lands, and nothing afterwards. It
+        // is deliberately NOT stored as the admin, which is what made an earlier
+        // version of this permanent — genesis refuses to overwrite a
+        // non-placeholder admin, so a forged hint would have outlived the
+        // bootstrap it was for.
+        if admin.is_none_or(|admin| admin == crate::placeholder_admin_identity()) {
+            if let Some(hint) = self.bootstrap_inviter(namespace_id)? {
+                if !accounts.contains(&hint) {
+                    accounts.push(hint);
+                }
             }
         }
         Ok(accounts)
+    }
+
+    /// The unverified inviter hint recorded at join, if this node kept one.
+    ///
+    /// See [`calimero_store::key::NamespaceBootstrapInviter`] for why it is not
+    /// stored anywhere that confers authority.
+    pub fn bootstrap_inviter(&self, namespace_id: NamespaceId) -> EyreResult<Option<AccountId>> {
+        let key = calimero_store::key::NamespaceBootstrapInviter::new(namespace_id.to_bytes());
+        Ok(self.store.handle().get(&key)?.map(AccountId::from))
+    }
+
+    /// Record the inviter hint an invitation carried. NODE-LOCAL.
+    pub fn set_bootstrap_inviter(
+        &self,
+        namespace_id: NamespaceId,
+        inviter: AccountId,
+    ) -> EyreResult<()> {
+        let key = calimero_store::key::NamespaceBootstrapInviter::new(namespace_id.to_bytes());
+        self.store.handle().put(&key, inviter.as_bytes())?;
+        Ok(())
     }
 
     /// Enumerate the trusted-anchor set: `{Owner} ∪ {Admins} ∪ {ReadOnlyTee}`.

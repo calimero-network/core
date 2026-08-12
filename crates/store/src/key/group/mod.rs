@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x46` is taken
-// except `0x2B` (retired, below); **the next free byte is `0x47`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x47` is taken
+// except `0x2B` (retired, below); **the next free byte is `0x48`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -1463,6 +1463,64 @@ impl NamespaceIdentity {
         let mut id = [0; 32];
         id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
         id
+    }
+}
+
+/// Prefix for the cold-start inviter hint. NODE-LOCAL, never gossiped.
+pub const NAMESPACE_BOOTSTRAP_INVITER_PREFIX: u8 = 0x47;
+
+// ---------------------------------------------------------------------------
+// Bootstrap inviter: the cold-start beacon-verification hint
+// ---------------------------------------------------------------------------
+
+/// The account an invitation CLAIMED its inviter acts as, kept only until
+/// genesis says who the admin really is.
+///
+/// Key layout: `NAMESPACE_BOOTSTRAP_INVITER_PREFIX (1 byte) + namespace_id (32)`.
+///
+/// Its own row because the value is a HINT and everywhere else it could live is
+/// authority. It arrives in the unsigned half of an invitation, so anything
+/// relaying one can choose it; put in `GroupMetaValue::admin_identity` it became
+/// the permanent trust root, since genesis refuses to overwrite a non-placeholder
+/// admin, and `owner_identity` is no better — that one gates ownership transfer
+/// and group deletion.
+///
+/// Read only while the namespace has no established admin, and consulted for one
+/// thing: letting the inviter's readiness beacons verify before any DAG has
+/// arrived, which is the trigger a cold-start joiner needs to pull governance at
+/// all. A wrong value there costs a bogus beacon accepted in that window and
+/// nothing after it.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NamespaceBootstrapInviter(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NamespaceBootstrapInviter {
+    #[must_use]
+    pub fn new(namespace_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([
+            NAMESPACE_BOOTSTRAP_INVITER_PREFIX,
+        ])
+        .concat(GenericArray::from(namespace_id))))
+    }
+}
+
+impl AsKeyParts for NamespaceBootstrapInviter {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NamespaceBootstrapInviter {
+    type Error = ();
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
     }
 }
 

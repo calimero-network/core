@@ -1602,6 +1602,55 @@ fn check_membership_direct_member_of_subgroup_always_passes() {
 /// op). `namespace_member_pubkeys` must include that identity so that
 /// `verify_ack` accepts legitimate acks signed by the namespace creator.
 #[test]
+fn the_bootstrap_inviter_hint_is_admitted_only_before_an_admin_exists() {
+    // The cold-start circle it breaks: a joiner that has applied no DAG ops
+    // knows nobody, so nothing verifies — including the inviter's readiness
+    // beacons, which are the trigger that would fetch the state that would end
+    // that condition.
+    let store = test_store();
+    let namespace_id = [0xD1; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let hint = AccountId::from([0x77; 32]);
+    let repo = MembershipRepository::new(&store);
+
+    // A namespace with no meta at all: the state a joiner is in before genesis.
+    repo.set_bootstrap_inviter(namespace_id.into(), hint)
+        .expect("record the hint");
+    assert!(
+        repo.namespace_accounts(namespace_id.into())
+            .expect("read")
+            .contains(&hint),
+        "before an admin exists the hint is the only thing that lets the inviter's \
+         beacons verify, which is the whole reason it is kept"
+    );
+
+    // Genesis establishes a real admin. From here the hint must be inert — this
+    // is the assertion that keeps an unsigned, relay-chosen value from outliving
+    // the bootstrap it was for.
+    let admin = AccountId::from([0x01; 32]);
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: ApplicationId::from([0xCC; 32]),
+        created_at: 1_700_000_000,
+        admin_identity: admin,
+        owner_identity: admin,
+        migration: None,
+        auto_join: true,
+    };
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+
+    let accounts = repo.namespace_accounts(namespace_id.into()).expect("read");
+    assert!(
+        accounts.contains(&admin),
+        "the established admin still verifies"
+    );
+    assert!(
+        !accounts.contains(&hint),
+        "and the hint no longer does — it is a bootstrap crutch, not a trust root"
+    );
+}
+
+#[test]
 fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     let store = test_store();
     let namespace_id = [0xAA; 32];
