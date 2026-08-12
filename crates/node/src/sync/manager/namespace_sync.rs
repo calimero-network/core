@@ -1497,17 +1497,38 @@ impl SyncManager {
         // key the rotation excluded it from. So asking without a device is asking
         // for nothing, and a node that has not enrolled yet would sit keyless —
         // unable to decrypt any group op — until something else happened to enrol
-        // it. `ensure_enrolled` is idempotent and returns the existing device when
-        // there is one, so this only ever mints on the first pull.
-        let requester = calimero_governance_store::KeyRequester {
-            identity: requester_public_key,
-            device: calimero_governance_store::NodeDeviceRepository::new(&store)
+        // it.
+        //
+        // Read before minting, and mint only when there is nothing to read.
+        // `ensure_enrolled` is idempotent only for a device of THIS node's own
+        // account: handed a row belonging to another account it releases the slot
+        // and mints a replacement, which is exactly what a paired device is. So
+        // calling it unconditionally destroyed the pairing on the first pull —
+        // and the key already in flight named the device it destroyed, so it
+        // arrived, matched nothing, and was dropped. The link op that would have
+        // protected the row is itself encrypted under that key, so the pairing
+        // could never recover; the next pull just did it again.
+        //
+        // Asking as a device we already are is right regardless of whose account
+        // it speaks for: the point is to be addressable, not to be ourselves.
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let device = match devices.get(&ns_gid) {
+            Ok(Some(existing)) => Some(existing.secret.device),
+            Ok(None) => devices
                 .ensure_enrolled(&ns_gid)
                 .map(|own| Some(own.secret.device))
                 .unwrap_or_else(|err| {
                     debug!(%err, "failed to enrol this node's device for key recovery");
                     None
                 }),
+            Err(err) => {
+                debug!(%err, "failed to read this node's device for key recovery");
+                None
+            }
+        };
+        let requester = calimero_governance_store::KeyRequester {
+            identity: requester_public_key,
+            device,
         };
 
         // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
