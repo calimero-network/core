@@ -577,9 +577,9 @@ async fn upgrade_group() {
             "data": {
                 "groupId": GID,
                 "status": "pending",
-                "total": null,
-                "completed": null,
-                "failed": null
+                "localContextsTotal": null,
+                "localContextsSwapped": null,
+                "localContextsFailed": null
             }
         })))
         .expect(1)
@@ -635,9 +635,9 @@ async fn get_cascade_status() {
                     "initiatedAt": 100,
                     "initiatedBy": ZERO_BS58,
                     "status": "pending",
-                    "total": 3,
-                    "completed": 1,
-                    "failed": 0
+                    "localContextsTotal": 3,
+                    "localContextsSwapped": 1,
+                    "localContextsFailed": 0
                 },
                 "cascadeHlc": "hlc-abc"
             }]})),
@@ -664,9 +664,9 @@ async fn retry_group_upgrade() {
             "data": {
                 "groupId": GID,
                 "status": "pending",
-                "total": null,
-                "completed": null,
-                "failed": null
+                "localContextsTotal": null,
+                "localContextsSwapped": null,
+                "localContextsFailed": null
             }
         })))
         .expect(1)

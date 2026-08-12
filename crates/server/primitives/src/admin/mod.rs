@@ -1692,9 +1692,14 @@ pub struct UpgradeGroupApiResponse {
 pub struct UpgradeGroupApiResponseData {
     pub group_id: String,
     pub status: String,
-    pub total: Option<u32>,
-    pub completed: Option<u32>,
-    pub failed: Option<u32>,
+    /// Contexts this node enumerated for the upgrade. A per-node count, not a
+    /// fleet one - fleet progress is the `migration-status` rollup.
+    pub local_contexts_total: Option<u32>,
+    /// Contexts this node has swapped to the target application.
+    pub local_contexts_swapped: Option<u32>,
+    /// Contexts whose swap failed on this node; a non-zero value is what
+    /// `retry_group_upgrade` picks up.
+    pub local_contexts_failed: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1859,9 +1864,14 @@ pub struct GroupUpgradeStatusApiData {
     pub initiated_at: u64,
     pub initiated_by: PublicKey,
     pub status: String,
-    pub total: Option<u32>,
-    pub completed: Option<u32>,
-    pub failed: Option<u32>,
+    /// Contexts this node enumerated for the upgrade. A per-node count, not a
+    /// fleet one - fleet progress is the `migration-status` rollup.
+    pub local_contexts_total: Option<u32>,
+    /// Contexts this node has swapped to the target application.
+    pub local_contexts_swapped: Option<u32>,
+    /// Contexts whose swap failed on this node; a non-zero value is what
+    /// `retry_group_upgrade` picks up.
+    pub local_contexts_failed: Option<u32>,
     pub completed_at: Option<u64>,
 }
 
