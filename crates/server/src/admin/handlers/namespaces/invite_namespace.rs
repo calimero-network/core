@@ -78,10 +78,16 @@ pub async fn handler(
         ) {
             Ok(Some(account)) => account,
             Ok(None) => {
-                return parse_api_error(eyre::eyre!(
-                    "the requesting identity is bound to no account in this namespace"
-                ))
-                .into_response()
+                // 403, not the 500 `parse_api_error` gives an untyped report.
+                // A caller who never joined asking to invite is a permission
+                // answer, and dressing it as an internal error both misleads the
+                // caller and hides real backend faults among identical 500s.
+                return ApiError {
+                    status_code: StatusCode::FORBIDDEN,
+                    message: "The requesting identity is bound to no account in this namespace"
+                        .into(),
+                }
+                .into_response();
             }
             Err(err) => return parse_api_error(err).into_response(),
         };

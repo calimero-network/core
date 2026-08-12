@@ -44,6 +44,15 @@ pub enum MembershipChangePayload {
 #[serde(rename_all = "camelCase")]
 pub struct MembershipChange {
     /// The member's ACCOUNT — the principal the governance rows name.
+    ///
+    /// Named `memberAccount` on the wire, not `member`. The field it replaces
+    /// carried a bs58 signing KEY; this carries 64-hex naming a different
+    /// principal entirely. Both are strings, so a consumer still reading
+    /// `member` would have parsed the new value as the old kind and compared it
+    /// against keys forever — silently, and against nothing. Renaming makes a
+    /// consumer that has not been updated fail at the field it no longer finds,
+    /// which is the only honest way to ship this change.
+    #[serde(rename = "memberAccount")]
     pub member: crate::identity::AccountId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<GroupMemberRole>,
@@ -241,7 +250,21 @@ mod tests {
         assert_eq!(v["groupId"], hex::encode([0x07; 32]), "groupId is hex");
         assert!(v.get("contextId").is_none(), "no contextId leaks in");
         assert_eq!(v["data"]["role"], "Member");
-        assert!(v["data"].get("member").is_some());
+        // Named `memberAccount`, and `member` must NOT be present. The old
+        // field carried a bs58 key; this carries a 64-hex account. Both are
+        // strings, so a consumer left reading `member` would have compared an
+        // account against keys and matched nothing, forever and silently. The
+        // absence assertion is the one that keeps the rename honest.
+        assert_eq!(
+            v["data"]["memberAccount"],
+            hex::encode([0x09; 32]),
+            "the member is named by account, in hex"
+        );
+        assert!(
+            v["data"].get("member").is_none(),
+            "the old key-shaped field must be gone, not shadowed — a consumer that \
+             still reads it should fail loudly rather than silently mismatch"
+        );
     }
 
     #[test]
