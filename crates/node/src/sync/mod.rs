@@ -32,6 +32,42 @@
 //!
 //! See [`metrics`] module for trait definition and [`prometheus_metrics`] for production use.
 
+/// The signing keys of a group's trusted anchors.
+///
+/// `trusted_anchors` answers in ACCOUNTS, because that is what "authoritative
+/// here" is recorded against. Peer selection matches on the key a peer actually
+/// presents, so each anchor account is expanded to its live devices. An anchor
+/// running two machines is preferred at both; matching on the account alone
+/// would match neither, since no peer ever presents one.
+///
+/// Returns an empty set on any store failure — the same conservative default the
+/// callers already applied, and one that only costs a less-preferred peer choice.
+pub(crate) fn anchor_device_keys(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+    let Ok(anchors) =
+        calimero_governance_store::MembershipRepository::new(store).trusted_anchors(group_id)
+    else {
+        return std::collections::BTreeSet::new();
+    };
+    let Ok(namespace) =
+        calimero_governance_store::NamespaceRepository::new(store).resolve(group_id)
+    else {
+        return std::collections::BTreeSet::new();
+    };
+    let Ok(bindings) =
+        calimero_governance_store::AccountBindingRepository::new(store).live_bindings(&namespace)
+    else {
+        return std::collections::BTreeSet::new();
+    };
+    bindings
+        .iter()
+        .filter(|binding| anchors.contains(&binding.account))
+        .map(|binding| binding.sign_pk)
+        .collect()
+}
+
 mod blobs;
 mod config;
 pub(crate) mod delta_request;

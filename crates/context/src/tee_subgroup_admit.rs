@@ -21,6 +21,7 @@
 
 use std::sync::Mutex;
 
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::AdmitTeeNodeRequest;
 use calimero_context_config::types::ContextGroupId;
@@ -47,7 +48,7 @@ pub(crate) enum AdmitTrigger {
     /// out into the Restricted subgroups this node holds keys for.
     NewTeeMember {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
     },
 }
 
@@ -185,8 +186,28 @@ async fn admit_member_into_subgroup(
     member: &PublicKey,
     record: &TeeAdmissionRecord,
 ) {
-    // Idempotency: skip if already a direct member of the subgroup.
-    match MembershipRepository::new(store).has_direct_member(subgroup_gid, member) {
+    // Idempotency: skip if already a direct member of the subgroup. Membership
+    // is account-keyed, so the replica's key is resolved first; a key bound to
+    // no account here holds no row, which is the same answer as `false`.
+    let member_account = match calimero_governance_store::member_account_in_namespace(
+        store,
+        subgroup_gid,
+        member,
+    ) {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            warn!(%member, "tee-subgroup-admit: skip member — its key is bound to no account here");
+            return;
+        }
+        Err(e) => {
+            error!(
+                ?e,
+                "tee-subgroup-admit: resolving the member's account failed"
+            );
+            return;
+        }
+    };
+    match MembershipRepository::new(store).has_direct_member(subgroup_gid, &member_account) {
         Ok(true) => return,
         Ok(false) => {}
         Err(e) => {
@@ -285,10 +306,30 @@ async fn handle_new_subgroup(
             return;
         }
     };
-    let tee_members: Vec<PublicKey> = members
+    // The member rows name accounts, but everything downstream — the admission
+    // record lookup and the group-key wrap — is addressed to the device that
+    // actually runs the replica. Expand each account to its live devices.
+    let live_bindings = match calimero_governance_store::AccountBindingRepository::new(store)
+        .live_bindings(&namespace_gid)
+    {
+        Ok(bindings) => bindings,
+        Err(e) => {
+            error!(?e, "tee-subgroup-admit: reading device bindings failed");
+            return;
+        }
+    };
+    let tee_accounts: std::collections::BTreeSet<AccountId> = members
         .into_iter()
         .filter(|(_, role)| *role == GroupMemberRole::ReadOnlyTee)
         .map(|(member, _)| member)
+        .collect();
+    // Each account paired with the devices that speak for it: the admission
+    // VERDICT is recorded against the account, while the admission itself and
+    // the key wrap that follows are addressed to a device.
+    let tee_members: Vec<(AccountId, PublicKey)> = live_bindings
+        .iter()
+        .filter(|binding| tee_accounts.contains(&binding.account))
+        .map(|binding| (binding.account, binding.sign_pk))
         .collect();
     if tee_members.is_empty() {
         debug!(subgroup = %hex::encode(child_group_id), "tee-subgroup-admit: skip — no root ReadOnlyTee members to admit");
@@ -305,8 +346,8 @@ async fn handle_new_subgroup(
             return;
         }
     };
-    for member in tee_members {
-        let Some(record) = records.get(&member) else {
+    for (account, member) in tee_members {
+        let Some(record) = records.get(&account) else {
             warn!(subgroup = %hex::encode(child_group_id), %member, "tee-subgroup-admit: skip member — no admission verdict in root op-log");
             continue; // no verdict to reuse (membership row without a join op)
         };
@@ -319,7 +360,7 @@ async fn handle_new_tee_member(
     store: &Store,
     context_client: &ContextClient,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) {
     let group_gid = ContextGroupId::from(group_id);
 
@@ -358,6 +399,20 @@ async fn handle_new_tee_member(
             }
         }
     }
+    let member_devices: Vec<PublicKey> =
+        match calimero_governance_store::AccountBindingRepository::new(store)
+            .live_bindings(&namespace_gid)
+        {
+            Ok(bindings) => bindings
+                .iter()
+                .filter(|binding| binding.account == member)
+                .map(|binding| binding.sign_pk)
+                .collect(),
+            Err(e) => {
+                error!(?e, "tee-subgroup-admit: reading device bindings failed");
+                return;
+            }
+        };
     let Some(record) = record else {
         // Exhausting the retry budget is not expected (the verdict gap is
         // normally microseconds). If the store write is delayed past ~1s (heavy
@@ -410,7 +465,12 @@ async fn handle_new_tee_member(
                 continue;
             }
         }
-        admit_member_into_subgroup(context_client, store, &sub, &member, &record).await;
+        // The verdict names the account; the admission and the key wrap that
+        // follows are addressed to a device, so fan out over every device the
+        // admitted account holds.
+        for binding in &member_devices {
+            admit_member_into_subgroup(context_client, store, &sub, binding, &record).await;
+        }
     }
 }
 
@@ -442,11 +502,11 @@ mod dispatch_tests {
         assert_eq!(
             admit_trigger(&OpEvent::TeeMemberAdmitted {
                 group_id: [4u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
             }),
             Some(AdmitTrigger::NewTeeMember {
                 group_id: [4u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
             })
         );
 
@@ -454,7 +514,7 @@ mod dispatch_tests {
         assert_eq!(
             admit_trigger(&OpEvent::MemberAdded {
                 group_id: [5u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
                 role: GroupMemberRole::Member,
             }),
             None
@@ -462,7 +522,7 @@ mod dispatch_tests {
         assert_eq!(
             admit_trigger(&OpEvent::TeeMemberRemoved {
                 group_id: [6u8; 32],
-                member,
+                member: crate::test_support::account_for(&member),
             }),
             None
         );

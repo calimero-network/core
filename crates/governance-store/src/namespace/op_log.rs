@@ -234,6 +234,14 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
+            // Past this family entirely: `GroupDeviceBinding` shares the exact
+            // key layout, so a binding row parses here and — on a namespace root,
+            // where the group id IS the namespace id — passes the id check too.
+            // Decoding its value as op bytes is the "Not all bytes read" this
+            // walk used to report as corruption.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
@@ -344,6 +352,14 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
+            // Past this family entirely: `GroupDeviceBinding` shares the exact
+            // key layout, so a binding row parses here and — on a namespace root,
+            // where the group id IS the namespace id — passes the id check too.
+            // Decoding its value as op bytes is the "Not all bytes read" this
+            // walk used to report as corruption.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
@@ -406,6 +422,14 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
+            // Past this family entirely: `GroupDeviceBinding` shares the exact
+            // key layout, so a binding row parses here and — on a namespace root,
+            // where the group id IS the namespace id — passes the id check too.
+            // Decoding its value as op bytes is the "Not all bytes read" this
+            // walk used to report as corruption.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }
@@ -459,6 +483,14 @@ impl<'a> NamespaceOpLogService<'a> {
                     break;
                 }
             };
+            // Past this family entirely: `GroupDeviceBinding` shares the exact
+            // key layout, so a binding row parses here and — on a namespace root,
+            // where the group id IS the namespace id — passes the id check too.
+            // Decoding its value as op bytes is the "Not all bytes read" this
+            // walk used to report as corruption.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != self.namespace_id.to_bytes() {
                 break;
             }

@@ -10,6 +10,7 @@
 use crate::authorizer::AtCutAuthorizer;
 use crate::permission_checker::PermissionChecker;
 use crate::{MembershipError, MembershipRepository};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::identity::PublicKey;
@@ -97,7 +98,13 @@ impl<'a> NamespaceApplyCtx<'a> {
                         signer: format!("{signer}"),
                     });
                 }
-                MembershipRepository::new(self.store).is_admin(&ns_gid, signer)?
+                match crate::member_account_in_namespace(self.store, &ns_gid, signer)? {
+                    Some(account) => {
+                        MembershipRepository::new(self.store).is_admin(&ns_gid, &account)?
+                    }
+                    // A key bound to no account here holds no admin row to find.
+                    None => false,
+                }
             }
         };
         if !authorized {
@@ -129,7 +136,7 @@ impl<'a> NamespaceApplyCtx<'a> {
     pub(crate) fn projection_membership_path(
         &self,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         self.authorizer
             .membership_path_at_cut(group, member, self.parents)
@@ -148,14 +155,14 @@ impl<'a> NamespaceApplyCtx<'a> {
     pub(crate) fn ensure_live_fallback_is_sound(
         &self,
         group: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<()> {
         if self.authorizer.can_resolve_cut(group, self.parents) {
             return Ok(());
         }
         bail!(crate::ApplyError::AuthorityUndecidable {
             group_id: format!("{group:?}"),
-            signer: format!("{identity}"),
+            signer: format!("{identity:?}"),
         });
     }
 }

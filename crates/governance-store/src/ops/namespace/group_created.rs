@@ -18,6 +18,7 @@ pub(crate) fn apply(
     group_id: [u8; 32],
     parent_id: [u8; 32],
     restricted: bool,
+    declared_admin: calimero_account::AccountId,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -96,6 +97,22 @@ pub(crate) fn apply(
     // ensure parent edge + child index + admin membership are present.
     // These are idempotent puts — a second apply is a no-op with
     // identical effect, so true replay is still safe.
+    // The creator becomes the subgroup's founding admin and owner, and both are
+    // recorded as accounts. Resolving rather than storing a key-derived stand-in
+    // is what makes the pins comparable to the membership rows every later gate
+    // reads; a creator this namespace has no binding for cannot found a group,
+    // because nothing it later signs would match the admin it was pinned as.
+    //
+    // Resolved once for both the meta pin and the Admin row below. They must
+    // agree — same signer, same parent — and each resolution is a binding-column
+    // scan, so doing it twice bought nothing but the chance of drifting apart.
+    let Some(creator) = crate::member_account_in_namespace(store, &parent_gid, &op.signer)? else {
+        bail!(crate::MembershipError::NotMember {
+            group_id: hex::encode(parent_gid.to_bytes()),
+            identity: format!("{}", op.signer),
+        });
+    };
+
     let meta_existed = MetaRepository::new(store).load(&gid)?.is_some();
     if !meta_existed {
         // Inherit application ID AND app_key from the immediate parent.
@@ -107,9 +124,23 @@ pub(crate) fn apply(
         // (from_app_key == descendant.app_key) would silently skip every
         // remote-created subgroup the originator added. Zero-init here
         // was the source of #2358-class cascade-skip bugs.
+        // The op CARRIES the creator's account so a receiver can fold it without
+        // resolving anything — but authority still comes from the resolution
+        // above, never from the field. They must agree: a signer that names an
+        // account it does not speak for would otherwise pin a subgroup admin its
+        // own later signatures could never match, and the fold would record a
+        // principal the rows disagree with.
+        if declared_admin != creator {
+            bail!(ApplyError::GroupCreatedRejected(
+                GroupCreatedRejection::Unauthorized {
+                    signer: format!("{}", op.signer),
+                    namespace: hex::encode(namespace_id.as_bytes()),
+                }
+            ));
+        }
         let meta = calimero_store::key::GroupMetaValue {
-            admin_identity: op.signer,
-            owner_identity: op.signer,
+            admin_identity: creator,
+            owner_identity: creator,
             target_application_id: parent_meta.target_application_id,
             app_key: parent_meta.app_key,
             migration: None,
@@ -137,7 +168,7 @@ pub(crate) fn apply(
         handle.put(&GroupParentRef::new(group_id), &parent_id)?;
         handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
     }
-    MembershipRepository::new(store).add_member(&gid, &op.signer, GroupMemberRole::Admin)?;
+    MembershipRepository::new(store).add_member(&gid, &creator, GroupMemberRole::Admin)?;
 
     // Born-Open atomic create (#2771): write the subgroup's visibility key
     // from `restricted` using the SAME mechanism `SubgroupVisibilitySet`

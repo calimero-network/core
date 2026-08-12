@@ -56,7 +56,10 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
             }
 
             // Admin authorization against the namespace root.
-            MembershipRepository::new(&self.datastore).require_admin(&namespace_id, &requester)?;
+            let requester_account =
+                crate::member_account::require(&self.datastore, &namespace_id, &requester)?;
+            MembershipRepository::new(&self.datastore)
+                .require_admin(&namespace_id, &requester_account)?;
 
             // Enumerate the full subtree so we can tear down children-first.
             let payload = NamespaceRepository::new(&self.datastore)

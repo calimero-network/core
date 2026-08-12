@@ -116,7 +116,11 @@ fn app_id_other() -> ApplicationId {
 /// and `admin` as both owner and admin identity (so cascade's
 /// per-descendant `can_manage_application` pre-scan passes for every
 /// matched group).
-fn meta_for(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMetaValue {
+fn meta_for(
+    admin: calimero_account::AccountId,
+    app_key: [u8; 32],
+    target: ApplicationId,
+) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
@@ -139,11 +143,14 @@ fn provision_group(
     app_key: [u8; 32],
     target: ApplicationId,
 ) {
+    // Enrolled so the rows name the account this key resolves to; the cascade's
+    // per-descendant admin pre-scan resolves the signer the same way.
+    let admin_account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta_for(admin, app_key, target))
+        .save(gid, &meta_for(admin_account, app_key, target))
         .expect("save_group_meta");
     MembershipRepository::new(store)
-        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .add_member(gid, &admin_account, GroupMemberRole::Admin)
         .expect("add admin");
 }
 

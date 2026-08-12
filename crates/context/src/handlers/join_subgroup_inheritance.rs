@@ -43,8 +43,10 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     .map(|(pk, sk, _)| (pk, sk))
                     .ok_or(JoinSubgroupInheritanceError::NoNamespaceIdentity)?;
 
-                let membership_path = MembershipRepository::new(&datastore)
-                    .check_path(&group_id, &joiner_identity)?;
+                let joiner_account =
+                    crate::member_account::require(&datastore, &group_id, &joiner_identity)?;
+                let membership_path =
+                    MembershipRepository::new(&datastore).check_path(&group_id, &joiner_account)?;
 
                 match membership_path {
                     calimero_governance_store::MembershipPath::Direct => {
@@ -149,7 +151,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &joiner_identity,
                 )?;
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
-                    member: joiner_identity,
+                    member: join_account.cert.account,
                     group_id: group_id.to_bytes().into(),
                     account: join_account,
                 });

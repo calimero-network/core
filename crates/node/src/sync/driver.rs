@@ -44,6 +44,27 @@ use crate::sync_session_bridge::{
     SyncSessionJob, SyncSessionResult, SyncSessionSendError, SyncSessionSender,
 };
 
+/// How many interval retries a namespace governance pull that delivered
+/// nothing is owed before the driver stops re-arming it.
+///
+/// Sized for the gap it exists to cover — a link that is visible but not yet
+/// usable — not for an absent peer. At the default interval that is a handful
+/// of seconds, long enough for a connection to finish coming up and short
+/// enough that a namespace with genuinely nothing to pull stops asking.
+const MAX_NS_SYNC_RETRIES: u8 = 5;
+
+/// Retries still owed to a namespace pull after an attempt that delivered
+/// nothing, or `None` when the budget is spent and the driver should stop
+/// re-arming it.
+///
+/// Its own function because the accounting is the whole safety property: too
+/// eager and a namespace with nothing to pull becomes a permanent background
+/// sync, too lax and the case this exists for — one lost attempt — is never
+/// retried at all.
+fn retries_left_after_failure(remaining: u8) -> Option<u8> {
+    remaining.checked_sub(1).filter(|left| *left > 0)
+}
+
 /// Cross-actor message handlers and store accessors the driver calls
 /// back into. Implemented by `SyncManager`; passed per-call to
 /// [`SyncDriver::run`] for the same Send-safety + cycle-avoidance
@@ -52,7 +73,12 @@ use crate::sync_session_bridge::{
 pub(crate) trait SyncDriverDispatch {
     /// Pull governance state for a namespace from a peer. Called from
     /// the `ns_sync_rx` arm.
-    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]);
+    ///
+    /// Returns the number of governance ops the pull delivered. Zero covers
+    /// every best-effort failure — no peer, no stream, a peer with nothing to
+    /// give — which the caller uses to decide whether the request still needs
+    /// answering. See [`SyncDriver::run`]'s retry of an undelivered pull.
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) -> usize;
 
     /// Initiate the namespace-join handshake. Called from the
     /// `ns_join_rx` arm; the result is forwarded to the requester's
@@ -132,11 +158,40 @@ impl SyncDriver {
 
         let mut requested_ctx = None;
         let mut requested_peer = None;
+        // Namespaces whose governance pull delivered nothing, with the number
+        // of interval retries still owed to each.
+        let mut pending_ns_sync: std::collections::HashMap<[u8; 32], u8> =
+            std::collections::HashMap::new();
 
         loop {
             tokio::select! {
                 _ = next_sync.tick() => {
                     debug!("Performing interval sync");
+
+                    // Retry the governance pulls that delivered nothing. Doing
+                    // it here rather than looping in place is what lets the
+                    // reason they failed change — a connection finishing its
+                    // handshake, a peer finishing its own join — instead of
+                    // hammering the same unusable link.
+                    for (namespace_id, remaining) in std::mem::take(&mut pending_ns_sync) {
+                        if dispatch.sync_namespace_from_peer(namespace_id).await > 0 {
+                            info!(
+                                namespace_id = %hex::encode(namespace_id),
+                                "namespace governance sync succeeded on retry"
+                            );
+                            continue;
+                        }
+                        if let Some(left) = retries_left_after_failure(remaining) {
+                            let _ignored = pending_ns_sync.insert(namespace_id, left);
+                        } else {
+                            debug!(
+                                namespace_id = %hex::encode(namespace_id),
+                                "namespace governance sync still delivered nothing; \
+                                 giving up until the next trigger"
+                            );
+                        }
+                    }
+
                     // #2319: roll up rate-limited mailbox-full drops.
                     if let Some(rollup) = self.tracker.tick_full_drops_summary() {
                         info!(
@@ -173,7 +228,27 @@ impl SyncDriver {
                         namespace_id = %hex::encode(namespace_id),
                         "Performing namespace governance sync"
                     );
-                    dispatch.sync_namespace_from_peer(namespace_id).await;
+                    if dispatch.sync_namespace_from_peer(namespace_id).await == 0 {
+                        // Nothing arrived, and nothing else will ask again.
+                        //
+                        // The request is an edge trigger with no periodic
+                        // counterpart, so a pull that lands in the wrong
+                        // moment is simply lost — and the moments are not
+                        // rare. A node that rejoins a peer it was partitioned
+                        // from is told to sync as soon as the peer is visible
+                        // again, which is before the connection is usable, so
+                        // the stream fails to open and the only request this
+                        // node will ever make is spent. It then sits divergent
+                        // with a healthy link, retrying nothing.
+                        //
+                        // Re-arm it on the interval instead. Bounded, because
+                        // zero is also what a peer with genuinely nothing to
+                        // give returns, and that must not become a permanent
+                        // background pull.
+                        let _ignored = pending_ns_sync.insert(namespace_id, MAX_NS_SYNC_RETRIES);
+                    } else {
+                        let _ignored = pending_ns_sync.remove(&namespace_id);
+                    }
                     continue;
                 }
                 Some((params, reply_tx)) = self.ns_join_rx.recv() => {
@@ -403,4 +478,42 @@ mod tests {
     // `p5_partition_scenarios_tests`) and the namespace-join /
     // open-subgroup-join e2e workflows continue to exercise the
     // driver's behaviour end-to-end in the meantime.
+
+    use super::{retries_left_after_failure, MAX_NS_SYNC_RETRIES};
+
+    /// A namespace pull that delivers nothing is retried, and the budget it is
+    /// given is actually spent over several attempts rather than one.
+    ///
+    /// The first cut of this owed a single retry — enough to look right and to
+    /// pass a test that only asserted "it retries", while still losing the case
+    /// it exists for: a link visible but not yet usable, which needs a few
+    /// seconds, not one tick.
+    #[test]
+    fn a_failed_namespace_pull_is_retried_until_its_budget_is_spent() {
+        let mut remaining = MAX_NS_SYNC_RETRIES;
+        let mut attempts = 0;
+        while let Some(left) = retries_left_after_failure(remaining) {
+            remaining = left;
+            attempts += 1;
+        }
+
+        assert_eq!(
+            attempts,
+            MAX_NS_SYNC_RETRIES - 1,
+            "the budget must be spent across attempts, not collapsed into one"
+        );
+        assert!(
+            attempts > 1,
+            "a single retry cannot cover a connection that is still coming up"
+        );
+    }
+
+    /// And it does stop: zero is also what a peer with genuinely nothing to
+    /// give returns, so an unbounded re-arm would turn every quiet namespace
+    /// into a permanent background pull.
+    #[test]
+    fn a_spent_budget_stops_re_arming() {
+        assert_eq!(retries_left_after_failure(1), None);
+        assert_eq!(retries_left_after_failure(0), None);
+    }
 }

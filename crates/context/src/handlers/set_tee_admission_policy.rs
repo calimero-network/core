@@ -69,7 +69,10 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                 );
             }
 
-            MembershipRepository::new(&self.datastore).require_admin(&group_id, &requester)?;
+            let requester_account =
+                crate::member_account::require(&self.datastore, &group_id, &requester)?;
+            MembershipRepository::new(&self.datastore)
+                .require_admin(&group_id, &requester_account)?;
 
             if signing_key.is_none() {
                 SigningKeysRepository::new(&self.datastore).require_key(&group_id, &requester)?;

@@ -1,6 +1,6 @@
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
-    ReentryRepository, SigningKeysRepository,
+    account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
+    MetadataRepository, ReentryRepository, SigningKeysRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,9 +89,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 let _ = SigningKeysRepository::new(&datastore).store_key(&group_id, &joiner_identity, &sk_bytes, );
 
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
-                    let admin_identity = calimero_primitives::identity::PublicKey::from(
-                        invitation.invitation.inviter_identity.to_bytes(),
-                    );
+                    // From the invitation ENVELOPE, and optional there: it is a
+                    // bootstrap hint, not authority. `None` simply skips the
+                    // admin seeding — the state before the field existed, which
+                    // `NamespaceCreated` genesis repairs on arrival anyway.
+                    let inviter_account = invitation.inviter_account;
                     // The invitation carries the application id so joiners
                     // pre-populate `GroupMetaValue` with the real value:
                     // `target_application_id` is part of
@@ -134,9 +136,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             _ => [0u8; 32],
                         }
                     });
+                    // The joiner has synced nothing yet, so it cannot resolve the
+                    // inviter's key to an account itself. Absent the hint, the
+                    // placeholder stands until genesis arrives and overwrites it.
+                    let seeded_admin =
+                        inviter_account.unwrap_or_else(calimero_governance_store::placeholder_admin_identity);
                     let meta = calimero_store::key::GroupMetaValue {
-                        admin_identity,
-                        owner_identity: admin_identity,
+                        admin_identity: seeded_admin,
+                        owner_identity: seeded_admin,
                         target_application_id,
                         app_key,
                         migration: None,
@@ -150,8 +157,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // Direct-row check: see joiner-side guard below for
                     // why inheritance-aware `check_group_membership`
                     // would be unsafe here.
-                    if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &admin_identity, )? {
-                        MembershipRepository::new(&datastore).add_member(&group_id, &admin_identity, calimero_primitives::context::GroupMemberRole::Admin, )?;
+                    // Only when the hint named someone: seeding a member row for
+                    // the placeholder would invent a principal.
+                    if let Some(inviter_account) = inviter_account {
+                        if !MembershipRepository::new(&datastore)
+                            .has_direct_member(&group_id, &inviter_account)?
+                        {
+                            MembershipRepository::new(&datastore).add_member(
+                                &group_id,
+                                &inviter_account,
+                                calimero_primitives::context::GroupMemberRole::Admin,
+                            )?;
+                        }
                     }
                 }
 
@@ -312,7 +329,50 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // membership from a parent namespace, leaving them
                 // without the direct row that subsequent direct lookups
                 // (removal, capability writes, list_group_members) need.
-                if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &joiner_identity)? {
+                // The joiner's own account, taken from the credential it is about
+                // to publish.
+                let joiner_credential = crate::join_credential::build(
+                    &datastore,
+                    &namespace_id.into(),
+                    &joiner_identity,
+                )?;
+                let joiner_account = joiner_credential.cert.account;
+
+                // Bind the joiner's own key to that account locally, now, rather
+                // than waiting for the `MemberJoined` op below to apply.
+                //
+                // The row written just below is keyed by the ACCOUNT, while every
+                // later read resolves this node's KEY to whatever account it can
+                // look up. Publishing the credential is what normally supplies
+                // that link, so a joiner whose op does not apply locally — an
+                // invitation whose inviter it cannot resolve offline, which is
+                // every joiner that has not yet synced the inviter's binding —
+                // ends up holding a row it cannot match itself against. It reads
+                // as "not a member of the group it just joined", from its own
+                // store, with the row sitting right there.
+                //
+                // Same fix, same reason, as the founder's binding at namespace
+                // genesis: the node that mints a credential is the one node that
+                // must not depend on an op round-trip to believe it.
+                let bindings =
+                    calimero_governance_store::AccountBindingRepository::new(&datastore);
+                if let Err(rejected) = bindings.apply_link(
+                    &namespace_id.into(),
+                    &joiner_credential.genesis,
+                    &joiner_credential.chain,
+                    &joiner_credential.cert,
+                )? {
+                    warn!(
+                        ?group_id,
+                        %joiner_identity,
+                        ?rejected,
+                        "joiner's own device credential was refused locally; membership \
+                         will not resolve until a peer's binding arrives"
+                    );
+                }
+                if !MembershipRepository::new(&datastore)
+                    .has_direct_member(&group_id, &joiner_account)?
+                {
                     // Do not materialize a local row for an identity that may not
                     // re-enter this group. This is the last writer of a direct row
                     // that isn't already gated, and the apply path leans on that:
@@ -330,10 +390,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // op they were about to publish.
                     ReentryRepository::new(&datastore).require_invitation_admits(
                         &group_id,
-                        &joiner_identity,
+                        &joiner_account,
                         invitation.invitation.invitation_nonce,
                     )?;
-                    MembershipRepository::new(&datastore).add_member(&group_id, &joiner_identity, role)?;
+                    MembershipRepository::new(&datastore)
+                        .add_member(&group_id, &joiner_account, role)?;
                 } else {
                     info!(
                         ?group_id,
@@ -377,7 +438,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // `AccountDeviceLinked` left open.
                 let join_account = crate::join_credential::build(&datastore, &namespace_id.into(), &joiner_identity)?;
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-                    member: joiner_identity,
+                    member: join_account.cert.account,
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,
@@ -628,9 +689,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     "member joined group via direct request-response"
                 );
 
+                // Resolved after the join has applied, so a joiner that enrolled
+                // as part of it reports the account it actually writes as rather
+                // than the stand-in its key would have derived a moment earlier.
+                let member_account = account_for_group(&datastore, &group_id)?;
+
                 Ok(JoinGroupResponse {
                     group_id,
                     member_identity: joiner_identity,
+                    member_account,
                     governance_op_bytes: vec![],
                 })
             }

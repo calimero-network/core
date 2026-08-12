@@ -39,12 +39,14 @@ pub mod handlers;
 pub mod hlc_fence;
 pub mod join_credential;
 mod lifecycle;
+pub mod member_account;
 pub mod membership_events;
 pub mod migration_plan;
 pub mod rotation_listener;
 pub mod scope_projection;
 pub mod self_purge;
 pub mod tee_subgroup_admit;
+pub mod test_support;
 pub mod unified_applier;
 pub mod unified_op_store;
 
@@ -635,7 +637,12 @@ impl ContextManager {
             eyre::bail!("group '{group_id:?}' not found");
         }
         if require_admin {
-            MembershipRepository::new(&self.datastore).require_admin(group_id, &requester)?;
+            // The caller presents a signing key; admin authority is held by the
+            // account it acts as.
+            let requester_account =
+                crate::member_account::require(&self.datastore, group_id, &requester)?;
+            MembershipRepository::new(&self.datastore)
+                .require_admin(group_id, &requester_account)?;
         }
 
         let signing_key = SigningKeysRepository::new(&self.datastore)

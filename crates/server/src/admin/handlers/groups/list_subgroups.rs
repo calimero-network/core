@@ -34,6 +34,9 @@ pub async fn handler(
     // AuthenticatedKey extension). Using `resolve_namespace_identity`
     // matches what `list_group_members` already does to populate
     // `selfIdentity`.
+    // Visibility is decided per account, so this node's namespace identity is
+    // resolved to one. An identity bound to no account here sees the same as no
+    // identity at all: every Restricted child stays hidden.
     let caller = match NamespaceRepository::new(&state.store).resolve_identity(&group_id) {
         Ok(Some((pk, _, _))) => Some(pk),
         Ok(None) => None,
@@ -48,6 +51,25 @@ pub async fn handler(
         }
     };
 
+    // Hiding every Restricted child is the conservative answer to both "no
+    // account here" and "the store would not say", but only one of them is
+    // normal. Unlogged they are the same event, so a persistent fault hides
+    // every restricted subgroup from this node's own admin API and looks like a
+    // visibility setting — the sibling `resolve_identity` above warns for the
+    // same reason.
+    let caller_account = caller.and_then(|pk| {
+        calimero_governance_store::member_account_in_namespace(&state.store, &group_id, &pk)
+            .unwrap_or_else(|err| {
+                warn!(
+                    ?err,
+                    group_id = %group_id_str,
+                    "resolving this node's account failed; falling back to conservative \
+                     listing (all Restricted subgroups hidden)"
+                );
+                None
+            })
+    });
+
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
         // `Open` subgroups are always listed; `Restricted` subgroups are
@@ -60,7 +82,7 @@ pub async fn handler(
         match MembershipRepository::new(&state.store).subgroup_visible_to(
             &group_id,
             &child,
-            caller.as_ref(),
+            caller_account.as_ref(),
         ) {
             Ok(true) => {}
             Ok(false) => continue,

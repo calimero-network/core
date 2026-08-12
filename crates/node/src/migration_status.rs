@@ -735,7 +735,31 @@ impl MigrationEmitter {
                 return;
             }
         };
-        let (_peer_pubkey, mut sk_bytes, mut sender_key) = identity;
+        let (peer_pubkey, mut sk_bytes, mut sender_key) = identity;
+        // Publish only what a receiver could actually verify. Every receiver
+        // gates a heartbeat on the sender resolving to a current member, and
+        // this node holds a namespace identity from early in the join —
+        // well before the op that publishes its own membership. Heartbeats sent
+        // in that window are unverifiable by construction: the peer drops them
+        // and logs a failed sig/membership check, which is indistinguishable
+        // from a real forgery in the logs.
+        //
+        // Same predicate as the receiver, deliberately: one rule, used at both
+        // ends, so the emitter can never send what the receiver must refuse.
+        if !calimero_governance_store::governance_broadcast::signer_is_namespace_member(
+            &self.datastore,
+            ns_id.into(),
+            &peer_pubkey,
+        ) {
+            sk_bytes.zeroize();
+            sender_key.zeroize();
+            tracing::debug!(
+                ?ns_id,
+                "MigrationHeartbeat: this node is not yet a verifiable member here; \
+                 skipping until its own membership op has applied"
+            );
+            return;
+        }
         // `sender_key` is unused on this path — zeroize immediately. `sk_bytes`
         // is consumed into `PrivateKey::from(...)`; because `[u8; 32]: Copy`
         // that move leaves a stack copy we zeroize after signing.

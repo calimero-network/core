@@ -510,6 +510,10 @@ const GOLDEN_ROOT_OP_GROUP_CREATED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // parent_id
     0, // restricted = false
+    // admin: the creator's ACCOUNT, carried so a receiver folds the principal
+    // the rows already name instead of deriving a stand-in from the signer's key.
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // admin [0u8;32]
 ];
 
 /// NamespaceOp::Root(RootOp::GroupReparented) — RootOp ordinal 1
@@ -567,7 +571,10 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // signed_invitation.invitation.invited_role u8 = 1:
     1, // signed_invitation.inviter_signature String len = 0:
-    0, 0, 0, 0, // signed_invitation.application_id = None:
+    0, 0, 0, 0, // signed_invitation.inviter_account = None — an UNSIGNED envelope
+    // hint now, so a client that round-trips the invitation through its own typed
+    // model can drop it without invalidating the inviter's signature:
+    0, // signed_invitation.application_id = None:
     0, // signed_invitation.app_key = None:
     0,
     // account: JoinAccountCredential — appended when the joiner's credential moved
@@ -692,6 +699,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, // invitation_nonce
     1, // invited_role = 1
     0, 0, 0, 0, // inviter_signature len = 0
+    0, // inviter_account = None (unsigned envelope hint)
     0, // application_id = None
     0, // app_key = None
     0, 0, 0, 0, 0, 0, 0, 0, // joined_at u64 = 0
@@ -723,8 +731,28 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
 const GOLDEN_ROOT_OP_NAMESPACE_CREATED: &[u8] = &[
     0, // NamespaceOp::Root
     9, // RootOp::NamespaceCreated discriminant
-    // founder [0u8;32]:
+    // founder [0u8;32] — an AccountId now, same 32 bytes as the key it replaced:
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // account: JoinAccountCredential — appended when the credential moved onto
+    // this op. Decode-only, so the values only have to be structurally valid.
+    1, // AccountGenesis::version = ACCOUNT_GENESIS_VERSION
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // genesis.root_sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // genesis.nonce [0u8;16]
+    0, 0, 0, 0, // chain: Vec<RootKeyHandoff> length 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.account [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.device [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.sign_pk [0u8;32]
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.kem_pk [0u8;32]
+    0, 0, 0, 0, // cert.key_epoch u32 = 0
+    0, 0, 0, 0, // cert.device_epoch u32 = 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cert.signature [0u8;64]
 ];
 
 /// NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation) — RootOp ordinal 10
@@ -925,7 +953,7 @@ fn sample_group_id() -> ContextGroupId {
 fn sign_and_verify_round_trip() {
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
-    let member = PrivateKey::random(&mut rng).public_key();
+    let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
     let op = SignedGroupOp::sign(
         &sk,
@@ -947,7 +975,7 @@ fn wrong_key_fails() {
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
     let other = PrivateKey::random(&mut rng);
-    let member = PrivateKey::random(&mut rng).public_key();
+    let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
     let mut op = SignedGroupOp::sign(
         &sk,
@@ -971,7 +999,7 @@ fn wrong_key_fails() {
 fn tampered_op_fails() {
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
-    let member = PrivateKey::random(&mut rng).public_key();
+    let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
     let mut op = SignedGroupOp::sign(
         &sk,
@@ -993,7 +1021,7 @@ fn tampered_op_fails() {
 fn replay_distinct_content_hash() {
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
-    let member = PrivateKey::random(&mut rng).public_key();
+    let member = calimero_account::AccountId::from(*PrivateKey::random(&mut rng).public_key());
 
     let op1 = SignedGroupOp::sign(
         &sk,
@@ -1066,6 +1094,7 @@ fn namespace_op_sign_verify_root() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1116,7 +1145,7 @@ fn namespace_op_tampered_fails() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::AdminChanged {
-            new_admin: sk.public_key(),
+            new_admin: calimero_account::AccountId::from(*sk.public_key()),
         }),
     )
     .expect("sign");
@@ -1136,6 +1165,7 @@ fn namespace_op_content_hash_distinct() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1149,6 +1179,7 @@ fn namespace_op_content_hash_distinct() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1175,6 +1206,7 @@ fn namespace_signable_bytes_deterministic() {
         signer: pk,
         nonce: 42,
         op: NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: sample_group_id(),
             parent_id: sample_namespace_id().to_bytes().into(),
             restricted: true,
@@ -1560,6 +1592,7 @@ mod governance_op_storage_roundtrip {
 
     fn sample_invitation() -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: SignerId::from([0xA1; 32]),
                 group_id: ContextGroupId::from([0x22; 32]),
@@ -1611,7 +1644,7 @@ mod governance_op_storage_roundtrip {
         // largest and most field-rich op payload — the one most exposed to a
         // codec asymmetry.
         assert_roundtrips(&signed(NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member: PrivateKey::random(&mut OsRng).public_key(),
+            member: calimero_account::AccountId::from(*PrivateKey::random(&mut OsRng).public_key()),
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
             account: sample_join_account(),
@@ -1622,6 +1655,7 @@ mod governance_op_storage_roundtrip {
     fn every_root_op_roundtrips_through_stored_signed_entry() {
         let ops = [
             RootOp::GroupCreated {
+                admin: calimero_account::AccountId::from([0x5C; 32]),
                 group_id: [1; 32].into(),
                 parent_id: [2; 32].into(),
                 restricted: true,
@@ -1636,23 +1670,31 @@ mod governance_op_storage_roundtrip {
                 cascade_context_ids: vec![[4; 32].into()],
             },
             RootOp::AdminChanged {
-                new_admin: PrivateKey::random(&mut OsRng).public_key(),
+                new_admin: calimero_account::AccountId::from(
+                    *PrivateKey::random(&mut OsRng).public_key(),
+                ),
             },
             RootOp::PolicyUpdated {
                 policy_bytes: vec![9, 8, 7],
             },
             RootOp::MemberJoined {
-                member: PrivateKey::random(&mut OsRng).public_key(),
+                member: calimero_account::AccountId::from(
+                    *PrivateKey::random(&mut OsRng).public_key(),
+                ),
                 signed_invitation: sample_invitation(),
                 account: sample_join_account(),
             },
             RootOp::MemberJoinedOpen {
-                member: PrivateKey::random(&mut OsRng).public_key(),
+                member: calimero_account::AccountId::from(
+                    *PrivateKey::random(&mut OsRng).public_key(),
+                ),
                 group_id: [7; 32].into(),
                 account: sample_join_account(),
             },
             RootOp::MemberJoinedAt {
-                member: PrivateKey::random(&mut OsRng).public_key(),
+                member: calimero_account::AccountId::from(
+                    *PrivateKey::random(&mut OsRng).public_key(),
+                ),
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
                 account: sample_join_account(),
@@ -1719,7 +1761,7 @@ mod governance_op_storage_roundtrip {
             signer: PublicKey::from([0u8; 32]),
             nonce: 1,
             op: NamespaceOp::Root(RootOp::AdminChanged {
-                new_admin: PublicKey::from([1u8; 32]),
+                new_admin: calimero_account::AccountId::from([1u8; 32]),
             }),
             signature: [0u8; 64],
         };

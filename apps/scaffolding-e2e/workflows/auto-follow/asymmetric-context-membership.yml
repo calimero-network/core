@@ -110,7 +110,7 @@ steps:
     node: af-asym-node-1
     namespace_id: "{{namespace_id}}"
     outputs:
-      node1_identity: publicKey
+      node1_account: account
 
   - name: Node-1 invites node-2 to namespace
     type: create_namespace_invitation
@@ -130,6 +130,7 @@ steps:
     invitation: "{{ns_invite}}"
     outputs:
       node2_identity: memberIdentity
+      node2_account: memberAccount
 
   # ── Phase 2: Three subgroups, both nodes members of all three ───────
   - name: Node-1 creates subgroup_a
@@ -198,7 +199,7 @@ steps:
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_c}}"
-    member_id: "{{node1_identity}}"
+    member_id: "{{node1_account}}"
     auto_follow_contexts: false
     auto_follow_subgroups: false
 
@@ -206,7 +207,7 @@ steps:
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_a}}"
-    member_id: "{{node2_identity}}"
+    member_id: "{{node2_account}}"
     auto_follow_contexts: false
     auto_follow_subgroups: false
 
@@ -216,7 +217,7 @@ steps:
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_a}}"
-    member_id: "{{node1_identity}}"
+    member_id: "{{node1_account}}"
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
@@ -224,7 +225,7 @@ steps:
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_b}}"
-    member_id: "{{node1_identity}}"
+    member_id: "{{node1_account}}"
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
@@ -232,7 +233,7 @@ steps:
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_b}}"
-    member_id: "{{node2_identity}}"
+    member_id: "{{node2_account}}"
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
@@ -240,7 +241,7 @@ steps:
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_c}}"
-    member_id: "{{node2_identity}}"
+    member_id: "{{node2_account}}"
     auto_follow_contexts: true
     auto_follow_subgroups: false
 

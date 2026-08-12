@@ -884,6 +884,27 @@ pub struct SignedGroupOpenInvitation {
     pub invitation: GroupInvitationFromAdmin,
     /// Admin's signature for the invitation payload (hex-encoded).
     pub inviter_signature: String,
+    /// The account [`GroupInvitationFromAdmin::inviter_identity`] acts as
+    /// (unsigned bootstrap field).
+    ///
+    /// The joiner needs it before it has synced anything: it seeds the group's
+    /// local meta so the inviter shows up as admin immediately, and governance
+    /// rows name accounts. It cannot derive this itself — an account is a hash
+    /// of a root the joiner has never seen, and the inviter is bound in a
+    /// namespace the joiner has not joined yet.
+    ///
+    /// Deliberately OUTSIDE the signed body, beside the other bootstrap hints.
+    /// Putting it inside would have made every client that round-trips an
+    /// invitation through its own typed model — which is what `calimero-client-py`
+    /// does — silently drop the field and invalidate the signature with it,
+    /// forcing a lockstep client release for a value that is only a hint.
+    ///
+    /// Unsigned is safe here because it is not authority: a wrong value seeds a
+    /// wrong admin in local meta and then self-heals, since `NamespaceCreated`
+    /// genesis is authoritative and overwrites it on arrival. `None` simply
+    /// skips the seeding, which is what happened before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inviter_account: Option<calimero_account::AccountId>,
     /// Application ID for the group (unsigned bootstrap field).
     /// `None` for backwards compatibility with invitations created before
     /// this field was added; joiners fall back to zero when absent.

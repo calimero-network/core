@@ -117,7 +117,7 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{namespace_invitation}}'
     outputs:
-      member_identity_node2: memberIdentity
+      member_account_node2: memberAccount
 
   # --- Core regression assertion ---
   # If the joiner-side fallback wins, node-2 has caps=4. If the bundle
@@ -127,7 +127,7 @@ steps:
     type: get_member_capabilities
     node: e2e-node-1
     group_id: '{{namespace_id}}'
-    member_id: '{{member_identity_node2}}'
+    member_id: '{{member_account_node2}}'
     outputs:
       node2_caps_view_node1: capabilities
 
@@ -142,7 +142,7 @@ steps:
     type: get_member_capabilities
     node: e2e-node-2
     group_id: '{{namespace_id}}'
-    member_id: '{{member_identity_node2}}'
+    member_id: '{{member_account_node2}}'
     outputs:
       node2_caps_view_node2: capabilities
 

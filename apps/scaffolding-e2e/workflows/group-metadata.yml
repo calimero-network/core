@@ -155,6 +155,7 @@ steps:
     invitation: '{{invitation}}'
     outputs:
       node2_id: memberIdentity
+      node2_account: memberAccount
 
   - name: Assert node-2 joined
     type: assert
@@ -259,7 +260,7 @@ steps:
     type: set_member_metadata
     node: e2e-node-2
     group_id: '{{ns}}'
-    member_id: '{{node2_id}}'
+    member_id: '{{node2_account}}'
     record_name: 'node-two'
     data:
       status: online
@@ -282,7 +283,7 @@ steps:
     type: get_member_metadata
     node: e2e-node-1
     group_id: '{{ns}}'
-    member_id: '{{node2_id}}'
+    member_id: '{{node2_account}}'
     outputs:
       m2_name: name
       m2_status: data.status
@@ -303,13 +304,13 @@ steps:
     node: e2e-node-1
     namespace_id: '{{ns}}'
     outputs:
-      node1_id: publicKey
+      node1_account: account
 
   - name: Node-2 tries to write node-1 member metadata without capability
     type: set_member_metadata
     node: e2e-node-2
     group_id: '{{ns}}'
-    member_id: '{{node1_id}}'
+    member_id: '{{node1_account}}'
     record_name: 'should-fail-cross-member'
     expected_failure: true
 
@@ -338,14 +339,14 @@ steps:
     type: set_member_capabilities
     node: e2e-node-1
     group_id: '{{ns}}'
-    member_id: '{{node2_id}}'
+    member_id: '{{node2_account}}'
     capabilities: 256
 
   - name: Grant node-2 CAN_MANAGE_METADATA on subgroup
     type: set_member_capabilities
     node: e2e-node-1
     group_id: '{{sub}}'
-    member_id: '{{node2_id}}'
+    member_id: '{{node2_account}}'
     capabilities: 256
 
   - name: Wait for namespace capability sync
@@ -458,7 +459,7 @@ steps:
     type: set_member_metadata
     node: e2e-node-2
     group_id: '{{ns}}'
-    member_id: '{{node1_id}}'
+    member_id: '{{node1_account}}'
     record_name: 'node-one-tagged-by-two'
     data:
       tag: 'cross-member'
@@ -481,7 +482,7 @@ steps:
     type: get_member_metadata
     node: e2e-node-1
     group_id: '{{ns}}'
-    member_id: '{{node1_id}}'
+    member_id: '{{node1_account}}'
     outputs:
       m1_name: name
       m1_tag: data.tag

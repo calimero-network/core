@@ -57,6 +57,7 @@ fn signed_invitation(
         .sign(&Sha256::digest(&bytes))
         .expect("sign invitation");
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(signature.to_bytes()),
         application_id: None,
@@ -90,10 +91,17 @@ fn signed_beacon(
 /// Admin member row (so the invitation's inviter passes the permission gate)
 /// plus a non-zero governance head (so the divergence check sees local state).
 fn seed_established_namespace(store: &Store, admin_sk: &PrivateKey) {
+    // Enrolled: the beacon's admission check resolves the inviter's KEY to the
+    // account the member row is keyed by.
+    let admin_account = calimero_context::test_support::enrol(
+        store,
+        &ContextGroupId::from(NS),
+        &admin_sk.public_key(),
+    );
     MembershipRepository::new(store)
         .add_member(
             &ContextGroupId::from(NS),
-            &admin_sk.public_key(),
+            &admin_account,
             GroupMemberRole::Admin,
         )
         .expect("seed admin member row");
@@ -336,7 +344,9 @@ fn queued_join_op(
         Vec::new(),
         1,
         NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member: joiner_sk.public_key(),
+            // The account the credential beside it certifies — a pair that
+            // disagrees is refused before it reaches the beacon proof.
+            member: test_join_account().cert.account,
             signed_invitation: invitation,
             joined_at: 0,
             account: test_join_account(),

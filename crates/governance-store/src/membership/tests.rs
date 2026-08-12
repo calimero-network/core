@@ -11,11 +11,11 @@ use crate::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     MetadataRepository,
 };
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
 
 use super::super::test_fixtures::{
@@ -29,7 +29,7 @@ use super::TeeAttestationClaims;
 fn add_and_check_membership() {
     let store = test_store();
     let gid = test_group_id();
-    let pk = PublicKey::from([0x01; 32]);
+    let pk = AccountId::from([0x01; 32]);
 
     assert!(!MembershipRepository::new(&store)
         .is_member(&gid, &pk)
@@ -50,7 +50,7 @@ fn add_and_check_membership() {
 fn remove_member() {
     let store = test_store();
     let gid = test_group_id();
-    let pk = PublicKey::from([0x02; 32]);
+    let pk = AccountId::from([0x02; 32]);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &pk, GroupMemberRole::Member)
@@ -76,7 +76,7 @@ fn remove_member_clears_stale_capabilities_so_readd_starts_fresh() {
 
     let store = test_store();
     let gid = test_group_id();
-    let pk = PublicKey::from([0x07; 32]);
+    let pk = AccountId::from([0x07; 32]);
     let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
 
     let membership = MembershipRepository::new(&store);
@@ -113,7 +113,7 @@ fn readd_with_defaults_seeds_defaults_not_stale_caps() {
 
     let store = test_store();
     let gid = test_group_id();
-    let pk = PublicKey::from([0x08; 32]);
+    let pk = AccountId::from([0x08; 32]);
     let elevated = MemberCapabilities::CAN_INVITE_MEMBERS.bits();
     let defaults = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
     assert_ne!(elevated, defaults);
@@ -139,8 +139,8 @@ fn readd_with_defaults_seeds_defaults_not_stale_caps() {
 fn get_member_role() {
     let store = test_store();
     let gid = test_group_id();
-    let admin = PublicKey::from([0x01; 32]);
-    let member = PublicKey::from([0x02; 32]);
+    let admin = AccountId::from([0x01; 32]);
+    let member = AccountId::from([0x02; 32]);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -170,7 +170,7 @@ fn get_member_role() {
 fn require_group_admin_rejects_non_admin() {
     let store = test_store();
     let gid = test_group_id();
-    let member = PublicKey::from([0x03; 32]);
+    let member = AccountId::from([0x03; 32]);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &member, GroupMemberRole::Member)
@@ -189,10 +189,10 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     let mut rng = OsRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin = PrivateKey::random(&mut rng).public_key();
-    let admin2 = PrivateKey::random(&mut rng).public_key();
-    let member = PrivateKey::random(&mut rng).public_key();
-    let outsider = PrivateKey::random(&mut rng).public_key();
+    let admin = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let admin2 = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let member = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let outsider = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
 
     MembershipRepository::new(&store)
         .add_member(&gid, &admin, GroupMemberRole::Admin)
@@ -229,8 +229,8 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     // sole Admin row is demotable/removable when a different genesis founder exists
     let founder_store = test_store();
     let founder_gid = test_group_id();
-    let lone_admin = PrivateKey::random(&mut rng).public_key();
-    let founder = PrivateKey::random(&mut rng).public_key();
+    let lone_admin = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
+    let founder = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
     MembershipRepository::new(&founder_store)
         .add_member(&founder_gid, &lone_admin, GroupMemberRole::Admin)
         .unwrap();
@@ -251,7 +251,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
     // the guard still fires
     let sole_store = test_store();
     let sole_gid = test_group_id();
-    let sole_admin = PrivateKey::random(&mut rng).public_key();
+    let sole_admin = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
     MembershipRepository::new(&sole_store)
         .add_member(&sole_gid, &sole_admin, GroupMemberRole::Admin)
         .unwrap();
@@ -328,7 +328,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
         )
         .is_err());
 
-    let tee_joined = PrivateKey::random(&mut rng).public_key();
+    let tee_joined = AccountId::from(rand::Rng::gen::<[u8; 32]>(&mut rng));
     assert!(!MembershipRepository::new(&store)
         .is_member(&gid, &tee_joined)
         .unwrap());
@@ -563,13 +563,13 @@ fn count_members_and_admins() {
     );
 
     MembershipRepository::new(&store)
-        .add_member(&gid, &PublicKey::from([0x01; 32]), GroupMemberRole::Admin)
+        .add_member(&gid, &AccountId::from([0x01; 32]), GroupMemberRole::Admin)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &PublicKey::from([0x02; 32]), GroupMemberRole::Member)
+        .add_member(&gid, &AccountId::from([0x02; 32]), GroupMemberRole::Member)
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&gid, &PublicKey::from([0x03; 32]), GroupMemberRole::Admin)
+        .add_member(&gid, &AccountId::from([0x03; 32]), GroupMemberRole::Admin)
         .unwrap();
 
     assert_eq!(MembershipRepository::new(&store).count(&gid).unwrap(), 3);
@@ -590,7 +590,7 @@ fn list_members_with_offset_and_limit() {
         let mut pk_bytes = [0u8; 32];
         pk_bytes[0] = i;
         MembershipRepository::new(&store)
-            .add_member(&gid, &PublicKey::from(pk_bytes), GroupMemberRole::Member)
+            .add_member(&gid, &AccountId::from(pk_bytes), GroupMemberRole::Member)
             .unwrap();
     }
 
@@ -610,7 +610,7 @@ fn check_membership_open_subgroup_inherits_parent_with_default_cap() {
     let store = test_store();
     let parent = ContextGroupId::from([0xB0; 32]);
     let child = ContextGroupId::from([0xB1; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
 
@@ -642,7 +642,7 @@ fn check_membership_path_inherited_when_member_added_after_default_caps() {
     let store = test_store();
     let ns = ContextGroupId::from([0xB4; 32]);
     let child = ContextGroupId::from([0xB5; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &ns, &child);
     CapabilitiesRepository::new(&store)
@@ -675,7 +675,7 @@ fn check_membership_path_none_when_member_added_before_default_caps() {
     let store = test_store();
     let ns = ContextGroupId::from([0xB6; 32]);
     let child = ContextGroupId::from([0xB7; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &ns, &child);
     CapabilitiesRepository::new(&store)
@@ -715,7 +715,7 @@ fn check_membership_restricted_subgroup_does_not_inherit() {
     let store = test_store();
     let parent = ContextGroupId::from([0xB2; 32]);
     let child = ContextGroupId::from([0xB3; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
     MembershipRepository::new(&store)
@@ -747,7 +747,7 @@ fn check_membership_restricted_wall_blocks_grandparent_inheritance() {
     let namespace = ContextGroupId::from([0xC0; 32]);
     let mid = ContextGroupId::from([0xC1; 32]);
     let leaf = ContextGroupId::from([0xC2; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &namespace, &mid);
     nest_for_test(&store, &mid, &leaf);
@@ -786,7 +786,7 @@ fn check_membership_open_chain_walks_to_root() {
     let namespace = ContextGroupId::from([0xD0; 32]);
     let mid = ContextGroupId::from([0xD1; 32]);
     let leaf = ContextGroupId::from([0xD2; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &namespace, &mid);
     nest_for_test(&store, &mid, &leaf);
@@ -819,7 +819,7 @@ fn check_membership_unset_visibility_treated_as_restricted() {
     let store = test_store();
     let parent = ContextGroupId::from([0xE0; 32]);
     let child = ContextGroupId::from([0xE1; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
     MembershipRepository::new(&store)
@@ -846,7 +846,7 @@ fn check_membership_open_subgroup_blocked_when_cap_revoked() {
     let store = test_store();
     let parent = ContextGroupId::from([0xF0; 32]);
     let child = ContextGroupId::from([0xF1; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
     MembershipRepository::new(&store)
@@ -872,7 +872,7 @@ fn check_membership_open_subgroup_admin_inherits_without_cap() {
     let store = test_store();
     let parent = ContextGroupId::from([0x10; 32]);
     let child = ContextGroupId::from([0x11; 32]);
-    let admin = PublicKey::from([0x01; 32]);
+    let admin = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
     MembershipRepository::new(&store)
@@ -903,7 +903,7 @@ fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
     let namespace = ContextGroupId::from([0x20; 32]);
     let mid = ContextGroupId::from([0x21; 32]);
     let leaf = ContextGroupId::from([0x22; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &namespace, &mid);
     nest_for_test(&store, &mid, &leaf);
@@ -948,8 +948,8 @@ fn enumerate_inherited_members_includes_open_subgroup_joiner() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x30; 32]);
     let reports = ContextGroupId::from([0x31; 32]);
-    let alice = PublicKey::from([0x01; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let alice = AccountId::from([0x01; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &namespace, &reports);
 
@@ -1017,7 +1017,7 @@ fn enumerate_inherited_members_preserves_read_only_tee_role() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x40; 32]);
     let reports = ContextGroupId::from([0x41; 32]);
-    let tee = PublicKey::from([0x03; 32]);
+    let tee = AccountId::from([0x03; 32]);
 
     nest_for_test(&store, &namespace, &reports);
 
@@ -1080,7 +1080,7 @@ fn enumerate_inherited_members_excludes_deny_listed_member() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x38; 32]);
     let reports = ContextGroupId::from([0x39; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -1143,7 +1143,7 @@ fn enumerate_inherited_members_reports_inherited_admin_role() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x32; 32]);
     let reports = ContextGroupId::from([0x33; 32]);
-    let admin = PublicKey::from([0x01; 32]);
+    let admin = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -1173,7 +1173,7 @@ fn enumerate_inherited_members_empty_for_restricted_subgroup() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x34; 32]);
     let reports = ContextGroupId::from([0x35; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -1261,7 +1261,7 @@ fn enumerate_inherited_members_resolves_at_max_namespace_depth_boundary() {
     }
     let leaf = *nodes.last().unwrap();
 
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
     MembershipRepository::new(&store)
         .add_member(&ns, &alice, GroupMemberRole::Member)
         .unwrap();
@@ -1304,7 +1304,7 @@ fn inherited_admin_walk_independent_of_direct_non_admin_membership() {
     let store = test_store();
     let parent = ContextGroupId::from([0x50; 32]);
     let child = ContextGroupId::from([0x51; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
 
@@ -1354,7 +1354,7 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
     let ns = ContextGroupId::from([0xE0; 32]);
     let mid = ContextGroupId::from([0xE1; 32]);
     let leaf = ContextGroupId::from([0xE2; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &ns, &mid);
     nest_for_test(&store, &mid, &leaf);
@@ -1403,7 +1403,7 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
     // Sanity: a non-admin in the same shape must still be denied —
     // the fix does NOT widen authorization for non-admins, only
     // honors admin authority that already exists higher up.
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
     MembershipRepository::new(&store)
         .add_member(&ns, &bob, GroupMemberRole::Member)
         .unwrap();
@@ -1469,7 +1469,7 @@ fn auth_and_crypto_walks_agree_at_max_namespace_depth_boundary() {
 
     // The bug: membership walks used to bail here. After the fix,
     // they must resolve to a definite answer (no cycle error).
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
     MembershipRepository::new(&store)
         .add_member(&ns, &alice, GroupMemberRole::Member)
         .unwrap();
@@ -1504,7 +1504,7 @@ fn auth_and_crypto_walks_agree_at_max_namespace_depth_boundary() {
 
     // Promoting alice to admin should also be observed (governance
     // surface in agreement).
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
     MembershipRepository::new(&store)
         .add_member(&ns, &bob, GroupMemberRole::Admin)
         .unwrap();
@@ -1530,7 +1530,7 @@ fn has_direct_group_member_ignores_open_chain_inheritance() {
     let store = test_store();
     let parent = ContextGroupId::from([0x60; 32]);
     let child = ContextGroupId::from([0x61; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
     MembershipRepository::new(&store)
@@ -1577,7 +1577,7 @@ fn check_membership_direct_member_of_subgroup_always_passes() {
     let store = test_store();
     let parent = ContextGroupId::from([0x30; 32]);
     let child = ContextGroupId::from([0x31; 32]);
-    let alice = PublicKey::from([0x01; 32]);
+    let alice = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &parent, &child);
     CapabilitiesRepository::new(&store)
@@ -1602,11 +1602,60 @@ fn check_membership_direct_member_of_subgroup_always_passes() {
 /// op). `namespace_member_pubkeys` must include that identity so that
 /// `verify_ack` accepts legitimate acks signed by the namespace creator.
 #[test]
+fn the_bootstrap_inviter_hint_is_admitted_only_before_an_admin_exists() {
+    // The cold-start circle it breaks: a joiner that has applied no DAG ops
+    // knows nobody, so nothing verifies — including the inviter's readiness
+    // beacons, which are the trigger that would fetch the state that would end
+    // that condition.
+    let store = test_store();
+    let namespace_id = [0xD1; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let hint = AccountId::from([0x77; 32]);
+    let repo = MembershipRepository::new(&store);
+
+    // A namespace with no meta at all: the state a joiner is in before genesis.
+    repo.set_bootstrap_inviter(namespace_id.into(), hint)
+        .expect("record the hint");
+    assert!(
+        repo.namespace_accounts(namespace_id.into())
+            .expect("read")
+            .contains(&hint),
+        "before an admin exists the hint is the only thing that lets the inviter's \
+         beacons verify, which is the whole reason it is kept"
+    );
+
+    // Genesis establishes a real admin. From here the hint must be inert — this
+    // is the assertion that keeps an unsigned, relay-chosen value from outliving
+    // the bootstrap it was for.
+    let admin = AccountId::from([0x01; 32]);
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: ApplicationId::from([0xCC; 32]),
+        created_at: 1_700_000_000,
+        admin_identity: admin,
+        owner_identity: admin,
+        migration: None,
+        auto_join: true,
+    };
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+
+    let accounts = repo.namespace_accounts(namespace_id.into()).expect("read");
+    assert!(
+        accounts.contains(&admin),
+        "the established admin still verifies"
+    );
+    assert!(
+        !accounts.contains(&hint),
+        "and the hint no longer does — it is a bootstrap crutch, not a trust root"
+    );
+}
+
+#[test]
 fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     let store = test_store();
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
-    let admin = PublicKey::from([0x01; 32]);
+    let admin = AccountId::from([0x01; 32]);
 
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
@@ -1620,7 +1669,7 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id.into())
+        .namespace_accounts(namespace_id.into())
         .unwrap();
     assert!(
         pks.contains(&admin),
@@ -1633,8 +1682,8 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
     let store = test_store();
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
-    let admin = PublicKey::from([0x01; 32]);
-    let other = PublicKey::from([0x02; 32]);
+    let admin = AccountId::from([0x01; 32]);
+    let other = AccountId::from([0x02; 32]);
 
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
@@ -1654,7 +1703,7 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
         .unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id.into())
+        .namespace_accounts(namespace_id.into())
         .unwrap();
     assert_eq!(pks.iter().filter(|p| **p == admin).count(), 1);
     assert!(pks.contains(&other));
@@ -1665,8 +1714,8 @@ fn namespace_member_pubkeys_includes_member_rows() {
     let store = test_store();
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
-    let m1 = PublicKey::from([0x10; 32]);
-    let m2 = PublicKey::from([0x20; 32]);
+    let m1 = AccountId::from([0x10; 32]);
+    let m2 = AccountId::from([0x20; 32]);
 
     MembershipRepository::new(&store)
         .add_member(&gid, &m1, GroupMemberRole::Member)
@@ -1676,7 +1725,7 @@ fn namespace_member_pubkeys_includes_member_rows() {
         .unwrap();
 
     let pks = MembershipRepository::new(&store)
-        .namespace_pubkeys(namespace_id.into())
+        .namespace_accounts(namespace_id.into())
         .unwrap();
     assert!(pks.contains(&m1));
     assert!(pks.contains(&m2));
@@ -1688,7 +1737,7 @@ fn remove_group_member_clears_member_metadata() {
 
     let store = test_store();
     let gid = test_group_id();
-    let member = PublicKey::from([0x42; 32]);
+    let member = AccountId::from([0x42; 32]);
     MetaRepository::new(&store)
         .save(&gid, &test_meta())
         .unwrap();
@@ -1739,7 +1788,7 @@ fn trusted_anchors_includes_owner_and_legacy_admin() {
     // Anchor set contains just that one pubkey.
     let store = test_store();
     let gid = test_group_id();
-    let creator = PublicKey::from([0x01; 32]);
+    let creator = AccountId::from([0x01; 32]);
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(creator))
         .unwrap();
@@ -1763,8 +1812,8 @@ fn trusted_anchors_includes_owner_distinct_from_legacy_admin() {
     use calimero_store::key::GroupMetaValue;
     let store = test_store();
     let gid = test_group_id();
-    let creator = PublicKey::from([0x01; 32]);
-    let new_owner = PublicKey::from([0x02; 32]);
+    let creator = AccountId::from([0x01; 32]);
+    let new_owner = AccountId::from([0x02; 32]);
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
@@ -1791,9 +1840,9 @@ fn trusted_anchors_includes_owner_distinct_from_legacy_admin() {
 fn trusted_anchors_includes_admin_members() {
     let store = test_store();
     let gid = test_group_id();
-    let creator = PublicKey::from([0x01; 32]);
-    let admin_a = PublicKey::from([0xA1; 32]);
-    let admin_b = PublicKey::from([0xA2; 32]);
+    let creator = AccountId::from([0x01; 32]);
+    let admin_a = AccountId::from([0xA1; 32]);
+    let admin_b = AccountId::from([0xA2; 32]);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(creator))
@@ -1823,8 +1872,8 @@ fn trusted_anchors_includes_read_only_tee_members() {
     // store IS the admission proof.
     let store = test_store();
     let gid = test_group_id();
-    let creator = PublicKey::from([0x01; 32]);
-    let tee_attested = PublicKey::from([0xC1; 32]);
+    let creator = AccountId::from([0x01; 32]);
+    let tee_attested = AccountId::from([0xC1; 32]);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(creator))
@@ -1846,9 +1895,9 @@ fn trusted_anchors_excludes_plain_members_and_read_only() {
     // asked, but clients should NOT preferentially target them.
     let store = test_store();
     let gid = test_group_id();
-    let creator = PublicKey::from([0x01; 32]);
-    let member = PublicKey::from([0xB1; 32]);
-    let read_only = PublicKey::from([0xB2; 32]);
+    let creator = AccountId::from([0x01; 32]);
+    let member = AccountId::from([0xB1; 32]);
+    let read_only = AccountId::from([0xB2; 32]);
 
     MetaRepository::new(&store)
         .save(&gid, &sample_meta_with_admin(creator))
@@ -1882,13 +1931,13 @@ fn trusted_anchors_mixed_roles() {
     use calimero_store::key::GroupMetaValue;
     let store = test_store();
     let gid = test_group_id();
-    let owner = PublicKey::from([0x01; 32]);
-    let legacy_admin = PublicKey::from([0x02; 32]);
-    let admin_a = PublicKey::from([0xA1; 32]);
-    let admin_b = PublicKey::from([0xA2; 32]);
-    let tee = PublicKey::from([0xC1; 32]);
-    let member = PublicKey::from([0xB1; 32]);
-    let read_only = PublicKey::from([0xB2; 32]);
+    let owner = AccountId::from([0x01; 32]);
+    let legacy_admin = AccountId::from([0x02; 32]);
+    let admin_a = AccountId::from([0xA1; 32]);
+    let admin_b = AccountId::from([0xA2; 32]);
+    let tee = AccountId::from([0xC1; 32]);
+    let member = AccountId::from([0xB1; 32]);
+    let read_only = AccountId::from([0xB2; 32]);
 
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
@@ -1935,7 +1984,7 @@ fn get_effective_member_capabilities_includes_inherited_open_subgroup_joiner() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x50; 32]);
     let reports = ContextGroupId::from([0x51; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -1988,7 +2037,7 @@ fn get_effective_member_capabilities_reports_inherited_admin() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x52; 32]);
     let reports = ContextGroupId::from([0x53; 32]);
-    let admin = PublicKey::from([0x01; 32]);
+    let admin = AccountId::from([0x01; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -2018,7 +2067,7 @@ fn get_effective_member_capabilities_returns_stored_bits_for_direct_member() {
     // row must still flow through unchanged.
     let store = test_store();
     let group = ContextGroupId::from([0x54; 32]);
-    let carol = PublicKey::from([0x03; 32]);
+    let carol = AccountId::from([0x03; 32]);
 
     MembershipRepository::new(&store)
         .add_member(&group, &carol, GroupMemberRole::Member)
@@ -2052,7 +2101,7 @@ fn get_effective_member_capabilities_some_zero_for_direct_member_without_cap_row
     // case, the common shape for a plain member.
     let store = test_store();
     let group = ContextGroupId::from([0x58; 32]);
-    let dave = PublicKey::from([0x05; 32]);
+    let dave = AccountId::from([0x05; 32]);
 
     MembershipRepository::new(&store)
         .add_member(&group, &dave, GroupMemberRole::Member)
@@ -2074,7 +2123,7 @@ fn get_effective_member_capabilities_none_for_non_member() {
     // handler keeps rejecting them.
     let store = test_store();
     let group = ContextGroupId::from([0x55; 32]);
-    let stranger = PublicKey::from([0x04; 32]);
+    let stranger = AccountId::from([0x04; 32]);
 
     assert_eq!(
         MembershipRepository::new(&store)
@@ -2095,7 +2144,7 @@ fn get_effective_member_capabilities_none_for_restricted_wall() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x56; 32]);
     let reports = ContextGroupId::from([0x57; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -2138,7 +2187,7 @@ fn get_effective_member_capabilities_none_for_denied_inherited_member() {
     let store = test_store();
     let namespace = ContextGroupId::from([0x59; 32]);
     let reports = ContextGroupId::from([0x5A; 32]);
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     nest_for_test(&store, &namespace, &reports);
     MembershipRepository::new(&store)
@@ -2188,7 +2237,7 @@ fn add_member_retracts_a_stale_deny_list_entry() {
     // because several paths materialize a row without going through an op.
     let store = test_store();
     let group = test_group_id();
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     // Removal: the row is deleted, then the identity is deny-listed.
     MembershipRepository::new(&store)
@@ -2231,7 +2280,7 @@ fn pre_registered_rejoiner_is_never_denied_and_capable_at_once() {
     // filter drops every delta the member authors. The two views must agree.
     let store = test_store();
     let group = test_group_id();
-    let bob = PublicKey::from([0x02; 32]);
+    let bob = AccountId::from([0x02; 32]);
 
     CapabilitiesRepository::new(&store)
         .set_default_capabilities(&group, MemberCapabilities::CAN_CREATE_CONTEXT.bits())
@@ -2281,7 +2330,7 @@ fn subgroup_visible_to_open_child_is_public_to_everyone() {
     let store = test_store();
     let parent = ContextGroupId::from([0xD0; 32]);
     let child = ContextGroupId::from([0xD1; 32]);
-    let stranger = PublicKey::from([0x09; 32]);
+    let stranger = AccountId::from([0x09; 32]);
 
     nest_for_test(&store, &parent, &child);
     CapabilitiesRepository::new(&store)
@@ -2306,7 +2355,7 @@ fn subgroup_visible_to_restricted_child_hidden_from_non_member() {
     let store = test_store();
     let parent = ContextGroupId::from([0xD2; 32]);
     let child = ContextGroupId::from([0xD3; 32]);
-    let stranger = PublicKey::from([0x09; 32]);
+    let stranger = AccountId::from([0x09; 32]);
 
     nest_for_test(&store, &parent, &child);
     CapabilitiesRepository::new(&store)
@@ -2348,7 +2397,7 @@ fn subgroup_visible_to_restricted_child_visible_to_parent_admin() {
     let store = test_store();
     let parent = ContextGroupId::from([0xD6; 32]);
     let child = ContextGroupId::from([0xD7; 32]);
-    let admin = PublicKey::from([0x0A; 32]);
+    let admin = AccountId::from([0x0A; 32]);
 
     nest_for_test(&store, &parent, &child);
     CapabilitiesRepository::new(&store)
@@ -2373,7 +2422,7 @@ fn subgroup_visible_to_restricted_child_visible_to_its_member() {
     let store = test_store();
     let parent = ContextGroupId::from([0xD8; 32]);
     let child = ContextGroupId::from([0xD9; 32]);
-    let member = PublicKey::from([0x0B; 32]);
+    let member = AccountId::from([0x0B; 32]);
 
     nest_for_test(&store, &parent, &child);
     CapabilitiesRepository::new(&store)
@@ -2400,11 +2449,11 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     let mut rng = OsRng;
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
-    let owner = PublicKey::from([0x01; 32]);
-    let admin_member = PublicKey::from([0x02; 32]);
-    let tee_node = PublicKey::from([0x03; 32]);
-    let ordinary = PublicKey::from([0x04; 32]);
-    let stranger = PublicKey::from([0x05; 32]);
+    let owner = AccountId::from([0x01; 32]);
+    let admin_member = AccountId::from([0x02; 32]);
+    let tee_node = AccountId::from([0x03; 32]);
+    let ordinary = AccountId::from([0x04; 32]);
+    let stranger = AccountId::from([0x05; 32]);
 
     let meta = GroupMetaValue {
         app_key: [0xBB; 32],
@@ -2480,7 +2529,7 @@ fn seed_inherited_only_member_open(
     store: &Store,
     root: &ContextGroupId,
     sub: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
@@ -2511,7 +2560,7 @@ fn flip_back_to_restricted_revokes_inherited_membership() {
     let store = test_store();
     let root = ContextGroupId::from([0xA0; 32]);
     let sub = ContextGroupId::from([0xA1; 32]);
-    let tee = PublicKey::from([0x01; 32]);
+    let tee = AccountId::from([0x01; 32]);
 
     seed_inherited_only_member_open(&store, &root, &sub, &tee);
 
@@ -2562,7 +2611,7 @@ fn flip_back_to_restricted_revokes_inherited_capabilities() {
     let store = test_store();
     let root = ContextGroupId::from([0xA2; 32]);
     let sub = ContextGroupId::from([0xA3; 32]);
-    let tee = PublicKey::from([0x02; 32]);
+    let tee = AccountId::from([0x02; 32]);
 
     seed_inherited_only_member_open(&store, &root, &sub, &tee);
     assert!(
@@ -2597,8 +2646,8 @@ fn flip_back_to_restricted_leaves_direct_membership_intact() {
     let store = test_store();
     let root = ContextGroupId::from([0xA4; 32]);
     let sub = ContextGroupId::from([0xA5; 32]);
-    let inherited_only = PublicKey::from([0x03; 32]);
-    let direct = PublicKey::from([0x04; 32]);
+    let inherited_only = AccountId::from([0x03; 32]);
+    let direct = AccountId::from([0x04; 32]);
 
     seed_inherited_only_member_open(&store, &root, &sub, &inherited_only);
     // `direct` additionally holds a real row in the subgroup itself.
@@ -2641,7 +2690,7 @@ fn flip_back_at_mid_chain_revokes_inheritance_from_root() {
     let root = ContextGroupId::from([0xA6; 32]);
     let mid = ContextGroupId::from([0xA7; 32]);
     let leaf = ContextGroupId::from([0xA8; 32]);
-    let tee = PublicKey::from([0x05; 32]);
+    let tee = AccountId::from([0x05; 32]);
 
     nest_for_test(&store, &root, &mid);
     nest_for_test(&store, &mid, &leaf);

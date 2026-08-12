@@ -19,7 +19,6 @@
 //! functions in this module so `SyncStateAccess`'s production impl in
 //! `crate::state` and the reconciler itself share a single source of
 //! truth. The fns are independently unit-testable.
-use calimero_governance_store::MembershipRepository;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -423,11 +422,14 @@ impl Reconciler {
     /// context→group mapping, which makes the context-keyed lookup
     /// return an empty set even though the group's anchors are
     /// well-defined on the local node.
+    /// The anchor set answers "who is authoritative here", which the governance
+    /// rows record against ACCOUNTS. Peer selection, though, matches on the
+    /// signing key a peer presents, so each anchor account is expanded to the
+    /// devices that speak for it: an anchor with two machines should be
+    /// preferred at both, and matching on the account alone would match neither.
     fn anchor_identities_for_group(&self, group_id: &ContextGroupId) -> BTreeSet<PublicKey> {
         let store = self.context_client.datastore_handle().into_inner();
-        MembershipRepository::new(&store)
-            .trusted_anchors(group_id)
-            .unwrap_or_default()
+        crate::sync::anchor_device_keys(&store, group_id)
     }
 }
 

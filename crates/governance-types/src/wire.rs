@@ -386,6 +386,7 @@ mod tests {
     /// wire and coverage by the beacon signature are under test.
     fn test_invitation(sk: &PrivateKey, id: NamespaceId) -> SignedGroupOpenInvitation {
         SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: SignerId::from(*sk.public_key()),
                 group_id: ContextGroupId::from(id.to_bytes()),
@@ -486,7 +487,7 @@ mod tests {
             Vec::new(),
             0,
             super::super::NamespaceOp::Root(super::super::RootOp::AdminChanged {
-                new_admin: sk.public_key(),
+                new_admin: calimero_account::AccountId::from([0x45; 32]),
             }),
         )
         .expect("sign");

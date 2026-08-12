@@ -50,7 +50,11 @@ pub(crate) fn apply(
     // cascade finish any remaining cleanup.
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     if let Some(root_meta) = MetaRepository::new(store).load(&root_gid)? {
-        if root_meta.owner_identity != op.signer {
+        // Ownership names an account, the op carries a key: resolve, then
+        // compare. An unresolvable signer is not the owner and falls through to
+        // the capability gate below, which refuses it for the same reason.
+        let signer_account = crate::member_account_in_namespace(store, &ns_gid, &op.signer)?;
+        if signer_account != Some(root_meta.owner_identity) {
             if let Err(e) =
                 PermissionChecker::new(store, ns_gid).require_can_delete_subgroup(&op.signer)
             {

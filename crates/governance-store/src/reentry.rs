@@ -69,8 +69,8 @@
 //! closing it needs invitations bound to a named invitee, which the current
 //! bearer-token invitation model does not support.
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupConsumedInvitation, GroupExitReason, GroupReentryBlock, GroupReentryBlockValue,
     GROUP_CONSUMED_INVITATION_PREFIX, GROUP_REENTRY_BLOCK_PREFIX,
@@ -106,7 +106,7 @@ impl<'a> ReentryRepository<'a> {
     pub fn block(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         reason: GroupExitReason,
     ) -> EyreResult<()> {
         let key = GroupReentryBlock::new(group_id.to_bytes(), *identity);
@@ -124,7 +124,7 @@ impl<'a> ReentryRepository<'a> {
     /// successful invitation join that satisfies [`Self::require_invitation_admits`]
     /// (which readmits a `Left` block only). It must **not** be called from
     /// `MembershipRepository::add_member_with_keys` — see the module docs.
-    pub fn clear_block(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
+    pub fn clear_block(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<()> {
         let key = GroupReentryBlock::new(group_id.to_bytes(), *identity);
         let mut handle = self.store.handle();
         handle
@@ -137,7 +137,7 @@ impl<'a> ReentryRepository<'a> {
     pub fn block_of(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<Option<GroupExitReason>> {
         let key = GroupReentryBlock::new(group_id.to_bytes(), *identity);
         let handle = self.store.handle();
@@ -152,7 +152,7 @@ impl<'a> ReentryRepository<'a> {
     pub fn mark_invitation_consumed(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         invitation_nonce: [u8; 32],
     ) -> EyreResult<()> {
         let key = GroupConsumedInvitation::new(group_id.to_bytes(), *identity, invitation_nonce);
@@ -167,7 +167,7 @@ impl<'a> ReentryRepository<'a> {
     pub fn is_invitation_consumed(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         invitation_nonce: [u8; 32],
     ) -> EyreResult<bool> {
         let key = GroupConsumedInvitation::new(group_id.to_bytes(), *identity, invitation_nonce);
@@ -190,7 +190,7 @@ impl<'a> ReentryRepository<'a> {
     pub fn require_invitation_admits(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         invitation_nonce: [u8; 32],
     ) -> EyreResult<()> {
         if let Some(GroupExitReason::Removed) = self.block_of(group_id, identity)? {
@@ -217,7 +217,7 @@ impl<'a> ReentryRepository<'a> {
     pub fn require_inheritance_admits(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<()> {
         if self.block_of(group_id, identity)?.is_some() {
             bail!(MembershipError::ReentryBlocked {
@@ -239,13 +239,13 @@ impl<'a> ReentryRepository<'a> {
         // `DenyListRepository::clear_all_for_group`.
         let blocks = collect_keys_with_prefix(
             self.store,
-            GroupReentryBlock::new(gid, PublicKey::from([0u8; 32])),
+            GroupReentryBlock::new(gid, AccountId::from([0u8; 32])),
             GROUP_REENTRY_BLOCK_PREFIX,
             |k| k.group_id() == gid,
         )?;
         let consumed = collect_keys_with_prefix(
             self.store,
-            GroupConsumedInvitation::new(gid, PublicKey::from([0u8; 32]), [0u8; 32]),
+            GroupConsumedInvitation::new(gid, AccountId::from([0u8; 32]), [0u8; 32]),
             GROUP_CONSUMED_INVITATION_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -273,8 +273,8 @@ mod tests {
     const NONCE_A: [u8; 32] = [0xA1; 32];
     const NONCE_B: [u8; 32] = [0xB2; 32];
 
-    fn bob() -> PublicKey {
-        PublicKey::from([0x02; 32])
+    fn bob() -> AccountId {
+        AccountId::from([0x02; 32])
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         let store = test_store();
         let repo = ReentryRepository::new(&store);
         let gid = test_group_id();
-        let carol = PublicKey::from([0x03; 32]);
+        let carol = AccountId::from([0x03; 32]);
 
         // Bob burns the shared open-invite link and leaves.
         repo.mark_invitation_consumed(&gid, &bob(), NONCE_A)

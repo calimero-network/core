@@ -110,7 +110,7 @@ impl Message for AddGroupMembersRequest {
 #[derive(Debug)]
 pub struct RemoveGroupMembersRequest {
     pub group_id: ContextGroupId,
-    pub members: Vec<PublicKey>,
+    pub members: Vec<AccountId>,
     pub requester: Option<PublicKey>,
 }
 
@@ -168,7 +168,12 @@ pub struct ListGroupMembersResponse {
 
 #[derive(Clone, Debug)]
 pub struct GroupMemberEntry {
-    pub identity: PublicKey,
+    /// The member's ACCOUNT — the principal every governance row is keyed by.
+    ///
+    /// It used to be a signing key. Listing members by key is no longer possible:
+    /// the rows name accounts, an account is a one-way hash, and a person can
+    /// hold several keys.
+    pub identity: AccountId,
     pub role: GroupMemberRole,
     pub name: Option<String>,
 }
@@ -305,6 +310,13 @@ impl Message for JoinGroupRequest {
 pub struct JoinGroupResponse {
     pub group_id: ContextGroupId,
     pub member_identity: PublicKey,
+    /// The principal the joiner's membership row is keyed by.
+    ///
+    /// Returned beside the key for the same reason [`NamespaceIdentity`] carries
+    /// both: the joiner is about to be addressed by account (capabilities, role,
+    /// metadata, removal), and the account is a hash of the key that no caller
+    /// can compute for itself.
+    pub member_account: AccountId,
     /// Serialized `SignedGroupOp` (borsh) containing the `JoinWithInvitationClaim`.
     /// The orchestrator must relay this to the inviting node's claim-invitation
     /// endpoint so the member is registered on the remote side.
@@ -333,7 +345,7 @@ pub struct GroupSummary {
 #[derive(Debug)]
 pub struct UpdateMemberRoleRequest {
     pub group_id: ContextGroupId,
-    pub identity: PublicKey,
+    pub identity: AccountId,
     pub new_role: GroupMemberRole,
     pub requester: Option<PublicKey>,
 }
@@ -527,7 +539,7 @@ impl Message for GetGroupMetadataRequest {
 #[derive(Copy, Clone, Debug)]
 pub struct GetMemberMetadataRequest {
     pub group_id: ContextGroupId,
-    pub member: PublicKey,
+    pub member: AccountId,
 }
 
 impl Message for GetMemberMetadataRequest {
@@ -612,7 +624,7 @@ pub struct IssueOwnershipProofResponse {
 #[derive(Debug)]
 pub struct SetMemberCapabilitiesRequest {
     pub group_id: ContextGroupId,
-    pub member: PublicKey,
+    pub member: AccountId,
     pub capabilities: u32,
     pub requester: Option<PublicKey>,
 }
@@ -629,7 +641,7 @@ impl Message for SetMemberCapabilitiesRequest {
 #[derive(Debug)]
 pub struct SetMemberAutoFollowRequest {
     pub group_id: ContextGroupId,
-    pub target: PublicKey,
+    pub target: AccountId,
     pub auto_follow_contexts: bool,
     pub auto_follow_subgroups: bool,
     pub requester: Option<PublicKey>,
@@ -642,7 +654,7 @@ impl Message for SetMemberAutoFollowRequest {
 #[derive(Debug)]
 pub struct GetMemberCapabilitiesRequest {
     pub group_id: ContextGroupId,
-    pub member: PublicKey,
+    pub member: AccountId,
 }
 
 impl Message for GetMemberCapabilitiesRequest {
@@ -685,6 +697,12 @@ impl Message for SetTeeAdmissionPolicyRequest {
 #[derive(Debug)]
 pub struct AdmitTeeNodeRequest {
     pub group_id: ContextGroupId,
+    /// The replica's identity KEY, not its account.
+    ///
+    /// Admission writes an account-keyed membership row, so the handler resolves
+    /// it — but the group-key delivery that follows is an ECDH wrap, which can
+    /// only be addressed to a key. Carrying the key keeps both possible; carrying
+    /// only the account would make the delivery unaddressable.
     pub member: PublicKey,
     /// The attested replica's account credential, already checked against the
     /// key the quote binds to by the announcement receiver.
@@ -997,7 +1015,7 @@ impl Message for PairDeviceCompleteRequest {
 pub struct RotateGroupKeyRequest {
     pub group_id: ContextGroupId,
     /// The member whose departure this rotation cuts off.
-    pub departed: PublicKey,
+    pub departed: AccountId,
 }
 
 impl Message for RotateGroupKeyRequest {
@@ -1040,7 +1058,7 @@ impl Message for BroadcastGroupLocalStateRequest {
 #[derive(Debug)]
 pub struct SetMemberMetadataRequest {
     pub group_id: ContextGroupId,
-    pub member: PublicKey,
+    pub member: AccountId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
     pub requester: Option<PublicKey>,
@@ -1056,7 +1074,7 @@ impl Message for SetMemberMetadataRequest {
 #[derive(Debug)]
 pub struct StoreMemberMetadataRequest {
     pub group_id: ContextGroupId,
-    pub member: PublicKey,
+    pub member: AccountId,
     pub record: MetadataRecord,
 }
 
@@ -1133,7 +1151,7 @@ impl Message for StoreGroupMetaRequest {
 #[derive(Debug)]
 pub struct StoreMemberCapabilityRequest {
     pub group_id: ContextGroupId,
-    pub member: PublicKey,
+    pub member: AccountId,
     pub capabilities: u32,
 }
 
@@ -1185,8 +1203,27 @@ pub struct GetNamespaceIdentityRequest {
     pub group_id: ContextGroupId,
 }
 
+/// This node's identity inside one namespace, in both spaces it is named in.
+///
+/// The two ids are not interchangeable and neither is derivable from the other by
+/// a caller: `public_key` is the key this node signs with, while `account` is the
+/// principal the governance rows are keyed by — a domain-separated hash of that
+/// key while the node is unenrolled, and the enrolled account once a binding
+/// exists. Every member-addressing endpoint takes the account, so a caller that
+/// only ever learned the key cannot name the member it just looked up. Returning
+/// both from the one call is what closes that gap.
+#[derive(Clone, Copy, Debug)]
+pub struct NamespaceIdentity {
+    /// The namespace the identity belongs to (the resolved root group).
+    pub namespace_id: ContextGroupId,
+    /// The key this node signs namespace ops with.
+    pub public_key: PublicKey,
+    /// The principal that key writes as — what member-addressing APIs expect.
+    pub account: AccountId,
+}
+
 impl Message for GetNamespaceIdentityRequest {
-    type Result = eyre::Result<Option<(ContextGroupId, PublicKey)>>;
+    type Result = eyre::Result<Option<NamespaceIdentity>>;
 }
 
 #[derive(Debug)]

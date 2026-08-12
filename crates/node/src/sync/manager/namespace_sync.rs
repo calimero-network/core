@@ -23,6 +23,38 @@ use tracing::{debug, info, warn};
 use super::SyncManager;
 use crate::sync::MAX_BACKFILL_OPS;
 
+/// The op kinds in a backfill response, for logging.
+///
+/// Decodes only far enough to name each op — an undecodable entry is reported
+/// as such rather than dropped, since "the responder sent something this build
+/// cannot read" is itself the answer when a backfill looks complete but leaves
+/// the receiver missing an op.
+fn backfill_op_kinds(deltas: &[([u8; 32], Vec<u8>)]) -> String {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let mut kinds = Vec::with_capacity(deltas.len());
+    for (_delta_id, bytes) in deltas {
+        kinds.push(match borsh::from_slice::<SignedNamespaceOp>(bytes) {
+            Ok(op) => match op.op {
+                NamespaceOp::Root(root) => {
+                    let named = format!("{root:?}");
+                    named
+                        .split(|c: char| c == '{' || c == '(' || c.is_whitespace())
+                        .next()
+                        .unwrap_or("Root")
+                        .to_owned()
+                }
+                // Encrypted; the inner kind is not readable without the key,
+                // which is frequently the very thing that is missing.
+                NamespaceOp::Group { .. } => "Group(encrypted)".to_owned(),
+                _ => "Unknown".to_owned(),
+            },
+            Err(_) => "undecodable".to_owned(),
+        });
+    }
+    kinds.join(",")
+}
+
 /// What one walk over the mesh learned about who holds a subgroup key.
 ///
 /// The two failure variants exist to keep a distinction the old single-pass code
@@ -410,6 +442,13 @@ impl SyncManager {
                     Ok(k) => k,
                     Err(_) => break,
                 };
+                // `GroupDeviceBinding` shares this key's exact layout, so a
+                // binding row parses here and — on a namespace root, where the
+                // group id IS the namespace id — passes the id check too. Stop
+                // on the family, never on width plus id.
+                if !key.is_gov_op_row() {
+                    break;
+                }
                 if key.namespace_id() != namespace_id {
                     break;
                 }
@@ -539,17 +578,36 @@ impl SyncManager {
         // perfectly ordinary re-sync or a retried join round — and since a
         // successful join consumes the invitation, gating them would reject every
         // repeat request they ever make with their own invitation.
-        let already_member = MembershipRepository::new(&store)
-            .has_direct_member(&group_id, &joiner_public_key)
-            .unwrap_or(false);
-        let admission = if already_member {
-            Ok(())
-        } else {
-            ReentryRepository::new(&store).require_invitation_admits(
+        // The joiner is named by key on the wire; the row names its account.
+        // A key with no binding here holds no row, which is what `false` says.
+        let joiner_account = calimero_governance_store::member_account_in_namespace(
+            &store,
+            &group_id,
+            &joiner_public_key,
+        )
+        .ok()
+        .flatten();
+        let already_member = joiner_account.is_some_and(|account| {
+            MembershipRepository::new(&store)
+                .has_direct_member(&group_id, &account)
+                .unwrap_or(false)
+        });
+        let admission = match (already_member, joiner_account) {
+            (true, _) => Ok(()),
+            (false, Some(account)) => ReentryRepository::new(&store).require_invitation_admits(
                 &group_id,
-                &joiner_public_key,
+                &account,
                 invitation.invitation.invitation_nonce,
-            )
+            ),
+            // The join request carries a key and an invitation, not a
+            // credential, so a first-time joiner names an account this responder
+            // cannot yet resolve. Both rows the gate reads — the re-entry block
+            // and the consumed-invitation marker — are keyed by that account, so
+            // neither can exist for a principal we cannot name, and admitting is
+            // the accurate answer rather than a lenient one. The authoritative
+            // gate is the apply of the joiner's own `MemberJoinedAt`, which
+            // carries the credential and re-runs this check against it.
+            (false, None) => Ok(()),
         };
         if let Err(err) = admission {
             warn!(
@@ -606,15 +664,30 @@ impl SyncManager {
             None => Vec::new(),
         };
 
-        // Pre-register the joiner as a group member and write ContextIdentity
-        // entries so that when the joiner opens a sync stream, this node's
-        // membership check (has_member) passes immediately.
-        if let Err(e) = MembershipRepository::new(&store).add_member(
-            &group_id,
-            &joiner_public_key,
-            calimero_primitives::context::GroupMemberRole::Member,
-        ) {
-            warn!(%e, "failed to pre-register joiner as group member");
+        // Pre-register the joiner as a group member so that when it opens a sync
+        // stream, this node's membership check passes immediately.
+        //
+        // Only possible for a joiner whose account we can already name — a
+        // re-join, typically. A first-time joiner presents a key and an
+        // invitation but no credential, and the membership row names an account,
+        // so there is nothing to write the row under. That costs the
+        // optimisation, not the join: the joiner's own `MemberJoinedAt` carries
+        // the credential and writes the row when it applies, and until then
+        // `has_member`'s key-keyed `ContextIdentity` arm still answers.
+        match joiner_account {
+            Some(account) => {
+                if let Err(e) = MembershipRepository::new(&store).add_member(
+                    &group_id,
+                    &account,
+                    calimero_primitives::context::GroupMemberRole::Member,
+                ) {
+                    warn!(%e, "failed to pre-register joiner as group member");
+                }
+            }
+            None => debug!(
+                %joiner_public_key,
+                "joiner names no account here yet; leaving its member row to its own join op"
+            ),
         }
 
         let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
@@ -738,7 +811,18 @@ impl SyncManager {
         // Open-chain inheritance walk. `MembershipPath::Inherited`
         // implies every intermediate ancestor was Open (see
         // `membership.rs:267`), so this is the proof of authorisation.
-        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_public_key)? {
+        let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
+            &store,
+            &subgroup_gid,
+            &joiner_public_key,
+        )?
+        else {
+            // A key bound to no account reaches the subgroup by no path.
+            return Err(eyre::eyre!(
+                "joiner identity is bound to no account in this namespace"
+            ));
+        };
+        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_account)? {
             MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
             MembershipPath::None => {
                 let msg = StreamMessage::Message {
@@ -929,6 +1013,11 @@ impl SyncManager {
                 Ok(k) => k,
                 Err(_) => break,
             };
+            // See the sibling walk above: a same-layout binding row would
+            // otherwise be read as a gov op.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != namespace_id {
                 break;
             }
@@ -1215,6 +1304,18 @@ impl SyncManager {
                 ..
             })) => {
                 let ops_received = deltas.len();
+                // The kinds, not just the count. A backfill that returns the
+                // same tally every time is ambiguous in exactly the way that
+                // matters: an op the responder never had looks identical to one
+                // it served and this node dropped, and telling those apart
+                // otherwise means correlating two nodes' logs by timestamp and
+                // guessing. A device waiting on a `KeyDelivery` it missed on
+                // gossip is the case that made this worth logging.
+                debug!(
+                    namespace_id = %hex::encode(namespace_id),
+                    kinds = %backfill_op_kinds(&deltas),
+                    "namespace backfill contents"
+                );
                 info!(
                     namespace_id = %hex::encode(namespace_id),
                     ops = ops_received,
@@ -1387,21 +1488,54 @@ impl SyncManager {
             }
         };
 
-        // The device we ask as, when this node has enrolled one. Once a peer
-        // knows an account for our identity this is the only way it will serve
-        // us — without it, a revoked device would still be its member and would
-        // be handed the very key the rotation excluded it from. `None` on a node
-        // that has enrolled no device, which is served member-addressed only
-        // while its member has no account in the group (the bootstrap case).
+        // The device we ask as — MINTED here if this node has none yet, not just
+        // read.
+        //
+        // A responder that knows an account for our identity serves that account's
+        // devices and nothing else: identity addressing cannot be a fallback,
+        // because a revoked device would simply omit its id and be handed the very
+        // key the rotation excluded it from. So asking without a device is asking
+        // for nothing, and a node that has not enrolled yet would sit keyless —
+        // unable to decrypt any group op — until something else happened to enrol
+        // it.
+        //
+        // Read before minting, and mint only when there is nothing to read.
+        // `ensure_enrolled` is idempotent only for a device of THIS node's own
+        // account: handed a row belonging to another account it releases the slot
+        // and mints a replacement, which is exactly what a paired device is. So
+        // calling it unconditionally destroyed the pairing on the first pull —
+        // and the key already in flight named the device it destroyed, so it
+        // arrived, matched nothing, and was dropped. The link op that would have
+        // protected the row is itself encrypted under that key, so the pairing
+        // could never recover; the next pull just did it again.
+        //
+        // Asking as a device we already are is right regardless of whose account
+        // it speaks for: the point is to be addressable, not to be ourselves.
+        //
+        // Unless it has been REVOKED. Releasing a revoked row so a fresh device
+        // is minted is the one replacement `ensure_enrolled` must still perform —
+        // a node that revoked itself out of the namespace re-enters under a new
+        // id, and reusing the revoked one would ask for keys the revocation
+        // exists to withhold. Reading past that check skipped it, and the node
+        // came back as the device it had just revoked.
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let device = match devices.reusable_device(&ns_gid) {
+            Ok(Some(existing)) => Some(existing.secret.device),
+            Ok(None) => devices
+                .ensure_enrolled(&ns_gid)
+                .map(|own| Some(own.secret.device))
+                .unwrap_or_else(|err| {
+                    debug!(%err, "failed to enrol this node's device for key recovery");
+                    None
+                }),
+            Err(err) => {
+                debug!(%err, "failed to read this node's device for key recovery");
+                None
+            }
+        };
         let requester = calimero_governance_store::KeyRequester {
             identity: requester_public_key,
-            device: calimero_governance_store::NodeDeviceRepository::new(&store)
-                .device_secret(&ns_gid)
-                .unwrap_or_else(|err| {
-                    debug!(%err, "failed to read node device identity for key recovery");
-                    None
-                })
-                .map(|own| own.device),
+            device,
         };
 
         // `(group_id, key_id)` pairs we're stranded on — we ask each peer for

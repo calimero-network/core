@@ -59,13 +59,14 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Get node-1 namespace identity
     type: get_namespace_identity
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     outputs:
-      identity_node1: publicKey
+      account_node1: account
 
   - name: Create subgroup A
     type: create_group_in_namespace
@@ -112,7 +113,7 @@ steps:
   - name: Assert node-2 is in subgroup-A before leave
     type: assert
     statements:
-      - "contains({{subgroup_a_before}}, {{identity_node2}})"
+      - "contains({{subgroup_a_before}}, {{account_node2}})"
 
   - name: List subgroup-B members before leave
     type: list_group_members
@@ -124,7 +125,7 @@ steps:
   - name: Assert node-2 is in subgroup-B before leave
     type: assert
     statements:
-      - "contains({{subgroup_b_before}}, {{identity_node2}})"
+      - "contains({{subgroup_b_before}}, {{account_node2}})"
 
   # leave_namespace at the root cascades through descendant subgroups.
 
@@ -148,8 +149,8 @@ steps:
   - name: Assert node-2 absent from namespace membership
     type: assert
     statements:
-      - "not_contains({{ns_members_after}}, {{identity_node2}})"
-      - "contains({{ns_members_after}}, {{identity_node1}})"
+      - "not_contains({{ns_members_after}}, {{account_node2}})"
+      - "contains({{ns_members_after}}, {{account_node1}})"
 
   - name: List subgroup-A members on node-1
     type: list_group_members
@@ -161,8 +162,8 @@ steps:
   - name: Assert node-2 absent from subgroup-A but node-1 still present
     type: assert
     statements:
-      - "not_contains({{subgroup_a_after}}, {{identity_node2}})"
-      - "contains({{subgroup_a_after}}, {{identity_node1}})"
+      - "not_contains({{subgroup_a_after}}, {{account_node2}})"
+      - "contains({{subgroup_a_after}}, {{account_node1}})"
 
   - name: List subgroup-B members on node-1
     type: list_group_members
@@ -174,8 +175,8 @@ steps:
   - name: Assert node-2 absent from subgroup-B but node-1 still present
     type: assert
     statements:
-      - "not_contains({{subgroup_b_after}}, {{identity_node2}})"
-      - "contains({{subgroup_b_after}}, {{identity_node1}})"
+      - "not_contains({{subgroup_b_after}}, {{account_node2}})"
+      - "contains({{subgroup_b_after}}, {{account_node1}})"
 
 stop_all_nodes: false
 restart: false

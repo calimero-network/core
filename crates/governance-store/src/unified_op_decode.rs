@@ -91,9 +91,7 @@ pub fn op_from_namespace_op(
         // still inherited, binding still recorded. Leaving it a `Noop` was what
         // let the apply path write a binding the projection never saw, which
         // re-keys the joiner's writer principal on one plane only.
-        NamespaceOp::Root(root) => {
-            payload_from_root_op(root, signed.signer).unwrap_or(OpPayload::Noop)
-        }
+        NamespaceOp::Root(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
         NamespaceOp::Group { group_id, .. } => decrypted_group_op
             .and_then(|g| payload_from_group_op(*group_id, g))
             .unwrap_or(OpPayload::Noop),

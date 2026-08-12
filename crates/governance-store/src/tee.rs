@@ -1,10 +1,10 @@
 use crate::NamespaceRepository;
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::{
     GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -95,11 +95,11 @@ pub fn is_quote_hash_used(
 /// True if `identity` joined `group_id` via a `MemberJoinedViaTeeAttestation`
 /// op. TEE nodes have no separate roster — admission is recorded only by
 /// that op in the governance log, so this scans the same op log as
-/// [`is_quote_hash_used`] and matches on the joined member's identity.
+/// [`is_quote_hash_used`] and matches on the joined member's account.
 pub fn is_tee_admitted_identity(
     store: &Store,
     group_id: &ContextGroupId,
-    identity: &PublicKey,
+    identity: &AccountId,
 ) -> EyreResult<bool> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
 
@@ -151,7 +151,7 @@ pub struct TeeAdmissionRecord {
 /// Needs no group id: the per-group op log this reads is already scoped to one
 /// group. Its cleartext counterpart is [`tee_admission_from_root_op`], which
 /// does need one, because a namespace log carries every group's root ops.
-fn tee_admission_from_bytes(bytes: &[u8]) -> Option<(PublicKey, TeeAdmissionRecord)> {
+fn tee_admission_from_bytes(bytes: &[u8]) -> Option<(AccountId, TeeAdmissionRecord)> {
     if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
         if let GroupOp::MemberJoinedViaTeeAttestation {
             member,
@@ -195,11 +195,11 @@ fn root_ops_for(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<Sign
 fn tee_admission_from_root_op(
     signed: &SignedNamespaceOp,
     group_id: &ContextGroupId,
-) -> Option<(PublicKey, TeeAdmissionRecord)> {
+) -> Option<(AccountId, TeeAdmissionRecord)> {
     {
         if let NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation {
             group_id: op_group,
-            member,
+            member: _,
             quote_hash,
             mrtd,
             rtmr0,
@@ -208,6 +208,7 @@ fn tee_admission_from_root_op(
             rtmr3,
             tcb_status,
             role,
+            account,
             ..
         }) = &signed.op
         {
@@ -217,8 +218,12 @@ fn tee_admission_from_root_op(
             if *op_group != *group_id {
                 return None;
             }
+            // The cleartext form names the attested KEY, while the verdict is
+            // recorded against the account that admission created. Both are on
+            // the op: the account comes from the credential, which the apply
+            // refused unless it certifies this very key.
             return Some((
-                *member,
+                account.cert.account,
                 TeeAdmissionRecord {
                     quote_hash: *quote_hash,
                     mrtd: mrtd.clone(),
@@ -238,7 +243,7 @@ fn tee_admission_from_root_op(
 pub fn tee_admission_record(
     store: &Store,
     group_id: &ContextGroupId,
-    identity: &PublicKey,
+    identity: &AccountId,
 ) -> EyreResult<Option<TeeAdmissionRecord>> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
     let mut latest = None;
@@ -278,7 +283,7 @@ pub fn tee_admission_record(
 pub fn tee_admission_records(
     store: &Store,
     group_id: &ContextGroupId,
-) -> EyreResult<std::collections::BTreeMap<PublicKey, TeeAdmissionRecord>> {
+) -> EyreResult<std::collections::BTreeMap<AccountId, TeeAdmissionRecord>> {
     let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
     let mut out = std::collections::BTreeMap::new();
 
@@ -300,10 +305,11 @@ pub fn tee_admission_records(
 
 #[cfg(test)]
 mod tests {
+    use calimero_account::AccountId;
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_primitives::identity::PrivateKey;
 
     use super::{tee_admission_record, tee_admission_records};
     use crate::local_state::append_op_log_entry;
@@ -313,7 +319,7 @@ mod tests {
         signer_sk: &PrivateKey,
         ns_gid: ContextGroupId,
         nonce: u64,
-        member: PublicKey,
+        member: AccountId,
         quote_hash: [u8; 32],
     ) -> SignedGroupOp {
         SignedGroupOp::sign(
@@ -342,8 +348,8 @@ mod tests {
         let mut rng = rand::thread_rng();
         let namespace_id = [0xAA; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
-        let tee_pk = PublicKey::from([0x42; 32]);
-        let unknown = PublicKey::from([0x43; 32]);
+        let tee_pk = AccountId::from([0x42; 32]);
+        let unknown = AccountId::from([0x43; 32]);
 
         let signer_sk = PrivateKey::random(&mut rng);
         let tee_op = SignedGroupOp::sign(
@@ -388,8 +394,8 @@ mod tests {
         let store = test_store();
         let mut rng = rand::thread_rng();
         let ns_gid = ContextGroupId::from([0xAA; 32]);
-        let tee_a = PublicKey::from([0x42; 32]);
-        let tee_b = PublicKey::from([0x44; 32]);
+        let tee_a = AccountId::from([0x42; 32]);
+        let tee_b = AccountId::from([0x44; 32]);
         let signer_sk = PrivateKey::random(&mut rng);
 
         append_op_log_entry(
@@ -438,7 +444,7 @@ mod tests {
         let store = test_store();
         let mut rng = rand::thread_rng();
         let ns_gid = ContextGroupId::from([0xAB; 32]);
-        let tee_pk = PublicKey::from([0x42; 32]);
+        let tee_pk = AccountId::from([0x42; 32]);
         let signer_sk = PrivateKey::random(&mut rng);
 
         // Original admission, then a later re-admission with a fresh quote.

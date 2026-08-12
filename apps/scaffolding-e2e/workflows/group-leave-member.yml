@@ -64,6 +64,7 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Invite node-3 to namespace
     type: create_namespace_invitation
@@ -79,13 +80,14 @@ steps:
     invitation: '{{invite_node3}}'
     outputs:
       identity_node3: memberIdentity
+      account_node3: memberAccount
 
   - name: Get node-1 namespace identity
     type: get_namespace_identity
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     outputs:
-      identity_node1: publicKey
+      account_node1: account
 
   - name: Create subgroup with all three nodes
     type: create_group_in_namespace
@@ -136,8 +138,8 @@ steps:
   - name: Assert node-2 absent from subgroup membership
     type: assert
     statements:
-      - "not_contains({{members_after_leave}}, {{identity_node2}})"
-      - "contains({{members_after_leave}}, {{identity_node3}})"
+      - "not_contains({{members_after_leave}}, {{account_node2}})"
+      - "contains({{members_after_leave}}, {{account_node3}})"
 
   # Cross-check on a third peer to catch fan-out bugs.
 
@@ -151,8 +153,8 @@ steps:
   - name: Assert node-3 also sees node-2 absent
     type: assert
     statements:
-      - "not_contains({{members_after_leave_node3}}, {{identity_node2}})"
-      - "contains({{members_after_leave_node3}}, {{identity_node3}})"
+      - "not_contains({{members_after_leave_node3}}, {{account_node2}})"
+      - "contains({{members_after_leave_node3}}, {{account_node3}})"
 
   # Scenario 2: a second leave is rejected — the direct-row precondition
   # is gone after the first leave.
@@ -183,9 +185,9 @@ steps:
   - name: Assert subgroup still has node-1 admin and node-3 member
     type: assert
     statements:
-      - "contains({{members_after_admin_fail}}, {{identity_node1}})"
-      - "contains({{members_after_admin_fail}}, {{identity_node3}})"
-      - "not_contains({{members_after_admin_fail}}, {{identity_node2}})"
+      - "contains({{members_after_admin_fail}}, {{account_node1}})"
+      - "contains({{members_after_admin_fail}}, {{account_node3}})"
+      - "not_contains({{members_after_admin_fail}}, {{account_node2}})"
 
 stop_all_nodes: false
 restart: false

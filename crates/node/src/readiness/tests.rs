@@ -639,6 +639,7 @@ async fn await_first_fresh_beacon_times_out() {
 
 fn test_invitation() -> SignedGroupOpenInvitation {
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation: GroupInvitationFromAdmin {
             inviter_identity: SignerId::from([1u8; 32]),
             group_id: ContextGroupId::from([7u8; 32]),
@@ -665,7 +666,10 @@ fn test_signed_op() -> SignedNamespaceOp {
         // below actually catches a value that got reset or re-signed.
         nonce: 42,
         op: NamespaceOp::Root(RootOp::MemberJoinedAt {
-            member,
+            // The member is the account the credential beside it certifies —
+            // these are round-trip/shape tests, but a pair that disagrees is a
+            // shape production never emits.
+            member: test_join_account().cert.account,
             signed_invitation: test_invitation(),
             joined_at: 0,
             account: test_join_account(),
@@ -717,7 +721,8 @@ fn admission_proof_is_the_invitation_inside_the_queued_join() {
 fn non_join_op_carries_no_admission_proof() {
     let mut op = test_signed_op();
     op.op = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: PublicKey::from([3u8; 32]),
+        founder: test_join_account().cert.account,
+        account: test_join_account(),
     });
 
     assert!(

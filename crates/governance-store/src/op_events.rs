@@ -17,6 +17,7 @@
 use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
+use calimero_account::AccountId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use tokio::sync::broadcast;
@@ -60,25 +61,25 @@ pub enum OpEvent {
     /// `GroupOp::MemberAdded` — a member was added to a group by an admin.
     MemberAdded {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
         role: GroupMemberRole,
     },
     /// A member joined via a self-service path (open invite or inherited
     /// Open-subgroup join). `role` is `None` for the inherited path.
     MemberJoined {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
         role: Option<GroupMemberRole>,
     },
     /// `GroupOp::MemberJoinedViaTeeAttestation` — a TEE node was admitted.
     TeeMemberAdmitted {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
     },
     /// `GroupOp::MemberRemoved` — a member was removed from a group.
     MemberRemoved {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
     },
     /// A `GroupMemberRole::ReadOnlyTee` member was removed from a group.
     ///
@@ -98,14 +99,14 @@ pub enum OpEvent {
     /// group where the leaver had a direct row.
     TeeMemberRemoved {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
     },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including
     /// when flags don't change, so handlers should dedupe if they care.
     AutoFollowSet {
         group_id: [u8; 32],
-        member: PublicKey,
+        member: AccountId,
         contexts: bool,
         subgroups: bool,
     },
@@ -160,6 +161,7 @@ pub fn subscribe() -> broadcast::Receiver<OpEvent> {
 
 #[cfg(test)]
 mod tests {
+    use calimero_account::AccountId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::PublicKey;
 
@@ -217,7 +219,7 @@ mod tests {
         // Must not panic or error with zero subscribers. Best-effort.
         notify(OpEvent::MemberRemoved {
             group_id: [0xCC; 32],
-            member: PublicKey::from([0xDD; 32]),
+            member: AccountId::from([0xDD; 32]),
         });
     }
 
@@ -256,7 +258,7 @@ mod tests {
         let tag = [0xEE; 32];
         notify(OpEvent::MemberAdded {
             group_id: tag,
-            member: PublicKey::from([0xFF; 32]),
+            member: AccountId::from([0xFF; 32]),
             role: GroupMemberRole::Member,
         });
         for rx in [&mut rx1, &mut rx2] {

@@ -92,15 +92,34 @@ pub(super) fn handle_namespace_governance_delta(
                 warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
                 return;
             }
-            if !calimero_governance_store::governance_broadcast::verify_migration_heartbeat(
+            // Two reasons not to cache, and only one of them is a problem. A
+            // joiner considers itself a member locally before the op that
+            // publishes that membership reaches us, and that same op carries the
+            // device binding — so "I cannot resolve this signer yet" is an
+            // ordinary phase of every join, not a failed check. Reporting both as
+            // a verification failure made each join look like a forgery.
+            match calimero_governance_store::governance_broadcast::classify_migration_heartbeat(
                 &this.datastore,
                 &heartbeat,
             ) {
-                debug!(
-                    namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
-                    "MigrationHeartbeat failed verification (sig/membership); dropping"
-                );
-                return;
+                calimero_governance_store::governance_broadcast::HeartbeatVerdict::Admit => {}
+                calimero_governance_store::governance_broadcast::HeartbeatVerdict::NotYetKnown => {
+                    debug!(
+                        namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
+                        peer = %heartbeat.peer_pubkey,
+                        "MigrationHeartbeat from a peer whose join has not reached us yet; \
+                         dropping until it does"
+                    );
+                    return;
+                }
+                // `Refused`, and anything a future variant adds: fail closed.
+                _ => {
+                    debug!(
+                        namespace_id = %hex::encode(heartbeat.namespace_id.as_bytes()),
+                        "MigrationHeartbeat failed verification (sig/membership); dropping"
+                    );
+                    return;
+                }
             }
             this.migration_status_cache.insert(&heartbeat);
             debug!(
@@ -287,8 +306,12 @@ impl NamespaceDeltaApply {
     ) -> Option<crate::peer_identity_cache::ObservedMembership> {
         let root_group = ContextGroupId::from(namespace_id);
         let store = self.context_client.datastore_handle().into_inner();
+        // The signer presents a key; the role belongs to the account it acts as.
+        let account =
+            calimero_governance_store::member_account_in_namespace(&store, &root_group, signer)
+                .ok()??;
         let role = MembershipRepository::new(&store)
-            .role_of(&root_group, signer)
+            .role_of(&root_group, &account)
             .ok()??;
         Some(crate::peer_identity_cache::ObservedMembership {
             group_id: root_group,

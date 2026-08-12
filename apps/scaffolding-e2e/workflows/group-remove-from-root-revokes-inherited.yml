@@ -139,7 +139,7 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{invite_node2}}'
     outputs:
-      identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Node-3 joins namespace
     type: join_namespace
@@ -147,7 +147,7 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{invite_node3}}'
     outputs:
-      identity_node3: memberIdentity
+      account_node3: memberAccount
 
   - name: Node-1 creates Open subgroup
     type: create_group_in_namespace
@@ -265,7 +265,7 @@ steps:
     node: revoke-inherit-node-1
     group_id: '{{namespace_id}}'
     members:
-      - '{{identity_node2}}'
+      - '{{account_node2}}'
 
   - name: Wait for MemberRemoved to propagate at namespace
     type: wait_for_sync
@@ -286,8 +286,8 @@ steps:
   - name: Assert node-2 absent from namespace, node-3 present
     type: assert
     statements:
-      - "not_contains({{ns_members_after}}, {{identity_node2}})"
-      - "contains({{ns_members_after}}, {{identity_node3}})"
+      - "not_contains({{ns_members_after}}, {{account_node2}})"
+      - "contains({{ns_members_after}}, {{account_node3}})"
 
   # Cross-peer check: node-3 also sees node-2 gone from the
   # namespace. Catches a fan-out bug where the removal applied
@@ -302,7 +302,7 @@ steps:
   - name: Assert cross-peer view agrees
     type: assert
     statements:
-      - "not_contains({{ns_members_after_node3}}, {{identity_node2}})"
+      - "not_contains({{ns_members_after_node3}}, {{account_node2}})"
 
   # ── Phase 5: node-3 (untouched inherited member) still works ──────
   # Negative-control complement to the Phase 6 / 7 revocation

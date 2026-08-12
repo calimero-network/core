@@ -127,7 +127,7 @@ mod tests {
 
         let (g, p) = to_membership_change(&OpEvent::MemberJoined {
             group_id: gid,
-            member,
+            member: crate::test_support::account_for(&member),
             role: None,
         })
         .expect("join maps");
@@ -136,7 +136,7 @@ mod tests {
 
         let (_, p) = to_membership_change(&OpEvent::MemberAdded {
             group_id: gid,
-            member,
+            member: crate::test_support::account_for(&member),
             role: GroupMemberRole::Admin,
         })
         .expect("add maps");
@@ -149,7 +149,7 @@ mod tests {
 
         let (_, p) = to_membership_change(&OpEvent::MemberRemoved {
             group_id: gid,
-            member,
+            member: crate::test_support::account_for(&member),
         })
         .expect("remove maps");
         assert!(matches!(p, MembershipChangePayload::MemberRemoved(_)));

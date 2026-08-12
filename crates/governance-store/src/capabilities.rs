@@ -1,8 +1,8 @@
 use crate::NamespaceRepository;
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupContextMemberCap, GroupDefaultCaps, GroupDefaultCapsValue, GroupMemberCapability,
     GroupMemberCapabilityValue, GroupSubgroupVis, GroupSubgroupVisValue,
@@ -35,7 +35,7 @@ impl<'a> CapabilitiesRepository<'a> {
     pub fn member_capability(
         &self,
         group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<Option<u32>> {
         let handle = self.store.handle();
         let key = GroupMemberCapability::new(group_id.to_bytes(), *member);
@@ -46,7 +46,7 @@ impl<'a> CapabilitiesRepository<'a> {
     pub fn set_member_capability(
         &self,
         group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         caps: u32,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -58,11 +58,11 @@ impl<'a> CapabilitiesRepository<'a> {
     pub fn enumerate_members(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<Vec<(PublicKey, u32)>> {
+    ) -> EyreResult<Vec<(AccountId, u32)>> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupMemberCapability::new(gid, PublicKey::from([0u8; 32])),
+            GroupMemberCapability::new(gid, AccountId::from([0u8; 32])),
             GROUP_MEMBER_CAPABILITY_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -72,7 +72,7 @@ impl<'a> CapabilitiesRepository<'a> {
             let Some(val) = handle.get(&key)? else {
                 continue;
             };
-            results.push((PublicKey::from(*key.identity()), val.capabilities));
+            results.push((key.account(), val.capabilities));
         }
         Ok(results)
     }
@@ -189,7 +189,7 @@ impl<'a> CapabilitiesRepository<'a> {
     pub fn delete_member_capability(
         &self,
         group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
         let key = GroupMemberCapability::new(group_id.to_bytes(), *member);
@@ -201,7 +201,7 @@ impl<'a> CapabilitiesRepository<'a> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupMemberCapability::new(gid, PublicKey::from([0u8; 32])),
+            GroupMemberCapability::new(gid, AccountId::from([0u8; 32])),
             GROUP_MEMBER_CAPABILITY_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -216,7 +216,7 @@ impl<'a> CapabilitiesRepository<'a> {
         &self,
         group_id: &ContextGroupId,
         context_id: &ContextId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
         let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
@@ -228,7 +228,7 @@ impl<'a> CapabilitiesRepository<'a> {
         &self,
         group_id: &ContextGroupId,
         context_id: &ContextId,
-        member: &PublicKey,
+        member: &AccountId,
         capabilities: u8,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -241,7 +241,7 @@ impl<'a> CapabilitiesRepository<'a> {
         &self,
         group_id: &ContextGroupId,
         context_id: &ContextId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<Option<u8>> {
         let handle = self.store.handle();
         let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
@@ -258,7 +258,7 @@ mod tests {
     fn member_capability_returns_none_when_unset() {
         let store = test_store();
         let repo = CapabilitiesRepository::new(&store);
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
         assert!(repo
             .member_capability(&test_group_id(), &pk)
             .unwrap()
@@ -270,7 +270,7 @@ mod tests {
         let store = test_store();
         let repo = CapabilitiesRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.set_member_capability(&gid, &pk, 0b1010_0101).unwrap();
         assert_eq!(
@@ -327,8 +327,8 @@ mod tests {
         let store = test_store();
         let repo = CapabilitiesRepository::new(&store);
         let gid = test_group_id();
-        let pk_a = PublicKey::from([0x01; 32]);
-        let pk_b = PublicKey::from([0x02; 32]);
+        let pk_a = AccountId::from([0x01; 32]);
+        let pk_b = AccountId::from([0x02; 32]);
 
         repo.set_member_capability(&gid, &pk_a, 1).unwrap();
         repo.set_member_capability(&gid, &pk_b, 2).unwrap();

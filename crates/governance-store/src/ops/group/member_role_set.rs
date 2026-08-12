@@ -3,13 +3,13 @@
 
 use super::context::GroupApplyCtx;
 use crate::{MembershipError, MembershipRepository};
+use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    member: &PublicKey,
+    member: &AccountId,
     role: &GroupMemberRole,
 ) -> EyreResult<()> {
     let signer = ctx.signer();

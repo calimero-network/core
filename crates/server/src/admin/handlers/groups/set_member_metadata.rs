@@ -9,7 +9,7 @@ use calimero_server_primitives::admin::{
 };
 use tracing::{error, info};
 
-use super::{parse_group_id, parse_identity};
+use super::{parse_account, parse_group_id};
 use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
@@ -27,8 +27,8 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let member = match parse_identity(&identity_str) {
-        Ok(pk) => pk,
+    let member = match parse_account(&identity_str) {
+        Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 
@@ -74,8 +74,8 @@ pub async fn get_handler(
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
-    let member = match parse_identity(&identity_str) {
-        Ok(pk) => pk,
+    let member = match parse_account(&identity_str) {
+        Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 

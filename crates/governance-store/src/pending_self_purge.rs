@@ -118,6 +118,7 @@ impl<'a> PendingSelfPurgeRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
+    use calimero_account::AccountId;
 
     #[test]
     fn is_marked_returns_false_when_unset() {
@@ -194,7 +195,7 @@ mod tests {
         // The scan must stop at the PendingSelfPurge prefix boundary and not
         // bleed into neighbouring column families (e.g. NamespaceIdentity /
         // GroupDeniedMember rows written under different prefixes).
-        use calimero_primitives::identity::PublicKey;
+
         use calimero_store::key::{GroupDeniedMember, NamespaceIdentity, NamespaceIdentityValue};
 
         let store = test_store();
@@ -217,7 +218,7 @@ mod tests {
                 .unwrap();
             handle
                 .put(
-                    &GroupDeniedMember::new([0x44; 32], PublicKey::from([0x05; 32])),
+                    &GroupDeniedMember::new([0x44; 32], AccountId::from([0x05; 32])),
                     &(),
                 )
                 .unwrap();

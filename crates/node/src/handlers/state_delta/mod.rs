@@ -2404,7 +2404,10 @@ mod tests {
             register_context_in_group(&store, &group_id, &context_id)
                 .expect("register_context_in_group");
 
-            let dummy_pk = PublicKey::from([0xAB; 32]);
+            // Never resolved here — the fence decision reads schema versions,
+            // not principals — so a bare account id is honest where a key would
+            // only look like one.
+            let dummy_pk = calimero_primitives::identity::AccountId::from([0xAB; 32]);
             MetaRepository::new(&store)
                 .save(
                     &group_id,
@@ -2429,7 +2432,7 @@ mod tests {
                             to_version: "2.0.0".to_owned(),
                             migration: None,
                             initiated_at: 1_700_000_000,
-                            initiated_by: dummy_pk,
+                            initiated_by: PublicKey::from([0xAB; 32]),
                             status: GroupUpgradeStatus::Completed { completed_at: None },
                             cascade_hlc: Some(cascade_hlc),
                             cascade_seq: None,

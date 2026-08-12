@@ -1,4 +1,6 @@
 use crate::{MembershipRepository, NamespaceRepository, ReentryRepository};
+use calimero_account::AccountId;
+use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
@@ -28,14 +30,15 @@ impl<'a> NamespaceMembershipService<'a> {
     pub fn apply_member_joined(
         &self,
         signer: &PublicKey,
-        member: &PublicKey,
+        member: &AccountId,
         signed_invitation: &SignedGroupOpenInvitation,
         joined_at: Option<u64>,
+        account: &JoinAccountCredential,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
 
-        self.verify_member_join_signature(signer, member, signed_invitation)?;
+        self.verify_member_join_signature(signer, member, signed_invitation, account)?;
 
         // Deterministic expiry gate: reject when the joiner's signed
         // claimed join time is past expiry, comparing the op's own field
@@ -60,7 +63,27 @@ impl<'a> NamespaceMembershipService<'a> {
         // None case explicitly.
 
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
-        self.require_inviter_permission(&group_id, &inviter_pk)?;
+        // Skipped on the node that authored this op — the joiner itself.
+        //
+        // The question the check asks ("does this inviter hold
+        // CAN_INVITE_MEMBERS in this group?") is answerable only from the
+        // group's membership state, and a joiner has none of it at the moment
+        // it must answer: it applies its own `MemberJoined` before any genesis,
+        // membership row or binding has reached it. So on the author the check
+        // is not a control that passes or fails on the merits, it is one that
+        // cannot be evaluated at all — and it refused every offline join, which
+        // left the op unapplied, hence unpublished, hence nothing to converge on
+        // once the partition healed.
+        //
+        // Nothing is granted by skipping it. The joiner's row is local, and
+        // every PEER applying the same op does hold the state, runs the check
+        // below, and rejects an invitation whose inviter lacked permission. A
+        // joiner handed a bad invitation ends up believing a join that no peer
+        // honours — which is what any other unaccepted join already looks like.
+        let self_authored = self.op_authored_by_this_node(signer)?;
+        if !self_authored {
+            self.require_inviter_permission(&group_id, &inviter_pk)?;
+        }
 
         // Direct-row dedup: a `MemberJoined` op materializes the joiner's
         // direct membership row. An identity that already inherits
@@ -105,10 +128,21 @@ impl<'a> NamespaceMembershipService<'a> {
         reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
         let role = role_from_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin
-            && !MembershipRepository::new(self.store).is_admin(&group_id, &inviter_pk)?
-        {
-            bail!("only admins can invite new admins");
+        if role == GroupMemberRole::Admin && !self_authored {
+            // Same key→account resolution as `require_inviter_permission`, and
+            // the same refusal when the inviter names no account here — and
+            // skipped on the author for the same reason, or an admin invitation
+            // would be the one kind that still cannot be accepted offline.
+            let inviter = crate::member_account_in_namespace(self.store, &group_id, &inviter_pk)?;
+            let is_admin = match inviter {
+                Some(inviter) => {
+                    MembershipRepository::new(self.store).is_admin(&group_id, &inviter)?
+                }
+                None => false,
+            };
+            if !is_admin {
+                bail!("only admins can invite new admins");
+            }
         }
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
@@ -180,17 +214,26 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// The joiner must prove it owns the account the op admits, and the
+    /// invitation must be genuinely the inviter's.
+    ///
+    /// The ownership half used to be `signer == member`, which worked only
+    /// while `member` was a signing key. An account is a hash, so nothing signs
+    /// as one; the proof now runs through the credential the op carries — see
+    /// [`join_op_proves_ownership`](crate::ops::namespace::member_joined_open::join_op_proves_ownership)
+    /// for why both of its halves are needed.
     fn verify_member_join_signature(
         &self,
         signer: &PublicKey,
-        member: &PublicKey,
+        member: &AccountId,
         signed_invitation: &SignedGroupOpenInvitation,
+        account: &JoinAccountCredential,
     ) -> EyreResult<()> {
-        if *signer != *member {
+        if !crate::ops::namespace::member_joined_open::join_op_proves_ownership(
+            signer, member, account,
+        ) {
             bail!(
-                "MemberJoined signer ({}) does not match member ({})",
-                signer,
-                member
+                "MemberJoined signer ({signer}) does not hold a credential for member ({member:?})"
             );
         }
         self.verify_inviter_signature(signed_invitation)
@@ -231,16 +274,45 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// Whether this node signed the op being applied — i.e. it is the joiner,
+    /// not a peer replaying its op.
+    ///
+    /// Compared against the namespace signing key rather than against any
+    /// account, deliberately: an account is resolved through a binding, and the
+    /// whole reason this distinction exists is that a fresh joiner has no
+    /// bindings yet. The key is stored before the first op is signed, so it is
+    /// the one identity available at this point. `signer` is authenticated —
+    /// the signature over the op was verified before this — so it cannot be
+    /// claimed by another node.
+    fn op_authored_by_this_node(&self, signer: &PublicKey) -> EyreResult<bool> {
+        let ns_gid = ContextGroupId::from(*self.namespace_id.as_bytes());
+        Ok(NamespaceRepository::new(self.store)
+            .identity(&ns_gid)?
+            .is_some_and(|(local_pk, ..)| local_pk == *signer))
+    }
+
+    /// The inviter named on an invitation must hold `CAN_INVITE_MEMBERS`.
+    ///
+    /// An invitation names the inviter by KEY (it is signed with it), while the
+    /// capability is granted to an account, so the key is resolved first. An
+    /// inviter this namespace has no binding for holds no capability under any
+    /// principal it knows, and is refused with the same message — the grant it
+    /// would need does not exist rather than merely not matching.
     fn require_inviter_permission(
         &self,
         group_id: &ContextGroupId,
         inviter_pk: &PublicKey,
     ) -> EyreResult<()> {
-        if !MembershipRepository::new(self.store).is_admin_or_has_capability(
-            group_id,
-            inviter_pk,
-            MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
-        )? {
+        let inviter = crate::member_account_in_namespace(self.store, group_id, inviter_pk)?;
+        let permitted = match inviter {
+            Some(inviter) => MembershipRepository::new(self.store).is_admin_or_has_capability(
+                group_id,
+                &inviter,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+            )?,
+            None => false,
+        };
+        if !permitted {
             bail!(
                 "invitation inviter {} lacks permission for group {:?}",
                 inviter_pk,

@@ -141,6 +141,7 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Node-3 joins namespace
     type: join_namespace
@@ -148,7 +149,7 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{invite_node3}}'
     outputs:
-      identity_node3: memberIdentity
+      account_node3: memberAccount
 
   - name: Node-1 creates Open subgroup inside namespace
     type: create_group_in_namespace
@@ -272,7 +273,7 @@ steps:
     node: kick-rejoin-node-1
     group_id: '{{subgroup_id}}'
     members:
-      - '{{identity_node2}}'
+      - '{{account_node2}}'
 
   - name: Wait for MemberRemoved + deny-list to propagate
     type: wait_for_sync
@@ -293,7 +294,7 @@ steps:
   - name: Assert node-2 absent from subgroup after kick
     type: assert
     statements:
-      - "not_contains({{members_after_kick}}, {{identity_node2}})"
+      - "not_contains({{members_after_kick}}, {{account_node2}})"
 
   # Cross-peer check: node-3 must also see node-2 gone after the kick.
   # Catches a fan-out bug where MemberRemoved applied locally on the
@@ -309,7 +310,7 @@ steps:
   - name: Assert cross-peer view agrees on the kick
     type: assert
     statements:
-      - "not_contains({{members_after_kick_node3}}, {{identity_node2}})"
+      - "not_contains({{members_after_kick_node3}}, {{account_node2}})"
 
   # ── Phase 5: Kicked node's write must NOT reach the cluster ───────
   # Two failure modes are acceptable signals here, both surface as
@@ -391,8 +392,8 @@ steps:
   - name: Assert the kicked member is still out
     type: assert
     statements:
-      - "not_contains({{members_after_failed_rejoin}}, {{identity_node2}})"
-      - "contains({{members_after_failed_rejoin}}, {{identity_node3}})"
+      - "not_contains({{members_after_failed_rejoin}}, {{account_node2}})"
+      - "contains({{members_after_failed_rejoin}}, {{account_node3}})"
 
   # Negative control: a rejected re-join must not have quietly restored
   # write access either. If the block were enforced only in the admin
@@ -442,8 +443,8 @@ steps:
   - name: Assert the re-added member is back in the list
     type: assert
     statements:
-      - "contains({{members_after_rejoin}}, {{identity_node2}})"
-      - "contains({{members_after_rejoin}}, {{identity_node3}})"
+      - "contains({{members_after_rejoin}}, {{account_node2}})"
+      - "contains({{members_after_rejoin}}, {{account_node3}})"
 
   # ── Phase 8: post-re-add write must reach node-3 ──────────────────
   # The end-to-end signal that the re-add really restored them:

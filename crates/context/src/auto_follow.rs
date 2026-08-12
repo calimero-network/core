@@ -36,6 +36,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::JoinContextRequest;
 use calimero_context_config::types::ContextGroupId;
@@ -371,8 +372,9 @@ async fn handle_subgroup_opened(
     if !should_follow_on_subgroup_open(store, group_id) {
         return;
     }
-    // `should_follow_on_subgroup_open` already confirmed a namespace identity.
-    let Some(self_pk) = self_pk_for_group(store, &ContextGroupId::from(group_id)) else {
+    // `should_follow_on_subgroup_open` already confirmed a namespace identity
+    // that resolves to an account.
+    let Some(self_account) = self_account_for_group(store, &ContextGroupId::from(group_id)) else {
         return;
     };
     info!(
@@ -383,7 +385,7 @@ async fn handle_subgroup_opened(
     // and (idempotently) join each. `join_context` is inheritance-aware, so a
     // non-inherited member is refused there and an already-joined context is a
     // no-op.
-    handle_auto_follow_enabled(store, context_client, limiter, group_id, self_pk).await;
+    handle_auto_follow_enabled(store, context_client, limiter, group_id, self_account).await;
 }
 
 /// Whether a `SubgroupVisibilityChanged { open: true }` on `group_id` should
@@ -398,8 +400,8 @@ async fn handle_subgroup_opened(
 /// unit-testable without a live `ContextClient`/rate-limiter/broadcast bus.
 pub(crate) fn should_follow_on_subgroup_open(store: &Store, group_id: [u8; 32]) -> bool {
     let gid = ContextGroupId::from(group_id);
-    match self_pk_for_group(store, &gid) {
-        Some(self_pk) => should_auto_follow_contexts(store, &gid, &self_pk),
+    match self_account_for_group(store, &gid) {
+        Some(self_account) => should_auto_follow_contexts(store, &gid, &self_account),
         None => false,
     }
 }
@@ -430,7 +432,15 @@ pub(crate) fn decide_on_context_registered(
     let Some(self_pk) = self_pk_for_group(store, &gid) else {
         return ContextRegisteredDecision::NotMember;
     };
-    if !should_auto_follow_contexts(store, &gid, &self_pk) {
+    // Two different questions about the same node: the auto-follow FLAG lives on
+    // the member row, which names an account, while the left-marker is a
+    // per-context stamp written under the identity that actually left. Asking
+    // each in its own space is the point — collapsing them onto one id would
+    // make a second device inherit the first one's "I left this context".
+    let Some(self_account) = self_account_for_group(store, &gid) else {
+        return ContextRegisteredDecision::NotMember;
+    };
+    if !should_auto_follow_contexts(store, &gid, &self_account) {
         return ContextRegisteredDecision::NotAutoFollowing;
     }
     if has_left_context(store, context_id, &self_pk) {
@@ -519,13 +529,13 @@ pub(crate) enum AutoFollowEnabledDecision {
 pub(crate) fn decide_on_auto_follow_enabled(
     store: &Store,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) -> AutoFollowEnabledDecision {
     let gid = ContextGroupId::from(group_id);
-    let Some(self_pk) = self_pk_for_group(store, &gid) else {
+    let Some(self_account) = self_account_for_group(store, &gid) else {
         return AutoFollowEnabledDecision::NotMember;
     };
-    if self_pk != member {
+    if self_account != member {
         return AutoFollowEnabledDecision::NotForSelf;
     }
     let contexts =
@@ -555,7 +565,7 @@ async fn handle_auto_follow_enabled(
     context_client: &ContextClient,
     limiter: &Arc<RateLimiter>,
     group_id: [u8; 32],
-    member: PublicKey,
+    member: AccountId,
 ) {
     let (contexts, truncated) = match decide_on_auto_follow_enabled(store, group_id, member) {
         AutoFollowEnabledDecision::NotMember
@@ -605,6 +615,16 @@ async fn handle_auto_follow_enabled(
     }
 }
 
+/// This node's ACCOUNT in the namespace containing `group_id`, or `None` when
+/// its identity is bound to none — which means it is not a member, so
+/// auto-follow does not apply, the same conclusion a missing identity reaches.
+fn self_account_for_group(store: &Store, group_id: &ContextGroupId) -> Option<AccountId> {
+    let self_pk = self_pk_for_group(store, group_id)?;
+    calimero_governance_store::member_account_in_namespace(store, group_id, &self_pk)
+        .ok()
+        .flatten()
+}
+
 /// Return this node's public key for the namespace containing `group_id`,
 /// or `None` if this node has no identity for that namespace (meaning
 /// we're not a member, so auto-follow doesn't apply).
@@ -634,7 +654,7 @@ fn self_pk_for_group(store: &Store, group_id: &ContextGroupId) -> Option<PublicK
 fn should_auto_follow_contexts(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) -> bool {
     let repo = MembershipRepository::new(store);
     match repo.member_value(group_id, member) {
@@ -819,7 +839,7 @@ mod tests {
             Store::new(Arc::new(InMemoryDB::owned()))
         }
 
-        fn sample_meta(admin: PublicKey) -> GroupMetaValue {
+        fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
             GroupMetaValue {
                 app_key: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
@@ -835,23 +855,27 @@ mod tests {
         /// identity for `gid` and added as a `Member` of the group. Returns
         /// the store and the self identity so the test can vary
         /// `auto_follow` state per case.
+        /// Also returns the ACCOUNT the identity speaks for: governance rows are
+        /// keyed by account, so a test that wants to read back what it wrote has
+        /// to name the same one the enrolment established.
         fn seed_self_member(
             rng: &mut OsRng,
             gid: ContextGroupId,
-        ) -> (Store, PrivateKey, PublicKey) {
+        ) -> (Store, PrivateKey, PublicKey, calimero_account::AccountId) {
             let store = test_store();
             let sk = PrivateKey::random(rng);
             let pk = sk.public_key();
+            let account = crate::test_support::enrol(&store, &gid, &pk);
             MetaRepository::new(&store)
-                .save(&gid, &sample_meta(pk))
+                .save(&gid, &sample_meta(account))
                 .expect("save_group_meta");
             NamespaceRepository::new(&store)
                 .store_identity(&gid, &pk, sk.as_bytes(), &[0u8; 32])
                 .expect("store_namespace_identity");
             MembershipRepository::new(&store)
-                .add_member(&gid, &pk, GroupMemberRole::Member)
+                .add_member(&gid, &account, GroupMemberRole::Member)
                 .expect("add member");
-            (store, sk, pk)
+            (store, sk, pk, account)
         }
 
         // ----- decide_on_context_registered ------------------------------
@@ -873,7 +897,7 @@ mod tests {
         fn context_registered_not_auto_following_when_flag_false() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x33u8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             let context_id = ContextId::from([0x44u8; 32]);
 
             // Post-#2422 the default for new members is `contexts: true`;
@@ -882,7 +906,7 @@ mod tests {
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: false,
                         subgroups: false,
@@ -900,11 +924,11 @@ mod tests {
         fn context_registered_previously_left_when_marker_present() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x55u8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: true,
                         subgroups: false,
@@ -939,11 +963,11 @@ mod tests {
         fn context_registered_join_on_happy_path() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x77u8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: true,
                         subgroups: false,
@@ -971,7 +995,10 @@ mod tests {
             admin: PublicKey,
         ) {
             MetaRepository::new(store)
-                .save(&sub_gid, &sample_meta(admin))
+                .save(
+                    &sub_gid,
+                    &sample_meta(crate::test_support::account_for(&admin)),
+                )
                 .expect("save_subgroup_meta");
             NamespaceRepository::new(store)
                 .nest(&root_gid, &sub_gid)
@@ -989,20 +1016,20 @@ mod tests {
         fn context_registered_join_for_inherited_open_subgroup_member() {
             let mut rng = OsRng;
             let root_gid = ContextGroupId::from([0xE1u8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, root_gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
 
             // Root row: CAN_JOIN_OPEN_SUBGROUPS + auto_follow.contexts = true.
             CapabilitiesRepository::new(&store)
                 .set_member_capability(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                 )
                 .expect("set_member_capability");
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: true,
                         subgroups: false,
@@ -1015,7 +1042,7 @@ mod tests {
             seed_open_subgroup(&store, root_gid, sub_gid, pk);
             assert!(
                 MembershipRepository::new(&store)
-                    .member_value(&sub_gid, &pk)
+                    .member_value(&sub_gid, &crate::test_support::account_for(&pk))
                     .expect("member_value")
                     .is_none(),
                 "test precondition: no direct subgroup row for self_pk"
@@ -1035,19 +1062,19 @@ mod tests {
         fn context_registered_not_auto_following_for_inherited_member_when_anchor_flag_false() {
             let mut rng = OsRng;
             let root_gid = ContextGroupId::from([0xE4u8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, root_gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
 
             CapabilitiesRepository::new(&store)
                 .set_member_capability(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                 )
                 .expect("set_member_capability");
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: false,
                         subgroups: false,
@@ -1083,18 +1110,18 @@ mod tests {
             root_gid: ContextGroupId,
             sub_gid: ContextGroupId,
         ) -> (Store, PublicKey) {
-            let (store, _sk, pk) = seed_self_member(rng, root_gid);
+            let (store, _sk, pk, _account) = seed_self_member(rng, root_gid);
             CapabilitiesRepository::new(&store)
                 .set_member_capability(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
                 )
                 .expect("set_member_capability");
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: true,
                         subgroups: false,
@@ -1104,7 +1131,10 @@ mod tests {
             // Subgroup nested under root, meta present, but visibility
             // Restricted (the `GroupCreated` birth default — NOT flipped).
             MetaRepository::new(&store)
-                .save(&sub_gid, &sample_meta(pk))
+                .save(
+                    &sub_gid,
+                    &sample_meta(crate::test_support::account_for(&pk)),
+                )
                 .expect("save_subgroup_meta");
             NamespaceRepository::new(&store)
                 .nest(&root_gid, &sub_gid)
@@ -1166,7 +1196,11 @@ mod tests {
             );
             // And the previously-registered context is the enumerated join target.
             assert_eq!(
-                decide_on_auto_follow_enabled(&store, sub_gid.to_bytes(), self_pk),
+                decide_on_auto_follow_enabled(
+                    &store,
+                    sub_gid.to_bytes(),
+                    crate::test_support::account_for(&self_pk)
+                ),
                 AutoFollowEnabledDecision::Backfill {
                     contexts: vec![context_id],
                     truncated: false,
@@ -1188,7 +1222,7 @@ mod tests {
             MembershipRepository::new(&store)
                 .set_auto_follow(
                     &root_gid,
-                    &pk,
+                    &crate::test_support::account_for(&pk),
                     AutoFollowFlags {
                         contexts: false,
                         subgroups: false,
@@ -1214,7 +1248,11 @@ mod tests {
             let bogus_member = PrivateKey::random(&mut OsRng).public_key();
 
             assert_eq!(
-                decide_on_auto_follow_enabled(&store, gid_bytes, bogus_member),
+                decide_on_auto_follow_enabled(
+                    &store,
+                    gid_bytes,
+                    crate::test_support::account_for(&bogus_member)
+                ),
                 AutoFollowEnabledDecision::NotMember,
             );
         }
@@ -1223,11 +1261,15 @@ mod tests {
         fn auto_follow_enabled_not_for_self_when_event_targets_other_member() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xAAu8; 32]);
-            let (store, _sk, _self_pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, _self_pk, _account) = seed_self_member(&mut rng, gid);
             let other = PrivateKey::random(&mut rng).public_key();
 
             assert_eq!(
-                decide_on_auto_follow_enabled(&store, gid.to_bytes(), other),
+                decide_on_auto_follow_enabled(
+                    &store,
+                    gid.to_bytes(),
+                    crate::test_support::account_for(&other)
+                ),
                 AutoFollowEnabledDecision::NotForSelf,
             );
         }
@@ -1236,10 +1278,14 @@ mod tests {
         fn auto_follow_enabled_nothing_to_backfill_when_group_empty() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xBBu8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
             // No contexts registered in the group yet.
             assert_eq!(
-                decide_on_auto_follow_enabled(&store, gid.to_bytes(), pk),
+                decide_on_auto_follow_enabled(
+                    &store,
+                    gid.to_bytes(),
+                    crate::test_support::account_for(&pk)
+                ),
                 AutoFollowEnabledDecision::NothingToBackfill,
             );
         }
@@ -1248,7 +1294,7 @@ mod tests {
         fn auto_follow_enabled_returns_backfill_with_existing_contexts() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xCCu8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
 
             let ctx_a = ContextId::from([0xC1u8; 32]);
             let ctx_b = ContextId::from([0xC2u8; 32]);
@@ -1257,7 +1303,11 @@ mod tests {
                 register_context_in_group(&store, &gid, &cid).expect("register_context_in_group");
             }
 
-            match decide_on_auto_follow_enabled(&store, gid.to_bytes(), pk) {
+            match decide_on_auto_follow_enabled(
+                &store,
+                gid.to_bytes(),
+                crate::test_support::account_for(&pk),
+            ) {
                 AutoFollowEnabledDecision::Backfill {
                     contexts,
                     truncated,
@@ -1280,7 +1330,7 @@ mod tests {
         fn auto_follow_enabled_truncates_backfill_at_limit() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0xDDu8; 32]);
-            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, gid);
 
             // Register BACKFILL_LIMIT + 1 contexts; only BACKFILL_LIMIT
             // should come back, and `truncated` should be true.
@@ -1291,7 +1341,11 @@ mod tests {
                 register_context_in_group(&store, &gid, &cid).expect("register_context_in_group");
             }
 
-            match decide_on_auto_follow_enabled(&store, gid.to_bytes(), pk) {
+            match decide_on_auto_follow_enabled(
+                &store,
+                gid.to_bytes(),
+                crate::test_support::account_for(&pk),
+            ) {
                 AutoFollowEnabledDecision::Backfill {
                     contexts,
                     truncated,

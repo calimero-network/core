@@ -1,12 +1,12 @@
 use crate::{CapabilitiesRepository, MetadataRepository};
 use crate::{DenyListRepository, MetaRepository, NamespaceRepository};
+use calimero_account::AccountId;
 use calimero_governance_types::NamespaceId;
 use std::collections::BTreeSet;
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{AutoFollowFlags, GroupMember, GroupMemberValue, GROUP_MEMBER_PREFIX};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -39,7 +39,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn add_member(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         role: GroupMemberRole,
     ) -> EyreResult<()> {
         self.add_member_with_keys(group_id, identity, role, None, None)
@@ -55,7 +55,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn add_member_with_keys(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         role: GroupMemberRole,
         private_key: Option<[u8; 32]>,
         sender_key: Option<[u8; 32]>,
@@ -140,7 +140,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn set_role(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         role: GroupMemberRole,
     ) -> EyreResult<()> {
         let is_admin = role == GroupMemberRole::Admin;
@@ -194,7 +194,7 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
-    pub fn remove_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
+    pub fn remove_member(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<()> {
         {
             let mut handle = self.store.handle();
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
@@ -216,7 +216,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn set_auto_follow(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         auto_follow: AutoFollowFlags,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -243,7 +243,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn role_of(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<Option<GroupMemberRole>> {
         get_direct_member_role(self.store, group_id, identity)
     }
@@ -251,7 +251,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn member_value(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<Option<GroupMemberValue>> {
         let handle = self.store.handle();
         let key = GroupMember::new(group_id.to_bytes(), *identity);
@@ -267,7 +267,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn check_path(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<MembershipPath> {
         if has_direct_member(self.store, group_id, identity)? {
             return Ok(MembershipPath::Direct);
@@ -312,7 +312,7 @@ impl<'a> MembershipRepository<'a> {
 
     /// Returns `true` if `identity` is a member of `group_id` either
     /// directly or by inheritance. Thin wrapper over [`Self::check_path`].
-    pub fn is_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<bool> {
+    pub fn is_member(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
         Ok(!matches!(
             self.check_path(group_id, identity)?,
             MembershipPath::None
@@ -351,7 +351,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn effective_capabilities(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<Option<u32>> {
         match self.check_path(group_id, identity)? {
             MembershipPath::None => Ok(None),
@@ -368,17 +368,17 @@ impl<'a> MembershipRepository<'a> {
         }
     }
 
-    /// Enumerate the identities that are members of `group_id` purely by
+    /// Enumerate the accounts that are members of `group_id` purely by
     /// inheritance. See `enumerate_inherited_members` doc for full
     /// semantics — preserved verbatim from the pre-#2303 free function.
     pub fn enumerate_inherited(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
-        let mut seen: BTreeSet<PublicKey> = self
+    ) -> EyreResult<Vec<(AccountId, GroupMemberRole)>> {
+        let mut seen: BTreeSet<AccountId> = self
             .list(group_id, 0, usize::MAX)?
             .into_iter()
-            .map(|(pk, _)| pk)
+            .map(|(account, _)| account)
             .collect();
         let mut result = Vec::new();
 
@@ -410,10 +410,10 @@ impl<'a> MembershipRepository<'a> {
         }
 
         for parent in &chain {
-            let mut candidates: Vec<PublicKey> = self
+            let mut candidates: Vec<AccountId> = self
                 .list(parent, 0, usize::MAX)?
                 .into_iter()
-                .map(|(pk, _)| pk)
+                .map(|(account, _)| account)
                 .collect();
             if let Some(meta) = MetaRepository::new(self.store).load(parent)? {
                 candidates.push(meta.admin_identity);
@@ -459,7 +459,7 @@ impl<'a> MembershipRepository<'a> {
         &self,
         group_id: &ContextGroupId,
         chain: &[ContextGroupId],
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<MembershipPath> {
         if has_direct_member(self.store, group_id, identity)? {
             return Ok(MembershipPath::Direct);
@@ -496,7 +496,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn is_direct_admin(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<bool> {
         match get_direct_member_role(self.store, group_id, identity)? {
             Some(GroupMemberRole::Admin) => Ok(true),
@@ -511,7 +511,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn is_inherited_admin(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<bool> {
         if self.is_admin(group_id, identity)? {
             return Ok(true);
@@ -534,7 +534,7 @@ impl<'a> MembershipRepository<'a> {
         bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
-    pub fn is_admin(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<bool> {
+    pub fn is_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
         if let Some(GroupMemberRole::Admin) = self.role_of(group_id, identity)? {
             return Ok(true);
         }
@@ -546,7 +546,7 @@ impl<'a> MembershipRepository<'a> {
         Ok(false)
     }
 
-    pub fn require_admin(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
+    pub fn require_admin(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<()> {
         if !self.is_admin(group_id, identity)? {
             bail!(MembershipError::NotAdmin {
                 group_id: format!("{group_id:?}"),
@@ -562,20 +562,20 @@ impl<'a> MembershipRepository<'a> {
         &self,
         parent_group_id: &ContextGroupId,
         child_group_id: &ContextGroupId,
-        caller: Option<&PublicKey>,
+        caller: Option<&AccountId>,
     ) -> EyreResult<bool> {
         if CapabilitiesRepository::new(self.store).subgroup_visibility(child_group_id)?
             == VisibilityMode::Open
         {
             return Ok(true);
         }
-        let Some(caller_pk) = caller else {
+        let Some(caller_account) = caller else {
             return Ok(false);
         };
-        if self.is_inherited_admin(parent_group_id, caller_pk)? {
+        if self.is_inherited_admin(parent_group_id, caller_account)? {
             return Ok(true);
         }
-        self.is_member(child_group_id, caller_pk)
+        self.is_member(child_group_id, caller_account)
     }
 
     /// Returns `true` if `identity` is a group admin **or** holds the
@@ -583,7 +583,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn is_admin_or_has_capability(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         capability_bit: u32,
     ) -> EyreResult<bool> {
         if self.is_admin(group_id, identity)? {
@@ -598,7 +598,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn require_admin_or_capability(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
         capability_bit: u32,
         operation: &str,
     ) -> EyreResult<()> {
@@ -627,7 +627,7 @@ impl<'a> MembershipRepository<'a> {
                     .get(&key)?
                     .ok_or_else(|| MembershipError::MissingMemberValue {
                         group_id: format!("{group_id:?}"),
-                        identity: format!("{:?}", key.identity()),
+                        account: format!("{:?}", key.account()),
                     })?;
             if val.role == GroupMemberRole::Admin {
                 count += 1;
@@ -641,7 +641,7 @@ impl<'a> MembershipRepository<'a> {
         group_id: &ContextGroupId,
         offset: usize,
         limit: usize,
-    ) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
+    ) -> EyreResult<Vec<(AccountId, GroupMemberRole)>> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix_paginated(
             self.store,
@@ -659,26 +659,76 @@ impl<'a> MembershipRepository<'a> {
                     .get(&key)?
                     .ok_or_else(|| MembershipError::MissingMemberValue {
                         group_id: format!("{group_id:?}"),
-                        identity: format!("{:?}", key.identity()),
+                        account: format!("{:?}", key.account()),
                     })?;
-            results.push((key.identity(), val.role));
+            results.push((key.account(), val.role));
         }
         Ok(results)
     }
 
-    /// Public-key-only view of the current member set for a namespace.
+    /// Principal-only view of the current member set for a namespace.
     /// Includes the meta `admin_identity` if not already in the member
     /// rows — see the original `namespace_member_pubkeys` doc.
-    pub fn namespace_pubkeys(&self, namespace_id: NamespaceId) -> EyreResult<Vec<PublicKey>> {
+    ///
+    /// Named for accounts rather than pubkeys because that is what it now
+    /// returns: callers holding a signing key must resolve it through
+    /// [`member_account_in_namespace`](crate::member_account_in_namespace)
+    /// before comparing, and refuse when it resolves to nothing.
+    pub fn namespace_accounts(&self, namespace_id: NamespaceId) -> EyreResult<Vec<AccountId>> {
         let group_id = ContextGroupId::from(namespace_id.to_bytes());
         let members = self.list(&group_id, 0, usize::MAX)?;
-        let mut pubkeys: Vec<PublicKey> = members.into_iter().map(|(pk, _role)| pk).collect();
-        if let Some(meta) = MetaRepository::new(self.store).load(&group_id)? {
-            if !pubkeys.contains(&meta.admin_identity) {
-                pubkeys.push(meta.admin_identity);
+        let mut accounts: Vec<AccountId> = members.into_iter().map(|(acct, _role)| acct).collect();
+        let admin = MetaRepository::new(self.store)
+            .load(&group_id)?
+            .map(|meta| meta.admin_identity);
+        if let Some(admin) = admin {
+            if !accounts.contains(&admin) {
+                accounts.push(admin);
             }
         }
-        Ok(pubkeys)
+
+        // Cold start only: before any admin is established, a joiner has applied
+        // no DAG ops and knows nobody, so nothing it receives verifies — including
+        // the inviter's readiness beacons, which are the trigger that would fetch
+        // the governance state that ends this state. The invitation's inviter hint
+        // breaks that circle.
+        //
+        // Gated on the admin still being the placeholder, and that gate is the
+        // whole safety argument. The hint is unsigned, so anything relaying an
+        // invitation can choose it; admitting it here lets a wrong value have one
+        // bogus beacon accepted before genesis lands, and nothing afterwards. It
+        // is deliberately NOT stored as the admin, which is what made an earlier
+        // version of this permanent — genesis refuses to overwrite a
+        // non-placeholder admin, so a forged hint would have outlived the
+        // bootstrap it was for.
+        if admin.is_none_or(|admin| admin == crate::placeholder_admin_identity()) {
+            if let Some(hint) = self.bootstrap_inviter(namespace_id)? {
+                if !accounts.contains(&hint) {
+                    accounts.push(hint);
+                }
+            }
+        }
+        Ok(accounts)
+    }
+
+    /// The unverified inviter hint recorded at join, if this node kept one.
+    ///
+    /// See [`calimero_store::key::NamespaceBootstrapInviter`] for why it is not
+    /// stored anywhere that confers authority.
+    pub fn bootstrap_inviter(&self, namespace_id: NamespaceId) -> EyreResult<Option<AccountId>> {
+        let key = calimero_store::key::NamespaceBootstrapInviter::new(namespace_id.to_bytes());
+        Ok(self.store.handle().get(&key)?.map(AccountId::from))
+    }
+
+    /// Record the inviter hint an invitation carried. NODE-LOCAL.
+    pub fn set_bootstrap_inviter(
+        &self,
+        namespace_id: NamespaceId,
+        inviter: AccountId,
+    ) -> EyreResult<()> {
+        let key = calimero_store::key::NamespaceBootstrapInviter::new(namespace_id.to_bytes());
+        self.store.handle().put(&key, inviter.as_bytes())?;
+        Ok(())
     }
 
     /// Enumerate the trusted-anchor set: `{Owner} ∪ {Admins} ∪ {ReadOnlyTee}`.
@@ -686,16 +736,16 @@ impl<'a> MembershipRepository<'a> {
     pub fn trusted_anchors(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<std::collections::BTreeSet<PublicKey>> {
+    ) -> EyreResult<std::collections::BTreeSet<AccountId>> {
         let mut anchors = std::collections::BTreeSet::new();
         if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
             let _ = anchors.insert(meta.owner_identity);
             let _ = anchors.insert(meta.admin_identity);
         }
-        for (pk, role) in self.list(group_id, 0, usize::MAX)? {
+        for (account, role) in self.list(group_id, 0, usize::MAX)? {
             match role {
                 GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee => {
-                    let _ = anchors.insert(pk);
+                    let _ = anchors.insert(account);
                 }
                 GroupMemberRole::Member | GroupMemberRole::ReadOnly => {}
             }
@@ -708,7 +758,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn is_authoritative_namespace_identity(
         &self,
         namespace_id: NamespaceId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<bool> {
         let gid = ContextGroupId::from(namespace_id.to_bytes());
 
@@ -741,7 +791,7 @@ impl<'a> MembershipRepository<'a> {
     pub fn has_direct_member(
         &self,
         group_id: &ContextGroupId,
-        identity: &PublicKey,
+        identity: &AccountId,
     ) -> EyreResult<bool> {
         has_direct_member(self.store, group_id, identity)
     }
@@ -774,7 +824,7 @@ pub enum MembershipPath {
 fn has_direct_member(
     store: &Store,
     group_id: &ContextGroupId,
-    identity: &PublicKey,
+    identity: &AccountId,
 ) -> EyreResult<bool> {
     let handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
@@ -784,7 +834,7 @@ fn has_direct_member(
 fn get_direct_member_role(
     store: &Store,
     group_id: &ContextGroupId,
-    identity: &PublicKey,
+    identity: &AccountId,
 ) -> EyreResult<Option<GroupMemberRole>> {
     let handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
@@ -807,7 +857,7 @@ mod tests {
     fn role_of_returns_none_when_not_a_member() {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
         assert!(repo.role_of(&test_group_id(), &pk).unwrap().is_none());
     }
 
@@ -816,7 +866,7 @@ mod tests {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.add_member(&gid, &pk, GroupMemberRole::Admin).unwrap();
         assert_eq!(
@@ -830,7 +880,7 @@ mod tests {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
         repo.remove_member(&gid, &pk).unwrap();
@@ -841,7 +891,7 @@ mod tests {
     fn is_admin_recognises_meta_admin_identity() {
         let store = test_store();
         let mut meta = test_meta();
-        meta.admin_identity = PublicKey::from([0xAA; 32]);
+        meta.admin_identity = AccountId::from([0xAA; 32]);
         MetaRepository::new(&store)
             .save(&test_group_id(), &meta)
             .unwrap();
@@ -858,9 +908,9 @@ mod tests {
         let store = test_store();
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
-        let admin_a = PublicKey::from([0x01; 32]);
-        let admin_b = PublicKey::from([0x02; 32]);
-        let member = PublicKey::from([0x03; 32]);
+        let admin_a = AccountId::from([0x01; 32]);
+        let admin_b = AccountId::from([0x02; 32]);
+        let member = AccountId::from([0x03; 32]);
 
         repo.add_member(&gid, &admin_a, GroupMemberRole::Admin)
             .unwrap();
@@ -879,7 +929,7 @@ mod tests {
         let repo = MembershipRepository::new(&store);
         let gid = test_group_id();
         for i in 0..5 {
-            let pk = PublicKey::from([i as u8; 32]);
+            let pk = AccountId::from([i as u8; 32]);
             repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
         }
         let page_1 = repo.list(&gid, 0, 2).unwrap();

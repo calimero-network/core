@@ -503,6 +503,33 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// # Errors
     /// Propagates the store read failure.
+    /// The device this node can still be addressed by in `namespace`, if any.
+    ///
+    /// For callers that need *a* device to be reachable at rather than one of
+    /// their own account: a paired device speaks for somebody else's account and
+    /// is perfectly usable, so reaching for [`Self::ensure_enrolled`] instead
+    /// would release the slot and mint a replacement — discarding the device any
+    /// key already in flight is addressed to.
+    ///
+    /// `None` means "nothing usable here, mint one": either no device, or one
+    /// this node has revoked. A revoked id is spent for good, so asking as it
+    /// asks for keys the revocation exists to withhold.
+    ///
+    /// A revocation read that FAILS reports the device as usable rather than
+    /// hiding it. Re-minting on a transient store error destroys a paired device
+    /// permanently, while asking as a revoked one costs nothing — the responder
+    /// checks revocation before serving a key, so that is the enforcement and
+    /// this is only politeness.
+    pub fn reusable_device(&self, namespace: &ContextGroupId) -> EyreResult<Option<NodeDevice>> {
+        let Some(held) = self.get(namespace)? else {
+            return Ok(None);
+        };
+        let revoked = crate::AccountBindingRepository::new(self.store)
+            .is_revoked(namespace, held.device())
+            .unwrap_or(false);
+        Ok((!revoked).then_some(held))
+    }
+
     pub fn get(&self, namespace: &ContextGroupId) -> EyreResult<Option<NodeDevice>> {
         let key = NodeDeviceIdentity::new(namespace.to_bytes());
         Ok(self
@@ -911,6 +938,74 @@ mod tests {
             squatted.device(),
             "and under a fresh device id, since the squatted one addresses another \
              account"
+        );
+    }
+
+    /// The three answers `reusable_device` owes a caller that needs to be
+    /// addressable rather than to be itself. Each was a live bug in the sync
+    /// path's key-recovery pull before the rule had a name to call.
+    #[test]
+    fn a_paired_device_is_reusable_and_is_not_re_minted_over() {
+        // The bug this pins: the pull called `ensure_enrolled`, which releases a
+        // row belonging to another account and mints a replacement. A paired
+        // device IS such a row, so the first pull after pairing destroyed it —
+        // and the scope key already in flight named the device it destroyed.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let paired = repo
+            .ensure_enrolled_into(&ns, AccountGenesis::new(root(1), [0xABu8; 16]))
+            .expect("adopt somebody else's account");
+
+        let reusable = repo
+            .reusable_device(&ns)
+            .expect("read")
+            .expect("a paired device is still a device this node can be addressed at");
+        assert_eq!(
+            reusable.device(),
+            paired.device(),
+            "reusing means the SAME id — a different one is the destruction this avoids"
+        );
+        assert_eq!(
+            repo.get(&ns).expect("read").expect("present").device(),
+            paired.device(),
+            "and reading must not have mutated the slot"
+        );
+    }
+
+    #[test]
+    fn a_revoked_device_is_not_reusable() {
+        // The mirror bug, introduced while fixing the one above: reading the held
+        // device before minting skipped the revocation check, so a node came back
+        // as the device it had just revoked. `None` here is what sends the caller
+        // to `ensure_enrolled`, which releases the spent row and mints.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let spent = repo.ensure_enrolled(&ns).expect("enroll");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, spent.device())
+            .expect("tombstone the device");
+
+        assert!(
+            repo.reusable_device(&ns).expect("read").is_none(),
+            "a spent id must not be handed back — asking as it asks for the keys the \
+             revocation withheld"
+        );
+    }
+
+    #[test]
+    fn a_namespace_with_no_device_has_nothing_to_reuse() {
+        let store = test_store();
+        let ns = test_group_id();
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .reusable_device(&ns)
+                .expect("read")
+                .is_none(),
+            "nothing held means nothing to reuse, which is the caller's cue to mint"
         );
     }
 

@@ -150,11 +150,24 @@ pub async fn handler(
     // the namespace root in one op. Previous two-op pattern (GroupCreated then
     // GroupNested) is collapsed — orphan state is no longer reachable. See
     // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
+    // The account this node signs as. Carried on the op so receivers fold the
+    // creator without resolving anything; the apply still checks it against its
+    // own resolution, so an unresolvable signer fails here rather than pinning a
+    // subgroup admin nobody can match.
+    let admin_account = match calimero_context::member_account::require(
+        &state.store,
+        &resolved_ns_id.to_bytes().into(),
+        &signer_pk,
+    ) {
+        Ok(account) => account,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
     let op = calimero_context_client::local_governance::NamespaceOp::Root(
         calimero_context_client::local_governance::RootOp::GroupCreated {
             group_id: group_id.into(),
             parent_id: namespace_id.to_bytes().into(),
             restricted,
+            admin: admin_account,
         },
     );
 

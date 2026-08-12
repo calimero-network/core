@@ -39,7 +39,11 @@ fn empty_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
 
-fn meta(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMetaValue {
+fn meta(
+    admin: calimero_account::AccountId,
+    app_key: [u8; 32],
+    target: ApplicationId,
+) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
@@ -54,19 +58,24 @@ fn meta(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMeta
 /// Create a group at `gid` with `admin` as direct admin (so the
 /// cascade arm's per-descendant `MANAGE_APPLICATION` pre-scan passes
 /// on every node in the walk) on `app_key`+`target_application_id`.
+/// `admin` is a signing KEY; it is enrolled here so the account the governance
+/// rows name is the one that key resolves to. Deriving an account from the key
+/// instead would compile and key the rows to a principal nothing resolves to.
 fn create_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
     app_key: [u8; 32],
     target: ApplicationId,
-) {
+) -> calimero_account::AccountId {
+    let account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta(admin, app_key, target))
+        .save(gid, &meta(account, app_key, target))
         .unwrap();
     MembershipRepository::new(store)
-        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .add_member(gid, &account, GroupMemberRole::Admin)
         .unwrap();
+    account
 }
 
 #[test]

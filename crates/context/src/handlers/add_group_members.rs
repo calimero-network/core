@@ -37,6 +37,14 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for (identity, role) in &members {
+                    // The caller names the invitee by KEY — that is what an
+                    // operator holds and shares — but the op names the account
+                    // it acts as. Resolution runs at the NAMESPACE: every direct
+                    // add in practice targets a subgroup and names somebody who
+                    // joined the namespace earlier, so asking the subgroup would
+                    // refuse every legitimate add.
+                    let member_account =
+                        crate::member_account::require(&datastore, &group_id, identity)?;
                     let report = calimero_governance_store::sign_apply_and_publish(
                         &datastore,
                         &node_client,
@@ -44,7 +52,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                         &group_id,
                         &sk,
                         GroupOp::MemberAdded {
-                            member: *identity,
+                            member: member_account,
                             role: role.clone(),
                         },
                     )

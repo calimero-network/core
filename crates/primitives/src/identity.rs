@@ -248,6 +248,170 @@ pub struct ContextUser {
     pub joined_at: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Content-addressed ids (accounts and devices)
+// ---------------------------------------------------------------------------
+//
+// These live here rather than in `calimero-account`, which is where the account
+// MODEL lives, because `calimero-account` depends on this crate and the ids are
+// named in the client-facing event payloads this crate defines. Declaring them
+// here and re-exporting from `calimero-account` keeps every existing import
+// working while breaking the cycle.
+
+/// Domain-separated, length-prefixed SHA-256 over `parts`.
+///
+/// Length-prefixing every segment is what stops `("ab", "c")` and `("a", "bc")`
+/// hashing alike, which would let two different facts share an id.
+#[must_use]
+pub fn domain_hash(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update((domain.len() as u64).to_le_bytes());
+    hasher.update(domain);
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+/// Domain separator for [`DeviceId::mint`].
+pub const DEVICE_ID_DOMAIN: &[u8] = b"calimero.device.id.v1";
+
+macro_rules! content_address_id {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, ::core::hash::Hash)]
+        #[cfg_attr(
+            feature = "borsh",
+            derive(::borsh::BorshSerialize, ::borsh::BorshDeserialize)
+        )]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            /// The raw 32 bytes of this id.
+            #[must_use]
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+        }
+
+        impl From<[u8; 32]> for $name {
+            fn from(value: [u8; 32]) -> Self {
+                Self(value)
+            }
+        }
+
+        impl AsRef<[u8]> for $name {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        ::calimero_wasm_abi::impl_bytes32_abi!($name);
+
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "{}", hex::encode(self.0))
+            }
+        }
+
+        /// Serializes as the hex string [`Display`] writes.
+        ///
+        /// A string, not a byte array: these ids cross the JSON-RPC boundary as
+        /// app method arguments, and an app author typing an account into a call
+        /// should be typing the same thing the CLI printed.
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_str(self)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let raw = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(d)?;
+                raw.parse().map_err(serde::de::Error::custom)
+            }
+        }
+
+        /// Parses the hex form [`Display`] writes.
+        ///
+        /// Hex rather than bs58, which is what a *key* is written in around
+        /// here: an id that renders like a key invites being pasted where a key
+        /// belongs, and both are 32 bytes, so nothing downstream would object.
+        impl core::str::FromStr for $name {
+            type Err = IdParseError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let bytes = hex::decode(s).map_err(|_| IdParseError)?;
+                <[u8; 32]>::try_from(bytes)
+                    .map(Self)
+                    .map_err(|_| IdParseError)
+            }
+        }
+    };
+}
+
+/// A string was not 64 hex characters, so it names no id.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("expected 64 hex characters (32 bytes)")]
+pub struct IdParseError;
+
+content_address_id! {
+    /// Stable identity of a person or agent — the **only** authorization
+    /// subject in the system, and what an app sees as "who wrote this".
+    ///
+    /// This is the content address of the account's [`AccountGenesis`], not a
+    /// public key. See the crate docs for why that distinction is load-bearing.
+    AccountId
+}
+
+content_address_id! {
+    /// Stable identity of one installation belonging to an account.
+    ///
+    /// This is the **CRDT replica id**: counter slots and HLC seeds key on it,
+    /// and both require one writer per id. It is never an authorization input —
+    /// authority always resolves through the [`AccountId`] the device is bound
+    /// to.
+    DeviceId
+}
+
+impl DeviceId {
+    /// Mint a device id. Called once per installation, before the device has
+    /// any certificate.
+    ///
+    /// Derived from the account and a fresh nonce rather than from the device's
+    /// keys, so rotating a device's keypair keeps its replica identity — and
+    /// therefore its counter slots and HLC lineage — intact.
+    #[must_use]
+    pub fn mint(account: AccountId, nonce: [u8; 16]) -> Self {
+        Self::from(domain_hash(DEVICE_ID_DOMAIN, &[account.as_bytes(), &nonce]))
+    }
+
+    /// The 16-byte prefix used as this device's HLC instance seed.
+    ///
+    /// RGA character ids are minted from this seed, and two replicas sharing a
+    /// seed mint colliding ids — which loses characters silently. So at most one
+    /// of a colliding pair may be live in a scope, and the **lower** device id is
+    /// the arbitrary-but-fixed winner. (Scope-local is sufficient: character ids
+    /// only need to be unique within the scope that stores them.)
+    ///
+    /// That rule is applied when the device set is **read**, not when a link is
+    /// admitted — see `ScopeState::live_devices`. Deciding it per link cannot
+    /// work: "is there a lower colliding id" reads only what has folded so far,
+    /// so the live set would depend on arrival order. Minting the id from a fresh
+    /// nonce makes a collision vanishingly unlikely in any case; the rule is
+    /// there so that a deliberate one is resolved identically everywhere rather
+    /// than corrupting the CRDT planes.
+    #[must_use]
+    pub fn hlc_seed(&self) -> [u8; 16] {
+        let mut seed = [0u8; 16];
+        seed.copy_from_slice(&self.as_bytes()[..16]);
+        seed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::mem::ManuallyDrop;

@@ -50,7 +50,10 @@ fn hlc_after_zero() -> HybridTimestamp {
 
 /// Build a minimal `GroupMetaValue` targeting `app_key`.
 fn meta_for(app_key: [u8; 32]) -> GroupMetaValue {
-    let admin = PublicKey::from([0x01; 32]);
+    // An ACCOUNT, which is what the meta names. Nothing in this suite resolves
+    // it — the fence decision reads schema versions, not principals — so a bare
+    // id is honest here where a key would only look like one.
+    let admin = calimero_account::AccountId::from([0x01; 32]);
     GroupMetaValue {
         app_key,
         target_application_id: ApplicationId::from([0xAA; 32]),

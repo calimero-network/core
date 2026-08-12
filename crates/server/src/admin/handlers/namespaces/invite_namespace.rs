@@ -71,9 +71,29 @@ pub async fn handler(
             },
         };
 
-        if let Err(err) = MembershipRepository::new(&state.store).require_admin_or_capability(
+        let requester_account = match calimero_governance_store::member_account_in_namespace(
+            &state.store,
             &namespace_id,
             &requester,
+        ) {
+            Ok(Some(account)) => account,
+            Ok(None) => {
+                // 403, not the 500 `parse_api_error` gives an untyped report.
+                // A caller who never joined asking to invite is a permission
+                // answer, and dressing it as an internal error both misleads the
+                // caller and hides real backend faults among identical 500s.
+                return ApiError {
+                    status_code: StatusCode::FORBIDDEN,
+                    message: "The requesting identity is bound to no account in this namespace"
+                        .into(),
+                }
+                .into_response();
+            }
+            Err(err) => return parse_api_error(err).into_response(),
+        };
+        if let Err(err) = MembershipRepository::new(&state.store).require_admin_or_capability(
+            &namespace_id,
+            &requester_account,
             calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
             "create namespace invitation",
         ) {

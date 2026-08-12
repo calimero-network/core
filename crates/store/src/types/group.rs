@@ -162,6 +162,13 @@ impl PredefinedEntry for key::GroupChildIndex {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::NamespaceBootstrapInviter {
+    type Codec = Borsh;
+    // A bare account id, like `GroupParentRef`'s group id: the row is one value
+    // and node-local, so a named wrapper would carry no extra meaning.
+    type DataType<'a> = [u8; 32];
+}
+
 impl PredefinedEntry for key::NamespaceIdentity {
     type Codec = Borsh;
     type DataType<'a> = key::NamespaceIdentityValue;

@@ -61,8 +61,9 @@ pub(crate) async fn execute_request(
     // anything else. This prevents a valid token from being used to execute
     // against contexts the caller has no membership in.
     if let CallerIdentity::Key(key) = caller {
+        let account = crate::caller_account::for_context(ctx_client, &request.context_id, key);
         let is_member = ctx_client
-            .has_member(&request.context_id, key)
+            .has_member(&request.context_id, key, account)
             .map_err(|err| {
                 error!(%err, "Membership lookup failed during execute");
                 ExecutionError::FunctionCallError(

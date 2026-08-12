@@ -1,5 +1,6 @@
 use crate::authorizer::AtCutAuthorizer;
 use crate::MembershipRepository;
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
@@ -83,6 +84,83 @@ impl<'a> PermissionChecker<'a> {
         });
     }
 
+    /// [`ensure_live_fallback_is_sound`](Self::ensure_live_fallback_is_sound)
+    /// for a gate whose subject is an account rather than a signing key.
+    fn ensure_live_fallback_is_sound_for_account(&self, member: &AccountId) -> EyreResult<()> {
+        if self
+            .authorizer
+            .can_resolve_cut(&self.group_id, self.parents)
+        {
+            return Ok(());
+        }
+        bail!(ApplyError::AuthorityUndecidable {
+            group_id: format!("{:?}", self.group_id),
+            signer: format!("{member:?}"),
+        });
+    }
+
+    /// The account `identity` speaks for on the live path, or `None`.
+    ///
+    /// The two authorization paths ask about the same signing key but resolve
+    /// it differently, and that is deliberate: the at-cut path resolves through
+    /// the projection folded to the op's own parents, while the live fallback
+    /// resolves through the materialized binding rows. Each must resolve in its
+    /// own frame — using live bindings to decide an at-cut question is the
+    /// divergence [`Self::ensure_live_fallback_is_sound`] exists to prevent.
+    ///
+    /// `None` means the key is bound to no account here (never enrolled, or
+    /// revoked), and every caller reads that as "not authorized". Failing
+    /// closed matters more here than anywhere: a key-derived stand-in would
+    /// name a principal that holds no grant, so the gate would refuse anyway —
+    /// but only after writing the refusal into a shape that looks like a real
+    /// verdict about a real account.
+    fn live_account(&self, identity: &PublicKey) -> EyreResult<Option<AccountId>> {
+        crate::member_account_in_namespace(self.store, &self.group_id, identity)
+    }
+
+    /// Has this replica learned who holds authority in this namespace yet?
+    ///
+    /// Before genesis applies, the root meta carries
+    /// [`crate::PLACEHOLDER_ADMIN_IDENTITY`] and no binding has been written by
+    /// any join — so the namespace has no authority to check against, and every
+    /// answer this checker could give is about its own sync progress rather than
+    /// about the op.
+    fn authority_established(&self) -> EyreResult<bool> {
+        let root = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        Ok(crate::MetaRepository::new(self.store)
+            .load(&root)?
+            .is_some_and(|meta| meta.admin_identity != crate::placeholder_admin_identity()))
+    }
+
+    /// The account `identity` speaks for, or a PARK when this replica cannot yet
+    /// say and cannot honestly answer "no" either.
+    ///
+    /// "Bound to no account here" has two very different causes, and the key
+    /// alone does not distinguish them: a stranger who holds authority nowhere,
+    /// or a real member whose binding this replica has not folded yet. Answering
+    /// `false` for the second turns a timing gap into a permanent verdict — the
+    /// publisher authorized its own op from live rows and accepted it, the
+    /// receiver drops it, and no later op reconciles the two.
+    ///
+    /// The tie is broken on whether this namespace has any authority established
+    /// at all. Before genesis there is nothing to have been a stranger TO, so the
+    /// op parks and is retried once the ancestry arrives. After genesis the rows
+    /// are meaningful and an unresolvable signer is genuinely unauthorized —
+    /// which also keeps a forged op signed by an unbound key from stalling the
+    /// DAG, since parking on it would be a denial of service.
+    fn live_account_or_park(&self, identity: &PublicKey) -> EyreResult<Option<AccountId>> {
+        if let Some(account) = self.live_account(identity)? {
+            return Ok(Some(account));
+        }
+        if self.authority_established()? {
+            return Ok(None);
+        }
+        bail!(ApplyError::AuthorityUndecidable {
+            group_id: format!("{:?}", self.group_id),
+            signer: format!("{identity}"),
+        })
+    }
+
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
         // Decide from the PROJECTION at the op's causal cut — admin authority as of the
         // op's own parents, which is the same answer on every replica.
@@ -93,6 +171,9 @@ impl<'a> PermissionChecker<'a> {
             return Ok(verdict);
         }
         self.ensure_live_fallback_is_sound(identity)?;
+        let Some(account) = self.live_account_or_park(identity)? else {
+            return Ok(false);
+        };
         // Issue #2256: admin authority cascades into Open subgroups
         // from any ancestor where the signer is a direct admin.
         // Uses `is_inherited_admin` (a dedicated walk) rather than
@@ -102,7 +183,26 @@ impl<'a> PermissionChecker<'a> {
         // non-admin `Member` row — which would suppress inherited
         // admin authority for parent admins who happen to also be
         // explicit subgroup members.
-        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
+        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, &account)
+    }
+
+    /// Is `member` an admin? The account-typed sibling of
+    /// [`is_admin`](Self::is_admin), for gates that ask about the op's TARGET.
+    ///
+    /// It resolves at the cut exactly as the signer form does. Answering this
+    /// one from live while the signer half resolved at the cut would make a
+    /// single gate straddle two cuts, which is the divergence
+    /// [`ensure_live_fallback_is_sound`](Self::ensure_live_fallback_is_sound)
+    /// exists to prevent.
+    pub fn is_admin_account(&self, member: &AccountId) -> EyreResult<bool> {
+        if let Some(verdict) =
+            self.authorizer
+                .is_admin_account_at_cut(&self.group_id, member, self.parents)
+        {
+            return Ok(verdict);
+        }
+        self.ensure_live_fallback_is_sound_for_account(member)?;
+        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, member)
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
@@ -291,9 +391,12 @@ impl<'a> PermissionChecker<'a> {
             return Ok(verdict);
         }
         self.ensure_live_fallback_is_sound(identity)?;
+        let Some(account) = self.live_account_or_park(identity)? else {
+            return Ok(false);
+        };
         let direct = MembershipRepository::new(self.store).is_admin_or_has_capability(
             &self.group_id,
-            identity,
+            &account,
             capability_bit,
         )?;
         // Only admin-inherited authority crosses the parent boundary;
@@ -306,7 +409,7 @@ impl<'a> PermissionChecker<'a> {
         // admin who is also an explicit non-admin subgroup member.
         Ok(direct
             || MembershipRepository::new(self.store)
-                .is_inherited_admin(&self.group_id, identity)?)
+                .is_inherited_admin(&self.group_id, &account)?)
     }
 
     pub fn require_admin_to_add_admin(
@@ -326,9 +429,9 @@ impl<'a> PermissionChecker<'a> {
     pub fn require_admin_to_remove_admin(
         &self,
         signer: &PublicKey,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<()> {
-        if self.is_admin(member)? && !self.is_admin(signer)? {
+        if self.is_admin_account(member)? && !self.is_admin(signer)? {
             bail!(MembershipError::NotAdmin {
                 group_id: format!("{:?}", self.group_id),
                 identity: format!("{signer:?}"),
@@ -337,8 +440,17 @@ impl<'a> PermissionChecker<'a> {
         Ok(())
     }
 
-    pub fn require_admin_or_self(&self, signer: &PublicKey, member: &PublicKey) -> EyreResult<()> {
-        if !self.is_admin(signer)? && *signer != *member {
+    /// An admin, or the member acting on their own behalf.
+    ///
+    /// The self-check crosses the key/account boundary — `signer` is a key, and
+    /// `member` names the principal the row belongs to — so it resolves rather
+    /// than comparing. It used to be `*signer != *member` with both sides keys,
+    /// which kept compiling after the flip because both ids are 32 bytes: the
+    /// comparison simply stopped ever being true, silently narrowing this gate
+    /// to admins only.
+    pub fn require_admin_or_self(&self, signer: &PublicKey, member: &AccountId) -> EyreResult<()> {
+        let is_self = self.live_account(signer)?.as_ref() == Some(member);
+        if !is_self && !self.is_admin(signer)? {
             bail!(CapabilitiesError::Unauthorized {
                 group_id: format!("{:?}", self.group_id),
                 operation: "set member alias (admin or self only)".into(),

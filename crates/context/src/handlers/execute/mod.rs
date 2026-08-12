@@ -2682,8 +2682,8 @@ mod tests {
             app_key,
             target_application_id: ApplicationId::from([0xCC; 32]),
             created_at: 1_700_000_000,
-            admin_identity: dummy_pk,
-            owner_identity: dummy_pk,
+            admin_identity: crate::test_support::account_for(&dummy_pk),
+            owner_identity: crate::test_support::account_for(&dummy_pk),
             migration: None,
             auto_join: false,
         }

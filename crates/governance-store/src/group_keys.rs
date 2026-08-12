@@ -1,5 +1,7 @@
-use crate::{AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository};
-use calimero_account::{DeviceId, KemPublicKey};
+use crate::{
+    AccountBindingRepository, DeviceSecret, KeyringError, MembershipRepository, NamespaceRepository,
+};
+use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation,
 };
@@ -68,8 +70,11 @@ pub struct KeyRequester {
 /// holding the fresh key — the exact failure the exclusion exists to prevent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EntitledRecipient {
-    /// The group member this delivery is on behalf of.
-    pub member: PublicKey,
+    /// The group member this delivery is on behalf of, named by account —
+    /// the same principal the membership row is keyed by, so a caller
+    /// excluding someone (a rotation dropping the departed) excludes every
+    /// device they hold rather than only the one that happened to be listed.
+    pub member: AccountId,
     /// Where the key actually goes.
     pub recipient: KeyRecipient,
 }
@@ -321,7 +326,13 @@ impl<'a> GroupKeyring<'a> {
             // `GroupKeyEntry` keys are ordered `(prefix, group_id, key_id)`, so
             // the first key at/after the seek that still belongs to this group
             // means the keyring is non-empty.
-            if key.group_id() == gid {
+            //
+            // The family check is not redundant with the group check: the
+            // iterator walks the whole column, and the account families that sort
+            // after this one are the same width with the group id in the same
+            // place — so a group with bound devices and NO key would answer
+            // "holds a key" on the group id alone.
+            if key.is_group_key_row() && key.group_id() == gid {
                 return Ok(true);
             }
         }
@@ -667,58 +678,44 @@ impl<'a> GroupKeyring<'a> {
     /// in this system is answered from folded state, not from a side effect of
     /// wrapping.
     ///
-    /// Resolution is **per member, device-first**:
+    /// Resolution is **per member, device-first**: a member row names an
+    /// account, and that account is addressed only through its live devices.
     ///
-    /// - A member this group knows an account for is addressed only through that
-    ///   account's live devices. Once accounts are in play for someone, falling
-    ///   back to their identity key would hand the key straight back to a device
-    ///   that was just revoked — the revoked device is still running on a node
-    ///   that holds the member key. So a member whose every device has been
-    ///   revoked or superseded receives **nothing** until they enroll a new one,
-    ///   which is the correct outcome and not an oversight.
-    /// - A member with no account here at all is addressed by identity. That is
-    ///   the bootstrap case, and the only one: an account cannot exist for
-    ///   someone who has never held the key long enough to publish a link.
+    /// A member whose every device has been revoked or superseded receives
+    /// **nothing** until they enroll a new one. That is the correct outcome and
+    /// not an oversight — the revoked device is still running on a node that
+    /// holds the member key, so any fallback to identity addressing would hand
+    /// the fresh key straight back to it.
     ///
-    /// The member→account direction is re-derived on every call from the endorser
-    /// rows, never cached. It cannot be read off the account row's root key: since
-    /// the account root became a dedicated offline key it is a member nowhere, so
-    /// matching on it matches nothing and every member falls back to identity
-    /// addressing — handing the scope key straight to a node running a revoked
-    /// device. And it cannot be cached either: `AccountId` is a one-way hash, so a
-    /// reverse map could only be populated while decoding ops, and would come back
-    /// empty after a projection rebuild with exactly the same silent result.
+    /// **Devices are resolved at the NAMESPACE, not at `self.group_id`.**
+    /// Binding rows are written where the credential arrived, which is the
+    /// namespace a member joined; a subgroup holds none of its own. Scanning
+    /// the subgroup would find no devices for anyone and deliver nothing to a
+    /// group whose members are all perfectly entitled. This is the same
+    /// namespace-vs-decision-group distinction
+    /// [`member_account_in_namespace`](crate::member_account_in_namespace)
+    /// exists for.
     ///
     /// # Errors
     /// Propagates the membership or account-row scan failure.
     pub fn current_key_recipients(&self) -> EyreResult<Vec<EntitledRecipient>> {
         let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
-        let bindings = AccountBindingRepository::new(self.store);
-        let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
+        let namespace = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         // One scan for the whole fan-out. Asking per account inside the member
-        // loop rescanned the binding column once per (member, account) pair.
-        let devices = bindings.live_devices_by_account(&self.group_id)?;
+        // loop rescanned the binding column once per member.
+        let devices =
+            AccountBindingRepository::new(self.store).live_devices_by_account(&namespace)?;
 
         let mut out = Vec::with_capacity(members.len());
         for (member, _) in members {
-            let member_accounts = accounts.get(&member).map(Vec::as_slice).unwrap_or(&[]);
-            if member_accounts.is_empty() {
+            for binding in devices.get(&member).map(Vec::as_slice).unwrap_or(&[]) {
                 out.push(EntitledRecipient {
                     member,
-                    recipient: KeyRecipient::Member(member),
+                    recipient: KeyRecipient::Device {
+                        device: binding.device,
+                        kem_pk: X25519PublicKey::from(binding.kem_pk),
+                    },
                 });
-                continue;
-            }
-            for account in member_accounts {
-                for binding in devices.get(account).map(Vec::as_slice).unwrap_or(&[]) {
-                    out.push(EntitledRecipient {
-                        member,
-                        recipient: KeyRecipient::Device {
-                            device: binding.device,
-                            kem_pk: X25519PublicKey::from(binding.kem_pk),
-                        },
-                    });
-                }
             }
         }
         Ok(out)
@@ -751,8 +748,10 @@ impl<'a> GroupKeyring<'a> {
     ///   publish the link on their behalf. If they could re-key themselves,
     ///   revocation would mean nothing.
     ///
-    /// A member with no account here is addressed by identity — the bootstrap
-    /// case, and the reason a keyless joiner can still get started.
+    /// A requester whose key names no account here is served nothing. Since
+    /// every member is bound by the op that admits it — a join for a joiner, the
+    /// genesis for a founder — an unresolvable requester is not a member, and
+    /// the caller has already refused it on that basis.
     ///
     /// # Errors
     /// Propagates the account-row scan failure.
@@ -760,25 +759,39 @@ impl<'a> GroupKeyring<'a> {
         &self,
         requester: &KeyRequester,
     ) -> EyreResult<Option<KeyRecipient>> {
-        let bindings = AccountBindingRepository::new(self.store);
-        let accounts = bindings.accounts_by_endorsing_member(&self.group_id)?;
-        let Some(member_accounts) = accounts.get(&requester.identity) else {
-            return Ok(Some(KeyRecipient::Member(requester.identity)));
+        // Resolved at the NAMESPACE, for the same reason
+        // [`current_key_recipients`](Self::current_key_recipients) resolves
+        // devices there: bindings are written where the credential arrived, and
+        // a subgroup holds none of its own.
+        let namespace = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let Some(account) =
+            crate::member_account_in_namespace(self.store, &self.group_id, &requester.identity)?
+        else {
+            return Ok(None);
         };
 
         let Some(claimed) = requester.device else {
+            // Served nothing, and NOT as an oversight. Once this group knows an
+            // account for the requester it knows which devices speak for it, so
+            // falling back to identity addressing here would let a REVOKED
+            // device simply omit its id and be served as its member. Revocation
+            // has to be unbypassable, which makes the absence of a device a
+            // refusal rather than a reason to address the member instead.
+            //
+            // The bootstrap this looks like it breaks is served elsewhere: a
+            // requester with no account at all is turned away by the membership
+            // gate in the caller, and a member that has not enrolled a device
+            // receives its first key member-addressed through key delivery,
+            // invitation, or TEE admission — never through this pull.
             return Ok(None);
         };
-        // One scan, then a lookup per account — rather than a scan per account.
-        let devices = bindings.live_devices_by_account(&self.group_id)?;
-        for account in member_accounts {
-            for binding in devices.get(account).map(Vec::as_slice).unwrap_or(&[]) {
-                if binding.device == claimed {
-                    return Ok(Some(KeyRecipient::Device {
-                        device: binding.device,
-                        kem_pk: X25519PublicKey::from(binding.kem_pk),
-                    }));
-                }
+        let bindings = AccountBindingRepository::new(self.store);
+        for binding in bindings.live_bindings(&namespace)? {
+            if binding.account == account && binding.device == claimed {
+                return Ok(Some(KeyRecipient::Device {
+                    device: binding.device,
+                    kem_pk: X25519PublicKey::from(binding.kem_pk),
+                }));
             }
         }
         Ok(None)
@@ -858,15 +871,30 @@ mod recipient_tests {
         PrivateKey::from([seed; 32]).public_key()
     }
 
+    /// The account a `member(seed)` key speaks for in these fixtures.
+    ///
+    /// The keyring answers in accounts (a member row names one, and so does
+    /// `EntitledRecipient.member`), while the wrap targets stay keys — so the
+    /// tests need both spellings of the same participant.
+    fn member_account(seed: u8) -> AccountId {
+        AccountId::from(*member(seed))
+    }
+
     /// Enroll a device for an account rooted at `member_sk`, the shape the
     /// membership gate requires: the account's epoch-0 root key IS a member key.
+    /// Link one device of `member_sk`'s account, returning it and the account.
+    ///
+    /// The account's genesis nonce is fixed per member, NOT per device — two
+    /// calls with different `device_seed`s are two devices of ONE person. It
+    /// used to vary with the device, which silently made every device its own
+    /// account and could not model the case these tests are about.
     fn link_device(
         store: &Store,
         gid: ContextGroupId,
         member_sk: &PrivateKey,
         device_seed: u8,
-    ) -> DeviceId {
-        let genesis = AccountGenesis::new(member_sk.public_key(), [device_seed; 16]);
+    ) -> (DeviceId, AccountId) {
+        let genesis = AccountGenesis::new(member_sk.public_key(), [0xA0; 16]);
         let account = genesis.account_id();
         let cert = sign_device_cert(
             member_sk,
@@ -886,12 +914,14 @@ mod recipient_tests {
         // The apply handler records the vouch alongside the link; the fixture has
         // to as well, or the member→account direction is empty and every lookup
         // here would be testing a state production never produces.
-        repo.record_endorser(&gid, account, &member_sk.public_key())
+        repo.record_endorser(&gid, account, &account)
             .expect("endorse");
-        repo.apply_link(&gid, &genesis, &[], &cert)
+        let device = repo
+            .apply_link(&gid, &genesis, &[], &cert)
             .expect("store")
             .expect("admitted")
-            .device
+            .device;
+        (device, account)
     }
 
     #[test]
@@ -930,7 +960,7 @@ mod recipient_tests {
 
         let stored = member(7);
         MembershipRepository::new(&store)
-            .add_member(&gid, &stored, GroupMemberRole::Member)
+            .add_member(&gid, &AccountId::from(*stored), GroupMemberRole::Member)
             .expect("add member");
 
         let asked_for = vec![KeyRecipient::Member(member(2))];
@@ -953,43 +983,53 @@ mod recipient_tests {
     }
 
     #[test]
-    fn a_member_with_no_account_is_addressed_by_identity() {
-        // The bootstrap case, and the reason the identity form cannot be
-        // retired: a member who has never held the key long enough to publish a
-        // device link has nothing else to be addressed by.
+    fn a_member_with_no_devices_is_addressed_at_all() {
+        // There is no bootstrap case left to test. A member row is only ever
+        // written by an op that carries a credential — a join, or the genesis
+        // for the founder — so "a member with no account" is not a state the
+        // system can reach, and the identity-addressed form it needed is gone.
+        //
+        // What remains is the revoked case, and it is deliberate: a member whose
+        // every device is revoked receives NOTHING until it enrols a new one.
+        // Delivering to the member's identity instead would hand the fresh key
+        // straight back to the node still running the revoked device.
         let store = test_store();
         let gid = test_group_id();
         let repo = MembershipRepository::new(&store);
-        repo.add_member(&gid, &member(2), GroupMemberRole::Member)
+        repo.add_member(&gid, &member_account(2), GroupMemberRole::Member)
             .expect("add");
-        repo.add_member(&gid, &member(3), GroupMemberRole::Admin)
+        repo.add_member(&gid, &member_account(3), GroupMemberRole::Admin)
             .expect("add");
 
-        let mut got: Vec<PublicKey> = GroupKeyring::new(&store, gid)
-            .current_key_recipients()
-            .expect("list")
-            .into_iter()
-            .map(|entitled| match entitled.recipient {
-                KeyRecipient::Member(identity) => identity,
-                KeyRecipient::Device { .. } => panic!("no devices are enrolled"),
-            })
-            .collect();
-        got.sort_unstable();
-        let mut want = vec![member(2), member(3)];
-        want.sort_unstable();
-        assert_eq!(got, want);
+        assert!(
+            GroupKeyring::new(&store, gid)
+                .current_key_recipients()
+                .expect("list")
+                .is_empty(),
+            "members with no live device are entitled to nothing — not to an \
+             identity-addressed envelope"
+        );
     }
 
     /// Enroll a device for an account rooted at a **dedicated account root** —
     /// the shape production actually produces since the root became an offline
-    /// key of its own. The member tie is the endorsement, not the genesis key.
+    /// key of its own.
+    ///
+    /// Returns the account as well as the device, because the caller has to seed
+    /// the member row under the SAME account: membership names a principal now,
+    /// and a row under any other id describes somebody else.
+    ///
+    /// The endorser is that same account. It used to be the member's KEY, and
+    /// the hop from key to account was the whole reason endorser rows fed key
+    /// delivery; with membership account-keyed the hop collapses, and an account
+    /// a member merely vouched for is a different principal that gets its own
+    /// row or gets nothing.
     fn link_device_under_dedicated_root(
         store: &Store,
         gid: ContextGroupId,
         account_root_sk: &PrivateKey,
-        endorser: &PublicKey,
         device_seed: u8,
-    ) -> DeviceId {
+    ) -> (DeviceId, AccountId) {
         let genesis = AccountGenesis::new(account_root_sk.public_key(), [device_seed; 16]);
         let account = genesis.account_id();
         let cert = sign_device_cert(
@@ -1007,12 +1047,14 @@ mod recipient_tests {
         )
         .expect("sign cert");
         let repo = AccountBindingRepository::new(store);
-        repo.record_endorser(&gid, account, endorser)
+        repo.record_endorser(&gid, account, &account)
             .expect("endorse");
-        repo.apply_link(&gid, &genesis, &[], &cert)
+        let device = repo
+            .apply_link(&gid, &genesis, &[], &cert)
             .expect("store")
             .expect("admitted")
-            .device
+            .device;
+        (device, account)
     }
 
     #[test]
@@ -1026,19 +1068,14 @@ mod recipient_tests {
         // device-first delivery exists to close.
         let store = test_store();
         let gid = test_group_id();
-        let member_sk = PrivateKey::from([2u8; 32]);
-        MembershipRepository::new(&store)
-            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
-            .expect("add");
 
+        // Link first, then seed the row under the account the link created:
+        // membership names a principal, so the two have to be the same one.
         let account_root = PrivateKey::from([42u8; 32]);
-        let laptop = link_device_under_dedicated_root(
-            &store,
-            gid,
-            &account_root,
-            &member_sk.public_key(),
-            5,
-        );
+        let (laptop, account) = link_device_under_dedicated_root(&store, gid, &account_root, 5);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .expect("add");
 
         let recipients = GroupKeyring::new(&store, gid)
             .current_key_recipients()
@@ -1073,12 +1110,11 @@ mod recipient_tests {
         let store = test_store();
         let gid = test_group_id();
         let member_sk = PrivateKey::from([2u8; 32]);
+        let (laptop, member) = link_device(&store, gid, &member_sk, 5);
+        let (phone, _) = link_device(&store, gid, &member_sk, 6);
         MembershipRepository::new(&store)
-            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
+            .add_member(&gid, &member, GroupMemberRole::Member)
             .expect("add");
-
-        let laptop = link_device(&store, gid, &member_sk, 5);
-        let phone = link_device(&store, gid, &member_sk, 6);
 
         let got = GroupKeyring::new(&store, gid)
             .current_key_recipients()
@@ -1086,7 +1122,7 @@ mod recipient_tests {
         assert_eq!(got.len(), 2, "one entry per device, none for the identity");
         assert!(
             got.iter()
-                .all(|e| e.member == member_sk.public_key() && e.recipient.device().is_some()),
+                .all(|e| e.member == member && e.recipient.device().is_some()),
             "every entry must be a device speaking for the member"
         );
 
@@ -1107,10 +1143,10 @@ mod recipient_tests {
         let store = test_store();
         let gid = test_group_id();
         let member_sk = PrivateKey::from([2u8; 32]);
+        let (device, member) = link_device(&store, gid, &member_sk, 5);
         MembershipRepository::new(&store)
-            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
+            .add_member(&gid, &member, GroupMemberRole::Member)
             .expect("add");
-        let device = link_device(&store, gid, &member_sk, 5);
         assert_eq!(
             GroupKeyring::new(&store, gid)
                 .current_key_recipients()
@@ -1120,7 +1156,7 @@ mod recipient_tests {
         );
 
         // Rotate the account root onto a key that is NOT a member of the group.
-        let genesis = AccountGenesis::new(member_sk.public_key(), [5u8; 16]);
+        let genesis = AccountGenesis::new(member_sk.public_key(), [0xA0; 16]);
         let offline_root = PrivateKey::from([0x77u8; 32]);
         let handoff = calimero_account::sign_root_key_handoff(
             &member_sk,
@@ -1140,7 +1176,7 @@ mod recipient_tests {
             .current_key_recipients()
             .expect("list");
         assert!(
-            got.iter().all(|e| e.member == member_sk.public_key()),
+            got.iter().all(|e| e.member == member),
             "the account must still resolve to the member its genesis names, not \
              disappear because its current root key is not a member"
         );
@@ -1157,11 +1193,10 @@ mod recipient_tests {
         let store = test_store();
         let gid = test_group_id();
         let member_sk = PrivateKey::from([2u8; 32]);
+        let (laptop, member) = link_device(&store, gid, &member_sk, 5);
         MembershipRepository::new(&store)
-            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
+            .add_member(&gid, &member, GroupMemberRole::Member)
             .expect("add");
-
-        let laptop = link_device(&store, gid, &member_sk, 5);
         AccountBindingRepository::new(&store)
             .apply_revocation(&gid, laptop)
             .expect("revoke");
@@ -1181,23 +1216,23 @@ mod recipient_tests {
         let gid = test_group_id();
         let leaving = PrivateKey::from([2u8; 32]);
         let staying = PrivateKey::from([3u8; 32]);
-        let repo = MembershipRepository::new(&store);
-        repo.add_member(&gid, &leaving.public_key(), GroupMemberRole::Member)
-            .expect("add");
-        repo.add_member(&gid, &staying.public_key(), GroupMemberRole::Admin)
-            .expect("add");
+        // Link first: the member rows have to name the accounts the links create.
+        let (doomed_a, leaving_account) = link_device(&store, gid, &leaving, 5);
+        let (doomed_b, _) = link_device(&store, gid, &leaving, 6);
+        let (survivor, staying_account) = link_device(&store, gid, &staying, 7);
+        let doomed = [doomed_a, doomed_b];
 
-        let doomed = [
-            link_device(&store, gid, &leaving, 5),
-            link_device(&store, gid, &leaving, 6),
-        ];
-        let survivor = link_device(&store, gid, &staying, 7);
+        let repo = MembershipRepository::new(&store);
+        repo.add_member(&gid, &leaving_account, GroupMemberRole::Member)
+            .expect("add");
+        repo.add_member(&gid, &staying_account, GroupMemberRole::Admin)
+            .expect("add");
 
         let kept: Vec<KeyRecipient> = GroupKeyring::new(&store, gid)
             .current_key_recipients()
             .expect("list")
             .into_iter()
-            .filter(|entitled| entitled.member != leaving.public_key())
+            .filter(|entitled| entitled.member != leaving_account)
             .map(|entitled| entitled.recipient)
             .collect();
 
@@ -1213,26 +1248,36 @@ mod recipient_tests {
 
     #[test]
     fn a_rotation_can_carry_both_addressing_modes_at_once() {
-        // The mixed group is the normal case during rollout, and the receive
-        // path depends on a bundle being allowed to hold both.
+        // The RECEIVE path still has to tolerate a bundle holding both forms,
+        // so this pins `build_rotation`, not `current_key_recipients`.
+        //
+        // It used to get the mixed list from `current_key_recipients` — an
+        // enrolled member addressed by device beside a bare one addressed by
+        // identity. That mixture is no longer producible: a member row is only
+        // ever written by an op carrying a credential, so there is no bare
+        // member to address. The list is therefore constructed here.
         let store = test_store();
         let gid = test_group_id();
         let enrolled = PrivateKey::from([2u8; 32]);
         let bare = PrivateKey::from([3u8; 32]);
-        let repo = MembershipRepository::new(&store);
-        repo.add_member(&gid, &enrolled.public_key(), GroupMemberRole::Member)
+        let (device, enrolled_account) = link_device(&store, gid, &enrolled, 5);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &enrolled_account, GroupMemberRole::Member)
             .expect("add");
-        repo.add_member(&gid, &bare.public_key(), GroupMemberRole::Member)
-            .expect("add");
-        let device = link_device(&store, gid, &enrolled, 5);
 
         let keyring = GroupKeyring::new(&store, gid);
-        let recipients: Vec<KeyRecipient> = keyring
+        let mut recipients: Vec<KeyRecipient> = keyring
             .current_key_recipients()
             .expect("list")
             .into_iter()
             .map(|entitled| entitled.recipient)
             .collect();
+        assert!(
+            recipients.iter().all(|r| r.device().is_some()),
+            "the resolver yields device-addressed recipients only"
+        );
+        recipients.push(KeyRecipient::Member(bare.public_key()));
+
         let rotation = keyring
             .build_rotation(&[9u8; 32], &PrivateKey::from([1u8; 32]), &recipients)
             .expect("build rotation");
@@ -1256,7 +1301,7 @@ mod recipient_tests {
         let store = test_store();
         let gid = test_group_id();
         MembershipRepository::new(&store)
-            .add_member(&gid, &member(7), GroupMemberRole::Member)
+            .add_member(&gid, &member_account(7), GroupMemberRole::Member)
             .expect("add member");
 
         let rotation = GroupKeyring::new(&store, gid)
@@ -1308,6 +1353,30 @@ mod delete_tests {
 
         // Idempotent: deleting again is a no-op.
         ring.delete_all_for_group().unwrap();
+    }
+
+    /// A keyless group with bound devices must still report holding no key.
+    ///
+    /// The device-binding and account-endorser families sort immediately after
+    /// the group-key family, are the same width, and carry the group id in the
+    /// same bytes — so a scan that stopped on the group id alone answered "yes"
+    /// for a group whose keyring is empty. Every member has a binding now, which
+    /// makes that the common case rather than an exotic one.
+    #[test]
+    fn holds_any_key_is_false_for_a_keyless_group_with_bound_devices() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x42u8; 32]);
+        let _ = crate::test_fixtures::enrol_member(
+            &store,
+            &gid,
+            &PrivateKey::from([0x77u8; 32]).public_key(),
+        );
+        assert!(
+            !GroupKeyring::new(&store, gid)
+                .holds_any_key()
+                .expect("scan the keyring"),
+            "a binding is not a key"
+        );
     }
 
     #[test]

@@ -372,8 +372,16 @@ fn is_signed_context_member(
     // vanishing in the sub-microsecond gap can only flip a non-member to a
     // member (never revoke an in-flight read), so there is no exploitable
     // TOCTOU for this read-authorization path.
-    let mut is_member =
-        ContextRegistry::new(store.clone()).has_member(&request.context_id, &auth.public_key)?;
+    let auth_account = get_group_for_context(store, &request.context_id)?.and_then(|group_id| {
+        calimero_governance_store::member_account_in_namespace(store, &group_id, &auth.public_key)
+            .ok()
+            .flatten()
+    });
+    let mut is_member = ContextRegistry::new(store.clone()).has_member(
+        &request.context_id,
+        &auth.public_key,
+        auth_account,
+    )?;
     if !is_member {
         is_member = is_inherited_context_member(store, &request.context_id, &auth.public_key)?;
     }
@@ -410,7 +418,12 @@ fn is_inherited_context_member(
     let Some(group_id) = get_group_for_context(store, context_id)? else {
         return Ok(false);
     };
-    MembershipRepository::new(store).is_member(&group_id, public_key)
+    let Some(account) =
+        calimero_governance_store::member_account_in_namespace(store, &group_id, public_key)?
+    else {
+        return Ok(false);
+    };
+    MembershipRepository::new(store).is_member(&group_id, &account)
 }
 
 #[cfg(test)]
@@ -456,13 +469,16 @@ mod tests {
         NamespaceRepository::new(&store)
             .nest(&namespace, &subgroup)
             .unwrap();
+        // Enrolled at the anchor so the rows name the account this key resolves
+        // to; the blob gate resolves the requester the same way.
+        let member_account = calimero_context::test_support::enrol(&store, &namespace, member);
         MembershipRepository::new(&store)
-            .add_member(&namespace, member, GroupMemberRole::Member)
+            .add_member(&namespace, &member_account, GroupMemberRole::Member)
             .unwrap();
         CapabilitiesRepository::new(&store)
             .set_member_capability(
                 &namespace,
-                member,
+                &member_account,
                 MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
@@ -516,13 +532,15 @@ mod tests {
     fn inherited_open_subgroup_member_is_recognised() {
         let (_sk, alice) = keypair(0x01);
         let (store, context_id, subgroup) = open_subgroup_with_inherited_member(&alice);
+        // The rows the fixture wrote name the account Alice's key resolves to.
+        let alice_account = calimero_context::test_support::account_for(&alice);
 
         // Precondition: alice has NO direct membership row in the subgroup —
         // this is precisely why the old flat `has_member` check missed her and
         // blob sync broke one-directionally.
         assert!(
             !MembershipRepository::new(&store)
-                .has_direct_member(&subgroup, &alice)
+                .has_direct_member(&subgroup, &alice_account)
                 .unwrap(),
             "test setup invariant: inherited member must have no direct row"
         );

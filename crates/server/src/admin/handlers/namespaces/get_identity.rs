@@ -28,10 +28,11 @@ pub async fn handler(
         .get_namespace_identity(GetNamespaceIdentityRequest { group_id })
         .await
     {
-        Ok(Some((ns_id, pk))) => ApiResponse {
+        Ok(Some(identity)) => ApiResponse {
             payload: NamespaceIdentityApiResponse {
-                namespace_id: hex::encode(ns_id.to_bytes()),
-                public_key: pk.to_string(),
+                namespace_id: hex::encode(identity.namespace_id.to_bytes()),
+                public_key: identity.public_key.to_string(),
+                account: identity.account.to_string(),
             },
         }
         .into_response(),
