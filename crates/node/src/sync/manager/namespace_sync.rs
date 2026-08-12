@@ -1519,20 +1519,7 @@ impl SyncManager {
         // exists to withhold. Reading past that check skipped it, and the node
         // came back as the device it had just revoked.
         let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
-        let bindings = calimero_governance_store::AccountBindingRepository::new(&store);
-        // A failed revocation read reuses rather than re-mints, deliberately.
-        // Re-minting on a transient store error would destroy a paired device
-        // for good; reusing one that turns out to be revoked costs nothing,
-        // because the responder checks revocation itself before serving a key —
-        // that check is the enforcement, this one only avoids asking.
-        let reusable = devices.get(&ns_gid).map(|held| {
-            held.filter(|existing| {
-                !bindings
-                    .is_revoked(&ns_gid, existing.device())
-                    .unwrap_or(false)
-            })
-        });
-        let device = match reusable {
+        let device = match devices.reusable_device(&ns_gid) {
             Ok(Some(existing)) => Some(existing.secret.device),
             Ok(None) => devices
                 .ensure_enrolled(&ns_gid)

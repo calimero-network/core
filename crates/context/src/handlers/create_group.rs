@@ -66,17 +66,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // member, so its account MUST come from the binding rows — deriving it
         // locally instead would let a node whose root was replaced write rows its
         // peers resolve to somebody else.
-        let founder_credential =
-            match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
-                Ok(credential) => credential,
-                Err(err) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "failed to mint this node's account credential: {err}"
-                    )))
-                }
-            };
-        let admin_account = if parent_group_id.is_some() {
-            match calimero_governance_store::member_account_in_namespace(
+        //
+        // Minted only for a root. A subgroup never uses the credential, so
+        // building one for it would let an unrelated fault — a namespace
+        // identity or account root in some transient state — refuse a creation
+        // that had no need of it.
+        let (admin_account, founder_credential) = if parent_group_id.is_some() {
+            let account = match calimero_governance_store::member_account_in_namespace(
                 &self.datastore,
                 &namespace_id,
                 &admin_identity,
@@ -89,9 +85,17 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     )))
                 }
                 Err(err) => return ActorResponse::reply(Err(err)),
-            }
+            };
+            (account, None)
         } else {
-            founder_credential.cert.account
+            match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
+                Ok(credential) => (credential.cert.account, Some(credential)),
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to mint this node's account credential: {err}"
+                    )))
+                }
+            }
         };
 
         let signing_key = Some(sk_bytes);
@@ -396,6 +400,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         }
                     }
                 } else {
+                    // Present by construction: the same `parent_group_id` test
+                    // that selected this branch is the one that minted it. Named
+                    // as an error rather than unwrapped so a future edit that
+                    // separates the two fails loudly instead of skipping the
+                    // genesis op and leaving a namespace with no founder on the
+                    // DAG.
+                    let Some(founder_credential) = founder_credential else {
+                        eyre::bail!(
+                            "internal: namespace-root creation reached the genesis op without \
+                             the founder credential it is minted with"
+                        );
+                    };
                     let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
                         founder: admin_account,
                         account: founder_credential,
