@@ -27,6 +27,13 @@ on:
   push:
     branches:
       - master
+  # Re-runnable by hand, because a re-run of a `pull_request` run cannot change
+  # which SDK it tests. The paired ref is read from the PR body at trigger time,
+  # so a re-run replays the old one — including a branch that has since merged
+  # and been deleted, which then fails on checkout rather than falling back to
+  # master. Dispatching sends no PR payload, so the ref resolves to master,
+  # which is exactly what you want to confirm after the SDK side lands.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
