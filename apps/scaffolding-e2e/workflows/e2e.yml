@@ -470,6 +470,17 @@ steps:
 
   # USER STORAGE - SIMPLE
 
+  # User storage is keyed by ACCOUNT, and an account is derived from a node's
+  # root rather than carried on the wire — so a reader has to be told it by the
+  # node that owns it.
+  - name: Read node-1's account
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    method: my_account
+    outputs:
+      node1_account: result.output
+
   # Node 1 sets their user storage first
   - name: Set user simple value on node-1
     type: call
@@ -510,7 +521,7 @@ steps:
     context_id: "{{context_id}}"
     method: get_user_simple_for
     args:
-      user_key: "{{node1_key}}"
+      user_key: "{{node1_account}}"
     outputs:
       node1_profile_from_node2: result
 
@@ -526,7 +537,7 @@ steps:
     context_id: "{{context_id}}"
     method: get_user_simple_for
     args:
-      user_key: "{{node1_key}}"
+      user_key: "{{node1_account}}"
     outputs:
       node1_profile_from_node3: result
 

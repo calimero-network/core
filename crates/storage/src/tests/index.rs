@@ -1250,8 +1250,8 @@ mod hashing {
 /// modifying either copy, update the other to keep them in sync.
 mod minimal_struct_layout_compat {
     use borsh::BorshDeserialize;
+    use calimero_account::AccountId;
     use calimero_primitives::crdt::CrdtType;
-    use calimero_primitives::identity::PublicKey;
 
     use crate::address::Id;
     use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
@@ -1423,7 +1423,7 @@ mod minimal_struct_layout_compat {
 
     #[test]
     fn round_trip_user_storage_with_signature() {
-        let owner: PublicKey = [0xDD_u8; 32].into();
+        let owner = AccountId::from([0xDD_u8; 32]);
         let sig_data = SignatureData {
             signature: [0xEE; 64],
             nonce: 42,
@@ -1714,11 +1714,11 @@ mod verify_snapshot_entity_signature_tests {
             "signed-but-unnamed-signer"
         );
 
-        // ...but NOT for `User`, which verifies against `owner` and ignores the
-        // hint. Reporting a finding here would be the mislabel that matters.
+        // ...and for `User` too, now that its `owner` is an account and the
+        // signature verifies against the named signer like every other arm.
         assert_eq!(
             signature_shape(&StorageType::User {
-                owner: signer,
+                owner: AccountId::from([0xA1; 32]),
                 signature_data: sig(real, None),
             }),
             "signed"
@@ -1808,7 +1808,6 @@ mod update_signature_in_place_tests {
     use std::collections::BTreeSet;
 
     use calimero_account::AccountId;
-    use calimero_primitives::identity::PublicKey;
 
     use crate::address::Id;
     use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
@@ -1836,7 +1835,7 @@ mod update_signature_in_place_tests {
         }
     }
 
-    fn user_signed(owner: PublicKey, sig: [u8; 64]) -> StorageType {
+    fn user_signed(owner: AccountId, sig: [u8; 64]) -> StorageType {
         StorageType::User {
             owner,
             signature_data: Some(SignatureData {
@@ -1892,7 +1891,7 @@ mod update_signature_in_place_tests {
     fn rejects_placeholder_signature_user() {
         // Same guard, User variant.
         let id = Id::new([0x22; 32]);
-        let owner = PublicKey::from([0xBB; 32]);
+        let owner = AccountId::from([0xBB; 32]);
         let result = <Interface<MockedStorage<3010>>>::update_signature_in_place(
             id,
             user_signed(owner, [0u8; 64]),
@@ -1949,7 +1948,7 @@ mod update_signature_in_place_tests {
         // place — which is what `persist_signed_signatures` now relies on for
         // DeleteRef actions.
         type S = MockedStorage<3013>;
-        let owner = PublicKey::from([0xCD; 32]);
+        let owner = AccountId::from([0xCD; 32]);
         let id = Id::new([0x25; 32]);
 
         // Seed a User-owned entity in the index, then tombstone it. It starts

@@ -302,13 +302,24 @@ steps:
     outputs:
       node1_id: publicKey
 
+  # By ACCOUNT: user storage is keyed per person, and an account is derived from
+  # a node's root rather than carried on the wire, so it has to be read off the
+  # node that owns it.
+  - name: Read node-1's account
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: my_account
+    outputs:
+      node1_account: result.output
+
   - name: Read node-1's User entity from node-2
     type: call
     node: e2e-node-2
     context_id: '{{ctx}}'
     method: get_user_simple_for
     args:
-      user_key: '{{node1_id}}'
+      user_key: '{{node1_account}}'
     outputs:
       user_read_from_node2: result
 

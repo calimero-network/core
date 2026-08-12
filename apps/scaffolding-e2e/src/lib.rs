@@ -669,7 +669,9 @@ impl E2eKvStore {
         Ok(self.user_items_simple.get()?.map(|v| v.get().clone()))
     }
 
-    pub fn get_user_simple_for(&self, user_key: PublicKey) -> app::Result<Option<String>> {
+    /// Named by ACCOUNT: user storage is keyed per person, so this reaches the
+    /// one slot every device of theirs writes to.
+    pub fn get_user_simple_for(&self, user_key: AccountId) -> app::Result<Option<String>> {
         app::log!("Getting simple value for specific user {:?}", user_key);
         Ok(self
             .user_items_simple

@@ -7,6 +7,7 @@ use velcro::btree_map;
 use super::*;
 use crate::interface::MainInterface;
 use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
+use calimero_account::AccountId;
 
 #[cfg(test)]
 mod collection__public_methods {
@@ -418,17 +419,12 @@ mod metadata__needs_owner_convert {
     use super::*;
     use crate::entities::needs_owner_convert;
 
-    /// A `PublicKey` for an entry owner / shared writer in the predicate tests.
-    fn key(byte: u8) -> PublicKey {
-        PublicKey::from([byte; 32])
-    }
-
     /// `Metadata` stamped `User { owner }` with the given `schema_version`
     /// (`None` ⇒ legacy/unmarked, treated as v0).
     fn user_meta(schema: Option<u32>) -> Metadata {
         let mut m = Metadata::new(1, 1);
         m.storage_type = StorageType::User {
-            owner: key(0xAA),
+            owner: AccountId::from([0xAA; 32]),
             signature_data: None,
         };
         m.schema_version = schema;

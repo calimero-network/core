@@ -6,7 +6,7 @@ use calimero_sdk::abi::AbiType;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::PublicKey;
+use calimero_sdk::{AccountId, PublicKey};
 use calimero_storage::collections::Mergeable;
 use calimero_storage::collections::{FrozenStorage, LwwRegister, UnorderedMap, UserStorage};
 use thiserror::Error;
@@ -17,11 +17,11 @@ pub struct KvStore {
     items: UnorderedMap<String, LwwRegister<String>>,
 
     // Simple user-owned data (e.g., a user's profile name)
-    // Stores: UnorderedMap<PublicKey, LwwRegister<String>>
+    // Stores: UnorderedMap<AccountId, LwwRegister<String>>
     user_items_simple: UserStorage<LwwRegister<String>>,
 
     // Nested user-owned data (e.g., a user's private key-value store)
-    // Stores: UnorderedMap<PublicKey, UnorderedMap<String, LwwRegister<String>>>
+    // Stores: UnorderedMap<AccountId, UnorderedMap<String, LwwRegister<String>>>
     user_items_nested: UserStorage<NestedMap>,
 
     // Content-addressable, immutable data
@@ -152,7 +152,10 @@ impl KvStore {
     }
 
     /// Gets the simple string value for a *specific* user.
-    pub fn get_user_simple_for(&self, user_key: PublicKey) -> app::Result<Option<String>> {
+    ///
+    /// Named by ACCOUNT: user storage is keyed per person, so this reaches the
+    /// one slot every device of theirs writes to.
+    pub fn get_user_simple_for(&self, user_key: AccountId) -> app::Result<Option<String>> {
         app::log!("Getting simple value for specific user {:?}", user_key);
         Ok(self
             .user_items_simple
