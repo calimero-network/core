@@ -1,7 +1,7 @@
 //! Ordered shared-keyspace vector with per-entry ownership.
 //!
 //! `AuthoredVector<V>` exposes a `Vector<V>` whose entries each carry a
-//! `StorageType::User { owner }` stamp set to the pusher's public key at
+//! `StorageType::User { owner }` stamp set to the pusher's account at
 //! `push` time. Any context member can push a new entry at the end; only the
 //! entry's author can update or tombstone it. There is intentionally no
 //! physical `remove` — shifting indices would complicate concurrent-push
@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, ValueRef, Vector};
@@ -32,7 +32,7 @@ use crate::store::{MainStorage, StorageAdaptor};
 /// A vector where each position is owned by the public key that pushed it.
 ///
 /// Internally a `Vector<V>`. Each entry's `StorageType` is `User { owner }`
-/// set at push time from `env::device_id()`. Only the owner can `update`
+/// set at push time from `env::account_id()`. Only the owner can `update`
 /// or `tombstone` their entry.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct AuthoredVector<V, S: StorageAdaptor = MainStorage>
@@ -165,11 +165,11 @@ where
         Ok(self.inner.get(index)?.map(ValueRef::into_inner))
     }
 
-    /// Returns the public key of the owner at `index`, if the slot exists.
+    /// Returns the account that owns at `index`, if the slot exists.
     ///
     /// # Errors
     /// Returns any underlying storage error.
-    pub fn owner_of(&self, index: usize) -> Result<Option<PublicKey>, StoreError> {
+    pub fn owner_of(&self, index: usize) -> Result<Option<AccountId>, StoreError> {
         let Some(id) = self.inner.entry_id_at(index)? else {
             return Ok(None);
         };
@@ -239,7 +239,7 @@ where
         self.inner.entry_id_at(index)
     }
 
-    fn require_owner(&self, index: usize) -> Result<(crate::address::Id, PublicKey), StoreError> {
+    fn require_owner(&self, index: usize) -> Result<(crate::address::Id, AccountId), StoreError> {
         // Out-of-bounds is surfaced as `InvalidData` rather than `ActionNotAllowed`:
         // the latter is reserved for authorization failures on valid addresses, and
         // `NotFound` takes an `Id` that we do not have for an unmapped index.
@@ -338,7 +338,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use calimero_primitives::identity::PublicKey;
+    use calimero_account::AccountId;
     use serial_test::serial;
 
     use super::AuthoredVector;
@@ -365,15 +365,16 @@ mod tests {
         );
     }
 
-    fn pk(bytes: [u8; 32]) -> PublicKey {
-        bytes.into()
+    /// The tests name the OWNER, and an owner is an account.
+    fn acct(bytes: [u8; 32]) -> AccountId {
+        AccountId::from(bytes)
     }
 
     #[test]
     #[serial]
     fn entry_schema_version_and_ownership_reflect_stored_metadata() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).expect("push");
@@ -386,11 +387,11 @@ mod tests {
         assert!(v.owned_by_me(0).unwrap());
 
         // A different executor is not the owner.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(!v.owned_by_me(0).unwrap());
 
         // Out-of-bounds slot: no version, not owned.
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         assert_eq!(v.entry_schema_version(99).unwrap(), None);
         assert!(!v.owned_by_me(99).unwrap());
     }
@@ -399,13 +400,13 @@ mod tests {
     #[serial]
     fn push_stamps_current_executor_as_owner() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         let idx = v.push(7).expect("push");
         assert_eq!(idx, 0);
         assert_eq!(v.get(0).unwrap(), Some(7));
-        assert_eq!(v.owner_of(0).unwrap(), Some(pk(ALICE)));
+        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
         assert_eq!(v.len().unwrap(), 1);
     }
 
@@ -416,53 +417,53 @@ mod tests {
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
 
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let a = v.push(1).unwrap();
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         let b = v.push(2).unwrap();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         let c = v.push(3).unwrap();
 
         assert_eq!((a, b, c), (0, 1, 2));
-        assert_eq!(v.owner_of(0).unwrap(), Some(pk(ALICE)));
-        assert_eq!(v.owner_of(1).unwrap(), Some(pk(BOB)));
-        assert_eq!(v.owner_of(2).unwrap(), Some(pk(ALICE)));
+        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
+        assert_eq!(v.owner_of(1).unwrap(), Some(acct(BOB)));
+        assert_eq!(v.owner_of(2).unwrap(), Some(acct(ALICE)));
     }
 
     #[test]
     #[serial]
     fn update_by_owner_succeeds() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
         v.update(0, 42).expect("owner update");
         assert_eq!(v.get(0).unwrap(), Some(42));
-        assert_eq!(v.owner_of(0).unwrap(), Some(pk(ALICE)));
+        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
     }
 
     #[test]
     #[serial]
     fn update_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         let err = v.update(0, 99).expect_err("non-owner update must fail");
         assert!(err.to_string().to_lowercase().contains("owner"));
         assert_eq!(v.get(0).unwrap(), Some(7));
-        assert_eq!(v.owner_of(0).unwrap(), Some(pk(ALICE)));
+        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
     }
 
     #[test]
     #[serial]
     fn update_out_of_bounds_errors() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         let err = v.update(5, 1).expect_err("out-of-bounds update must fail");
@@ -473,7 +474,7 @@ mod tests {
     #[serial]
     fn tombstone_by_owner_writes_default() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
@@ -482,19 +483,19 @@ mod tests {
         assert_eq!(v.get(0).unwrap(), Some(0));
         // Position and owner are preserved.
         assert_eq!(v.len().unwrap(), 1);
-        assert_eq!(v.owner_of(0).unwrap(), Some(pk(ALICE)));
+        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
     }
 
     #[test]
     #[serial]
     fn tombstone_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(7).unwrap();
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         let err = v.tombstone(0).expect_err("non-owner tombstone must fail");
         assert!(err.to_string().to_lowercase().contains("owner"));
         assert_eq!(v.get(0).unwrap(), Some(7));
@@ -504,12 +505,12 @@ mod tests {
     #[serial]
     fn iter_yields_all_values_in_insertion_order() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
         v.push(10).unwrap();
         v.push(20).unwrap();
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         v.push(30).unwrap();
 
         let items: Vec<u64> = v.iter().unwrap().collect();
@@ -520,7 +521,7 @@ mod tests {
     #[serial]
     fn owner_of_out_of_bounds_is_none() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let v = Root::new(AuthoredVector::<u64>::new);
         assert_eq!(v.owner_of(0).unwrap(), None);

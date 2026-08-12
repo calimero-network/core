@@ -18,7 +18,6 @@ use crate::collections::{
 use crate::entities::{Element, Metadata};
 use crate::store::MainStorage;
 use crate::{address::Id, Interface, StorageError};
-use calimero_primitives::identity::PublicKey;
 
 use calimero_account::AccountId;
 /// Macro support for deriving storage traits on the wrapper types.
@@ -609,7 +608,7 @@ impl Default for JsCounter {
 
 /// A byte-oriented user storage wrapper that integrates with Calimero storage.
 ///
-/// The storage maps PublicKeys (32 bytes) to raw byte arrays (`Vec<u8>`).
+/// The storage maps accounts (32 bytes) to raw byte arrays (`Vec<u8>`).
 /// This enables JavaScript runtimes to use UserStorage with proper StorageType::User
 /// metadata for security checks.
 #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
@@ -681,14 +680,16 @@ impl JsUserStorage {
         self.user_storage.get()
     }
 
-    /// Retrieves the value for a specific user's PublicKey, if present.
+    /// Retrieves the value for a specific user's account, if present.
+    ///
+    /// `user_key` is an `AccountId`'s bytes — the person, not one of their
+    /// devices.
     ///
     /// # Errors
     ///
     /// Propagates [`StoreError`] when the underlying storage read fails.
     pub fn get_for_user(&self, user_key: &[u8; 32]) -> Result<Option<Vec<u8>>, StoreError> {
-        let public_key: PublicKey = (*user_key).into();
-        self.user_storage.get_for_user(&public_key)
+        self.user_storage.get_for_user(&AccountId::from(*user_key))
     }
 
     /// Checks whether data exists for the current executor.
@@ -706,8 +707,7 @@ impl JsUserStorage {
     ///
     /// Propagates [`StoreError`] if the existence check fails.
     pub fn contains_user(&self, user_key: &[u8; 32]) -> Result<bool, StoreError> {
-        let public_key: PublicKey = (*user_key).into();
-        self.user_storage.contains_user(&public_key)
+        self.user_storage.contains_user(&AccountId::from(*user_key))
     }
 
     /// Returns all user/value pairs currently stored.
@@ -715,7 +715,7 @@ impl JsUserStorage {
     /// # Errors
     ///
     /// Propagates [`StoreError`] if reading from storage fails.
-    pub fn entries(&self) -> Result<Vec<(PublicKey, Vec<u8>)>, StoreError> {
+    pub fn entries(&self) -> Result<Vec<(AccountId, Vec<u8>)>, StoreError> {
         let iter = self.user_storage.entries()?;
         Ok(iter.collect())
     }
@@ -738,7 +738,7 @@ impl JsUserStorage {
         let iter = self.entries()?;
         Ok(iter
             .into_iter()
-            .map(|(public_key, value)| (*public_key.as_ref(), value))
+            .map(|(account, value)| (*account.as_bytes(), value))
             .collect())
     }
 
@@ -1459,7 +1459,10 @@ impl JsAuthoredMap {
     ///
     /// Propagates [`StoreError`] if reading entry metadata fails.
     pub fn owner_of(&self, key: &[u8]) -> Result<Option<[u8; 32]>, StoreError> {
-        Ok(self.map.owner_of(&key.to_vec())?.map(|pk| *pk.as_ref()))
+        Ok(self
+            .map
+            .owner_of(&key.to_vec())?
+            .map(|account| *account.as_bytes()))
     }
 
     /// Returns whether the current executor owns `key`. False for absent keys.
@@ -1614,7 +1617,10 @@ impl JsAuthoredVector {
     ///
     /// Propagates [`StoreError`] if reading slot metadata fails.
     pub fn owner_of(&self, index: usize) -> Result<Option<[u8; 32]>, StoreError> {
-        Ok(self.vector.owner_of(index)?.map(|pk| *pk.as_ref()))
+        Ok(self
+            .vector
+            .owner_of(index)?
+            .map(|account| *account.as_bytes()))
     }
 
     /// Returns whether the current executor owns the slot at `index`. False for
@@ -1882,7 +1888,7 @@ mod roundtrip_tests {
     #[serial]
     fn js_vector_value_roundtrips_byte_identically() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         ensure_root_index();
 
         let mut v = JsVector::new();
@@ -1902,7 +1908,7 @@ mod roundtrip_tests {
     #[serial]
     fn js_authored_vector_iter_roundtrips_byte_identically() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         ensure_root_index();
 
         let mut v = JsAuthoredVector::new();
@@ -1938,7 +1944,7 @@ mod roundtrip_tests {
     #[serial]
     fn js_authored_map_value_roundtrips_byte_identically() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         ensure_root_index();
 
         let key = b"post-1";

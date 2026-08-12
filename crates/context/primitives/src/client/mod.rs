@@ -283,7 +283,7 @@ mod borsh_layout_round_trip {
     fn user_round_trips() {
         let owner = [0x11; 32];
         let decoded = round_trip(StorageType::User {
-            owner: PublicKey::from(owner),
+            owner: calimero_account::AccountId::from(owner),
             signature_data: Some(SignatureData {
                 signature: [0x22; 64],
                 nonce: 42,

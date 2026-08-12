@@ -1,7 +1,12 @@
 //! User-centric storage wrapper.
 //!
-//! Provides an `UnorderedMap<PublicKey, T>` where the current user can
-//! only `insert` into their own key-slot (`env::device_id()`).
+//! Provides an `UnorderedMap<AccountId, T>` where the current user can only
+//! `insert` into their own slot (`env::account_id()`).
+//!
+//! Keyed by ACCOUNT, so "this user's data" means the person's, not the machine's:
+//! their phone and their laptop reach one slot instead of each holding a copy the
+//! other cannot see. Which device performed a given write is still recorded, on
+//! the entry's `signature_data.signer`.
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, UnorderedMap, ValueRef};
@@ -9,19 +14,17 @@ use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
 use borsh::{BorshDeserialize, BorshSerialize};
-// TODO: possibly replace with the prelude's lighter implementation of `PublicKey` to not utilize
-// the whole `calimero_primitives` dependency.
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 use std::collections::BTreeMap;
 
-/// A wrapper for user-owned storage, mapping PublicKeys to data.
+/// A wrapper for user-owned storage, mapping accounts to data.
 ///
-/// Under the hood, this is an `UnorderedMap<PublicKey, T>`.
+/// Under the hood, this is an `UnorderedMap<AccountId, T>`.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct UserStorage<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor = MainStorage> {
     /// The underlying map storing user data.
     #[borsh(bound(serialize = "", deserialize = ""))]
-    inner: UnorderedMap<PublicKey, T, S>,
+    inner: UnorderedMap<AccountId, T, S>,
     /// The storage element for this UserStorage instance itself.
     storage: Element,
 }
@@ -109,12 +112,16 @@ where
     where
         T: 'static,
     {
-        let executor_public_key: PublicKey = env::device_id().into();
+        // One account, one slot — and the same account stamped as the owner that
+        // gates it. Slot and stamp have to agree: keying the slot by device while
+        // gating by account would hand each of a person's machines its own entry
+        // that all of them may edit.
+        let owner = AccountId::from(env::account_id());
 
         // Construct the StorageType. It will be signed later, on the upper levels by
         // `ContextManager`.
         let storage_type = StorageType::User {
-            owner: executor_public_key,
+            owner,
             signature_data: None,
             //signature_data: Some(crate::entities::SignatureData {
             //    nonce: 0,
@@ -124,7 +131,7 @@ where
 
         // Call the new method on UnorderedMap
         self.inner
-            .insert_with_storage_type(executor_public_key, value, storage_type, None)
+            .insert_with_storage_type(owner, value, storage_type, None)
     }
 }
 
@@ -133,11 +140,11 @@ where
     T: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
-    /// Returns an iterator over all `(PublicKey, value)` entries.
+    /// Returns an iterator over all `(AccountId, value)` entries.
     ///
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (PublicKey, T)> + '_, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (AccountId, T)> + '_, StoreError> {
         self.inner.entries()
     }
 
@@ -146,18 +153,15 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self) -> Result<Option<T>, StoreError> {
-        let executor_public_key: PublicKey = env::device_id().into();
-        Ok(self
-            .inner
-            .get(&executor_public_key)?
-            .map(ValueRef::into_inner))
+        let executor_account = AccountId::from(env::account_id());
+        Ok(self.inner.get(&executor_account)?.map(ValueRef::into_inner))
     }
 
-    /// Gets the data for a *specific* user's PublicKey.
+    /// Gets the data for a *specific* user's account.
     ///
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
-    pub fn get_for_user(&self, user_key: &PublicKey) -> Result<Option<T>, StoreError> {
+    pub fn get_for_user(&self, user_key: &AccountId) -> Result<Option<T>, StoreError> {
         Ok(self.inner.get(user_key)?.map(ValueRef::into_inner))
     }
 
@@ -166,15 +170,15 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn contains_current_user(&self) -> Result<bool, StoreError> {
-        let executor_public_key: PublicKey = env::device_id().into();
-        self.inner.contains(&executor_public_key)
+        let executor_account = AccountId::from(env::account_id());
+        self.inner.contains(&executor_account)
     }
 
     /// Checks if data exists for a specific user.
     ///
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
-    pub fn contains_user(&self, user_key: &PublicKey) -> Result<bool, StoreError> {
+    pub fn contains_user(&self, user_key: &AccountId) -> Result<bool, StoreError> {
         self.inner.contains(user_key)
     }
 
@@ -183,8 +187,8 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn remove(&mut self) -> Result<Option<T>, StoreError> {
-        let executor_public_key: PublicKey = env::device_id().into();
-        self.inner.remove(&executor_public_key)
+        let executor_account = AccountId::from(env::account_id());
+        self.inner.remove(&executor_account)
     }
 }
 

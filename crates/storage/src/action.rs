@@ -277,20 +277,25 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
             signature_data,
         } => {
             hasher.update([2u8]); // type tag
-            hasher.update(owner.as_ref() as &[u8; 32]);
+            hasher.update(owner.as_bytes());
             // sig-data presence tag — see "Domain separation" in the
             // function doc.
             if let Some(sig_data) = signature_data.as_ref() {
                 hasher.update([1u8]);
                 hasher.update(sig_data.nonce.to_le_bytes());
-                // `User` deliberately does NOT commit to
-                // `sig_data.signer`: there is exactly one owner, the
-                // verifier always uses `owner` directly, and the hint
-                // is unused on this path (only `Shared` uses it for
-                // O(1) writer-set lookup). Keeping the User payload
-                // shape independent of the optional hint avoids a
-                // class of "signer field set to a different value but
-                // still passes verify" footguns at zero cost.
+                // `User` commits to `sig_data.signer`, exactly as `Shared`
+                // does. It did not have to when `owner` was itself the
+                // verification key: there was one owner, the verifier used it
+                // directly, and the field was an unused hint. Now `owner` is an
+                // account and `signer` is the key the signature is checked
+                // against, so leaving it out of the payload would sign a
+                // statement that does not name its own author.
+                if let Some(signer) = sig_data.signer {
+                    hasher.update([1u8]); // signer-present tag
+                    hasher.update(signer.as_ref() as &[u8; 32]);
+                } else {
+                    hasher.update([0u8]); // signer-absent tag
+                }
             } else {
                 hasher.update([0u8]);
             }
@@ -388,7 +393,7 @@ mod tests {
         }
     }
 
-    fn meta_user(owner: PublicKey, nonce: u64) -> Metadata {
+    fn meta_user(owner: AccountId, nonce: u64) -> Metadata {
         Metadata {
             created_at: 100,
             updated_at: nonce.into(),
@@ -459,7 +464,7 @@ mod tests {
 
     #[test]
     fn payload_differs_on_nonce_change() {
-        let owner = PublicKey::from([0x10; 32]);
+        let owner = AccountId::from([0x10; 32]);
         let id = Id::new([0xAA; 32]);
         let a = upsert(id, b"v".to_vec(), vec![], meta_user(owner, 1));
         let b = upsert(id, b"v".to_vec(), vec![], meta_user(owner, 2));
@@ -513,7 +518,7 @@ mod tests {
         // (or vice versa) at apply time.
         let id = Id::new([0xAA; 32]);
         let data = b"v".to_vec();
-        let owner = PublicKey::from([0x10; 32]);
+        let owner = AccountId::from([0x10; 32]);
 
         let a = upsert(id, data.clone(), vec![], meta_public());
         let b = upsert(id, data.clone(), vec![], meta_user(owner, 1));
@@ -673,7 +678,7 @@ mod tests {
         // but for the User branch. Both branches now have the same
         // sig-data presence-tag shape.
         let id = Id::new([0xAA; 32]);
-        let owner = PublicKey::from([0x10; 32]);
+        let owner = AccountId::from([0x10; 32]);
 
         let mut unsigned = meta_user(owner, 0);
         if let StorageType::User {
