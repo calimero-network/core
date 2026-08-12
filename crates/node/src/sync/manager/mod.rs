@@ -3354,7 +3354,15 @@ impl SyncManager {
 
         // `has_member`'s account-keyed arm needs the account the peer's key acts
         // as; this crate can resolve it, `calimero-context-client` cannot.
-        let their_account = {
+        //
+        // Re-resolved at every attempt rather than captured once. The whole point
+        // of the retries below is that the peer may have joined DURING the
+        // intervening catch-up — which is exactly when their binding first
+        // becomes resolvable here. A value read before the catch-up would carry
+        // its own staleness into every retry, so the account-keyed arm would keep
+        // being handed the `None` that provoked the catch-up in the first place
+        // and only the key-keyed fallback could rescue a peer who did just join.
+        let their_account = || {
             let store = self.context_client.datastore();
             calimero_governance_store::get_group_for_context(store, &context_id)
                 .ok()
@@ -3371,7 +3379,7 @@ impl SyncManager {
         };
         if !self
             .context_client
-            .has_member(&context_id, &their_identity, their_account)?
+            .has_member(&context_id, &their_identity, their_account())?
             && !is_inherited_member()?
         {
             _updated = Some(
@@ -3382,7 +3390,7 @@ impl SyncManager {
 
             if !self
                 .context_client
-                .has_member(&context_id, &their_identity, their_account)?
+                .has_member(&context_id, &their_identity, their_account())?
                 && !is_inherited_member()?
             {
                 // The peer may have just published MemberAdded for themselves
@@ -3402,7 +3410,7 @@ impl SyncManager {
 
                 if !self
                     .context_client
-                    .has_member(&context_id, &their_identity, their_account)?
+                    .has_member(&context_id, &their_identity, their_account())?
                     && !is_inherited_member()?
                 {
                     // Catch-up didn't resolve it (peer returned nothing, peer

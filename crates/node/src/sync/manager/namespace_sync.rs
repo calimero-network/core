@@ -603,10 +603,22 @@ impl SyncManager {
             // credential, so a first-time joiner names an account this responder
             // cannot yet resolve. Both rows the gate reads — the re-entry block
             // and the consumed-invitation marker — are keyed by that account, so
-            // neither can exist for a principal we cannot name, and admitting is
-            // the accurate answer rather than a lenient one. The authoritative
-            // gate is the apply of the joiner's own `MemberJoinedAt`, which
-            // carries the credential and re-runs this check against it.
+            // for a genuine first-timer neither row can exist and there is
+            // nothing here to check.
+            //
+            // It is lenient in one case, and knowingly: a denied account can
+            // present a device key this responder holds no binding for, and its
+            // deny row goes unread because we cannot name whose it is. What that
+            // buys the holder is the backfill and the wrapped key served below,
+            // ahead of the apply-time check that does have the credential and
+            // does reject them. It is not a regression — the gate was keyed by
+            // KEY before, so a fresh key walked past it just the same, and
+            // keying by account is what lets a denied account's OTHER devices be
+            // caught at all. Closing it needs the join request to carry the
+            // joiner's credential so the responder can name the principal before
+            // it serves anything, which is a wire change and needs its own
+            // version gate — see the "join-sync admission skips the deny-list
+            // check" issue.
             (false, None) => Ok(()),
         };
         if let Err(err) = admission {
