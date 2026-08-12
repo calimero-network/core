@@ -183,14 +183,28 @@ pub async fn join_namespace(
         .map_err(|e| JoinError::Local(e.to_string()))?
         .is_none()
     {
-        // From the invitation ENVELOPE, and optional there: this node has synced
-        // nothing yet, so it cannot resolve the inviter's key to an account
-        // itself, and the hint is the only thing that can name one. Absent, the
-        // placeholder stands until genesis arrives and overwrites it — the
-        // behaviour before the hint existed.
-        let seeded_admin = invitation
-            .inviter_account
-            .unwrap_or_else(calimero_governance_store::placeholder_admin_identity);
+        // The placeholder, never `invitation.inviter_account`.
+        //
+        // That hint rides in the UNSIGNED envelope — `inviter_signature` covers
+        // the inner `GroupInvitationFromAdmin` only — so anything that can relay
+        // an invitation can choose it. Seeding it here made it this node's
+        // `admin_identity`, which is the local root of trust for `is_admin` and
+        // for readiness-beacon, ack and heartbeat verification.
+        //
+        // The field's own documentation calls that safe because genesis
+        // overwrites a wrong value on arrival. It does not: `namespace_created`
+        // keys its established-check on `admin_identity != placeholder` and is
+        // "ALWAYS a no-op, NEVER Err" once one is set. So an attacker-chosen
+        // account would not have been reconciled — it would have been permanent.
+        //
+        // Master seeds the inviter's KEY, which is inside the signed body. This
+        // branch cannot: `admin_identity` is an account now, and a joiner that
+        // has synced nothing has no binding to resolve the key through. So it
+        // seeds nothing and waits for genesis, which is authoritative. The cost
+        // is that the inviter's beacons do not verify until the DAG arrives —
+        // the behaviour before the hint existed. Restoring that head start needs
+        // an authenticated account, not a hint anyone can rewrite.
+        let seeded_admin = calimero_governance_store::placeholder_admin_identity();
         let meta = GroupMetaValue {
             admin_identity: seeded_admin,
             owner_identity: seeded_admin,
