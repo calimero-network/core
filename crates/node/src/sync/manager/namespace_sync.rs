@@ -1511,8 +1511,28 @@ impl SyncManager {
         //
         // Asking as a device we already are is right regardless of whose account
         // it speaks for: the point is to be addressable, not to be ourselves.
+        //
+        // Unless it has been REVOKED. Releasing a revoked row so a fresh device
+        // is minted is the one replacement `ensure_enrolled` must still perform —
+        // a node that revoked itself out of the namespace re-enters under a new
+        // id, and reusing the revoked one would ask for keys the revocation
+        // exists to withhold. Reading past that check skipped it, and the node
+        // came back as the device it had just revoked.
         let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
-        let device = match devices.get(&ns_gid) {
+        let bindings = calimero_governance_store::AccountBindingRepository::new(&store);
+        // A failed revocation read reuses rather than re-mints, deliberately.
+        // Re-minting on a transient store error would destroy a paired device
+        // for good; reusing one that turns out to be revoked costs nothing,
+        // because the responder checks revocation itself before serving a key —
+        // that check is the enforcement, this one only avoids asking.
+        let reusable = devices.get(&ns_gid).map(|held| {
+            held.filter(|existing| {
+                !bindings
+                    .is_revoked(&ns_gid, existing.device())
+                    .unwrap_or(false)
+            })
+        });
+        let device = match reusable {
             Ok(Some(existing)) => Some(existing.secret.device),
             Ok(None) => devices
                 .ensure_enrolled(&ns_gid)
