@@ -112,13 +112,30 @@ fn bind_founder(
 ) -> EyreResult<()> {
     let bindings = crate::AccountBindingRepository::new(store);
     let outcome = bindings.apply_link(ns_gid, &account.genesis, &account.chain, &account.cert)?;
-    if !outcome
-        .as_ref()
-        .err()
-        .is_some_and(crate::BindingRejected::is_permanent)
-    {
-        bindings.record_endorser(ns_gid, account.cert.account, &founder)?;
+    if let Err(rejected) = &outcome {
+        if rejected.is_permanent() {
+            // Refuse the genesis rather than establish a namespace its founder
+            // can never act in.
+            //
+            // A permanent rejection is decided by the credential's own bytes, so
+            // every replica reaches this verdict — refusing is consistent, not a
+            // local opinion that could partition the namespace. Warning and
+            // continuing established it with a founder that binds no device,
+            // therefore receives no scope key, and — being the admin — cannot be
+            // replaced by anyone either. `is_permanent`'s own contract calls that
+            // state "no recovery path".
+            //
+            // The founder applies its own genesis first, so this surfaces as a
+            // failed `create_group` on the machine that can still fix it, instead
+            // of a namespace that looks created and is inert.
+            bail!(
+                "namespace genesis refused: the founder's device credential is inadmissible \
+                 ({rejected:?}), and no later op can change that — establishing would leave \
+                 this namespace with a founder that can never bind a device"
+            );
+        }
     }
+    bindings.record_endorser(ns_gid, account.cert.account, &founder)?;
     if let Err(rejected) = outcome {
         tracing::warn!(
             namespace_id = %hex::encode(namespace_id.as_bytes()),

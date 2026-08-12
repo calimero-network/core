@@ -26,6 +26,55 @@ use super::super::test_fixtures::{
 };
 use super::super::*;
 
+/// A genesis whose founder credential is inadmissible establishes nothing.
+///
+/// Two layers enforce it and this pins the property, not either one.
+/// `join_op_proves_ownership` catches the common case first — the credential
+/// must certify both the declared founder and the key that signed the op — and
+/// `bind_founder` refuses the permanent rejections that reach it (a chain past
+/// the handoff cap, a bad rotation signature), which used to warn and continue.
+///
+/// Continuing is what makes this worth a test: it established the namespace
+/// with a founder that binds no device, so the scope-key fan-out reached
+/// nobody, and — being the admin — nothing could replace it.
+/// `BindingRejected::is_permanent` calls that state "no recovery path". The
+/// verdict is decided by the credential's own bytes, so every replica refuses
+/// identically rather than one node holding a lone opinion.
+#[test]
+fn a_genesis_whose_founder_credential_can_never_bind_is_refused() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let namespace_id = [0xF3u8; 32];
+    let founder_sk = PrivateKey::random(&mut OsRng);
+
+    let (genesis, founder) = namespace_genesis_for(&founder_sk);
+    // Corrupt the certificate's signature: inadmissible by its own bytes, which
+    // is exactly the class `is_permanent` covers.
+    let NamespaceOp::Root(RootOp::NamespaceCreated { account, .. }) = genesis else {
+        panic!("the fixture builds a NamespaceCreated");
+    };
+    let mut account = account;
+    account.cert.signature = [0xFFu8; 64];
+    let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder, account });
+
+    let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, forged)
+        .expect("sign genesis");
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+
+    let _err = gov
+        .apply_signed_op(&signed)
+        .expect_err("a founder that can never bind must not establish a namespace");
+    assert!(
+        MetaRepository::new(&store)
+            .load(&namespace_id.into())
+            .expect("read")
+            .is_none(),
+        "and nothing may be established — a half-founded namespace is the state this avoids"
+    );
+}
+
 #[test]
 fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
