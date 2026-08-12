@@ -899,10 +899,24 @@ pub struct SignedGroupOpenInvitation {
     /// does — silently drop the field and invalidate the signature with it,
     /// forcing a lockstep client release for a value that is only a hint.
     ///
-    /// Unsigned is safe here because it is not authority: a wrong value seeds a
-    /// wrong admin in local meta and then self-heals, since `NamespaceCreated`
-    /// genesis is authoritative and overwrites it on arrival. `None` simply
-    /// skips the seeding, which is what happened before the field existed.
+    /// Unsigned is safe only because no joiner treats it as authority, and that
+    /// is a constraint on joiners rather than a property of the field. It is
+    /// chosen by whatever relayed the invitation: `inviter_signature` covers the
+    /// inner [`GroupInvitationFromAdmin`], not this envelope.
+    ///
+    /// So a joiner may record it where it confers nothing and stops being read
+    /// once real state lands — `MembershipRepository::set_bootstrap_inviter`,
+    /// consulted only while the group's `admin_identity` is still the
+    /// placeholder — and may NOT write it as `admin_identity`, as an Admin
+    /// membership row, or anywhere else a later gate reads as a grant.
+    ///
+    /// An earlier version of this doc claimed the seeding self-heals because
+    /// `NamespaceCreated` genesis overwrites it. It does not: genesis keys its
+    /// established-check on `admin_identity != placeholder`, so a seeded value
+    /// makes genesis a no-op and pins itself permanently on that node.
+    ///
+    /// `None` skips the hint entirely, which is what happened before the field
+    /// existed and costs only a slower cold start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inviter_account: Option<calimero_account::AccountId>,
     /// Application ID for the group (unsigned bootstrap field).
