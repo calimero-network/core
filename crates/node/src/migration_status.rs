@@ -685,13 +685,15 @@ pub(crate) fn on_heartbeat_facts_changed(
     );
 
     if status.rollup.all_migrated {
-        stamp_fleet_completion(
-            datastore,
-            node_client,
-            &ns,
-            status.target_version,
-            previously == Some(false),
-        );
+        let announce = previously == Some(false);
+        // The latch above already consumed the edge. A closed guard is a real
+        // answer and keeps it consumed, but a store fault is not - put the edge
+        // back so the next heartbeat announces instead of stamping silently.
+        if !stamp_fleet_completion(datastore, node_client, &ns, status.target_version, announce)
+            && announce
+        {
+            let _ = cache.swap_all_migrated(namespace_id, false);
+        }
     }
 }
 
@@ -722,25 +724,26 @@ pub(crate) fn on_heartbeat_facts_changed(
 /// Namespace-root record only: a bare `upgrade_group` on a subgroup writes no
 /// root record and so gets no completion stamp, the same asymmetry
 /// `resolve_group_target_version` already carries.
+///
+/// Returns `false` only when the store denied an answer. Every closed guard
+/// returns `true`: it decided, and the caller's consumed edge stays consumed.
 fn stamp_fleet_completion(
     datastore: &Store,
     node_client: &NodeClient,
     ns: &calimero_context_config::types::ContextGroupId,
     target_version: u32,
     announce: bool,
-) {
+) -> bool {
     let repo = calimero_governance_store::UpgradesRepository::new(datastore);
-    // A store error is not "nothing to stamp": it leaves the latch armed on a
-    // convergence this process already watched, so it has to be visible.
     let mut record = match repo.load(ns) {
         Ok(Some(record)) => record,
-        Ok(None) => return,
+        Ok(None) => return true,
         Err(err) => {
             tracing::error!(
                 ?err,
                 "failed to load the record to stamp migration completion"
             );
-            return;
+            return false;
         }
     };
     let calimero_store::key::GroupUpgradeStatus::Completed {
@@ -748,10 +751,10 @@ fn stamp_fleet_completion(
         fleet_completed_at: None,
     } = record.status
     else {
-        return;
+        return true;
     };
     if record.to_state_version != target_version {
-        return;
+        return true;
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -764,10 +767,10 @@ fn stamp_fleet_completion(
     let to_version = record.to_version.clone();
     if let Err(err) = repo.save(ns, &record) {
         tracing::error!(?err, "failed to stamp migration completion");
-        return;
+        return false;
     }
     if !announce {
-        return;
+        return true;
     }
 
     calimero_context::migration_events::emit(
@@ -779,6 +782,7 @@ fn stamp_fleet_completion(
             completed_at: now,
         },
     );
+    true
 }
 
 /// Pick the more severe of an accumulated failure and a freshly-read one:
