@@ -241,7 +241,6 @@ mod handler_tests {
             LazyRecipient::new(),
             event_sender,
             sync_client,
-            String::new(),
             None,
         );
         let ctx_client = ContextClient::new(store, node_client.clone(), LazyRecipient::new());

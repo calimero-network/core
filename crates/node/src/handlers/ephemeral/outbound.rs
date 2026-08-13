@@ -403,7 +403,6 @@ mod tests {
             LazyRecipient::new(),
             event_sender,
             sync_client,
-            String::new(),
             None,
         );
         (client, tmp)

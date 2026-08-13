@@ -267,7 +267,6 @@ mod tests {
             LazyRecipient::new(),
             event_sender,
             sync_client,
-            String::new(),
             None,
         );
         (client, event_rx, tmp)
@@ -339,7 +338,11 @@ mod tests {
 
         // Assert the event reached the subscriber.
         let event = event_rx.try_recv().expect("event must have been emitted");
-        let NodeEvent::Context(ctx_event) = event;
+        // `NodeEvent` gained a `GroupMembership` variant upstream, so this
+        // binding is no longer irrefutable — anything else is a test failure.
+        let NodeEvent::Context(ctx_event) = event else {
+            panic!("expected NodeEvent::Context");
+        };
         assert_eq!(ctx_event.context_id, context_id);
         let ContextEventPayload::Ephemeral(payload) = ctx_event.payload else {
             panic!("expected ContextEventPayload::Ephemeral");

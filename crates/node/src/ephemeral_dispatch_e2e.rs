@@ -131,6 +131,9 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
                     }
                     // Ignore any unrelated context events.
                 }
+                // Non-context events (e.g. GroupMembership) are not this
+                // test's concern — keep waiting for the presence event.
+                Some(_) => {}
                 None => panic!("event stream closed before an Ephemeral event arrived"),
             }
         }
