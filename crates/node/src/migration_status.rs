@@ -119,11 +119,15 @@ pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
 #[derive(Debug, Default)]
 pub struct MigrationStatusCache {
     entries: Mutex<BTreeMap<([u8; 32], PublicKey), CacheEntry>>,
-    /// Last `all_migrated` this PROCESS rolled up per namespace, the on-change
-    /// reference for [`on_heartbeat_facts_changed`]'s completion announcement.
-    /// Deliberately not persisted: completion is a transition, and a node that
-    /// just booted has observed none.
-    all_migrated: Mutex<HashMap<[u8; 32], bool>>,
+    /// Last `all_migrated` this PROCESS rolled up per namespace AND rolled-up
+    /// target, the on-change reference for [`on_heartbeat_facts_changed`]'s
+    /// completion announcement. Deliberately not persisted: completion is a
+    /// transition, and a node that just booted has observed none.
+    ///
+    /// Keyed on the target too, because an edge belongs to the migration it was
+    /// watched for: a green rollup whose target a stale root record cannot
+    /// describe must not spend the edge of the migration that follows it.
+    all_migrated: Mutex<HashMap<([u8; 32], u32), bool>>,
 }
 
 impl MigrationStatusCache {
@@ -283,14 +287,20 @@ impl MigrationStatusCache {
             .cloned()
     }
 
-    /// Record the `all_migrated` just rolled up for `ns`, returning the one
-    /// this process recorded before it (`None` on the first rollup after boot).
-    /// Poison recovery matches [`entries_lock`](Self::entries_lock).
-    fn swap_all_migrated(&self, ns: [u8; 32], all_migrated: bool) -> Option<bool> {
+    /// Record the `all_migrated` just rolled up for `ns` at `target_version`,
+    /// returning the one this process recorded before it for that same target
+    /// (`None` on the first rollup after boot, or on a target it has not rolled
+    /// up before). Poison recovery matches [`entries_lock`](Self::entries_lock).
+    fn swap_all_migrated(
+        &self,
+        ns: [u8; 32],
+        target_version: u32,
+        all_migrated: bool,
+    ) -> Option<bool> {
         self.all_migrated
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(ns, all_migrated)
+            .insert((ns, target_version), all_migrated)
     }
 }
 
@@ -658,7 +668,7 @@ pub(crate) fn on_heartbeat_facts_changed(
     ) {
         Ok(status) => status,
         Err(err) => {
-            tracing::debug!(?err, "migration rollup failed; skipping progress event");
+            tracing::warn!(?err, "migration rollup failed; skipping progress event");
             return;
         }
     };
@@ -669,7 +679,11 @@ pub(crate) fn on_heartbeat_facts_changed(
     if status.target_version == 0 {
         return;
     }
-    let previously = cache.swap_all_migrated(namespace_id, status.rollup.all_migrated);
+    let previously = cache.swap_all_migrated(
+        namespace_id,
+        status.target_version,
+        status.rollup.all_migrated,
+    );
 
     calimero_context::migration_events::emit(
         node_client,
@@ -692,7 +706,7 @@ pub(crate) fn on_heartbeat_facts_changed(
         if !stamp_fleet_completion(datastore, node_client, &ns, status.target_version, announce)
             && announce
         {
-            let _ = cache.swap_all_migrated(namespace_id, false);
+            let _ = cache.swap_all_migrated(namespace_id, status.target_version, false);
         }
     }
 }
