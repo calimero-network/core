@@ -41,9 +41,9 @@ impl Handler<NodeMessage> for NodeManager {
                 outcome,
             } => {
                 // Synchronous snapshot for the admin `get_migration_status`
-                // route (Task 6c.10), assembled by the same function the
-                // receive-path reaction uses so both answer from one map. Pure
-                // observability read — a dropped receiver is fine to ignore.
+                // route, assembled by the same function the receive-path
+                // reaction uses so both answer from one map. Pure observability
+                // read - a dropped receiver is fine to ignore.
                 let _ = outcome.send(crate::migration_status::namespace_member_reports(
                     &self.migration_status_cache,
                     &self.datastore,

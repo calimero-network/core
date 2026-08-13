@@ -165,7 +165,7 @@ impl MigrationStatusCache {
     /// `fresh_peers` by the per-call `ttl` check.
     ///
     /// Returns `true` iff the heartbeat was stored AND its reported facts
-    /// differ from the entry it replaced — the edge the receive path hangs
+    /// differ from the entry it replaced - the edge the receive path hangs
     /// its rollup recompute off. A dropped heartbeat (drift, stale) and a
     /// stored one that only advanced `synced_up_to_hlc` both report `false`,
     /// so a re-delivery or an op-rate HLC bump costs nothing.
@@ -598,7 +598,7 @@ pub fn self_migration_report(
 ///
 /// The self-report injection is not optional: a node never receives its own
 /// gossiped heartbeat, so the receive cache never holds it, and an absent
-/// local node resolves to `unknown` — which pins `all_migrated` false forever.
+/// local node resolves to `unknown` - which pins `all_migrated` false forever.
 /// Stale entries are filtered by the cache's per-call TTL; a member with no
 /// fresh entry is simply absent, which the rollup also resolves to `unknown`.
 #[must_use]
@@ -623,7 +623,7 @@ pub(crate) fn namespace_member_reports(
 /// namespace rollup, mirror its counters to subscribers, and stamp the real
 /// completion timestamp on the false-to-true `all_migrated` edge.
 ///
-/// The recompute walks the namespace subtree, so it is not free — it runs only
+/// The recompute walks the namespace subtree, so it is not free - it runs only
 /// on a genuine facts change (bounded by the on-change heartbeat rate plus the
 /// low-frequency periodic tick, never by op volume), and through the same
 /// `compute_namespace_rollup` the admin read uses so the event stream and the
@@ -648,6 +648,13 @@ pub(crate) fn on_heartbeat_facts_changed(
         }
     };
 
+    // Target `0` means no upgrade record anywhere in the subtree: every member
+    // is trivially at target, so the green rollup describes no migration at all
+    // and announcing it would beat forever on a namespace that never migrated.
+    if status.target_version == 0 {
+        return;
+    }
+
     calimero_context::migration_events::emit(
         node_client,
         datastore,
@@ -662,7 +669,7 @@ pub(crate) fn on_heartbeat_facts_changed(
     );
 
     if status.rollup.all_migrated {
-        stamp_fleet_completion(datastore, node_client, &ns);
+        stamp_fleet_completion(datastore, node_client, &ns, status.target_version);
     }
 }
 
@@ -670,9 +677,14 @@ pub(crate) fn on_heartbeat_facts_changed(
 ///
 /// Guarded on `Completed { completed_at: None }`: an `InProgress` record still
 /// holds this node's `validate_upgrade` rule-4 mutex and must never be released
-/// from an observability path. The stamp is also the idempotence latch — once
+/// from an observability path. The stamp is also the idempotence latch - once
 /// `completed_at` is `Some`, every later heartbeat finds the guard closed and
 /// announces nothing, and that survives a restart.
+///
+/// Guarded a second time on the root record describing the very migration
+/// `target_version` was rolled up for: the target is the max across the root AND
+/// every descendant, so a root record left behind by an older migration would
+/// otherwise announce its own stale `to_version` on someone else's convergence.
 ///
 /// Namespace-root record only: a bare `upgrade_group` on a subgroup writes no
 /// root record and so gets no completion stamp, the same asymmetry
@@ -681,6 +693,7 @@ fn stamp_fleet_completion(
     datastore: &Store,
     node_client: &NodeClient,
     ns: &calimero_context_config::types::ContextGroupId,
+    target_version: u32,
 ) {
     let repo = calimero_governance_store::UpgradesRepository::new(datastore);
     let Ok(Some(mut record)) = repo.load(ns) else {
@@ -690,6 +703,9 @@ fn stamp_fleet_completion(
         record.status,
         calimero_store::key::GroupUpgradeStatus::Completed { completed_at: None }
     ) {
+        return;
+    }
+    if record.to_state_version != target_version {
         return;
     }
     let now = std::time::SystemTime::now()
@@ -1135,7 +1151,7 @@ mod tests {
     }
 
     /// `insert` reports whether the peer's REPORTED FACTS moved, not merely
-    /// whether the heartbeat was newer — `synced_up_to_hlc` advances on every
+    /// whether the heartbeat was newer - `synced_up_to_hlc` advances on every
     /// applied op and must not trigger a rollup recompute.
     #[test]
     fn insert_reports_a_facts_change_but_not_a_bare_hlc_advance() {

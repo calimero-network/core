@@ -52,8 +52,10 @@ pub struct MembershipChange {
     pub role: Option<GroupMemberRole>,
 }
 
-/// Mirrors [`GroupMembershipEvent`] so both route through the same
-/// group-subscription filter - that filter is this event's authorization.
+/// Shaped like [`GroupMembershipEvent`] but not authorized like it: delivery
+/// runs the group-subscription filter AND the per-variant
+/// [`GroupMigrationPayload::requires_group_admin`] branch, so a new variant
+/// carrying identities must declare its own gate there.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMigrationEvent {
@@ -83,8 +85,8 @@ pub enum GroupMigrationPayload {
         local_contexts_total: u32,
     },
     /// Fleet rollup counters, recomputed when a peer's heartbeat facts change.
-    /// Counters only - per-member detail comes from `migration-status`, which
-    /// the same membership gate governs.
+    /// Counters only - the per-member detail behind them stays admin-only, in
+    /// the `migration-status` read a plain member cannot call.
     #[serde(rename_all = "camelCase")]
     MigrationProgress {
         migrated: usize,

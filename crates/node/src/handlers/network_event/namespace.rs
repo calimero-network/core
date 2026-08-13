@@ -86,7 +86,7 @@ pub(super) fn handle_namespace_governance_delta(
         // AND cohort membership via `verify_migration_heartbeat` before
         // inserting — an unsigned or non-member heartbeat must never enter a
         // rollup. The heartbeat is ephemeral telemetry, not governance state,
-        // so there is no apply / ack / backfill — just the cache upsert and,
+        // so there is no apply / ack / backfill - just the cache upsert and,
         // when it moved the peer's facts, the fleet-rollup reaction.
         NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
             if heartbeat.namespace_id != namespace_id.into() {

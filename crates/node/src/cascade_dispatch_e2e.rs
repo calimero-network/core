@@ -1537,3 +1537,194 @@ async fn fleet_completion_stamps_the_record_once() {
         "the stamp is written once, not refreshed on every recompute"
     );
 }
+
+/// The completion stamp must describe the migration the rollup measured.
+///
+/// Every installation that ever upgraded carries a root record sitting at
+/// `Completed { completed_at: None }`, so the first heartbeat on an
+/// already-converged fleet finds an armed latch. The rollup's target is the max
+/// across the root AND every descendant: once a subgroup has been upgraded past
+/// the root, a green fleet is the subgroup's migration converging, and stamping
+/// the root would announce its stale `to_version` to every member subscriber.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn stale_root_record_does_not_announce_a_newer_migration() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    // The namespace's sole context is already loaded at state version 3, so
+    // this node's self-report is `migrated` against the subtree target.
+    let ns = ContextGroupId::from([0x72; 32]);
+    let subgroup = ContextGroupId::from([0x73; 32]);
+    let app_key = [0xB3; 32];
+    let app_v3 = ApplicationId::from([0xDD; 32]);
+    provision_group(&node.store, &ns, admin_pk, app_key, app_v3);
+    provision_group(&node.store, &subgroup, admin_pk, app_key, app_v3);
+    NamespaceRepository::new(&node.store)
+        .nest(&ns, &subgroup)
+        .expect("nest subgroup");
+    install_application(&node.store, app_v3, app_key, "0.3.0", 3);
+    register_context_for(&node.store, &ns, ContextId::from([0xC9; 32]), app_v3);
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .expect("store namespace identity");
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The old root migration, latch still armed months later.
+    let stale_root = GroupUpgradeValue {
+        from_version: "0.1.0".to_owned(),
+        to_version: "0.2.0".to_owned(),
+        migration: None,
+        initiated_at: 0,
+        initiated_by: admin_pk,
+        status: GroupUpgradeStatus::Completed { completed_at: None },
+        cascade_hlc: None,
+        cascade_seq: None,
+        to_state_version: 2,
+    };
+    UpgradesRepository::new(&node.store)
+        .save(&ns, &stale_root)
+        .expect("save stale root record");
+    // The migration actually in flight, recorded on the subgroup alone by a
+    // bare `upgrade_group` - this is what pulls the subtree target to 3.
+    UpgradesRepository::new(&node.store)
+        .save(
+            &subgroup,
+            &GroupUpgradeValue {
+                from_version: "0.2.0".to_owned(),
+                to_version: "0.3.0".to_owned(),
+                to_state_version: 3,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+                ..stale_root.clone()
+            },
+        )
+        .expect("save subgroup record");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 3,
+                residue_auto: 0,
+                synced_up_to_hlc: 0,
+                authored_remaining: 0,
+                migration_failed: None,
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    // The fleet really is green at the subtree target, so the completion path
+    // is reached - the guard, not a false rollup, is what declines below.
+    let progress = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup");
+    match progress.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "this node plus the peer");
+            assert_eq!(migrated, 2, "both report the subtree target of 3");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "the stale root record must not announce a completion for a migration \
+         it does not describe"
+    );
+    match UpgradesRepository::new(&node.store)
+        .load(&ns)
+        .expect("load record")
+        .expect("record exists")
+        .status
+    {
+        GroupUpgradeStatus::Completed { completed_at: None } => {}
+        other => panic!("the unmeasured record must be left untouched, got {other:?}"),
+    }
+}
+
+/// A namespace that has never migrated has nothing to report.
+///
+/// With no upgrade record anywhere in the subtree the target is `0`, every
+/// member is trivially at it, and the rollup is green forever - so an unguarded
+/// reaction would announce progress on every heartbeat, on every such
+/// namespace, for the life of the node.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn never_migrated_namespace_announces_nothing() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x74; 32]);
+    let app_key = [0xB4; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v1());
+    install_application(&node.store, app_id_v1(), app_key, "0.1.0", 1);
+    register_context_for(&node.store, &ns, ContextId::from([0xCA; 32]), app_id_v1());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .expect("store namespace identity");
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                residue_auto: 0,
+                synced_up_to_hlc: 0,
+                authored_remaining: 0,
+                migration_failed: None,
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "a namespace with no upgrade record has no migration to report on"
+    );
+}
