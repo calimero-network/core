@@ -244,6 +244,7 @@ pub async fn handle_subscription(
                 let caller_key = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
                 let mut subscribed_groups = Vec::new();
                 let mut admin_groups = Vec::new();
+                let mut revoked_groups = Vec::new();
                 for group_id in ctxs.group_ids.iter().copied() {
                     let access = crate::ws::caller_group_access(
                         &state.ctx_client,
@@ -254,10 +255,13 @@ pub async fn handle_subscription(
                     );
                     if !access.observe {
                         warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
+                        revoked_groups.push(group_id);
                         continue;
                     }
                     if access.admin {
                         admin_groups.push(group_id);
+                    } else {
+                        revoked_groups.push(group_id);
                     }
                     subscribed_groups.push(group_id);
                 }
@@ -272,6 +276,16 @@ pub async fn handle_subscription(
                     }
                     for gid in &admin_groups {
                         let _ = inner.admin_group_subscriptions.insert(*gid);
+                    }
+                    // A subscribe re-authorizes every group it names, so it must
+                    // be able to take authority away too - and an SSE session
+                    // outlives the connection, so "until reconnect" would not
+                    // bound it here at all.
+                    for gid in &revoked_groups {
+                        let _ = inner.admin_group_subscriptions.remove(gid);
+                        if !subscribed_groups.contains(gid) {
+                            let _ = inner.group_subscriptions.remove(gid);
+                        }
                     }
                     inner.touch();
                     inner.to_persisted()

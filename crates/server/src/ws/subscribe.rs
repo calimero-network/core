@@ -61,6 +61,7 @@ async fn handle(
     // in the same pass, since admin-only payloads ride the same subscription.
     let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
     let mut admin_groups = Vec::new();
+    let mut revoked_groups = Vec::new();
     for group_id in request.group_ids {
         let access = caller_group_access(
             &state.ctx_client,
@@ -69,14 +70,17 @@ async fn handle(
             caller.as_ref(),
             &group_id,
         );
-        if access.observe {
-            if access.admin {
-                admin_groups.push(group_id);
-            }
-            subscribed_groups.push(group_id);
-        } else {
+        if !access.observe {
             warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
+            revoked_groups.push(group_id);
+            continue;
         }
+        if access.admin {
+            admin_groups.push(group_id);
+        } else {
+            revoked_groups.push(group_id);
+        }
+        subscribed_groups.push(group_id);
     }
 
     // Acquire the write lock only to record the approved subscriptions.
@@ -90,6 +94,16 @@ async fn handle(
         }
         for gid in &admin_groups {
             let _ = inner.admin_group_subscriptions.insert(*gid);
+        }
+        // A subscribe re-authorizes every group it names, so it must be able to
+        // take authority away too: a caller demoted since an earlier subscribe
+        // would otherwise keep the admin-only payloads until it reconnects. A
+        // group denied outright loses the plain subscription with it.
+        for gid in &revoked_groups {
+            let _ = inner.admin_group_subscriptions.remove(gid);
+            if !subscribed_groups.contains(gid) {
+                let _ = inner.group_subscriptions.remove(gid);
+            }
         }
     }
 
