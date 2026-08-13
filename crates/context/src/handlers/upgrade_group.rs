@@ -1074,6 +1074,30 @@ pub(crate) async fn resolve_resumed_migration(
     Ok(resolved.flatten().map(|method| MigrationParams { method }))
 }
 
+/// Announce how far this node's own contexts have got through the cascade.
+///
+/// One reader for the `subgroup_id` derivation: the propagator reports progress
+/// from three places, and a payload keyed on anything but the group being walked
+/// would name the wrong subgroup to an admin.
+fn emit_cascade_progress(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    datastore: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    local_contexts_swapped: u32,
+    local_contexts_total: u32,
+) {
+    crate::migration_events::emit(
+        node_client,
+        datastore,
+        group_id,
+        GroupMigrationPayload::CascadeProgress {
+            subgroup_id: Hash::from(group_id.to_bytes()),
+            local_contexts_swapped,
+            local_contexts_total,
+        },
+    );
+}
+
 pub(crate) async fn propagate_upgrade(
     context_client: calimero_context_client::client::ContextClient,
     node_client: calimero_node_primitives::client::NodeClient,
@@ -1133,15 +1157,12 @@ pub(crate) async fn propagate_upgrade(
                     if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
                         error!(?group_id, ?err, "failed to persist upgrade progress");
                     }
-                    crate::migration_events::emit(
+                    emit_cascade_progress(
                         &node_client,
                         &datastore,
                         &group_id,
-                        GroupMigrationPayload::CascadeProgress {
-                            subgroup_id: Hash::from(group_id.to_bytes()),
-                            local_contexts_swapped: completed,
-                            local_contexts_total: total_contexts as u32,
-                        },
+                        completed,
+                        total_contexts as u32,
                     );
                     continue;
                 }
@@ -1219,15 +1240,12 @@ pub(crate) async fn propagate_upgrade(
             if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
                 error!(?group_id, ?err, "failed to persist upgrade progress");
             }
-            crate::migration_events::emit(
+            emit_cascade_progress(
                 &node_client,
                 &datastore,
                 &group_id,
-                GroupMigrationPayload::CascadeProgress {
-                    subgroup_id: Hash::from(group_id.to_bytes()),
-                    local_contexts_swapped: completed,
-                    local_contexts_total: total_contexts as u32,
-                },
+                completed,
+                total_contexts as u32,
             );
         }
 
@@ -1289,15 +1307,12 @@ pub(crate) async fn propagate_upgrade(
     if let Err(err) = update_upgrade_status(&datastore, &group_id, final_status) {
         error!(?group_id, ?err, "failed to persist final upgrade status");
     }
-    crate::migration_events::emit(
+    emit_cascade_progress(
         &node_client,
         &datastore,
         &group_id,
-        GroupMigrationPayload::CascadeProgress {
-            subgroup_id: Hash::from(group_id.to_bytes()),
-            local_contexts_swapped: completed,
-            local_contexts_total: total_contexts as u32,
-        },
+        completed,
+        total_contexts as u32,
     );
 
     info!(
