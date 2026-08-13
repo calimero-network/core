@@ -1,4 +1,5 @@
 use calimero_context_config::types::ContextGroupId;
+use calimero_store::handle::HandleError;
 use calimero_store::key::{
     GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_UPGRADE_PREFIX,
 };
@@ -45,7 +46,9 @@ impl<'a> UpgradesRepository<'a> {
 
     /// Scans all `GroupUpgradeKey` entries and returns
     /// `(group_id, upgrade_value)` pairs where status is `InProgress`.
-    /// Used for crash recovery on startup.
+    /// Used for crash recovery on startup. A row that fails to decode is
+    /// skipped rather than fatal - recovery must not be blocked by a record
+    /// it has no use for.
     pub fn enumerate_in_progress(&self) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
         let keys = collect_keys_with_prefix(
             self.store,
@@ -56,10 +59,25 @@ impl<'a> UpgradesRepository<'a> {
         let handle = self.store.handle();
         let mut results = Vec::new();
         for key in keys {
-            if let Some(upgrade) = handle.get(&key)? {
-                if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
-                    results.push((ContextGroupId::from(key.group_id()), upgrade));
+            let upgrade = match handle.get(&key) {
+                Ok(Some(upgrade)) => upgrade,
+                Ok(None) => continue,
+                // A record this binary cannot decode is not one recovery can act
+                // on, and it must not strand the upgrades that decode fine: a
+                // `Completed` row an older binary wrote is unreadable here, and
+                // every node carries those the moment it upgrades.
+                Err(HandleError::CodecError(err)) => {
+                    tracing::warn!(
+                        group_id = %hex::encode(key.group_id()),
+                        %err,
+                        "skipping an undecodable group upgrade record during recovery scan"
+                    );
+                    continue;
                 }
+                Err(HandleError::LayerError(err)) => return Err(err),
+            };
+            if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
+                results.push((ContextGroupId::from(key.group_id()), upgrade));
             }
         }
         Ok(results)
@@ -168,6 +186,39 @@ mod tests {
         )
         .unwrap();
         let in_progress = repo.enumerate_in_progress().unwrap();
+        assert_eq!(in_progress.len(), 1);
+        assert_eq!(in_progress[0].0, gid_progress);
+    }
+
+    /// A row this binary cannot decode - notably a `Completed` record written
+    /// before `fleet_completed_at` existed, which every node holds the moment it
+    /// upgrades - must not strand the in-progress upgrades recovery exists to
+    /// resume.
+    #[test]
+    fn enumerate_in_progress_survives_an_undecodable_record() {
+        use calimero_store::layer::WriteLayer;
+        use calimero_store::slice::Slice;
+
+        let mut store = test_store();
+        let gid_progress = test_group_id();
+        UpgradesRepository::new(&store)
+            .save(
+                &gid_progress,
+                &sample_upgrade(GroupUpgradeStatus::InProgress {
+                    total: 5,
+                    completed: 0,
+                    failed: 0,
+                }),
+            )
+            .unwrap();
+        let undecodable = GroupUpgradeKey::new([0xCC; 32]);
+        store
+            .put(&undecodable, Slice::from(&b"not a GroupUpgradeValue"[..]))
+            .unwrap();
+
+        let in_progress = UpgradesRepository::new(&store)
+            .enumerate_in_progress()
+            .unwrap();
         assert_eq!(in_progress.len(), 1);
         assert_eq!(in_progress[0].0, gid_progress);
     }
