@@ -274,6 +274,22 @@ steps:
     type: wait
     seconds: 8
 
+  # By ACCOUNT: user storage is keyed per person, and an account is derived from
+  # a node's root rather than carried on the wire, so it has to be read off the
+  # node that owns it.
+  #
+  # Read BEFORE the reconciliation barrier, though it only reads node-1's own
+  # local root and converges nothing. The convergence lint counts any `call` as a
+  # mutation, so leaving it after the barrier made the cross-node read below look
+  # like it raced a node-1 write.
+  - name: Read node-1's account
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: my_account
+    outputs:
+      node1_account: result.output
+
   - name: Wait for context reconciliation
     type: wait_for_sync
     context_id: '{{ctx}}'
@@ -301,17 +317,6 @@ steps:
     namespace_id: '{{ns}}'
     outputs:
       node1_id: publicKey
-
-  # By ACCOUNT: user storage is keyed per person, and an account is derived from
-  # a node's root rather than carried on the wire, so it has to be read off the
-  # node that owns it.
-  - name: Read node-1's account
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx}}'
-    method: my_account
-    outputs:
-      node1_account: result.output
 
   - name: Read node-1's User entity from node-2
     type: call
