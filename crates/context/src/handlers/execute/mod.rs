@@ -567,7 +567,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }
                 Either::Right(parts) => parts,
             };
-            match action {
+            let upgraded = match action {
                 // Replay the group's upgrade ladder hop by hop, re-resolving
                 // after each committed hop. The per-access budget bounds a
                 // pathological marker-write failure loop; a longer ladder
@@ -773,7 +773,31 @@ impl Handler<ExecuteRequest> for ContextManager {
                         .boxed_local()
                     }
                 }
-            }
+            };
+
+            // Every arm above binds execution to the activated blob without
+            // ever running the install, so heal the application row once the
+            // ladder has settled - otherwise the rollup keeps reporting this
+            // context on the last version this node installed.
+            upgraded
+                .then(move |result, act, _ctx| {
+                    let datastore = act.datastore.clone();
+                    let node_client = act.node_client.clone();
+                    async move {
+                        (
+                            result,
+                            install_activated_blob(&datastore, &node_client, &context_id).await,
+                        )
+                    }
+                    .into_actor(act)
+                })
+                .map(|(result, installed), act, _ctx| {
+                    if let Some(application_id) = installed {
+                        act.evict_application_caches(application_id);
+                    }
+                    result
+                })
+                .boxed_local()
         });
 
         // Re-fetch context after possible lazy upgrade (application_id may have changed)
@@ -1835,6 +1859,53 @@ async fn ensure_blob_local(
             false
         }
     }
+}
+
+/// Reinstall the application row in place from the blob this context just
+/// activated, so `ApplicationMeta` (what the migration rollup reads) reports
+/// the version the context actually executes. Returns the reinstalled id so
+/// the caller can evict its now-stale cache entry. Best-effort: a row left
+/// behind only misreports the version, it never changes what executes.
+async fn install_activated_blob(
+    datastore: &Store,
+    node_client: &NodeClient,
+    context_id: &ContextId,
+) -> Option<ApplicationId> {
+    let blob = crate::activation::uninstalled_activated_blob(datastore, context_id)?;
+    let blob_id = calimero_primitives::blobs::BlobId::from(blob);
+    if !node_client.has_blob(&blob_id).unwrap_or(false) {
+        return None;
+    }
+    // The row's own source: an in-place reinstall re-derives the same bundle
+    // id, it does not re-point the context anywhere new.
+    let source = installed_source(datastore, context_id)?;
+    match node_client
+        .install_application_from_bundle_blob(&blob_id, &source)
+        .await
+    {
+        Ok(application_id) => {
+            info!(%context_id, %blob_id, %application_id, "installed activated bytecode in place");
+            Some(application_id)
+        }
+        Err(err) => {
+            warn!(%context_id, %blob_id, %err, "activated bytecode not installable; reported version will lag until the next install");
+            None
+        }
+    }
+}
+
+/// The source URL recorded on a context's current application row.
+fn installed_source(
+    datastore: &Store,
+    context_id: &ContextId,
+) -> Option<calimero_primitives::application::ApplicationSource> {
+    let handle = datastore.handle();
+    let meta = handle
+        .get(&key::ContextMeta::new(*context_id))
+        .ok()
+        .flatten()?;
+    let application = handle.get(&meta.application).ok().flatten()?;
+    application.source.parse().ok()
 }
 
 /// Store-level executing-blob resolution for a context: its activation

@@ -1187,7 +1187,8 @@ impl SyncManager {
         // the SAME in-place install the normal blob-share path runs
         // (`install_bundle_after_blob_sharing`) against the blob the activation
         // marker now points at, so the peer's installed version matches the
-        // adopted one — exactly as a normally-upgraded peer ends up.
+        // adopted one. The lazy-upgrade path heals the same way: only a peer
+        // that installed the bundle itself gets there without help.
         if let Some(bound) = calimero_context::activation::activated_blob(
             self.context_client.datastore(),
             &context_id,

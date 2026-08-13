@@ -32,6 +32,24 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
+/// The blob a context executes but was never installed from, or `None` when
+/// its application row already agrees. A peer that converges by activation
+/// (lazy upgrade, cascade) loads the target bytecode by blob key and never
+/// runs the install, so the row - and `ApplicationMeta.state_version`, which
+/// the migration rollup reads as "what version is this context on" - stays
+/// pinned to the last bundle this node did install.
+pub fn uninstalled_activated_blob(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
+    let activated = activated_blob(store, context_id)?;
+    let handle = store.handle();
+    let meta = handle
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()
+        .flatten()?;
+    let application = handle.get(&meta.application).ok().flatten()?;
+    let installed: [u8; 32] = *application.bytecode.blob_id().as_ref();
+    (installed != activated).then_some(activated)
+}
+
 /// The next upgrade rung a context bound to `bound` must replay from the
 /// group's ladder, or `None` when it is already at the group's current
 /// bytecode. The LAST occurrence of `bound` positions the context (an
@@ -244,6 +262,64 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(meta.application.application_id(), new);
+    }
+
+    /// Build a context bound to `application_id`, whose row was installed from
+    /// blob `installed`.
+    fn context_installed_from(store: &Store, ctx: ContextId, installed: [u8; 32]) {
+        use calimero_store::key::{ApplicationMeta as ApplicationMetaKey, BlobMeta};
+        use calimero_store::types::{ApplicationMeta, ContextMeta, PackageInfo};
+
+        let application_id = ApplicationId::from([0xAA; 32]);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextMeta::new(ctx),
+                &ContextMeta::new(
+                    ApplicationMetaKey::new(application_id),
+                    [0u8; 32],
+                    vec![],
+                    None,
+                ),
+            )
+            .unwrap();
+        handle
+            .put(
+                &ApplicationMetaKey::new(application_id),
+                &ApplicationMeta::new(
+                    BlobMeta::new(installed.into()),
+                    0,
+                    "http://example.com".into(),
+                    Box::default(),
+                    BlobMeta::new([0u8; 32].into()),
+                    PackageInfo {
+                        package: "pkg".into(),
+                        version: "1.0.0".into(),
+                        signer_id: "signer".into(),
+                        state_version: 1,
+                    },
+                ),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn uninstalled_activated_blob_flags_only_a_row_left_behind() {
+        let store = store();
+        let ctx = ContextId::from([0x44; 32]);
+        context_installed_from(&store, ctx, [0x01; 32]);
+
+        // No marker: the row is all there is, nothing to heal.
+        assert_eq!(uninstalled_activated_blob(&store, &ctx), None);
+
+        // Converged by activation alone: the context executes 0x02 while its
+        // row still records the 0x01 bundle it installed.
+        record_activation(&store, &ctx, [0x02; 32]);
+        assert_eq!(uninstalled_activated_blob(&store, &ctx), Some([0x02; 32]));
+
+        // Healed: the row now records what the marker points at.
+        context_installed_from(&store, ctx, [0x02; 32]);
+        assert_eq!(uninstalled_activated_blob(&store, &ctx), None);
     }
 
     #[test]

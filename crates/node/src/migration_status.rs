@@ -1428,6 +1428,81 @@ mod tests {
         assert!(emit, "residue drop must edge-trigger");
     }
 
+    /// The rollup reads the version off the application row, so a peer that
+    /// converged by activation alone - it executes the target bytecode but
+    /// never ran the install - reports its OLD version until the row is healed.
+    #[test]
+    fn loaded_version_lags_until_the_activated_blob_is_installed() {
+        use calimero_primitives::context::ContextId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{ApplicationMeta as ApplicationMetaKey, BlobMeta};
+        use calimero_store::types::{ApplicationMeta, ContextMeta, PackageInfo};
+        use std::sync::Arc;
+
+        const V1_BLOB: [u8; 32] = [0x01; 32];
+        const V2_BLOB: [u8; 32] = [0x02; 32];
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from([0x77u8; 32]);
+        let application_id = calimero_primitives::application::ApplicationId::from([0xAAu8; 32]);
+
+        let install = |blob: [u8; 32], state_version: u32| {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ContextMeta::new(context_id),
+                    &ContextMeta::new(
+                        ApplicationMetaKey::new(application_id),
+                        [0u8; 32],
+                        vec![],
+                        None,
+                    ),
+                )
+                .unwrap();
+            handle
+                .put(
+                    &ApplicationMetaKey::new(application_id),
+                    &ApplicationMeta::new(
+                        BlobMeta::new(blob.into()),
+                        0,
+                        "http://example.com".into(),
+                        Box::default(),
+                        BlobMeta::new([0u8; 32].into()),
+                        PackageInfo {
+                            package: "pkg".into(),
+                            version: "1.0.0".into(),
+                            signer_id: "signer".into(),
+                            state_version,
+                        },
+                    ),
+                )
+                .unwrap();
+        };
+
+        install(V1_BLOB, 1);
+        calimero_context::activation::record_activation(&store, &context_id, V2_BLOB);
+
+        assert_eq!(
+            loaded_context_version(&store, &context_id),
+            Some(1),
+            "an un-healed row keeps the rollup on the last installed version"
+        );
+        assert_eq!(
+            calimero_context::activation::uninstalled_activated_blob(&store, &context_id),
+            Some(V2_BLOB),
+            "the heal must fire for exactly this context"
+        );
+
+        // What the in-place install of the activated blob writes.
+        install(V2_BLOB, 2);
+
+        assert_eq!(loaded_context_version(&store, &context_id), Some(2));
+        assert_eq!(
+            calimero_context::activation::uninstalled_activated_blob(&store, &context_id),
+            None
+        );
+    }
+
     #[test]
     fn facts_for_namespace_reads_target_from_upgrade_record() {
         // The on-change driver computes the node's advertised facts from local
