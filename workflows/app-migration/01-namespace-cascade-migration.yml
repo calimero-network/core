@@ -292,16 +292,8 @@ steps:
   #      asserts node 2's lazy migration explicitly.
   #
   # So node 2 DOES run `migrate_v1_to_v2` — just via the lazy path, not
-  # the eager propagator. This step is intentionally emitter-scoped.
-  - name: Assert migration ran on node 1
-    type: assert_log_present
-    nodes:
-      - app-migration-cascade-1
-    patterns:
-      - "Executing migration"
-      - "migrate_v1_to_v2"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # the eager propagator. Both triggers land on the same reported ABI state
+  # version, asserted together in Phase 7b''.
 
   # Phase 7b': Receiver-side cascade apply log on EACH node
   # separately.
@@ -356,20 +348,48 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  # Phase 7b'': Receiver-side migration ran ON node 2 (lazy upgrade).
-  # Proves node 2 self-migrated rather than passively receiving state
-  # — the lazy path logs `performing lazy upgrade before execution`
-  # then the same `Executing migration` / `Migrated state written
-  # successfully` lines the emitter's eager propagator logs.
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
-    type: assert_log_present
-    nodes:
-      - app-migration-cascade-2
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # Phase 7b'': proves node 2 self-migrated rather than passively receiving
+  # state. A migration is a whole-root replacement and is never gossiped, so
+  # node 2's reported state version can only reach the target by migrating its
+  # own bytes. schema_info cannot say that: it reads "2.0.0" either way.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-cascade-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
+
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-cascade-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
 
   - name: Assert v2 schema on node 1 (v1 data preserved + notes seeded)
     type: json_assert

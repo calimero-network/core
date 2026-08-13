@@ -260,7 +260,9 @@ steps:
       - 'json_subset({{item_node2}}, {"output": "v1-value"})'
 
   # Each node replayed TWO ladder hops, each migration executed in its
-  # own release's binary.
+  # own release's binary. The hop COUNT stays a log assertion: core exposes the
+  # current and target state version but nothing about the path between them,
+  # so a one-shot v2 -> v4 jump would satisfy every API assertion available.
   - name: Assert chained replay ran on node 1
     type: assert_log_present
     nodes:
@@ -280,6 +282,47 @@ steps:
       - "Executing migration"
       - "Migrated state written successfully"
     min_matches: 2
+
+  # Where the replay landed. The "4.0.0" the schema_info reads compare against
+  # is a constant compiled into the v4 binary, so it reads the same for a node
+  # that loaded v4 over state left at v2. A member stalled on an intermediate
+  # rung is visible in the rollup's ABI state version and nowhere else.
+  - name: Wait for both members to report the v4 target state version
+    type: assert_migration_complete
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
+
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_min_reported: min_reported_schema_version
+      mig_residue: residue_total
+
+  - name: Assert both members finished the ladder rather than stalling on a rung
+    type: json_assert
+    statements:
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # The subgroup's record targets state version 4, the last rung.
+      - "equal({{mig_target}}, 4)"
+      # A member stranded at v2 or v3 lands here, not in the semver reads.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_min_reported}}, 4)"
+      - "equal({{mig_residue}}, 0)"
 
   # Phase 7: post-catch-up convergence — writes still flow both ways.
   - name: Write post-catchup item on node 1

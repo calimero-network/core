@@ -225,27 +225,47 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  # Both nodes self-migrated via the lazy path — assert the migration
-  # logs on EACH after its triggering read above.
-  - name: Assert lazy migration ran on node 1
-    type: assert_log_present
-    nodes:
-      - app-migration-archive-1
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # schema_info cannot prove a migration ran: the version string it returns is a
+  # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
+  # v1 bytes too. The rollup carries each member's ABI STATE version instead.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
-    type: assert_log_present
-    nodes:
-      - app-migration-archive-2
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
 
   - name: Assert v2 schema on node 1 (legacy archived, name + counter preserved)
     type: json_assert

@@ -307,12 +307,40 @@ steps:
       - 'json_equal({{local_n1a}}, {"output": 2})'
       - 'json_equal({{local_n2a}}, {"output": 2})'
 
-  # Phase 7b: give the converted deltas time to gossip + apply on the peer.
-  # (wait_for_sync can return instantly on a trivially-matching DAG-head check,
-  # racing the convert delta, so wait explicitly before cross-node assertions.)
-  - name: Wait for converted notes to replicate as normal signed deltas
-    type: wait
-    seconds: 15
+  # Phase 7b: CAUSAL BARRIER for the cross-node reads in Phase 9.
+  #
+  # The convert re-stamps each entry without changing its value, so it leaves
+  # the context root hash where it was and a wait_for_sync over that hash
+  # returns on its first poll whether or not the convert replicated. An INSERT
+  # does move the hash, and each barrier insert is causally after that node's
+  # own convert, so converging on it implies the convert landed. Do not replace
+  # these with a bare wait: the gate is the point.
+  - name: Node 1 writes a barrier note after its convert
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n1-barrier"
+      text: "node1-post-convert-barrier"
+
+  - name: Node 2 writes a barrier note after its convert
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n2-barrier"
+      text: "node2-post-convert-barrier"
+
+  - name: Wait for both barrier notes, and the converts before them, to converge
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-ux-1
+      - app-migration-ux-2
+    timeout: 90
+    trigger_sync: true
 
   # Phase 8: NEGATIVE node-log validation.
   - name: Assert the owner gate never tripped on either node
@@ -333,22 +361,8 @@ steps:
 
   # Phase 9: CONVERGENCE — every note is at schema 2 on BOTH nodes, and values
   # are preserved. node 2 sees node 1's converted notes at v2 (the convert
-  # replicated as ordinary signed deltas).
-  # Phase 9 asserts CROSS-NODE convergence, so it has to wait for it. Without
-  # this, the reads below race the deltas they are asserting on: node 1's own
-  # note is local and node 1's note on node 2 has had the whole convert phase to
-  # propagate, but node 2's note on node 1 is the last write to travel and reads
-  # back `null` under CI load — a failure that looks like a migration bug and is
-  # really a missing barrier.
-  - name: Wait for the converted notes to converge on both nodes
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-ux-1
-      - app-migration-ux-2
-    timeout: 90
-    trigger_sync: true
-
+  # replicated as ordinary signed deltas). The barrier in Phase 7b is what makes
+  # these reads a convergence assertion rather than a timing one.
   - name: Read node 1's note schema_version AFTER convert (node 1)
     type: call
     node: app-migration-ux-1
