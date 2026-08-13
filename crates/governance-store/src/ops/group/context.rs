@@ -105,21 +105,20 @@ impl<'a> GroupApplyCtx<'a> {
         to_state_version: Option<u32>,
         local_contexts_total: u32,
     ) {
-        let row = |id: &ApplicationId| {
-            self.store
-                .handle()
-                .get(&calimero_store::key::ApplicationMeta::new(*id))
-                .ok()
-                .flatten()
-        };
-        let version = |id: &ApplicationId| {
-            row(id).map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
-        };
-        let from_version = version(previous_application_id);
+        let from_version = application_version(self.store, previous_application_id);
         let to_state_version = to_state_version
-            .or_else(|| row(target_application_id).map(|app| app.state_version))
+            .or_else(|| {
+                self.store
+                    .handle()
+                    .get(&calimero_store::key::ApplicationMeta::new(
+                        *target_application_id,
+                    ))
+                    .ok()
+                    .flatten()
+                    .map(|app| app.state_version)
+            })
             .unwrap_or_default();
-        let to_version = version(target_application_id);
+        let to_version = application_version(self.store, target_application_id);
         self.queue_event(crate::op_events::OpEvent::MigrationStarted {
             group_id: self.group_id.to_bytes(),
             from_version,
@@ -234,4 +233,18 @@ impl<'a> GroupApplyCtx<'a> {
             signer: format!("{identity}"),
         });
     }
+}
+
+/// The semver string on `id`'s local application row, or `"unknown"`.
+///
+/// Nothing on the wire carries these, so every migration announcement resolves
+/// them against this node's own rows. One reader keeps the announcement and the
+/// per-descendant cascade record from falling back differently.
+pub(crate) fn application_version(store: &Store, id: &ApplicationId) -> String {
+    store
+        .handle()
+        .get(&calimero_store::key::ApplicationMeta::new(*id))
+        .ok()
+        .flatten()
+        .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
 }

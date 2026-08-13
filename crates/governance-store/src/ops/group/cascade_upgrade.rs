@@ -17,9 +17,7 @@ use crate::{
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_store::key::{
-    ApplicationMeta, GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead,
-};
+use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead};
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
@@ -89,22 +87,14 @@ pub(crate) fn apply(
         .flatten()
         .map(|meta| meta.target_application_id);
 
-    // Semver strings for the per-descendant record, resolved from this node's
-    // own application rows: nothing on the wire carries them, and the empty
-    // strings this used to write are what a receiver's completion banner
-    // renders. Same local lookup, same `unknown` fallback, as the announcement.
-    let version_of = |id: &ApplicationId| {
-        store
-            .handle()
-            .get(&ApplicationMeta::new(*id))
-            .ok()
-            .flatten()
-            .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
-    };
-    let to_version = version_of(target_application_id);
-    let from_version = previous_application_id
-        .as_ref()
-        .map_or_else(|| "unknown".to_owned(), version_of);
+    // Semver strings for the per-descendant record: the empty strings this used
+    // to write are what a receiver's completion banner renders. Shares the
+    // announcement's reader, so the two cannot fall back differently.
+    let to_version = super::context::application_version(store, target_application_id);
+    let from_version = previous_application_id.as_ref().map_or_else(
+        || "unknown".to_owned(),
+        |id| super::context::application_version(store, id),
+    );
 
     let mut any_applied = false;
     let mut local_contexts_total: u32 = 0;
