@@ -23,7 +23,7 @@
 //! namespace-membership state into this module, and duplicate work since the
 //! receiver gate runs first — exactly the split the readiness cache uses.
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
@@ -882,6 +882,9 @@ pub const DEFAULT_EMIT_INTERVAL: Duration = Duration::from_secs(30);
 pub struct MigrationEmitter {
     pub node_client: NodeClient,
     pub datastore: Store,
+    /// Shared with the gossip receive path, which folds peers' heartbeats into
+    /// it. The rollup needs both sides: this node never receives its own.
+    pub cache: Arc<MigrationStatusCache>,
     pub interval: Duration,
     /// Last facts we emitted per namespace — the on-change reference for
     /// [`should_emit_on_change`] and the carry-forward source for the
@@ -934,6 +937,16 @@ impl Handler<MigrationFactsUpdate> for MigrationEmitter {
         if should_emit_on_change(last, facts) {
             self.last_emitted.insert(msg.namespace_id, facts);
             self.publish_heartbeat(msg.namespace_id, facts);
+            // The receive path recomputes on a PEER's facts moving, and a node
+            // never receives its own heartbeat - so without this a cohort of one,
+            // or a node that is the last to converge among quiet peers, would
+            // publish its convergence and never announce it.
+            on_heartbeat_facts_changed(
+                &self.datastore,
+                &self.node_client,
+                &self.cache,
+                msg.namespace_id,
+            );
         } else {
             // No edge — still record the carry-forward value so the next
             // periodic beat advertises the latest HLC.

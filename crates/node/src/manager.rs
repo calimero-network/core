@@ -245,6 +245,7 @@ impl NodeManager {
         let emitter = MigrationEmitter {
             node_client: self.clients.node.clone(),
             datastore: self.datastore.clone(),
+            cache: Arc::clone(&self.migration_status_cache),
             interval: DEFAULT_EMIT_INTERVAL,
             last_emitted: std::collections::HashMap::new(),
         };
