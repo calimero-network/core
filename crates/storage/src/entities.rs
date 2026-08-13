@@ -354,7 +354,10 @@ impl Element {
     }
 
     /// Helper to set the storage domain to `User`.
-    pub fn set_user_domain(&mut self, owner: PublicKey) {
+    ///
+    /// `owner` is the ACCOUNT that may later change this entry, not the device
+    /// writing it now — see [`StorageType::User`].
+    pub fn set_user_domain(&mut self, owner: AccountId) {
         self.metadata.storage_type = StorageType::User {
             owner,
             signature_data: None, // Will be signed later
@@ -439,11 +442,15 @@ pub struct SignatureData {
     /// Nonce (counter/timestamp) to avoid replaying attacks.
     pub nonce: u64,
     /// Which key produced the signature. `Option` for wire compatibility
-    /// only — a signed `Shared`/`SharedMember` write that names nobody is
-    /// rejected as `InvalidSignature`, because resolving the author is what
-    /// makes "is this principal a writer?" a separate question from "does
-    /// this signature verify?". Ignored for `User`, where the owner is
-    /// already known.
+    /// only — a signed `Shared`/`SharedMember`/`User` write that names nobody
+    /// is rejected as `InvalidSignature`, because resolving the author is what
+    /// makes "is this principal authorized?" a separate question from "does
+    /// this signature verify?".
+    ///
+    /// Required for `User` too, now that its `owner` is an account: an account
+    /// is a content hash, so it cannot be the key a signature verifies against.
+    /// This field is that key, and it is also the record of which of the
+    /// owner's devices wrote the entry.
     pub signer: Option<PublicKey>,
 }
 
@@ -595,9 +602,23 @@ pub enum StorageType {
     Public,
     /// Verifiable, user-signed, synchronized storage.
     User {
-        /// The owner of the data where this storage type is applied.
-        owner: PublicKey,
-        /// A signature and nonce for the data. The signature should be done by the `owner`.
+        /// The **account** that owns this entry — the principal the "only the
+        /// author may change it" gate is enforced against.
+        ///
+        /// An account, not a device key, so a person editing from their laptop
+        /// can still change what they wrote from their phone. Authorship is an
+        /// access-control question, and access control names people; the
+        /// per-replica identities that CRDT mechanics need (an LWW tiebreak, a
+        /// counter slot, an HLC seed) stay on [`crate::env::device_id`] and are
+        /// untouched by this — see its doc for why they must.
+        ///
+        /// Which DEVICE wrote the entry is not lost: it is
+        /// [`SignatureData::signer`], the key the signature actually verifies
+        /// against.
+        owner: AccountId,
+        /// A signature and nonce for the data. The signature is produced by one
+        /// of `owner`'s device keys, named in [`SignatureData::signer`] — an
+        /// `AccountId` is a content hash and nothing signs as one.
         signature_data: Option<SignatureData>,
     },
     /// Data that can be set only once, can'be modified or deleted.

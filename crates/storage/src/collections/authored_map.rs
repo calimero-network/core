@@ -1,9 +1,9 @@
 //! Shared-keyspace map with per-entry ownership.
 //!
 //! `AuthoredMap<K, V>` exposes an `UnorderedMap<K, V>` whose entries each carry
-//! a `StorageType::User { owner }` stamp set to the inserter's public key.
-//! Any context member can insert a new key; only the inserter can update or
-//! remove their own entries. Reads are unrestricted.
+//! a `StorageType::User { owner }` stamp set to the inserter's ACCOUNT. Any
+//! context member can insert a new key; only the owning account can update or
+//! remove its entries — from any of its devices. Reads are unrestricted.
 //!
 //! The per-entry authorization is enforced at merge time in
 //! `Interface::apply_action` (see `interface.rs`). Local `update`/`remove`
@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{compute_id, StoreError, UnorderedMap, ValueRef};
@@ -30,12 +30,11 @@ use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};
 
-/// A map keyed by `K` where each entry is owned by the public key that
-/// inserted it.
+/// A map keyed by `K` where each entry is owned by the account that inserted it.
 ///
 /// Internally an `UnorderedMap<K, V>`. Each entry's `StorageType` is
-/// `User { owner }`, set at insert time from `env::device_id()`. Only the
-/// owner can `update` or `remove` their entry.
+/// `User { owner }`, set at insert time from `env::account_id()`. Only that
+/// account can `update` or `remove` the entry, from any device it holds.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct AuthoredMap<K, V, S: StorageAdaptor = MainStorage>
 where
@@ -203,11 +202,11 @@ where
         self.inner.contains(k)
     }
 
-    /// Returns the public key of the owner of `k`, if any.
+    /// Returns the account that owns of `k`, if any.
     ///
     /// # Errors
     /// Returns any underlying storage error.
-    pub fn owner_of(&self, k: &K) -> Result<Option<PublicKey>, StoreError> {
+    pub fn owner_of(&self, k: &K) -> Result<Option<AccountId>, StoreError> {
         let id = self.entry_id(k);
         let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
         Ok(metadata.and_then(|m| match m.storage_type {
@@ -346,7 +345,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use calimero_primitives::identity::PublicKey;
+    use calimero_account::AccountId;
     use serial_test::serial;
 
     use super::AuthoredMap;
@@ -375,21 +374,25 @@ mod tests {
         );
     }
 
-    fn pk(bytes: [u8; 32]) -> PublicKey {
-        bytes.into()
+    /// The tests name the OWNER, and an owner is an account.
+    fn acct(bytes: [u8; 32]) -> AccountId {
+        AccountId::from(bytes)
     }
 
     #[test]
     #[serial]
     fn insert_stamps_current_executor_as_owner() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).expect("insert");
 
         assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
-        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
+        assert_eq!(
+            map.owner_of(&"apple".to_owned()).unwrap(),
+            Some(acct(ALICE))
+        );
         assert_eq!(map.len().unwrap(), 1);
     }
 
@@ -397,7 +400,7 @@ mod tests {
     #[serial]
     fn insert_rejects_existing_key() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -416,26 +419,29 @@ mod tests {
     #[serial]
     fn update_by_owner_succeeds() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
         map.update(&"apple".to_owned(), 42).expect("owner update");
 
         assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(42));
-        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
+        assert_eq!(
+            map.owner_of(&"apple".to_owned()).unwrap(),
+            Some(acct(ALICE))
+        );
     }
 
     #[test]
     #[serial]
     fn update_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         let err = map
             .update(&"apple".to_owned(), 99)
             .expect_err("non-owner update must fail");
@@ -444,14 +450,17 @@ mod tests {
             "error should mention ownership, got: {err}"
         );
         assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
-        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
+        assert_eq!(
+            map.owner_of(&"apple".to_owned()).unwrap(),
+            Some(acct(ALICE))
+        );
     }
 
     #[test]
     #[serial]
     fn update_missing_key_errors() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         let err = map
@@ -468,7 +477,7 @@ mod tests {
     #[serial]
     fn remove_by_owner_succeeds() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -483,12 +492,12 @@ mod tests {
     #[serial]
     fn remove_by_non_owner_rejected() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         let err = map
             .remove(&"apple".to_owned())
             .expect_err("non-owner remove must fail");
@@ -500,7 +509,7 @@ mod tests {
     #[serial]
     fn remove_missing_key_is_none() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         assert_eq!(map.remove(&"ghost".to_owned()).unwrap(), None);
@@ -513,18 +522,21 @@ mod tests {
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
 
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         map.insert("alice_key".to_owned(), 1).unwrap();
 
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         map.insert("bob_key".to_owned(), 2).unwrap();
 
         assert_eq!(map.len().unwrap(), 2);
         assert_eq!(
             map.owner_of(&"alice_key".to_owned()).unwrap(),
-            Some(pk(ALICE))
+            Some(acct(ALICE))
         );
-        assert_eq!(map.owner_of(&"bob_key".to_owned()).unwrap(), Some(pk(BOB)));
+        assert_eq!(
+            map.owner_of(&"bob_key".to_owned()).unwrap(),
+            Some(acct(BOB))
+        );
 
         // Bob cannot overwrite Alice's key via insert (it already exists).
         let err = map.insert("alice_key".to_owned(), 99);
@@ -535,7 +547,7 @@ mod tests {
         assert!(map.remove(&"alice_key".to_owned()).is_err());
 
         // Alice still sees her original value.
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         assert_eq!(map.get(&"alice_key".to_owned()).unwrap(), Some(1));
     }
 
@@ -553,10 +565,19 @@ mod tests {
     /// compiles and every other test in this file still passes.
     #[test]
     #[serial]
-    fn two_devices_of_one_account_own_their_entries_separately() {
+    fn two_devices_of_one_account_share_ownership_of_its_entries() {
         // One account; two of its devices. The account is unlike either device id
-        // on purpose — where they matched, a device-keyed stamp would satisfy
-        // every assertion below.
+        // on purpose — where they matched, this could not tell an account-keyed
+        // stamp from a device-keyed one.
+        //
+        // This assertion used to run the other way: the phone was refused the
+        // laptop's entry, on the grounds that an account-keyed stamp would "let
+        // two devices clobber each other's per-writer state". That conflated two
+        // things. Per-writer state — an LWW register's tiebreak, a counter's
+        // slot, an HLC seed — is keyed on `device_id` and still is; nothing here
+        // moved it. The owner stamp is not per-writer state, it is an
+        // access-control principal, and refusing a person their own data on a
+        // second machine was the bug, not the protection.
         const ACCOUNT: [u8; 32] = [0xAC; 32];
         const LAPTOP: [u8; 32] = [0xD1; 32];
         const PHONE: [u8; 32] = [0xD2; 32];
@@ -572,21 +593,27 @@ mod tests {
         notes.insert("from-phone".to_owned(), 2).unwrap();
 
         assert_eq!(notes.len().unwrap(), 2, "neither device's entry was lost");
+        // The ACCOUNT owns both — not the machine that happened to type them.
         assert_eq!(
             notes.owner_of(&"from-laptop".to_owned()).unwrap(),
-            Some(pk(LAPTOP))
+            Some(acct(ACCOUNT))
         );
         assert_eq!(
             notes.owner_of(&"from-phone".to_owned()).unwrap(),
-            Some(pk(PHONE))
+            Some(acct(ACCOUNT))
         );
 
-        // Still the phone, and still the same account as the laptop.
+        // Still the phone, and that is the point: one person, either machine.
+        notes
+            .update(&"from-laptop".to_owned(), 99)
+            .expect("a second device of the owning account may edit its entry");
+        assert_eq!(notes.get(&"from-laptop".to_owned()).unwrap(), Some(99));
+
+        // The guard: "any device may edit" would pass everything above.
+        env::set_account_id([0xEE; 32]);
         assert!(
-            notes.update(&"from-laptop".to_owned(), 99).is_err(),
-            "one account, but the phone is not the laptop: an account-keyed stamp \
-             would let this succeed and let two devices clobber each other's \
-             per-writer state"
+            notes.update(&"from-laptop".to_owned(), 1234).is_err(),
+            "a different account must still be refused someone else's entry"
         );
     }
 
@@ -594,7 +621,7 @@ mod tests {
     #[serial]
     fn owner_of_missing_key_is_none() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let map = Root::new(AuthoredMap::<String, u64>::new);
         assert_eq!(map.owner_of(&"ghost".to_owned()).unwrap(), None);
@@ -632,7 +659,7 @@ mod tests {
         }
 
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         // Insert at the default (unversioned 0) target — the "v1" stamp.
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
@@ -689,7 +716,7 @@ mod tests {
         }
 
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, LwwRegister<String>>::new);
         map.insert("k".to_owned(), LwwRegister::new("v1".to_owned()))
@@ -715,7 +742,7 @@ mod tests {
     #[serial]
     fn entry_schema_version_and_ownership_reflect_stored_metadata() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("apple".to_owned(), 1).unwrap();
@@ -729,11 +756,11 @@ mod tests {
         assert!(map.owned_by_me(&"apple".to_owned()).unwrap());
 
         // A different executor is not the owner.
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         assert!(!map.owned_by_me(&"apple".to_owned()).unwrap());
 
         // Absent key: no version, not owned.
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         assert_eq!(map.entry_schema_version(&"ghost".to_owned()).unwrap(), None);
         assert!(!map.owned_by_me(&"ghost".to_owned()).unwrap());
     }
@@ -742,12 +769,12 @@ mod tests {
     #[serial]
     fn entries_contains_all_inserted_pairs() {
         env::reset_for_testing();
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
         map.insert("a".to_owned(), 1).unwrap();
         map.insert("b".to_owned(), 2).unwrap();
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         map.insert("c".to_owned(), 3).unwrap();
 
         let pairs: Vec<_> = map.entries().unwrap().collect();
@@ -770,9 +797,9 @@ mod tests {
         env::reset_for_testing();
 
         let mut map = Root::new(|| AuthoredMap::<String, u64>::new_with_field_name("entries"));
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         map.insert("apple".to_owned(), 1).expect("alice insert");
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         map.insert("banana".to_owned(), 2).expect("bob insert");
 
         // Simulate the macro-driven id canonicalisation.
@@ -783,13 +810,19 @@ mod tests {
         assert_eq!(map.get(&"banana".to_owned()).unwrap(), Some(2));
         assert_eq!(map.len().unwrap(), 2);
         // Owner stamps survive (not re-stamped to the calling executor).
-        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
-        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
+        assert_eq!(
+            map.owner_of(&"apple".to_owned()).unwrap(),
+            Some(acct(ALICE))
+        );
+        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(acct(BOB)));
 
         // Idempotent: a second reassign is a no-op and still preserves everything.
         map.reassign_deterministic_id("entries");
-        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
-        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
+        assert_eq!(
+            map.owner_of(&"apple".to_owned()).unwrap(),
+            Some(acct(ALICE))
+        );
+        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(acct(BOB)));
         assert_eq!(map.len().unwrap(), 2);
     }
 
@@ -803,9 +836,9 @@ mod tests {
         env::reset_for_testing();
 
         let mut map = Root::new(AuthoredMap::<String, u64>::new);
-        env::set_device_id(ALICE);
+        env::set_account_id(ALICE);
         map.insert("apple".to_owned(), 1).expect("alice insert");
-        env::set_device_id(BOB);
+        env::set_account_id(BOB);
         map.insert("banana".to_owned(), 2).expect("bob insert");
 
         // Random inner id != deterministic id => real clear+reinsert (not the
@@ -815,7 +848,10 @@ mod tests {
         assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
         assert_eq!(map.get(&"banana".to_owned()).unwrap(), Some(2));
         assert_eq!(map.len().unwrap(), 2);
-        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
-        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
+        assert_eq!(
+            map.owner_of(&"apple".to_owned()).unwrap(),
+            Some(acct(ALICE))
+        );
+        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(acct(BOB)));
     }
 }

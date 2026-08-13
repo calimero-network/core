@@ -203,17 +203,31 @@ bytes, so confusing them **compiles**, and most tests pass either way.
 | **Gate** — "may this person write?" | `env::account_id()` | a writer set names people, so one grant covers every device they hold |
 | **Stamp** — "who wrote this?" | `env::device_id()` | per-writer state: two devices sharing a counter slot or an HLC seed lose each other's writes |
 
-The boundary is **per file**, not per symbol: `shared.rs`, `access_control.rs` and
-`permissioned.rs` are entirely principals; `user.rs` and `authored_*.rs` are
-entirely stamps. Do not run a blanket `PublicKey → AccountId` replace — it builds,
-and it silently moves owner stamps onto accounts.
+The boundary is **per file for most of the tree, and per symbol in two places.**
+`shared.rs`, `access_control.rs` and `permissioned.rs` are entirely principals.
+`user.rs` and `authored_*.rs` hold BOTH: an entry's `owner` is a gate — it decides
+who may `update`/`remove` — so it is an `AccountId`, while the device that wrote
+the entry is stamped on `signature_data.signer`. Everything else in those files
+that reads `device_id()` (an LWW tiebreak, a counter slot, an HLC seed) is still a
+stamp and must stay one.
+
+Still do not run a blanket `PublicKey → AccountId` replace: it builds, and it
+would sweep those per-writer stamps onto accounts, where two devices of one person
+share a counter slot and lose each other's writes.
 
 A signature can only name a **key**, so the bridge is
 `ApplyContext.signer_account`: the account that key speaks for, resolved by the
 NODE at the write's causal cut and passed in. This crate has no store and no cut,
 so it cannot resolve one itself, and it must never fall back to the locally
-executing account — a remote action would then authorize itself. `None` is a
-refusal.
+executing account — a remote action would then authorize itself.
+
+`None` means "this path could not resolve it", and what that costs depends on the
+gate. For a `Shared` writer set it is a refusal. For a `User` owner it DEFERS —
+the sync repair paths (HashComparison, snapshot, level-wise) apply through an
+`ApplyContext::empty()` and refusing there would drop every legitimately repaired
+entry. The ownership check for those runs in `calimero-node`
+(`is_leaf_currently_authorized`), which has the bindings this crate lacks.
+Signature authenticity is enforced here on every path, because that needs none.
 
 **The caller owes a contract this crate cannot check:** `signer_account` must be
 the resolution of *that action's own* signer. Storage verifies the signature under

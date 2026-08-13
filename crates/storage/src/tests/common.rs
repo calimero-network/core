@@ -283,6 +283,18 @@ pub fn create_test_keypair() -> (SigningKey, PublicKey) {
     (signing_key, public_key)
 }
 
+/// A signing key and the ACCOUNT it speaks for — the pair a `User` entry needs.
+///
+/// The account comes from [`account_of_key`], which hashes in its own domain, so
+/// it is never equal to the key's own bytes. That inequality is the point: a test
+/// that used the key as both signer and owner would pass whether the gate is
+/// keyed by account or by device, and so could not tell the two apart.
+pub fn create_test_owner() -> (SigningKey, AccountId) {
+    let (signing_key, _) = create_test_keypair();
+    let account = account_of_key(&signing_key);
+    (signing_key, account)
+}
+
 /// Helper to sign an action with the given signing key.
 pub fn sign_action(action: &Action, signing_key: &SigningKey) -> [u8; 64] {
     let payload = action.payload_for_signing();
@@ -293,7 +305,7 @@ pub fn sign_action(action: &Action, signing_key: &SigningKey) -> [u8; 64] {
 /// Helper to create a User storage action (Add) with proper signature.
 pub fn create_signed_user_add_action(
     signing_key: &SigningKey,
-    owner: PublicKey,
+    owner: AccountId,
     id: Id,
     data: Vec<u8>,
     nonce: u64,
@@ -309,7 +321,9 @@ pub fn create_signed_user_add_action(
             signature_data: Some(SignatureData {
                 signature: [0; 64], // Placeholder
                 nonce,
-                signer: None,
+                // The key the signature verifies against. `owner` is an account
+                // now, so this is no longer optional.
+                signer: Some(pubkey_of(signing_key)),
             }),
         },
         crdt_type: None,
@@ -340,7 +354,9 @@ pub fn create_signed_user_add_action(
             *signature_data = Some(SignatureData {
                 signature,
                 nonce,
-                signer: None,
+                // Must match what the payload was hashed over — the stamp above
+                // named this key, so re-stating it here keeps the two in step.
+                signer: Some(pubkey_of(signing_key)),
             });
         }
     }
@@ -609,7 +625,7 @@ pub fn build_signed_member_delete(
 /// Helper to create a User storage Update action with proper signature.
 pub fn create_signed_user_update_action(
     signing_key: &SigningKey,
-    owner: PublicKey,
+    owner: AccountId,
     id: Id,
     data: Vec<u8>,
     nonce: u64,
@@ -625,7 +641,7 @@ pub fn create_signed_user_update_action(
             signature_data: Some(SignatureData {
                 signature: [0; 64],
                 nonce,
-                signer: None,
+                signer: Some(pubkey_of(signing_key)),
             }),
         },
         crdt_type: None,
@@ -654,7 +670,9 @@ pub fn create_signed_user_update_action(
             *signature_data = Some(SignatureData {
                 signature,
                 nonce,
-                signer: None,
+                // Must match what the payload was hashed over — the stamp above
+                // named this key, so re-stating it here keeps the two in step.
+                signer: Some(pubkey_of(signing_key)),
             });
         }
     }

@@ -470,6 +470,17 @@ steps:
 
   # USER STORAGE - SIMPLE
 
+  # User storage is keyed by ACCOUNT, and an account is derived from a node's
+  # root rather than carried on the wire — so a reader has to be told it by the
+  # node that owns it.
+  - name: Read node-1's account
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    method: my_account
+    outputs:
+      node1_account: result.output
+
   # Node 1 sets their user storage first
   - name: Set user simple value on node-1
     type: call
@@ -510,7 +521,7 @@ steps:
     context_id: "{{context_id}}"
     method: get_user_simple_for
     args:
-      user_key: "{{node1_key}}"
+      user_key: "{{node1_account}}"
     outputs:
       node1_profile_from_node2: result
 
@@ -526,7 +537,7 @@ steps:
     context_id: "{{context_id}}"
     method: get_user_simple_for
     args:
-      user_key: "{{node1_key}}"
+      user_key: "{{node1_account}}"
     outputs:
       node1_profile_from_node3: result
 
@@ -552,6 +563,18 @@ steps:
     outputs:
       node2_profile: result
 
+  # As with node-1 above: user storage is keyed by ACCOUNT, and an account is
+  # derived from a node's root rather than carried on the wire, so it has to be
+  # read off the node that owns it. A member public key is a different id space
+  # and the app refuses it.
+  - name: Read node-2's account
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    method: my_account
+    outputs:
+      node2_account: result.output
+
   - name: Assert node-2 profile
     type: json_assert
     statements:
@@ -575,7 +598,7 @@ steps:
     context_id: "{{context_id}}"
     method: get_user_simple_for
     args:
-      user_key: "{{public_key_e2e-node-2}}"
+      user_key: "{{node2_account}}"
     outputs:
       node2_profile_from_node1: result
 
@@ -591,7 +614,7 @@ steps:
     context_id: "{{context_id}}"
     method: get_user_simple_for
     args:
-      user_key: "{{public_key_e2e-node-2}}"
+      user_key: "{{node2_account}}"
     outputs:
       node2_profile_from_node3: result
 
