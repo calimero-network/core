@@ -53,7 +53,7 @@ pub(crate) async fn resolve_and_decrypt(
     // (context not in any group) the message is not decryptable — drop.
     let store = context_client.datastore();
     let group_id: ContextGroupId =
-        match calimero_context::group_store::get_group_for_context(store, &context_id) {
+        match calimero_governance_store::get_group_for_context(store, &context_id) {
             Ok(Some(gid)) => gid,
             Ok(None) => {
                 debug!(%context_id, "ephemeral: context has no group — dropping");
@@ -206,10 +206,10 @@ mod tests {
 
     use calimero_blobstore::config::BlobStoreConfig;
     use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-    use calimero_context::group_store::{register_context_in_group, GroupKeyring};
     use calimero_context_client::client::ContextClient;
     use calimero_context_config::types::ContextGroupId;
     use calimero_crypto::{SharedKey, NONCE_LEN};
+    use calimero_governance_store::{register_context_in_group, GroupKeyring};
     use calimero_network_primitives::client::NetworkClient;
     use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_primitives::context::ContextId;
@@ -293,7 +293,7 @@ mod tests {
         let nonce = [0x11u8; NONCE_LEN];
         let sk = PrivateKey::from(*group_key_bytes);
         let cipher = SharedKey::from_sk(&sk)
-            .encrypt(plaintext.to_vec(), nonce)
+            .encrypt_with_nonce(plaintext.to_vec(), nonce)
             .expect("encrypt");
         (cipher, nonce)
     }

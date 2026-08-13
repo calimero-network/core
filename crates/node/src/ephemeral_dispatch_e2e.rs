@@ -16,9 +16,9 @@
 
 use std::time::Duration;
 
-use calimero_context::group_store::{register_context_in_group, GroupKeyring};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::{SharedKey, NONCE_LEN};
+use calimero_governance_store::{register_context_in_group, GroupKeyring};
 use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::ContextId;
@@ -94,7 +94,7 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     let nonce = [0x11u8; NONCE_LEN];
     let sk = PrivateKey::from(group_key_bytes);
     let ciphertext = SharedKey::from_sk(&sk)
-        .encrypt(slice.to_vec(), nonce)
+        .encrypt_with_nonce(slice.to_vec(), nonce)
         .expect("encrypt");
 
     // Subscribe to the node event sink BEFORE dispatching, so the emit from

@@ -3,7 +3,7 @@
 //! output small and the sorting rule beside `validate_manifest`.
 
 use crate::abi_type::TypeRegistry;
-use crate::schema::{Event, Manifest, Method, MigrationEdgeAbi};
+use crate::schema::{EphemeralType, Event, Manifest, Method, MigrationEdgeAbi};
 
 /// Accumulates a manifest's parts as generated code registers types, methods,
 /// and events; [`finish`](Self::finish) applies the sorting `validate_manifest`
@@ -16,6 +16,7 @@ pub struct ManifestBuilder {
     state_root: Option<String>,
     state_version: Option<u32>,
     migrations: Vec<MigrationEdgeAbi>,
+    ephemeral: Vec<EphemeralType>,
 }
 
 impl ManifestBuilder {
@@ -34,6 +35,13 @@ impl ManifestBuilder {
 
     pub fn event(&mut self, e: Event) {
         self.events.push(e);
+    }
+
+    /// Record a `#[app::ephemeral]` DTO. The shape itself lands in the registry
+    /// like any other type; this only names it as an ephemeral entrypoint so a
+    /// client can find the presence types without scanning every record.
+    pub fn ephemeral(&mut self, e: EphemeralType) {
+        self.ephemeral.push(e);
     }
 
     pub fn state_root(&mut self, name: &str) {
@@ -59,6 +67,8 @@ impl ManifestBuilder {
         methods.sort_by(|a, b| a.name.cmp(&b.name));
         let mut events = self.events;
         events.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut ephemeral = self.ephemeral;
+        ephemeral.sort_by(|a, b| a.name.cmp(&b.name));
 
         Manifest {
             schema_version: "wasm-abi/1".to_owned(),
@@ -68,6 +78,7 @@ impl ManifestBuilder {
             state_root: self.state_root,
             state_version: self.state_version,
             migrations: self.migrations,
+            ephemeral,
         }
     }
 }

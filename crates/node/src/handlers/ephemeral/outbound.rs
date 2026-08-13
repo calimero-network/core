@@ -23,13 +23,12 @@
 use std::borrow::Cow;
 
 use calimero_context_client::client::ContextClient;
-use calimero_crypto::{Nonce, SharedKey};
+use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::snapshot::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use libp2p::gossipsub::TopicHash;
-use rand::Rng;
 use tracing::debug;
 
 use crate::handlers::ephemeral::inbound::emit_ephemeral_diff;
@@ -111,23 +110,25 @@ pub(crate) async fn do_publish_ephemeral(
     let store = context_client.datastore();
 
     // Resolve the group the context belongs to (same derivation as inbound).
-    let group_id = calimero_context::group_store::get_group_for_context(store, &context_id)?
+    let group_id = calimero_governance_store::get_group_for_context(store, &context_id)?
         .ok_or(EphemeralOutboundError::NoGroup)?;
 
     // Load the current (highest-epoch) group key for encryption.
-    let record = calimero_context::group_store::GroupKeyring::new(store, group_id)
+    let record = calimero_governance_store::GroupKeyring::new(store, group_id)
         .load_current_key_record()?
         .ok_or(EphemeralOutboundError::NoGroupKey)?;
 
-    // Fresh random nonce — never reuse a nonce under the same key.
-    let nonce: Nonce = rand::thread_rng().gen();
-
     // AEAD-seal the presence slice under the group key.
     // `SharedKey::from_sk` derives the symmetric key from the group private key
-    // — identical to the `encrypt_op` pattern in `group_keys.rs:272`.
+    // — identical to the `encrypt_op` pattern in `group_keys.rs`.
+    //
+    // `encrypt` mints a fresh random nonce per call and hands it back; presence
+    // slices have no ratchet to sequence them, so a per-message random nonce is
+    // exactly the guarantee this path needs (`encrypt_with_nonce` is for the
+    // sync stream, whose caller owns single-use).
     let sk = PrivateKey::from(record.group_key);
-    let ciphertext = SharedKey::from_sk(&sk)
-        .encrypt(slice, nonce)
+    let (nonce, ciphertext) = SharedKey::from_sk(&sk)
+        .encrypt(slice)
         .ok_or_else(|| eyre::eyre!("AEAD encrypt failed for ephemeral slice"))?;
 
     // Build and serialize the wire message.
@@ -321,9 +322,9 @@ mod tests {
     use actix::Actor;
     use calimero_blobstore::config::BlobStoreConfig;
     use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-    use calimero_context::group_store::{register_context_in_group, GroupKeyring};
     use calimero_context_client::client::ContextClient;
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{register_context_in_group, GroupKeyring};
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
     use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
