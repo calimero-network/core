@@ -132,9 +132,18 @@ impl GroupMigrationPayload {
     /// subgroup's existence is not something a plain namespace member may
     /// enumerate - the same disclosure the `migration-status` read is
     /// admin-gated against. The other variants carry counters only.
+    ///
+    /// Exhaustive rather than a `matches!`, because the wrong default here is
+    /// silent: a later variant carrying identities would otherwise reach every
+    /// member. This way the compiler asks.
     #[must_use]
     pub const fn requires_group_admin(&self) -> bool {
-        matches!(*self, Self::CascadeProgress { .. })
+        match *self {
+            Self::CascadeProgress { .. } => true,
+            Self::MigrationStarted { .. }
+            | Self::MigrationProgress { .. }
+            | Self::MigrationCompleted { .. } => false,
+        }
     }
 }
 
