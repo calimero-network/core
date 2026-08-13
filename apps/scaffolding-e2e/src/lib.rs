@@ -1220,7 +1220,10 @@ impl E2eKvStore {
     }
 
     pub fn authored_get_owner(&self, key: String) -> app::Result<Option<String>> {
-        Ok(self.authored_items.owner_of(&key)?.map(|pk| pk.to_string()))
+        Ok(self
+            .authored_items
+            .owner_of(&key)?
+            .map(|account| account.to_string()))
     }
 
     pub fn authored_len(&self) -> app::Result<usize> {
@@ -1331,7 +1334,10 @@ impl E2eKvStore {
     }
 
     pub fn authored_vec_get_owner(&self, index: usize) -> app::Result<Option<String>> {
-        Ok(self.authored_vec.owner_of(index)?.map(|pk| pk.to_string()))
+        Ok(self
+            .authored_vec
+            .owner_of(index)?
+            .map(|account| account.to_string()))
     }
 
     pub fn authored_vec_entries(&self) -> app::Result<Vec<String>> {
