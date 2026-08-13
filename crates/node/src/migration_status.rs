@@ -297,10 +297,18 @@ impl MigrationStatusCache {
         target_version: u32,
         all_migrated: bool,
     ) -> Option<bool> {
-        self.all_migrated
+        let mut latches = self
+            .all_migrated
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert((ns, target_version), all_migrated)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The rolled-up target is a max across the subtree and only moves
+        // forward, so this namespace's other entries describe migrations that
+        // are over. Dropping them holds the map at one entry per namespace
+        // instead of one per upgrade the process ever saw.
+        latches.retain(|(entry_ns, entry_target), _| {
+            *entry_ns != ns || *entry_target == target_version
+        });
+        latches.insert((ns, target_version), all_migrated)
     }
 }
 
