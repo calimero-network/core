@@ -440,6 +440,39 @@ pub enum LeafOutcome {
 ///
 /// Must be called inside a `with_runtime_env(...)` scope (it delegates to
 /// [`apply_leaf_with_crdt_merge`] on the apply branch).
+/// The account a repair-pushed leaf's signer speaks for, for
+/// [`ApplyContext::signer_account`].
+///
+/// A signed leaf carries the KEY that signed it; the writer set it must be
+/// checked against names ACCOUNTS. Storage cannot bridge the two — it has no
+/// bindings — so the node resolves it here and passes the answer in.
+///
+/// Resolving live is sound for this one question, and only because a device is
+/// bound to exactly one account for its whole life (`BindingRejected::
+/// AccountReassignment`). Two nodes that both know a binding therefore always
+/// agree, whatever their fold depth; the only variance is knowing versus not
+/// knowing yet. That is unlike the writer SET, which genuinely changes over
+/// time — and which storage already resolves deterministically, as of the
+/// leaf's own HLC, from the anchor's rotation log.
+///
+/// `None` means the binding has not folded here yet. Storage refuses on `None`,
+/// which is the right answer: the leaf is re-driven by the next repair round
+/// once the binding lands, so both peers converge on the same verdict instead
+/// of one accepting what the other rejects.
+fn repair_signer_account(
+    store: &Store,
+    context_id: &ContextId,
+    leaf: &TreeLeafData,
+) -> Option<calimero_account::AccountId> {
+    let signer = extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())?;
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
+        .ok()
+        .flatten()
+}
+
 pub fn apply_leaf_with_crdt_merge_gated(
     store: &Store,
     context_id: ContextId,
@@ -473,11 +506,31 @@ pub fn apply_leaf_with_crdt_merge_gated(
             return Ok(LeafOutcome::Buffered);
         }
     }
-    apply_leaf_with_crdt_merge(context_id, leaf)?;
+    let signer_account = repair_signer_account(store, &context_id, leaf);
+    apply_leaf_with_crdt_merge_as(context_id, leaf, signer_account)?;
     Ok(LeafOutcome::Applied)
 }
 
+/// [`apply_leaf_with_crdt_merge_as`] for a caller that cannot name the signer's
+/// account — no store in scope, or a test.
+///
+/// A signed leaf applied this way is REFUSED by storage and re-driven on the
+/// next repair round. Prefer the gated entry point, which resolves it.
 pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
+    apply_leaf_with_crdt_merge_as(context_id, leaf, None)
+}
+
+/// Apply a repair-pushed leaf as `signer_account`.
+///
+/// The account is the node's half of the writer check: storage verifies the
+/// signature under the key the leaf names, then checks that account against the
+/// writer set resolved as of the leaf's own HLC. Passing `None` leaves storage
+/// unable to name the writer, so it refuses — see [`repair_signer_account`].
+pub fn apply_leaf_with_crdt_merge_as(
+    context_id: ContextId,
+    leaf: &TreeLeafData,
+    signer_account: Option<calimero_account::AccountId>,
+) -> Result<()> {
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
 
@@ -731,11 +784,16 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         }
     };
 
-    // #2266: snapshot leaf push has no `CausalDelta` in scope — these
-    // bytes come from a peer who already verified them. Empty ctx →
-    // verifier falls back to v2 stored-writers, which is the safe
-    // semantic for already-verified replicated state.
-    Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())?;
+    // No `CausalDelta` in scope (#2266): a repair carries state, not an op, so
+    // there are no parents and `effective_writers` stays `None` — storage then
+    // resolves the writer set as of this leaf's own HLC. What the node supplies
+    // is the other half, the account its signer speaks for, without which the
+    // writer check cannot run at all.
+    let ctx = ApplyContext {
+        signer_account,
+        ..ApplyContext::empty()
+    };
+    Interface::<MainStorage>::apply_action(action, &ctx)?;
     Ok(())
 }
 
