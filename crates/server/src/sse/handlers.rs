@@ -242,37 +242,25 @@ pub async fn handle_subscription(
                 // is resolved in the same pass, since admin-only payloads ride
                 // the same subscription.
                 let caller_key = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
-                let subscribed_groups: Vec<_> = ctxs
-                    .group_ids
-                    .iter()
-                    .copied()
-                    .filter(|group_id| {
-                        let authorized = crate::ws::caller_may_observe_group(
-                            &state.ctx_client,
-                            state.auth_enabled,
-                            node_owner,
-                            caller_key,
-                            group_id,
-                        );
-                        if !authorized {
-                            warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
-                        }
-                        authorized
-                    })
-                    .collect();
-                let admin_groups: Vec<_> = subscribed_groups
-                    .iter()
-                    .copied()
-                    .filter(|group_id| {
-                        crate::ws::caller_may_observe_group_as_admin(
-                            &state.ctx_client,
-                            state.auth_enabled,
-                            node_owner,
-                            caller_key,
-                            group_id,
-                        )
-                    })
-                    .collect();
+                let mut subscribed_groups = Vec::new();
+                let mut admin_groups = Vec::new();
+                for group_id in ctxs.group_ids.iter().copied() {
+                    let access = crate::ws::caller_group_access(
+                        &state.ctx_client,
+                        state.auth_enabled,
+                        node_owner,
+                        caller_key,
+                        &group_id,
+                    );
+                    if !access.observe {
+                        warn!(%session_id, group_id=%group_id, "SSE subscribe denied: caller is not a member of the group");
+                        continue;
+                    }
+                    if access.admin {
+                        admin_groups.push(group_id);
+                    }
+                    subscribed_groups.push(group_id);
+                }
 
                 let persisted = {
                     let mut inner = session.inner.write().await;

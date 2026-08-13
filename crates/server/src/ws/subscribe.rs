@@ -62,20 +62,15 @@ async fn handle(
     let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
     let mut admin_groups = Vec::new();
     for group_id in request.group_ids {
-        if caller_may_observe_group(
+        let access = caller_group_access(
             &state.ctx_client,
             state.auth_enabled,
             node_owner,
             caller.as_ref(),
             &group_id,
-        ) {
-            if caller_may_observe_group_as_admin(
-                &state.ctx_client,
-                state.auth_enabled,
-                node_owner,
-                caller.as_ref(),
-                &group_id,
-            ) {
+        );
+        if access.observe {
+            if access.admin {
                 admin_groups.push(group_id);
             }
             subscribed_groups.push(group_id);
@@ -136,60 +131,64 @@ pub(crate) fn may_observe_group(
     }
 }
 
+/// What a connection may observe on one group. Named rather than a `bool` pair,
+/// because the two differ by which payloads they admit and swapping them leaks.
+pub(crate) struct GroupAccess {
+    /// Admits the group's events, counters included.
+    pub(crate) observe: bool,
+    /// Additionally admits the payloads that name a descendant subgroup.
+    pub(crate) admin: bool,
+}
+
 /// Group-subscription authorization gate, shared by the WS and SSE handlers so
 /// the deny-list-aware membership check lives in one place. Resolves effective
-/// membership for `caller` then applies [`may_observe_group`].
-pub(crate) fn caller_may_observe_group(
+/// membership and ADMIN authority for `caller` in one pass, then applies
+/// [`may_observe_group`] to each.
+///
+/// One pass because both authorities are held by the ACCOUNT, so the caller's
+/// key resolves once and both lookups hang off it; a key bound to no account
+/// holds neither. `is_admin` is skipped for a non-member, whose subscription is
+/// refused outright.
+///
+/// The admin predicate is `is_admin` on the subscribed id itself - the same
+/// authority the `migration-status` read requires. It is deliberately NOT
+/// re-keyed to the descendant subgroup a payload names: for a Restricted
+/// subgroup, `check_path` returns before its ancestor-admin arm, so an admin of
+/// the root resolves to no membership there and would be refused its own
+/// cascade detail.
+pub(crate) fn caller_group_access(
     ctx_client: &ContextClient,
     auth_enabled: bool,
     node_owner: bool,
     caller: Option<&PublicKey>,
     group_id: &Hash,
-) -> bool {
-    let caller_is_member = caller.map(|key| {
+) -> GroupAccess {
+    let resolved = caller.map(|key| {
         let gid = ContextGroupId::from(*group_id.as_bytes());
         let Some(account) = crate::caller_account::for_group(ctx_client, &gid, key) else {
-            return false;
+            return (false, false);
         };
-        MembershipRepository::new(ctx_client.datastore())
+        let memberships = MembershipRepository::new(ctx_client.datastore());
+        let member = memberships
             .effective_capabilities(&gid, &account)
             .map(|caps| caps.is_some())
             .unwrap_or_else(|err| {
                 warn!(group_id=%group_id, %err, "group effective-membership lookup failed; denying subscription");
                 false
-            })
+            });
+        if !member {
+            return (false, false);
+        }
+        let admin = memberships.is_admin(&gid, &account).unwrap_or_else(|err| {
+            warn!(group_id=%group_id, %err, "group admin lookup failed; denying admin-only detail");
+            false
+        });
+        (member, admin)
     });
-    may_observe_group(auth_enabled, node_owner, caller_is_member)
-}
-
-/// Whether a connection additionally holds ADMIN authority over `group_id`, the
-/// gate for group events whose payload is admin-only.
-///
-/// The predicate is `is_admin` on the subscribed id itself - the same authority
-/// the `migration-status` read requires. It is deliberately NOT re-keyed to the
-/// descendant subgroup a payload names: for a Restricted subgroup, `check_path`
-/// returns before its ancestor-admin arm, so an admin of the root resolves to
-/// no membership there and would be refused its own cascade detail.
-pub(crate) fn caller_may_observe_group_as_admin(
-    ctx_client: &ContextClient,
-    auth_enabled: bool,
-    node_owner: bool,
-    caller: Option<&PublicKey>,
-    group_id: &Hash,
-) -> bool {
-    let caller_is_admin = caller.map(|key| {
-        let gid = ContextGroupId::from(*group_id.as_bytes());
-        let Some(account) = crate::caller_account::for_group(ctx_client, &gid, key) else {
-            return false;
-        };
-        MembershipRepository::new(ctx_client.datastore())
-            .is_admin(&gid, &account)
-            .unwrap_or_else(|err| {
-                warn!(group_id=%group_id, %err, "group admin lookup failed; denying admin-only detail");
-                false
-            })
-    });
-    may_observe_group(auth_enabled, node_owner, caller_is_admin)
+    GroupAccess {
+        observe: may_observe_group(auth_enabled, node_owner, resolved.map(|(m, _)| m)),
+        admin: may_observe_group(auth_enabled, node_owner, resolved.map(|(_, a)| a)),
+    }
 }
 
 /// Whether a group-keyed event may be delivered to a connection holding these
