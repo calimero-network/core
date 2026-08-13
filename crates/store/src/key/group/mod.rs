@@ -3563,4 +3563,37 @@ mod cascade_hlc_borsh_tests {
             .expect_err("expected Err for truncated to_state_version");
         assert_eq!(err.kind(), borsh::io::ErrorKind::InvalidData);
     }
+
+    /// `fleet_completed_at` was added to `Completed` with no migration path, so
+    /// a record an older binary wrote does not decode. `status` is not the last
+    /// field, so the missing bytes shift `cascade_hlc`, `cascade_seq` and
+    /// `to_state_version` rather than simply truncating - this pins that the
+    /// shift is caught instead of read as those fields.
+    #[test]
+    fn a_completed_record_written_before_fleet_completed_at_fails_loud() {
+        let mut bytes = Vec::new();
+        "1.0.0".to_owned().serialize(&mut bytes).unwrap();
+        "2.0.0".to_owned().serialize(&mut bytes).unwrap();
+        None::<Vec<u8>>.serialize(&mut bytes).unwrap();
+        1_700_000_000u64.serialize(&mut bytes).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut bytes)
+            .unwrap();
+        // `Completed` as the older binary wrote it: variant tag and
+        // `completed_at`, with no `fleet_completed_at` behind it.
+        bytes.push(1u8);
+        Some(1_700_001_000u64).serialize(&mut bytes).unwrap();
+        None::<HybridTimestamp>.serialize(&mut bytes).unwrap();
+        None::<u64>.serialize(&mut bytes).unwrap();
+        2u32.serialize(&mut bytes).unwrap();
+
+        let err = GroupUpgradeValue::try_from_slice(&bytes)
+            .expect_err("a pre-fleet_completed_at record must not decode");
+        assert_eq!(
+            err.kind(),
+            borsh::io::ErrorKind::InvalidData,
+            "the break must stay a loud decode error; a tolerant impl that read \
+             one of these into the wrong field would be silent corruption"
+        );
+    }
 }
