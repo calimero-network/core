@@ -46,7 +46,7 @@ pub(super) fn handle_namespace_governance_delta(
         NamespaceTopicMsg::Ack(ack) => {
             // Phase 4: route the ack to whatever in-flight
             // `publish_and_await_ack` caller is waiting on this op_hash.
-            // `route` returns false if no subscriber registered — fine,
+            // `route` returns false if no subscriber registered - fine,
             // it just means the publish completed already (or wasn't ours).
             let _ = this.clients.context.ack_router().route(ack);
             return;
@@ -57,7 +57,7 @@ pub(super) fn handle_namespace_governance_delta(
         // `EmitOutOfCycleBeacon` handler on `ReadinessManager`.
         //
         // Cross-check `inner.namespace_id == namespace_id` (the topic's
-        // namespace) BEFORE forwarding — without this, a peer could
+        // namespace) BEFORE forwarding - without this, a peer could
         // publish a beacon claiming `beacon.namespace_id = X` on the
         // gossipsub topic for namespace Y, polluting namespace X's
         // cache from a Y subscription. Mirrors the existing `Op` arm
@@ -78,16 +78,16 @@ pub(super) fn handle_namespace_governance_delta(
             super::readiness::handle_readiness_probe(this, ctx, source, probe);
             return;
         }
-        // PR-6c Task 6c.8: ingest a signed migration heartbeat into the
-        // per-(namespace, peer) TTL cache. Cross-check the heartbeat's
-        // namespace against the topic's namespace FIRST (same guard as the
-        // `ReadinessBeacon` arm) so a peer can't pollute namespace X's cache
-        // from a namespace-Y subscription. Then verify the Ed25519 signature
-        // AND cohort membership via `verify_migration_heartbeat` before
-        // inserting — an unsigned or non-member heartbeat must never enter a
-        // rollup. The heartbeat is ephemeral telemetry, not governance state,
-        // so there is no apply / ack / backfill - just the cache upsert and,
-        // when it moved the peer's facts, the fleet-rollup reaction.
+        // Ingest a signed migration heartbeat into the per-(namespace, peer)
+        // TTL cache. Cross-check the heartbeat's namespace against the topic's
+        // namespace FIRST (same guard as the `ReadinessBeacon` arm) so a peer
+        // can't pollute namespace X's cache from a namespace-Y subscription.
+        // Then verify the Ed25519 signature AND cohort membership via
+        // `verify_migration_heartbeat` before inserting - an unsigned or
+        // non-member heartbeat must never enter a rollup. The heartbeat is
+        // ephemeral telemetry, not governance state, so there is no apply /
+        // ack / backfill - just the cache upsert and, when it moved the peer's
+        // facts, the fleet-rollup reaction.
         NamespaceTopicMsg::MigrationHeartbeat(heartbeat) => {
             if heartbeat.namespace_id != namespace_id.into() {
                 warn!("MigrationHeartbeat namespace_id mismatch with topic; dropping");
