@@ -3535,12 +3535,14 @@ impl SyncManager {
             namespace_id,
             ref invitation_bytes,
             joiner_public_key,
+            ref joiner_credential_bytes,
         } = &payload
         {
             self.handle_namespace_join_request(
                 *namespace_id,
                 invitation_bytes,
                 *joiner_public_key,
+                joiner_credential_bytes,
                 stream,
                 nonce,
             )
@@ -4145,6 +4147,7 @@ mod init_pop_gate_tests {
                 namespace_id: [0; 32],
                 invitation_bytes: vec![],
                 joiner_public_key: [0; 32].into(),
+                joiner_credential_bytes: vec![],
             },
             InitPayload::OpenSubgroupJoinRequest {
                 namespace_id: [0; 32],

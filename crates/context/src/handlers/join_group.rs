@@ -218,8 +218,33 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Previously this was a hard `?`, so a join attempted before the
                 // mesh formed aborted before writing the joiner's membership row
                 // and left the node not-a-member (the reported symptom).
+                // Built BEFORE the request, not after: the responder needs it to
+                // name this joiner's account, and the deny-list gate it feeds
+                // runs before any state is served. The same credential is
+                // published with `MemberJoinedAt` further below.
+                let joiner_credential_bytes = match crate::join_credential::build(
+                    &datastore,
+                    &namespace_id.into(),
+                    &joiner_identity,
+                ) {
+                    Ok(credential) => borsh::to_vec(&*credential)?,
+                    Err(e) => {
+                        // Without one the responder cannot name us, and a
+                        // responder on this version refuses rather than guess.
+                        return Err(e.wrap_err(
+                            "join: could not build the account credential the responder \
+                             needs to authorize this join",
+                        ));
+                    }
+                };
+
                 let join_result = match node_client
-                    .request_namespace_join(namespace_id, invitation_bytes, joiner_identity)
+                    .request_namespace_join(
+                        namespace_id,
+                        invitation_bytes,
+                        joiner_identity,
+                        joiner_credential_bytes,
+                    )
                     .await
                 {
                     Ok(bundle) => bundle,
