@@ -43,6 +43,9 @@ pub struct NamespaceJoinParams {
     pub namespace_id: [u8; 32],
     pub invitation_bytes: Vec<u8>,
     pub joiner_public_key: PublicKey,
+    /// Borsh-serialized `JoinAccountCredential`, so the responder can name this
+    /// joiner's ACCOUNT before it serves any state. See the wire variant.
+    pub joiner_credential_bytes: Vec<u8>,
 }
 
 /// Parameters for a direct open-subgroup join request (issue #2357).
@@ -122,12 +125,14 @@ impl SyncClient {
         namespace_id: [u8; 32],
         invitation_bytes: Vec<u8>,
         joiner_public_key: PublicKey,
+        joiner_credential_bytes: Vec<u8>,
     ) -> eyre::Result<JoinBundle> {
         let (tx, rx) = oneshot::channel();
         let params = NamespaceJoinParams {
             namespace_id,
             invitation_bytes,
             joiner_public_key,
+            joiner_credential_bytes,
         };
         self.ns_join_tx
             .send((params, tx))
@@ -866,9 +871,15 @@ impl NodeClient {
         namespace_id: [u8; 32],
         invitation_bytes: Vec<u8>,
         joiner_public_key: PublicKey,
+        joiner_credential_bytes: Vec<u8>,
     ) -> eyre::Result<JoinBundle> {
         self.sync_client
-            .request_namespace_join(namespace_id, invitation_bytes, joiner_public_key)
+            .request_namespace_join(
+                namespace_id,
+                invitation_bytes,
+                joiner_public_key,
+                joiner_credential_bytes,
+            )
             .await
     }
 
