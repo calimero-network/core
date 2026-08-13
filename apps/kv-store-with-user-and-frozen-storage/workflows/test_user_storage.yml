@@ -111,6 +111,18 @@ steps:
     timeout: 60
     trigger_sync: true
 
+  # User storage is keyed by ACCOUNT, and an account is derived from a node's
+  # root rather than carried on the wire — a member public key is a different id
+  # space and the app refuses it. So each account is read off the node that owns
+  # it, before the other node reads that user's slot.
+  - name: Read node-1's account
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      node1_account: result.output
+
   # Step 11: Node2: get simple user storage for a specific user
   - name: Node 2 - Simple user storage get test for a specific user
     type: call
@@ -118,7 +130,7 @@ steps:
     context_id: '{{context_id}}'
     method: get_user_simple_for
     args:
-      user_key: "{{member_public_key}}"
+      user_key: "{{node1_account}}"
     outputs:
       node2_simple_value_res_specific_user: result
 
@@ -160,6 +172,14 @@ steps:
     timeout: 60
     trigger_sync: true
 
+  - name: Read node-2's account
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: my_account
+    outputs:
+      node2_account: result.output
+
   # Step 14: Node1: get simple user storage for Node 2 user
   - name: Node 1 - Simple user storage get test for a specific user (from Node2)
     type: call
@@ -167,7 +187,7 @@ steps:
     context_id: '{{context_id}}'
     method: get_user_simple_for
     args:
-      user_key: "{{public_key_new-calimero-node-2}}"
+      user_key: "{{node2_account}}"
     outputs:
       node1_simple_value_res_from_node2: result
 

@@ -151,6 +151,14 @@ impl KvStore {
         Ok(self.user_items_simple.get()?.map(|v| v.get().clone()))
     }
 
+    /// This node's account, hex-encoded — what user storage is keyed by.
+    ///
+    /// Exists for the e2e: an account is derived from the node's root rather
+    /// than carried on the wire, so a scenario has no other way to learn one.
+    pub fn my_account(&self) -> app::Result<String> {
+        Ok(AccountId::from(calimero_sdk::env::account_id()).to_string())
+    }
+
     /// Gets the simple string value for a *specific* user.
     ///
     /// Named by ACCOUNT: user storage is keyed per person, so this reaches the
