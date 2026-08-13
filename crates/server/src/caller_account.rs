@@ -8,6 +8,7 @@
 
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use tracing::warn;
@@ -52,4 +53,26 @@ pub(crate) fn for_context(
             None
         },
     )
+}
+
+/// The account `key` acts as in `group_id`, if any.
+///
+/// The group-keyed sibling of [`for_context`], for the gates that subscribe a
+/// connection to a group. Both the capability and the admin authority those
+/// gates test are held by the account, so the key resolves first and a key
+/// bound to none is denied by both.
+pub(crate) fn for_group(
+    ctx_client: &ContextClient,
+    group_id: &ContextGroupId,
+    key: &PublicKey,
+) -> Option<AccountId> {
+    calimero_governance_store::member_account_in_namespace(ctx_client.datastore(), group_id, key)
+        .unwrap_or_else(|err| {
+            warn!(
+                %err, ?group_id, %key,
+                "resolving the caller's account: could not read the account binding; \
+                 treating the caller as unresolved"
+            );
+            None
+        })
 }
