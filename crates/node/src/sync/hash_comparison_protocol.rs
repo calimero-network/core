@@ -513,7 +513,11 @@ async fn run_initiator_impl<T: SyncTransport>(
                 if !remote_node.deleted_children.is_empty() {
                     let applied =
                         apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            apply_remote_tombstones(&remote_node.deleted_children)
+                            apply_remote_tombstones(
+                                context_client.map(ContextClient::datastore),
+                                context_id,
+                                &remote_node.deleted_children,
+                            )
                         })
                         .await;
                     if applied > 0 {
@@ -1579,7 +1583,16 @@ pub(crate) fn get_local_tree_node(
 /// `Action::DeleteRef` path (delete-wins by HLC; signature/nonce verified for
 /// User/Shared, safe no-op when it loses or fails auth). Returns the count
 /// applied. Must be called inside a `with_runtime_env` scope.
-pub(crate) fn apply_remote_tombstones(deletions: &[EntityDeletion]) -> u64 {
+/// `store`/`context_id` are what let a tombstone for a SIGNED entity be
+/// authorized: the delete is a write like any other, so it needs the account
+/// its signer speaks for. Without them a `User`/`Shared` deletion cannot be
+/// authorized and simply stops propagating — pass `None` only where no store
+/// exists (tests).
+pub(crate) fn apply_remote_tombstones(
+    store: Option<&calimero_store::Store>,
+    context_id: ContextId,
+    deletions: &[EntityDeletion],
+) -> u64 {
     let mut applied = 0u64;
     for deletion in deletions {
         let action = calimero_storage::action::Action::DeleteRef {
@@ -1587,12 +1600,17 @@ pub(crate) fn apply_remote_tombstones(deletions: &[EntityDeletion]) -> u64 {
             deleted_at: deletion.deleted_at,
             metadata: deletion.metadata.clone(),
         };
-        if Interface::<MainStorage>::apply_action(
-            action,
-            &calimero_storage::interface::ApplyContext::empty(),
-        )
-        .is_ok()
-        {
+        let ctx = calimero_storage::interface::ApplyContext {
+            signer_account: store.and_then(|store| {
+                crate::sync::helpers::signer_account_for(
+                    store,
+                    &context_id,
+                    Some(&deletion.metadata.storage_type),
+                )
+            }),
+            ..calimero_storage::interface::ApplyContext::empty()
+        };
+        if Interface::<MainStorage>::apply_action(action, &ctx).is_ok() {
             applied += 1;
         }
     }

@@ -347,7 +347,30 @@ where
         // Without this trace, a `Result::Err` from apply_actions surfaces
         // as a bare WASM `unreachable` trap with no clue what failed.
         match artifact {
-            StorageDelta::Actions(actions) => Self::apply_actions(actions, |_| ctx.clone()),
+            // The SDK-driven LOCAL apply: these actions are this node's own
+            // writes, so the account executing right now is the account that
+            // wrote them. Saying so is what lets the signed-storage gates run
+            // here at all — they resolve a writer by account, and a caller that
+            // names nobody is indistinguishable from a remote action whose
+            // signer this node cannot yet place, which must be refused.
+            //
+            // Not the "never fall back to the locally executing account" hazard
+            // on `ApplyContext::signer_account`: that warns against letting a
+            // REMOTE action authorize itself as whoever happens to be applying
+            // it. This branch is local by construction — `CausalActions` below
+            // is the network one, and it carries its own resolved account.
+            //
+            // An explicit `signer_account` on the way in still wins, so a caller
+            // that has already resolved one is never second-guessed.
+            StorageDelta::Actions(actions) => {
+                let local = crate::interface::ApplyContext {
+                    signer_account: ctx.signer_account.or_else(|| {
+                        Some(calimero_account::AccountId::from(crate::env::account_id()))
+                    }),
+                    ..ctx.clone()
+                };
+                Self::apply_actions(actions, |_| local.clone())
+            }
             StorageDelta::CausalActions {
                 actions,
                 delta_id,

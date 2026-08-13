@@ -730,7 +730,21 @@ impl<S: StorageAdaptor> Interface<S> {
         }
         match signer_account {
             Some(account) => account == owner,
-            None => true,
+            // Refused, matching the `Shared` and `SharedMember` arms, which bail
+            // on an unnameable writer via `resolve_signer`.
+            //
+            // This arm used to accept, from when nothing could name a signer on
+            // any path that reaches here. Both now can: a local apply states the
+            // executing account (`Root::sync`), and a repair resolves the leaf's
+            // signer (`calimero-node`'s `repair_signer_account`). So `None` no
+            // longer means "nobody asked" — it means the binding has not folded
+            // here yet, which is a retryable timing gap, not authority.
+            //
+            // Accepting it was the divergence the refusal exists to prevent: a
+            // peer that HAS folded the binding refuses the same leaf, and the two
+            // keep different state. Refusing converges them, because the leaf is
+            // re-driven once the binding lands.
+            None => false,
         }
     }
 

@@ -464,7 +464,18 @@ fn repair_signer_account(
     context_id: &ContextId,
     leaf: &TreeLeafData,
 ) -> Option<calimero_account::AccountId> {
-    let signer = extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())?;
+    signer_account_for(store, context_id, leaf.metadata.authorization.as_ref())
+}
+
+/// [`repair_signer_account`] over any authorization stamp, so a tombstone —
+/// whose `Metadata` carries the storage type directly rather than in a leaf's
+/// `authorization` — resolves its signer the same way a pushed value does.
+pub(crate) fn signer_account_for(
+    store: &Store,
+    context_id: &ContextId,
+    authorization: Option<&StorageType>,
+) -> Option<calimero_account::AccountId> {
+    let signer = extract_author_from_leaf_authorization(authorization)?;
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
@@ -1070,6 +1081,7 @@ pub async fn handle_entity_push_locked(
 /// A deletion that loses the LWW race or fails authorization is a safe no-op
 /// and is not counted. Returns the number applied.
 fn apply_entity_deletions(
+    store: Option<&Store>,
     context_id: ContextId,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     deletions: &[EntityDeletion],
@@ -1082,7 +1094,17 @@ fn apply_entity_deletions(
                 deleted_at: deletion.deleted_at,
                 metadata: deletion.metadata.clone(),
             };
-            match Interface::<MainStorage>::apply_action(action, &ApplyContext::empty()) {
+            // A tombstone for a signed entity is authorized like any other
+            // write, so it needs the same account resolution a pushed value
+            // gets — otherwise deletes of `User`/`Shared` entities stop
+            // propagating on the repair paths.
+            let ctx = ApplyContext {
+                signer_account: store.and_then(|store| {
+                    signer_account_for(store, &context_id, Some(&deletion.metadata.storage_type))
+                }),
+                ..ApplyContext::empty()
+            };
+            match Interface::<MainStorage>::apply_action(action, &ctx) {
                 Ok(_) => applied += 1,
                 Err(e) => tracing::debug!(
                     %context_id,
@@ -1111,7 +1133,12 @@ pub async fn handle_entity_delete_push_locked(
         Some(client) => client.acquire_lock(&context_id).await,
         None => None,
     };
-    apply_entity_deletions(context_id, runtime_env, deletions)
+    apply_entity_deletions(
+        context_client.map(ContextClient::datastore),
+        context_id,
+        runtime_env,
+        deletions,
+    )
 }
 
 /// Extract a [`SignedNamespaceOp`](calimero_context_client::local_governance::SignedNamespaceOp)
