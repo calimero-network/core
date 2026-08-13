@@ -915,14 +915,17 @@ impl SyncManager {
     /// missing context→group mapping, which makes the context-keyed
     /// lookup return an empty set even though the group's anchors are
     /// well-defined on the local node.
+    /// The anchor set answers "who is authoritative here", which the governance
+    /// rows record against ACCOUNTS. Peer selection, though, matches on the
+    /// signing key a peer presents, so each anchor account is expanded to the
+    /// devices that speak for it: an anchor with two machines should be
+    /// preferred at both, and matching on the account alone would match neither.
     fn anchor_identities_for_group(
         &self,
         group_id: &calimero_context_config::types::ContextGroupId,
     ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
         let store = self.context_client.datastore_handle().into_inner();
-        MembershipRepository::new(&store)
-            .trusted_anchors(group_id)
-            .unwrap_or_default()
+        crate::sync::anchor_device_keys(&store, group_id)
     }
 
     /// Resolve the cached member peers for the group that owns
@@ -3283,7 +3286,18 @@ impl SyncManager {
         group_id: calimero_context_config::types::ContextGroupId,
         their_identity: &PublicKey,
     ) -> eyre::Result<bool> {
-        let live = MembershipRepository::new(store).is_member(&group_id, their_identity)?;
+        // The peer presents a signing key; membership names the account it acts
+        // as. A key bound to no account here is not a member — the same verdict,
+        // reached without inventing a principal for it.
+        let Some(their_account) = calimero_governance_store::member_account_in_namespace(
+            store,
+            &group_id,
+            their_identity,
+        )?
+        else {
+            return Ok(false);
+        };
+        let live = MembershipRepository::new(store).is_member(&group_id, &their_account)?;
         let Some(heads) =
             calimero_context::scope_projection::ScopeProjections::namespace_current_heads(
                 store, group_id,
@@ -3338,9 +3352,34 @@ impl SyncManager {
             self.peer_is_group_member(store, group_id, &their_identity)
         };
 
+        // `has_member`'s account-keyed arm needs the account the peer's key acts
+        // as; this crate can resolve it, `calimero-context-client` cannot.
+        //
+        // Re-resolved at every attempt rather than captured once. The whole point
+        // of the retries below is that the peer may have joined DURING the
+        // intervening catch-up — which is exactly when their binding first
+        // becomes resolvable here. A value read before the catch-up would carry
+        // its own staleness into every retry, so the account-keyed arm would keep
+        // being handed the `None` that provoked the catch-up in the first place
+        // and only the key-keyed fallback could rescue a peer who did just join.
+        let their_account = || {
+            let store = self.context_client.datastore();
+            calimero_governance_store::get_group_for_context(store, &context_id)
+                .ok()
+                .flatten()
+                .and_then(|gid| {
+                    calimero_governance_store::member_account_in_namespace(
+                        store,
+                        &gid,
+                        &their_identity,
+                    )
+                    .ok()
+                    .flatten()
+                })
+        };
         if !self
             .context_client
-            .has_member(&context_id, &their_identity)?
+            .has_member(&context_id, &their_identity, their_account())?
             && !is_inherited_member()?
         {
             _updated = Some(
@@ -3351,7 +3390,7 @@ impl SyncManager {
 
             if !self
                 .context_client
-                .has_member(&context_id, &their_identity)?
+                .has_member(&context_id, &their_identity, their_account())?
                 && !is_inherited_member()?
             {
                 // The peer may have just published MemberAdded for themselves
@@ -3371,7 +3410,7 @@ impl SyncManager {
 
                 if !self
                     .context_client
-                    .has_member(&context_id, &their_identity)?
+                    .has_member(&context_id, &their_identity, their_account())?
                     && !is_inherited_member()?
                 {
                     // Catch-up didn't resolve it (peer returned nothing, peer
@@ -3496,12 +3535,14 @@ impl SyncManager {
             namespace_id,
             ref invitation_bytes,
             joiner_public_key,
+            ref joiner_credential_bytes,
         } = &payload
         {
             self.handle_namespace_join_request(
                 *namespace_id,
                 invitation_bytes,
                 *joiner_public_key,
+                joiner_credential_bytes,
                 stream,
                 nonce,
             )
@@ -3839,8 +3880,8 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
 // rationale as the prior dispatch impls.
 #[async_trait::async_trait(?Send)]
 impl super::driver::SyncDriverDispatch for SyncManager {
-    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
-        let _ops = SyncManager::sync_namespace_from_peer(self, namespace_id, None).await;
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) -> usize {
+        SyncManager::sync_namespace_from_peer(self, namespace_id, None).await
     }
 
     async fn initiate_namespace_join(
@@ -4106,6 +4147,7 @@ mod init_pop_gate_tests {
                 namespace_id: [0; 32],
                 invitation_bytes: vec![],
                 joiner_public_key: [0; 32].into(),
+                joiner_credential_bytes: vec![],
             },
             InitPayload::OpenSubgroupJoinRequest {
                 namespace_id: [0; 32],
@@ -4165,7 +4207,6 @@ mod pending_upgrade_tests {
     use calimero_governance_store::{register_context_in_group, MetaRepository};
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
-    use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{
         ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
@@ -4186,7 +4227,9 @@ mod pending_upgrade_tests {
         migration: Option<&str>,
     ) -> ContextGroupId {
         let group_id = ContextGroupId::from([0x42; 32]);
-        let admin = PublicKey::from([0x07; 32]);
+        // Never resolved here — this fixture drives the upgrade/migration path,
+        // which reads app keys rather than principals.
+        let admin = calimero_primitives::identity::AccountId::from([0x07; 32]);
         let meta = GroupMetaValue {
             app_key: [0x11; 32],
             target_application_id: target,

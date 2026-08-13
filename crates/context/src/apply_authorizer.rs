@@ -16,6 +16,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath};
 use calimero_primitives::identity::PublicKey;
@@ -112,10 +113,25 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             .is_admin_or_capability_at_cut(self.store, *group, signer, capability, parents)
     }
 
+    fn is_admin_account_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .is_admin_account_at_cut(self.store, *group, member, parents)
+    }
+
     fn is_last_admin_at_cut(
         &self,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<bool> {
         // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
@@ -130,7 +146,7 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
     fn membership_path_at_cut(
         &self,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
         // Empty cut ⇒ defer to live (see `is_admin_at_cut`).

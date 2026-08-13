@@ -39,16 +39,16 @@ use crate::group::{
     LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
     LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, MigrationStatus, NamespaceSummary, PairDeviceCompleteRequest,
-    PairDeviceInitRequest, RemoveGroupMembersRequest, ResyncContextRequest, ResyncContextResponse,
-    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    ListNamespacesRequest, MigrationStatus, NamespaceIdentity, NamespaceSummary,
+    PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -283,7 +283,7 @@ mod borsh_layout_round_trip {
     fn user_round_trips() {
         let owner = [0x11; 32];
         let decoded = round_trip(StorageType::User {
-            owner: PublicKey::from(owner),
+            owner: calimero_account::AccountId::from(owner),
             signature_data: Some(SignatureData {
                 signature: [0x22; 64],
                 nonce: 42,
@@ -1060,11 +1060,22 @@ impl ContextRegistry {
     ///
     /// * `context_id` - The context to check within.
     /// * `public_key` - The public key of the potential member.
+    /// * `account` - The account that key speaks for, when the caller could
+    ///   resolve one. Membership rows are account-keyed and this crate cannot
+    ///   resolve a binding (they live in `calimero-governance-store`, which
+    ///   depends on this crate), so the caller supplies it. `None` skips the
+    ///   group-membership arm rather than guessing — the `ContextIdentity` arm
+    ///   is key-keyed and still answers.
     ///
     /// # Returns
     ///
     /// A `Result` containing `true` if the identity is a known member, `false` otherwise.
-    pub fn has_member(&self, context_id: &ContextId, public_key: &PublicKey) -> eyre::Result<bool> {
+    pub fn has_member(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        account: Option<calimero_account::AccountId>,
+    ) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
         // Check ContextIdentity first (fast path, covers locally-written entries).
@@ -1076,8 +1087,10 @@ impl ContextRegistry {
         // Fall back to group membership: if the identity is a member of the
         // group that owns this context, they are implicitly a context member.
         let ref_key = key::ContextGroupRef::new(*context_id);
-        if let Some(group_id_bytes) = handle.get(&ref_key)? {
-            let gm_key = key::GroupMember::new(group_id_bytes, *public_key);
+        if let (Some(group_id_bytes), Some(account)) = (handle.get(&ref_key)?, account) {
+            // Both group-level arms are account-keyed, so `None` skips them
+            // entirely rather than guessing which key speaks for whom.
+            let gm_key = key::GroupMember::new(group_id_bytes, account);
             if handle.has(&gm_key)? {
                 return Ok(true);
             }
@@ -1085,11 +1098,11 @@ impl ContextRegistry {
             // The group admin/creator never publishes a MemberJoined governance
             // op for themselves, so joining nodes never store a GroupMember entry
             // for the creator. Fall back to GroupMeta.admin_identity so that the
-            // creator's identity is recognised as a valid member on all nodes.
+            // creator is recognised as a valid member on all nodes.
             let meta_key = key::GroupMeta::new(group_id_bytes);
             if let Some(meta) = handle.get(&meta_key)? {
                 let meta: key::GroupMetaValue = meta;
-                if meta.admin_identity == *public_key {
+                if meta.admin_identity == account {
                     return Ok(true);
                 }
             }
@@ -1548,8 +1561,16 @@ impl ContextClient {
     }
 
     /// Checks if a given public key is a member of a context in the local datastore.
-    pub fn has_member(&self, context_id: &ContextId, public_key: &PublicKey) -> eyre::Result<bool> {
-        self.registry.has_member(context_id, public_key)
+    ///
+    /// See [`ContextRegistry::has_member`] for why `account` is the caller's to
+    /// supply.
+    pub fn has_member(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        account: Option<calimero_account::AccountId>,
+    ) -> eyre::Result<bool> {
+        self.registry.has_member(context_id, public_key, account)
     }
 
     /// Returns the group/namespace ID for a context, if the context belongs to a group.
@@ -2181,7 +2202,7 @@ impl ContextClient {
         get_namespace_identity,
         GetNamespaceIdentity,
         GetNamespaceIdentityRequest,
-        eyre::Result<Option<(ContextGroupId, PublicKey)>>
+        eyre::Result<Option<NamespaceIdentity>>
     );
     forward_to_actor!(
         list_namespaces_for_application,

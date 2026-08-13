@@ -40,9 +40,9 @@
 
 use std::sync::Mutex;
 
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::{op_events, op_events::OpEvent, PendingRotationRepository};
-use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
@@ -172,7 +172,7 @@ async fn run(
 /// Ask the actor to rotate. It re-checks eligibility (admin, not the leaver, still
 /// owed) and declines quietly if this node is not the right one to act — so several
 /// admins reacting to the same departure is expected, not a problem.
-async fn rotate(context_client: &ContextClient, group_id: ContextGroupId, departed: PublicKey) {
+async fn rotate(context_client: &ContextClient, group_id: ContextGroupId, departed: AccountId) {
     let request = calimero_context_client::group::RotateGroupKeyRequest { group_id, departed };
     if let Err(err) = context_client.rotate_group_key(request).await {
         // Best-effort: the row survives, so a later event, another admin, or the next

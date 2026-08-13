@@ -1001,7 +1001,7 @@ mod tests {
         NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: group,
             payload: MembershipChangePayload::MemberJoined(MembershipChange {
-                member: PublicKey::from([9u8; 32]),
+                member: calimero_primitives::identity::AccountId::from([9u8; 32]),
                 role: None,
             }),
         })
@@ -1213,12 +1213,14 @@ mod tests {
     }
 
     /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
-    /// returning the namespace and subgroup ids as wire hashes.
+    /// returning the namespace and subgroup ids as wire hashes plus the account
+    /// `caller`'s key resolves to - the principal every row below is keyed by,
+    /// and what the subscribe gate compares against.
     fn seed_namespace_with_restricted_subgroup(
         store: &Store,
         caller: PublicKey,
         role: calimero_primitives::context::GroupMemberRole,
-    ) -> (Hash, Hash) {
+    ) -> (Hash, Hash, calimero_primitives::identity::AccountId) {
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::VisibilityMode;
         use calimero_governance_store::{
@@ -1228,8 +1230,12 @@ mod tests {
         let ns = ContextGroupId::from([0xC0u8; 32]);
         let subgroup = ContextGroupId::from([0xC1u8; 32]);
 
+        // Enrolled at the namespace anchor, so the caller's key resolves there
+        // and every row below names the account it resolves to.
+        let account = calimero_context::test_support::enrol(store, &ns, &caller);
+
         MembershipRepository::new(store)
-            .add_member(&ns, &caller, role)
+            .add_member(&ns, &account, role)
             .unwrap();
         NamespaceRepository::new(store)
             .nest(&ns, &subgroup)
@@ -1238,7 +1244,11 @@ mod tests {
             .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
             .unwrap();
 
-        (Hash::from(ns.to_bytes()), Hash::from(subgroup.to_bytes()))
+        (
+            Hash::from(ns.to_bytes()),
+            Hash::from(subgroup.to_bytes()),
+            account,
+        )
     }
 
     // `CascadeProgress` names a descendant subgroup id, so a plain member of the
@@ -1254,7 +1264,7 @@ mod tests {
             calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
         let server = spawn_test_ws_authed(member_pk).await;
         let store = server.state.ctx_client.datastore();
-        let (group, subgroup) =
+        let (group, subgroup, member) =
             seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
 
         let membership = MembershipRepository::new(store);
@@ -1262,18 +1272,18 @@ mod tests {
         let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
         assert!(
             membership
-                .effective_capabilities(&ns_gid, &member_pk)
+                .effective_capabilities(&ns_gid, &member)
                 .unwrap()
                 .is_some(),
             "precondition: the caller subscribes as a genuine namespace member"
         );
         assert!(
-            !membership.is_admin(&ns_gid, &member_pk).unwrap(),
+            !membership.is_admin(&ns_gid, &member).unwrap(),
             "precondition: the caller is not an admin of the namespace"
         );
         assert!(
             membership
-                .effective_capabilities(&sub_gid, &member_pk)
+                .effective_capabilities(&sub_gid, &member)
                 .unwrap()
                 .is_none(),
             "precondition: the Restricted subgroup is invisible to it - its id is what the cascade frame would disclose"
@@ -1336,13 +1346,13 @@ mod tests {
             calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
         let server = spawn_test_ws_authed(admin_pk).await;
         let store = server.state.ctx_client.datastore();
-        let (group, subgroup) =
+        let (group, subgroup, admin) =
             seed_namespace_with_restricted_subgroup(store, admin_pk, GroupMemberRole::Admin);
 
         let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
         assert!(
             MembershipRepository::new(store)
-                .effective_capabilities(&sub_gid, &admin_pk)
+                .effective_capabilities(&sub_gid, &admin)
                 .unwrap()
                 .is_none(),
             "the root admin has no membership on the Restricted subgroup, so the gate must key on the root"
@@ -1440,14 +1450,18 @@ mod tests {
         let subgroup = ContextGroupId::from([0xB1u8; 32]);
         let store = server.state.ctx_client.datastore();
 
+        // Enrolled at the namespace anchor, so every row below names the account
+        // Bob's key resolves to.
+        let bob = calimero_context::test_support::enrol(store, &ns_gid, &bob_pk);
+
         // Bob has no direct subgroup row, so he is an inherited member via the Open subgroup.
         MembershipRepository::new(store)
-            .add_member(&ns_gid, &bob_pk, GroupMemberRole::Member)
+            .add_member(&ns_gid, &bob, GroupMemberRole::Member)
             .unwrap();
         CapabilitiesRepository::new(store)
             .set_member_capability(
                 &ns_gid,
-                &bob_pk,
+                &bob,
                 MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
             )
             .unwrap();
@@ -1461,17 +1475,17 @@ mod tests {
         // The kick: a per-subgroup deny-list entry. `is_member` (deny-list-blind)
         // still passes; `effective_capabilities` (deny-list-aware) does not.
         DenyListRepository::new(store)
-            .mark(&subgroup, &bob_pk)
+            .mark(&subgroup, &bob)
             .unwrap();
         assert!(
             MembershipRepository::new(store)
-                .is_member(&subgroup, &bob_pk)
+                .is_member(&subgroup, &bob)
                 .unwrap(),
             "precondition: the deny-list-blind check still sees Bob as a member (that is the bug)"
         );
         assert!(
             MembershipRepository::new(store)
-                .effective_capabilities(&subgroup, &bob_pk)
+                .effective_capabilities(&subgroup, &bob)
                 .unwrap()
                 .is_none(),
             "precondition: the deny-list-aware check must exclude the kicked member"

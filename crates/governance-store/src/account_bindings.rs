@@ -386,7 +386,7 @@ impl<'a> AccountBindingRepository<'a> {
         &self,
         group: &ContextGroupId,
         account: AccountId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<()> {
         let key = GroupAccountEndorser::new(group.to_bytes(), *account.as_bytes(), *member);
         let mut handle = self.store.handle();
@@ -417,16 +417,16 @@ impl<'a> AccountBindingRepository<'a> {
     pub fn accounts_by_endorsing_member(
         &self,
         group: &ContextGroupId,
-    ) -> EyreResult<BTreeMap<PublicKey, Vec<AccountId>>> {
+    ) -> EyreResult<BTreeMap<AccountId, Vec<AccountId>>> {
         let gid = group.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupAccountEndorser::new(gid, [0u8; 32], PublicKey::from([0u8; 32])),
+            GroupAccountEndorser::new(gid, [0u8; 32], AccountId::from([0u8; 32])),
             calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
             |k| k.group_id() == gid,
         )?;
 
-        let mut out: BTreeMap<PublicKey, Vec<AccountId>> = BTreeMap::new();
+        let mut out: BTreeMap<AccountId, Vec<AccountId>> = BTreeMap::new();
         for key in keys {
             out.entry(key.member())
                 .or_default()
@@ -471,12 +471,12 @@ impl<'a> AccountBindingRepository<'a> {
         &self,
         group: &ContextGroupId,
         account: AccountId,
-    ) -> EyreResult<Vec<PublicKey>> {
+    ) -> EyreResult<Vec<AccountId>> {
         let gid = group.to_bytes();
         let account_bytes = *account.as_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupAccountEndorser::new(gid, account_bytes, PublicKey::from([0u8; 32])),
+            GroupAccountEndorser::new(gid, account_bytes, AccountId::from([0u8; 32])),
             calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
             |k| k.group_id() == gid && k.account_id() == account_bytes,
         )?;
@@ -1352,7 +1352,7 @@ mod tests {
         // RPC layer — a message that names neither accounts nor devices.
         let store = test_store();
         let gid = ContextGroupId::from([7u8; 32]);
-        let member = key(1).public_key();
+        let member = AccountId::from(*key(1).public_key());
         crate::MembershipRepository::new(&store)
             .add_member(&gid, &member, crate::GroupMemberRole::Member)
             .expect("add member");

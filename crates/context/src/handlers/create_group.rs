@@ -55,6 +55,49 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 }
             };
 
+        // The creator's ACCOUNT — every governance row this handler writes names
+        // a principal, and a principal is an account.
+        //
+        // A namespace root has no bindings yet (nothing has been applied), so the
+        // founder's account comes from the credential this node mints for itself;
+        // the genesis op carries that same credential and the apply records the
+        // binding, which is what makes the founder resolvable to every peer
+        // afterwards. A subgroup is different: its creator is already a namespace
+        // member, so its account MUST come from the binding rows — deriving it
+        // locally instead would let a node whose root was replaced write rows its
+        // peers resolve to somebody else.
+        //
+        // Minted only for a root. A subgroup never uses the credential, so
+        // building one for it would let an unrelated fault — a namespace
+        // identity or account root in some transient state — refuse a creation
+        // that had no need of it.
+        let (admin_account, founder_credential) = if parent_group_id.is_some() {
+            let account = match calimero_governance_store::member_account_in_namespace(
+                &self.datastore,
+                &namespace_id,
+                &admin_identity,
+            ) {
+                Ok(Some(account)) => account,
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "cannot create a subgroup: this node's identity is bound to no account \
+                         in namespace '{namespace_id:?}'"
+                    )))
+                }
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+            (account, None)
+        } else {
+            match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
+                Ok(credential) => (credential.cert.account, Some(credential)),
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to mint this node's account credential: {err}"
+                    )))
+                }
+            }
+        };
+
         let signing_key = Some(sk_bytes);
 
         // Subgroups inherit target_application_id from the parent (namespace root owns the app).
@@ -73,7 +116,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // (honored only at root level — see the capability's doc and
             // `execute_group_created`, which re-checks this on every peer).
             let is_namespace_admin = match MembershipRepository::new(&self.datastore)
-                .is_admin(&namespace_id, &admin_identity)
+                .is_admin(&namespace_id, &admin_account)
             {
                 Ok(v) => v,
                 Err(err) => return ActorResponse::reply(Err(err)),
@@ -165,8 +208,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
             app_key: row_blob,
             target_application_id: effective_application_id,
             created_at: reservation_now,
-            admin_identity,
-            owner_identity: admin_identity,
+            admin_identity: admin_account,
+            owner_identity: admin_account,
             migration: None,
             auto_join: true,
         };
@@ -193,10 +236,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     app_key: app_key.to_bytes(),
                     target_application_id: effective_application_id,
                     created_at: reservation_now,
-                    admin_identity,
+                    admin_identity: admin_account,
                     // Creator is the initial Owner. Transferable via
                     // `GroupOp::TransferOwnership`.
-                    owner_identity: admin_identity,
+                    owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
                 };
@@ -221,7 +264,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
                     MembershipRepository::new(&datastore).add_member(
                         &group_id,
-                        &admin_identity,
+                        &admin_account,
                         GroupMemberRole::Admin,
                     )?;
 
@@ -279,6 +322,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         rollback_local_group_rows(
                             &datastore,
                             &group_id,
+                            &admin_account,
                             &admin_identity,
                             group_key_id,
                             name_written,
@@ -325,6 +369,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
                     let create_op = NamespaceOp::Root(RootOp::GroupCreated {
+                        // The account this node acts as — the same one written
+                        // into the local rows above, so a receiver folds the
+                        // creator the rows already name.
+                        admin: admin_account,
                         group_id: group_id.to_bytes().into(),
                         parent_id: parent_id.to_bytes().into(),
                         restricted,
@@ -352,8 +400,21 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         }
                     }
                 } else {
+                    // Present by construction: the same `parent_group_id` test
+                    // that selected this branch is the one that minted it. Named
+                    // as an error rather than unwrapped so a future edit that
+                    // separates the two fails loudly instead of skipping the
+                    // genesis op and leaving a namespace with no founder on the
+                    // DAG.
+                    let Some(founder_credential) = founder_credential else {
+                        eyre::bail!(
+                            "internal: namespace-root creation reached the genesis op without \
+                             the founder credential it is minted with"
+                        );
+                    };
                     let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreated {
-                        founder: admin_identity,
+                        founder: admin_account,
+                        account: founder_credential,
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -498,6 +559,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             rollback_local_group_rows(
                                 &datastore,
                                 &group_id,
+                                &admin_account,
                                 &admin_identity,
                                 Some(key_id),
                                 name_written,
@@ -556,6 +618,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 fn rollback_local_group_rows(
     datastore: &Store,
     group_id: &ContextGroupId,
+    admin_account: &calimero_account::AccountId,
     admin_identity: &PublicKey,
     group_key_id: Option<[u8; 32]>,
     has_name: bool,
@@ -563,7 +626,7 @@ fn rollback_local_group_rows(
     if let Err(re) = MetaRepository::new(datastore).delete(group_id) {
         warn!(?re, ?group_id, "rollback: failed to delete root meta");
     }
-    if let Err(re) = MembershipRepository::new(datastore).remove_member(group_id, admin_identity) {
+    if let Err(re) = MembershipRepository::new(datastore).remove_member(group_id, admin_account) {
         warn!(
             ?re,
             ?group_id,
@@ -666,6 +729,9 @@ mod tests {
         admin: &PublicKey,
         with_name: bool,
     ) -> [u8; 32] {
+        // Enrolled so the rows name the account this key resolves to; the
+        // rollback assertions below read them back by that account.
+        let admin_account = crate::test_support::enrol(store, group, admin);
         MetaRepository::new(store)
             .save(
                 group,
@@ -673,15 +739,15 @@ mod tests {
                     app_key: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     created_at: 1_700_000_000,
-                    admin_identity: *admin,
-                    owner_identity: *admin,
+                    admin_identity: admin_account,
+                    owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
                 },
             )
             .expect("save meta");
         MembershipRepository::new(store)
-            .add_member(group, admin, GroupMemberRole::Admin)
+            .add_member(group, &admin_account, GroupMemberRole::Admin)
             .expect("add admin");
         CapabilitiesRepository::new(store)
             .set_default_capabilities(group, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
@@ -718,7 +784,7 @@ mod tests {
         // Sanity: everything is present before the rollback.
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_some());
         assert!(MembershipRepository::new(&store)
-            .is_member(&group, &admin)
+            .is_member(&group, &crate::test_support::account_for(&admin))
             .unwrap());
         assert!(CapabilitiesRepository::new(&store)
             .default_capabilities(&group)
@@ -734,7 +800,14 @@ mod tests {
             .unwrap()
             .is_some());
 
-        rollback_local_group_rows(&store, &group, &admin, Some(key_id), true);
+        rollback_local_group_rows(
+            &store,
+            &group,
+            &crate::test_support::account_for(&admin),
+            &admin,
+            Some(key_id),
+            true,
+        );
 
         // Every row the create wrote is gone; a retry with the same id is clean.
         assert!(
@@ -743,7 +816,7 @@ mod tests {
         );
         assert!(
             !MembershipRepository::new(&store)
-                .is_member(&group, &admin)
+                .is_member(&group, &crate::test_support::account_for(&admin))
                 .unwrap(),
             "member"
         );
@@ -783,7 +856,14 @@ mod tests {
         let key_id = seed_group(&store, &victim, &admin, true);
         let _ = seed_group(&store, &bystander, &admin, true);
 
-        rollback_local_group_rows(&store, &victim, &admin, Some(key_id), true);
+        rollback_local_group_rows(
+            &store,
+            &victim,
+            &crate::test_support::account_for(&admin),
+            &admin,
+            Some(key_id),
+            true,
+        );
 
         // The bystander group is untouched — every row type the helper deletes
         // is checked here, so a rollback that used the wrong group id for any
@@ -793,7 +873,7 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(MembershipRepository::new(&store)
-            .is_member(&bystander, &admin)
+            .is_member(&bystander, &crate::test_support::account_for(&admin))
             .unwrap());
         assert!(CapabilitiesRepository::new(&store)
             .default_capabilities(&bystander)
@@ -827,15 +907,22 @@ mod tests {
                     app_key: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     created_at: 1,
-                    admin_identity: admin,
-                    owner_identity: admin,
+                    admin_identity: crate::test_support::account_for(&admin),
+                    owner_identity: crate::test_support::account_for(&admin),
                     migration: None,
                     auto_join: true,
                 },
             )
             .expect("save meta");
 
-        rollback_local_group_rows(&store, &group, &admin, None, false);
+        rollback_local_group_rows(
+            &store,
+            &group,
+            &crate::test_support::account_for(&admin),
+            &admin,
+            None,
+            false,
+        );
 
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
     }

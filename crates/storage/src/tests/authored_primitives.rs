@@ -7,7 +7,6 @@
 //! tampered writes — the central security guarantee of these primitives.
 
 use borsh::to_vec;
-use calimero_primitives::identity::PublicKey;
 use ed25519_dalek::SigningKey;
 use serial_test::serial;
 
@@ -18,7 +17,8 @@ use crate::env;
 use crate::error::StorageError;
 use crate::interface::{ApplyContext, Interface};
 use crate::store::MainStorage;
-use crate::tests::common::{create_test_keypair, sign_action};
+use crate::tests::common::{create_test_keypair, create_test_owner, sign_action};
+use calimero_account::AccountId;
 
 type MainInterface = Interface<MainStorage>;
 
@@ -39,7 +39,7 @@ const FORGED_NONCE_OFFSET_NS: u64 = 1_000_000_000;
 fn build_signed_update_for(
     id: crate::address::Id,
     data: Vec<u8>,
-    claimed_owner: PublicKey,
+    claimed_owner: AccountId,
     signing_key: &SigningKey,
     nonce: u64,
 ) -> Action {
@@ -92,7 +92,7 @@ fn build_signed_update_for(
 /// stored owner, then checks the signature against `claimed_owner`.
 fn build_signed_delete_for(
     id: crate::address::Id,
-    claimed_owner: PublicKey,
+    claimed_owner: AccountId,
     signing_key: &SigningKey,
     deleted_at: u64,
 ) -> Action {
@@ -145,11 +145,11 @@ fn build_signed_delete_for(
 fn authored_map_update_with_forged_owner_claim_is_rejected() {
     env::reset_for_testing();
 
-    let (alice_sk, alice_pk) = create_test_keypair();
+    let (alice_sk, alice_account) = create_test_owner();
     let (bob_sk, _bob_pk) = create_test_keypair();
 
     // Alice inserts the entry (stamped owner = Alice).
-    env::set_device_id(*alice_pk.digest());
+    env::set_account_id(*alice_account.as_bytes());
     let mut map = Root::new(AuthoredMap::<String, u64>::new);
     map.insert("apple".to_owned(), 1).expect("alice insert");
 
@@ -157,11 +157,11 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
 
     // Bob forges an Update claiming to be Alice. He has to sign with Alice's
     // identity as declared in metadata — but he doesn't hold Alice's key, so
-    // he signs with his own. The signature verification against alice_pk fails.
+    // he signs with his own. The signature verification against Alice's key fails.
     let forged = build_signed_update_for(
         entry_id,
         to_vec(&("apple".to_owned(), 99u64)).unwrap(),
-        alice_pk,
+        alice_account,
         &bob_sk,
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
@@ -183,10 +183,10 @@ fn authored_map_update_with_forged_owner_claim_is_rejected() {
 fn authored_map_delete_by_non_owner_is_rejected() {
     env::reset_for_testing();
 
-    let (_alice_sk, alice_pk) = create_test_keypair();
-    let (bob_sk, bob_pk) = create_test_keypair();
+    let (_alice_sk, alice_account) = create_test_owner();
+    let (bob_sk, bob_account) = create_test_owner();
 
-    env::set_device_id(*alice_pk.digest());
+    env::set_account_id(*alice_account.as_bytes());
     let mut map = Root::new(AuthoredMap::<String, u64>::new);
     map.insert("apple".to_owned(), 1).expect("alice insert");
 
@@ -197,7 +197,7 @@ fn authored_map_delete_by_non_owner_is_rejected() {
     // path rejects before even trying the signature check.
     let forged = build_signed_delete_for(
         entry_id,
-        bob_pk,
+        bob_account,
         &bob_sk,
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
@@ -214,10 +214,10 @@ fn authored_map_delete_by_non_owner_is_rejected() {
 fn authored_vector_update_with_forged_owner_claim_is_rejected() {
     env::reset_for_testing();
 
-    let (_alice_sk, alice_pk) = create_test_keypair();
+    let (_alice_sk, alice_account) = create_test_owner();
     let (bob_sk, _bob_pk) = create_test_keypair();
 
-    env::set_device_id(*alice_pk.digest());
+    env::set_account_id(*alice_account.as_bytes());
     let mut v = Root::new(AuthoredVector::<u64>::new);
     v.push(7).expect("alice push");
 
@@ -229,7 +229,7 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
     let forged = build_signed_update_for(
         entry_id,
         to_vec(&99u64).unwrap(),
-        alice_pk,
+        alice_account,
         &bob_sk,
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );
@@ -246,10 +246,10 @@ fn authored_vector_update_with_forged_owner_claim_is_rejected() {
 fn authored_vector_delete_by_non_owner_is_rejected() {
     env::reset_for_testing();
 
-    let (_alice_sk, alice_pk) = create_test_keypair();
-    let (bob_sk, bob_pk) = create_test_keypair();
+    let (_alice_sk, alice_account) = create_test_owner();
+    let (bob_sk, bob_account) = create_test_owner();
 
-    env::set_device_id(*alice_pk.digest());
+    env::set_account_id(*alice_account.as_bytes());
     let mut v = Root::new(AuthoredVector::<u64>::new);
     v.push(7).expect("alice push");
 
@@ -260,7 +260,7 @@ fn authored_vector_delete_by_non_owner_is_rejected() {
 
     let forged = build_signed_delete_for(
         entry_id,
-        bob_pk,
+        bob_account,
         &bob_sk,
         env::time_now().saturating_add(FORGED_NONCE_OFFSET_NS),
     );

@@ -79,7 +79,9 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 // namespace member holding CAN_DELETE_SUBGROUP. The non-owner case
                 // routes through `PermissionChecker` to stay in step with the
                 // create / set-visibility handlers.
-                if meta.owner_identity != requester {
+                let requester_account =
+                    crate::member_account::require(&self.datastore, &group_id, &requester)?;
+                if meta.owner_identity != requester_account {
                     calimero_governance_store::PermissionChecker::new(
                         &self.datastore,
                         namespace_id,

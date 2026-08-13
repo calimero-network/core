@@ -46,7 +46,12 @@ impl Handler<RotateGroupKeyRequest> for ContextManager {
         // hole this whole mechanism exists to close. (The membership row is already
         // gone, so the admin check below would normally catch it; this is explicit
         // because getting it wrong silently defeats the feature.)
-        if departed == self_pk {
+        let self_account =
+            match crate::member_account::require(&self.datastore, &group_id, &self_pk) {
+                Ok(account) => account,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+        if departed == self_account {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "refusing to rotate {group_id:?} for this node's own departure: a leaver \
                  cannot mint the key they are being cut off from"

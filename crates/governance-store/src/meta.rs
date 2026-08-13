@@ -1,7 +1,7 @@
 use crate::{MembershipRepository, MetaError};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{ContextMeta, GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
@@ -112,14 +112,14 @@ impl<'a> MetaRepository<'a> {
     pub fn compute_state_hash_after_remove(
         &self,
         group_id: &ContextGroupId,
-        removed_member: &PublicKey,
+        removed_member: &AccountId,
     ) -> EyreResult<[u8; 32]> {
         let meta = self
             .load(group_id)?
             .ok_or(MetaError::GroupNotFoundForHash)?;
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
-        members.retain(|(pk, _role)| pk != removed_member);
+        members.retain(|(account, _role)| account != removed_member);
         members.sort_by(|a, b| a.0.cmp(&b.0));
         members.dedup_by(|a, b| a.0 == b.0);
 
@@ -159,21 +159,21 @@ impl<'a> MetaRepository<'a> {
 fn hash_group_state(
     group_id: &ContextGroupId,
     meta: &GroupMetaValue,
-    members_sorted: &[(PublicKey, GroupMemberRole)],
+    members_sorted: &[(AccountId, GroupMemberRole)],
 ) -> EyreResult<[u8; 32]> {
     debug_assert!(
         members_sorted
             .windows(2)
-            .all(|w| AsRef::<[u8]>::as_ref(&w[0].0) < AsRef::<[u8]>::as_ref(&w[1].0)),
-        "hash_group_state: members must be strictly sorted by PublicKey byte order"
+            .all(|w| w[0].0.as_bytes() < w[1].0.as_bytes()),
+        "hash_group_state: members must be strictly sorted by AccountId byte order"
     );
     let mut hasher = Sha256::new();
     hasher.update(group_id.to_bytes());
-    hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
-    hasher.update(AsRef::<[u8]>::as_ref(&meta.owner_identity));
+    hasher.update(meta.admin_identity.as_bytes());
+    hasher.update(meta.owner_identity.as_bytes());
     hasher.update(meta.target_application_id.as_ref());
-    for (pk, role) in members_sorted {
-        hasher.update(AsRef::<[u8]>::as_ref(pk));
+    for (account, role) in members_sorted {
+        hasher.update(account.as_bytes());
         let role_bytes =
             borsh::to_vec(role).map_err(|e| eyre!("role serialization failed: {e}"))?;
         hasher.update(&role_bytes);

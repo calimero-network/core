@@ -5,26 +5,32 @@ use super::super::super::build_auto_follow_set_if_enabled;
 use super::context::GroupApplyCtx;
 use crate::membership::TeeAttestationClaims;
 use crate::{DenyListRepository, MembershipError, ReentryRepository};
+use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    member: &PublicKey,
+    member: &AccountId,
     claims: &TeeAttestationClaims<'_>,
     role: &GroupMemberRole,
 ) -> EyreResult<()> {
-    let signer = ctx.signer();
+    let _signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
 
     if *role != GroupMemberRole::ReadOnlyTee {
         bail!(MembershipError::TeeRoleMustBeReadOnly);
     }
+    // The verifier is a member who vouched for the attestation, so its key is
+    // resolved to the account membership is recorded against. A key bound to no
+    // account here vouches for nobody.
+    let Some(verifier) = ctx.signer_account()? else {
+        bail!(MembershipError::TeeVerifierNotMember);
+    };
     ctx.membership_policy()
-        .require_tee_attestation_verifier_membership(signer)?;
+        .require_tee_attestation_verifier_membership(&verifier)?;
     let policy = ctx
         .membership_policy()
         .read_required_tee_admission_policy()?;

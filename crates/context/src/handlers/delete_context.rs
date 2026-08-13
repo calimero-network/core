@@ -65,8 +65,13 @@ impl Handler<DeleteContextRequest> for ContextManager {
                     )))
                 }
             };
-            if let Err(err) =
-                MembershipRepository::new(&self.datastore).require_admin(&group_id, &requester)
+            let requester_account =
+                match crate::member_account::require(&self.datastore, &group_id, &requester) {
+                    Ok(account) => account,
+                    Err(err) => return ActorResponse::reply(Err(err)),
+                };
+            if let Err(err) = MembershipRepository::new(&self.datastore)
+                .require_admin(&group_id, &requester_account)
             {
                 return ActorResponse::reply(Err(err));
             }

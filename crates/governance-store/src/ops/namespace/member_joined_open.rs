@@ -18,26 +18,62 @@ use crate::{
     ApplyError, BindingRejected, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
     NamespaceRepository, ReentryRepository,
 };
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::{JoinAccountCredential, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
 
+/// Whether a self-service join op was really made by the account it admits.
+///
+/// The op names an ACCOUNT, so proving ownership takes two halves and the
+/// credential carries both:
+///
+/// 1. `op.signer == cert.sign_pk` — the op was signed by the device this
+///    certificate certifies. This is what the old `op.signer == member`
+///    comparison did while `member` was a key; it cannot be asked of an account
+///    directly, because an account is a hash and no signature names it.
+/// 2. [`join_credential_binds`](calimero_op_adapter::join_credential_binds) —
+///    the certificate names `member` and verifies against its own genesis and
+///    chain.
+///
+/// Either half alone admits a forgery. Without (1), anyone can lift a
+/// credential out of somebody else's cleartext join and replay it to claim
+/// their account. Without (2), a member holding any valid credential could
+/// name someone else's account in the op and have the row written for them.
+///
+/// Deliberately NOT used by the TEE admission path, which breaks half (1) on
+/// purpose: an attested replica cannot admit itself, so its op is signed by the
+/// verifying member rather than by the replica's own device.
+pub(crate) fn join_op_proves_ownership(
+    signer: &PublicKey,
+    member: &AccountId,
+    account: &JoinAccountCredential,
+) -> bool {
+    *signer == account.cert.sign_pk
+        && calimero_op_adapter::join_credential_binds(
+            member,
+            &account.genesis,
+            &account.chain,
+            &account.cert,
+        )
+}
+
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
-    member: PublicKey,
+    member: AccountId,
     group_id: [u8; 32],
     account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
 
-    if op.signer != member {
+    if !join_op_proves_ownership(&op.signer, &member, account) {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::SignerMismatch {
                 signer: format!("{}", op.signer),
-                member: format!("{member}"),
+                member: format!("{member:?}"),
             }
         ));
     }
@@ -159,7 +195,7 @@ fn membership_path_kind(path: &MembershipPath) -> AtCutMembershipPath {
 /// Propagates a store read/write failure from the binding or endorser write.
 pub(super) fn record_join_credential(
     ctx: &mut NamespaceApplyCtx<'_>,
-    member: PublicKey,
+    member: AccountId,
     account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     let namespace = ContextGroupId::from(ctx.namespace_id().to_bytes());
@@ -168,8 +204,8 @@ pub(super) fn record_join_credential(
     // the check that establishes both. `apply_link` below verifies the certificate
     // too, but says nothing about WHOSE it is: these ops are cleartext, so any
     // node can lift a credential out of somebody else's join and present it as the
-    // `account` of its own, signed honestly with its own key. `op.signer ==
-    // member` proves the envelope, never the payload. Binding it anyway would
+    // `account` of its own, signed honestly with its own key. A valid outer
+    // signature proves the envelope, never the payload. Binding it anyway would
     // graft a stranger's account into this namespace under the replayer's
     // membership, and — because the endorser row below is what makes a member
     // account-addressed — would aim the replayer's scope keys at the victim's
@@ -178,7 +214,7 @@ pub(super) fn record_join_credential(
     // Shared verbatim with the projection encoder, which has to reach the same
     // verdict or the two planes disagree about the same op in the opposite
     // direction: a credential refused a binding here and granted one in the fold.
-    if !calimero_op_adapter::join_credential_is_the_joiners(
+    if !calimero_op_adapter::join_credential_binds(
         &member,
         &account.genesis,
         &account.chain,
@@ -186,7 +222,7 @@ pub(super) fn record_join_credential(
     ) {
         tracing::warn!(
             ?namespace,
-            %member,
+            ?member,
             cert_sign_pk = %account.cert.sign_pk,
             "member joined presenting a credential that is not its own or does not \
              verify; the credential is ignored and the member is recorded without a \

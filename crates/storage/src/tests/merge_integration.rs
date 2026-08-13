@@ -14,7 +14,7 @@ use crate::collections::{
 use crate::env;
 use crate::merge::{clear_merge_registry, merge_root_state, register_crdt_merge};
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::PublicKey;
+use calimero_account::AccountId;
 use serial_test::serial;
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
@@ -139,11 +139,12 @@ fn test_user_storage_reassign_deterministic_id_preserves_entries() {
     use crate::collections::UserStorage;
 
     env::reset_for_testing();
-    env::set_device_id([0x11; 32]);
+    env::set_account_id([0x11; 32]);
 
     let mut storage = UserStorage::<u64>::new();
     let _ = storage.insert(7).expect("initial insert should succeed");
-    let owner_key: PublicKey = [0x11; 32].into();
+    // UserStorage is keyed by ACCOUNT — the person whose slot this is.
+    let owner_key = AccountId::from([0x11; 32]);
     assert_eq!(
         storage
             .get_for_user(&owner_key)
@@ -159,11 +160,11 @@ fn test_user_storage_reassign_deterministic_id_preserves_entries() {
         Some(7)
     );
 
-    env::set_device_id([0x22; 32]);
+    env::set_account_id([0x22; 32]);
     let _ = storage
         .insert(11)
         .expect("second user insert should succeed");
-    let second_key: PublicKey = [0x22; 32].into();
+    let second_key = AccountId::from([0x22; 32]);
     assert_eq!(
         storage
             .get_for_user(&second_key)

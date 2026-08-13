@@ -41,8 +41,8 @@
 //! still finds the outstanding work when it comes back, and a node that crashes
 //! mid-rotation retries. The worklist drains; it does not evaporate.
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupPendingKeyRotation, GROUP_PENDING_KEY_ROTATION_PREFIX};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -89,7 +89,7 @@ impl<'a> PendingRotationRepository<'a> {
     ///
     /// Idempotent. Called from the `MemberLeft` apply on every node, so the worklist
     /// is replicated rather than gossiped.
-    pub fn mark(&self, group_id: &ContextGroupId, departed: &PublicKey) -> EyreResult<()> {
+    pub fn mark(&self, group_id: &ContextGroupId, departed: &AccountId) -> EyreResult<()> {
         let key = GroupPendingKeyRotation::new(group_id.to_bytes(), *departed);
         let mut handle = self.store.handle();
         handle
@@ -103,7 +103,7 @@ impl<'a> PendingRotationRepository<'a> {
     /// Idempotent — clearing an absent row is a no-op, which is what makes a
     /// concurrent double-rotation harmless: the second `GroupKeyRotated` to apply
     /// simply finds nothing left to clear.
-    pub fn clear(&self, group_id: &ContextGroupId, departed: &PublicKey) -> EyreResult<()> {
+    pub fn clear(&self, group_id: &ContextGroupId, departed: &AccountId) -> EyreResult<()> {
         let key = GroupPendingKeyRotation::new(group_id.to_bytes(), *departed);
         let mut handle = self.store.handle();
         handle
@@ -113,7 +113,7 @@ impl<'a> PendingRotationRepository<'a> {
     }
 
     /// Does `group_id` still owe a rotation for `departed`?
-    pub fn is_pending(&self, group_id: &ContextGroupId, departed: &PublicKey) -> EyreResult<bool> {
+    pub fn is_pending(&self, group_id: &ContextGroupId, departed: &AccountId) -> EyreResult<bool> {
         let key = GroupPendingKeyRotation::new(group_id.to_bytes(), *departed);
         let handle = self.store.handle();
         handle
@@ -121,26 +121,23 @@ impl<'a> PendingRotationRepository<'a> {
             .map_err(|e| eyre::eyre!("PendingRotationRepository::is_pending: {e}"))
     }
 
-    /// Every identity `group_id` still owes a rotation for.
+    /// Every account `group_id` still owes a rotation for.
     ///
     /// Usually zero or one. More than one means several members left before any
     /// rotation landed — a single rotation discharges them all (it excludes every
     /// non-member), so the caller clears each row it covers.
-    pub fn departed_for_group(&self, group_id: &ContextGroupId) -> EyreResult<Vec<PublicKey>> {
+    pub fn departed_for_group(&self, group_id: &ContextGroupId) -> EyreResult<Vec<AccountId>> {
         let gid = group_id.to_bytes();
-        // Seek from the lexicographic minimum of the identity space so a forward
+        // Seek from the lexicographic minimum of the account space so a forward
         // iterator visits every row under this group — the same scan-from-minimum
         // convention the deny-list uses.
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupPendingKeyRotation::new(gid, PublicKey::from([0u8; 32])),
+            GroupPendingKeyRotation::new(gid, AccountId::from([0u8; 32])),
             GROUP_PENDING_KEY_ROTATION_PREFIX,
             |k| k.group_id() == gid,
         )?;
-        Ok(keys
-            .iter()
-            .map(|k| PublicKey::from(*k.departed()))
-            .collect())
+        Ok(keys.iter().map(GroupPendingKeyRotation::departed).collect())
     }
 
     /// The node's entire rotation backlog, as `(group_id, departed)` pairs.
@@ -148,21 +145,16 @@ impl<'a> PendingRotationRepository<'a> {
     /// This is what a rotator drains on startup: a node that was offline when the
     /// leave applied still finds the outstanding work here, which is the whole point
     /// of persisting the worklist rather than reacting only to a live event.
-    pub fn all_pending(&self) -> EyreResult<Vec<(ContextGroupId, PublicKey)>> {
+    pub fn all_pending(&self) -> EyreResult<Vec<(ContextGroupId, AccountId)>> {
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupPendingKeyRotation::new([0u8; 32], PublicKey::from([0u8; 32])),
+            GroupPendingKeyRotation::new([0u8; 32], AccountId::from([0u8; 32])),
             GROUP_PENDING_KEY_ROTATION_PREFIX,
             |_| true,
         )?;
         Ok(keys
             .iter()
-            .map(|k| {
-                (
-                    ContextGroupId::from(k.group_id()),
-                    PublicKey::from(*k.departed()),
-                )
-            })
+            .map(|k| (ContextGroupId::from(k.group_id()), k.departed()))
             .collect())
     }
 
@@ -172,7 +164,7 @@ impl<'a> PendingRotationRepository<'a> {
         let gid = group_id.to_bytes();
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupPendingKeyRotation::new(gid, PublicKey::from([0u8; 32])),
+            GroupPendingKeyRotation::new(gid, AccountId::from([0u8; 32])),
             GROUP_PENDING_KEY_ROTATION_PREFIX,
             |k| k.group_id() == gid,
         )?;

@@ -467,11 +467,16 @@ pub fn context_id() -> [u8; 32] {
 /// attributes writes to.
 ///
 /// Every use of it in this crate is a per-replica question: an LWW register's
-/// tiebreak `node_id`, a counter's per-actor slot, an HLC instance seed, an
-/// author-tracked entry's owner. None of those may become an account: two devices
-/// of one account acting concurrently must stay distinguishable, or they share a
-/// counter slot and an HLC seed and silently lose each other's writes. Per-person
-/// aggregation belongs above storage, on `account_id()`.
+/// tiebreak `node_id`, a counter's per-actor slot, an HLC instance seed. None of
+/// those may become an account: two devices of one account acting concurrently
+/// must stay distinguishable, or they share a counter slot and an HLC seed and
+/// silently lose each other's writes.
+///
+/// An author-tracked entry's `owner` used to be on this list and is not any more.
+/// It gates who may change the entry, which is a question about a person, so it
+/// reads [`account_id`]; the device that wrote it is recorded separately, as the
+/// signer its signature verifies against. Nothing about per-replica state moved
+/// with it.
 ///
 /// In WASM, this calls the host function. In tests, returns a fixed value.
 #[must_use]

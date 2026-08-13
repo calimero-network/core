@@ -59,10 +59,15 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         let signer_sk = PrivateKey::from(signer_sk_bytes);
         let store = self.datastore.clone();
 
-        let is_admin = match MembershipRepository::new(&store).is_admin(&namespace_id, &self_pk) {
-            Ok(is_admin) => is_admin,
+        let self_account = match crate::member_account::require(&store, &namespace_id, &self_pk) {
+            Ok(account) => account,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        let is_admin =
+            match MembershipRepository::new(&store).is_admin(&namespace_id, &self_account) {
+                Ok(is_admin) => is_admin,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
 
         // Whose device this is, and whether this node can prove it owns the
         // account, both come from the group's own binding. Deriving the account

@@ -1,6 +1,16 @@
 name: Setup Merobox
 description: "Install the merobox release binary (Linux only)"
 
+# There is deliberately no "install a prebuilt artifact instead" input. Pointing
+# the suite at an unreleased merobox is occasionally useful while a fix is in
+# flight, but an artifact installed by name is a binary every downstream step
+# then executes with full access to node data dirs, and a same-repo artifact name
+# is not an authenticated identity — any job that can upload under that name
+# substitutes it. The release path below is verified against its published
+# `.sha256`, and that guarantee is the reason this is the only path. Testing
+# against an unshipped merobox means shipping it first, to a pre-release if need
+# be; the floor below is a floor precisely so that is cheap.
+
 runs:
   using: "composite"
   steps:

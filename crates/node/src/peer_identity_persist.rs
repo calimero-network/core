@@ -249,7 +249,7 @@ pub(crate) fn reconcile_peer_scores(state: &NodeState, network: &NetworkClient, 
 /// a removed member stops being preferred for sync (and stops being
 /// re-persisted) promptly, rather than after the 24h TTL. Other events
 /// are ignored. Kept separate from the async loop so it's unit-testable.
-fn apply_invalidation_event(state: &NodeState, event: &OpEvent) {
+fn apply_invalidation_event(state: &NodeState, store: &calimero_store::Store, event: &OpEvent) {
     if let OpEvent::MemberRemoved { group_id, member } = event {
         // Only the durable cache's per-group membership view is dropped.
         // The in-memory `peer_identities` reverse view is deliberately
@@ -261,12 +261,34 @@ fn apply_invalidation_event(state: &NodeState, event: &OpEvent) {
         // `member_removed_event_drops_cached_member` test pins this
         // (asserts the reverse view is untouched) so a future "cleanup"
         // doesn't silently change it.
-        state
-            .lock_peer_identity_cache()
-            .remove_member(&ContextGroupId::from(*group_id), member);
+        //
+        // The event names the removed ACCOUNT while the cache is keyed by the
+        // identity a peer presents, so the account is expanded to its devices —
+        // removing a person has to drop every machine they were preferred at.
+        // A device already revoked has no live binding and so is not dropped
+        // here; it is refused at signature verification long before selection.
+        let gid = ContextGroupId::from(*group_id);
+        let devices: Vec<_> =
+            match calimero_governance_store::NamespaceRepository::new(store).resolve(&gid) {
+                Ok(namespace) => calimero_governance_store::AccountBindingRepository::new(store)
+                    .live_bindings(&namespace)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|binding| binding.account == *member)
+                    .map(|binding| binding.sign_pk)
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+        {
+            let mut cache = state.lock_peer_identity_cache();
+            for device in &devices {
+                cache.remove_member(&gid, device);
+            }
+        }
         debug!(
             group_id = %hex::encode(group_id),
-            %member,
+            ?member,
+            devices = devices.len(),
             "dropped removed member from peer-identity cache"
         );
     }
@@ -289,12 +311,15 @@ fn apply_invalidation_event(state: &NodeState, event: &OpEvent) {
 /// (`RecvError::Closed`), i.e. for the process lifetime. There is no
 /// graceful-shutdown path because a missed late event is harmless (TTL
 /// covers it); a caller that wanted one could `abort()` the handle.
-pub(crate) fn spawn_invalidation_task(state: NodeState) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_invalidation_task(
+    state: NodeState,
+    store: calimero_store::Store,
+) -> tokio::task::JoinHandle<()> {
     let mut rx = op_events::subscribe();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(event) => apply_invalidation_event(&state, &event),
+                Ok(event) => apply_invalidation_event(&state, &store, &event),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(
                         skipped,
@@ -431,6 +456,11 @@ mod tests {
         let state = NodeState::new();
         let group = ContextGroupId::from([7u8; 32]);
         let member = PublicKey::from([9u8; 32]);
+        // The event names an ACCOUNT while the cache is keyed by identity KEY,
+        // so the invalidation expands the account back to the devices that speak
+        // for it — which needs a store holding the binding.
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let member_account = calimero_context::test_support::enrol(&store, &group, &member);
         let peer = PeerId::random();
         state.observe_peer_identity(
             peer,
@@ -449,9 +479,10 @@ mod tests {
 
         apply_invalidation_event(
             &state,
+            &store,
             &OpEvent::MemberRemoved {
                 group_id: [7u8; 32],
-                member,
+                member: member_account,
             },
         );
         assert!(!cached(&state), "MemberRemoved dropped the cached member");

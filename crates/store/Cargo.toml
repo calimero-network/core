@@ -20,6 +20,7 @@ thiserror.workspace = true
 thunderdome.workspace = true
 zeroize.workspace = true
 
+calimero-account.workspace = true
 calimero-primitives.workspace = true
 calimero-storage.workspace = true
 

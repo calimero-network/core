@@ -1,4 +1,5 @@
 use crate::{MembershipRepository, NamespaceRepository};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -99,7 +100,14 @@ pub fn is_currently_authorized_for_context(
     // `GroupMeta::admin_identity` rather than a `GroupMember` row. Without
     // this short-circuit, `check_group_membership` returns false for the
     // creator and HC would drop their legitimately-authored entities.
-    if MembershipRepository::new(store).is_admin(&group_id, author)? {
+    // The author signs with a device key; membership and roles are recorded
+    // against the account it speaks for. Resolve once, here, and refuse a key
+    // this namespace has no binding for — HC must not admit an entity from a
+    // principal the group cannot name.
+    let Some(account) = crate::member_account_in_namespace(store, &group_id, author)? else {
+        return Ok(false);
+    };
+    if MembershipRepository::new(store).is_admin(&group_id, &account)? {
         return Ok(true);
     }
     // Reject read-only roles up-front — `check_group_membership` returns
@@ -111,7 +119,7 @@ pub fn is_currently_authorized_for_context(
     if NamespaceRepository::new(store).is_read_only_for_context(context_id, author)? {
         return Ok(false);
     }
-    MembershipRepository::new(store).is_member(&group_id, author)
+    MembershipRepository::new(store).is_member(&group_id, &account)
 }
 
 pub fn enumerate_group_contexts(
@@ -125,12 +133,30 @@ pub fn enumerate_group_contexts(
 
 /// Internal helper intended to be used only from authorization-checked paths.
 /// Callers must enforce the relevant governance permissions.
+///
+/// `member` names an ACCOUNT because that is what a removal op names, but
+/// `ContextIdentity` rows are per-DEVICE stamps — one per key that actually
+/// authored in the context. So the removal fans out over every live device of
+/// the account: dropping only one key would leave the same person still able to
+/// author from their other machine.
+///
+/// A device already revoked has no live binding and so keeps its row here. That
+/// is not a hole this function should paper over — a revoked device is refused
+/// at signature verification long before membership is consulted, and
+/// revocation has its own tombstone path.
 pub fn cascade_remove_member_from_group_tree(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) -> EyreResult<()> {
-    ContextTreeService::new(store, *group_id).cascade_remove_member(member)
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    let tree = ContextTreeService::new(store, *group_id);
+    for binding in crate::AccountBindingRepository::new(store).live_bindings(&namespace)? {
+        if binding.account == *member {
+            tree.cascade_remove_member(&binding.sign_pk)?;
+        }
+    }
+    Ok(())
 }
 
 /// Inverse of [`cascade_remove_member_from_group_tree`]: re-create the local
@@ -145,8 +171,11 @@ pub fn cascade_remove_member_from_group_tree(
 /// it so the rejoiner can author again the moment the member row is back.
 ///
 /// **Scoped to the local rejoiner.** Only re-create the marker on the node whose
-/// namespace identity *is* `member` — on every other peer this resolves to a
-/// different identity (or `None`) and the function is a no-op. Peers re-learn a
+/// namespace identity speaks for `member` — on every other peer that identity
+/// resolves to a different account (or to none) and the function is a no-op.
+/// The comparison runs in account space because `member` is an account now; the
+/// marker itself is still written under this node's own identity key, since a
+/// `ContextIdentity` row is a per-device stamp. Peers re-learn a
 /// member's marker through the ordinary sync/registration paths, not here. Both
 /// apply-path call sites (`MemberAdded` in `mod.rs`, `MemberJoinedOpen` in
 /// `namespace_governance.rs`) invoke this unconditionally and rely on the gate.
@@ -177,25 +206,25 @@ pub fn cascade_remove_member_from_group_tree(
 pub fn restore_member_context_identities(
     store: &Store,
     group_id: &ContextGroupId,
-    member: &PublicKey,
+    member: &AccountId,
 ) -> EyreResult<()> {
-    // Scope gate (see doc comment). Only the local rejoiner's own node holds the
-    // namespace identity for `member`; on every other peer this resolves to a
-    // different pk (or `None`) and the function is a no-op.
+    // Scope gate (see doc comment). Only the local rejoiner's own node holds a
+    // namespace identity speaking for `member`; on every other peer it speaks
+    // for someone else (or for nobody) and the function is a no-op.
     let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
     let Some((local_pk, _private_key, _sender_key)) =
         NamespaceRepository::new(store).identity(&namespace_id)?
     else {
         return Ok(());
     };
-    if local_pk != *member {
+    if crate::member_account_in_namespace(store, group_id, &local_pk)?.as_ref() != Some(member) {
         return Ok(());
     }
 
     let contexts = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
     let mut handle = store.handle();
     for context_id in &contexts {
-        let identity_key = calimero_store::key::ContextIdentity::new(*context_id, *member);
+        let identity_key = calimero_store::key::ContextIdentity::new(*context_id, local_pk);
         // Only write when there is no row at all. A prior cascade deleted the
         // marker, so re-create it keyless. Leave any existing row untouched — a
         // standalone keyed row or an already-present marker must not be clobbered.
@@ -207,7 +236,8 @@ pub fn restore_member_context_identities(
             tracing::info!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 context_id = %hex::encode(context_id.as_ref()),
-                member = %member,
+                ?member,
+                identity = %local_pk,
                 "rejoin: restored ContextIdentity membership marker for local rejoiner"
             );
         }
@@ -315,6 +345,7 @@ pub fn find_local_signing_identities(
 
 #[cfg(test)]
 mod tests {
+    use calimero_account::AccountId;
     use std::sync::Arc;
 
     use calimero_primitives::context::ContextId;
@@ -398,12 +429,22 @@ mod tests {
     /// under an `Open` subgroup. Returns (root, sub, context, member).
     fn seed_inherited_context_open(
         store: &Store,
-    ) -> (ContextGroupId, ContextGroupId, ContextId, PublicKey) {
+    ) -> (
+        ContextGroupId,
+        ContextGroupId,
+        ContextId,
+        AccountId,
+        PublicKey,
+    ) {
         let root = ContextGroupId::from([0xB0; 32]);
         let sub = ContextGroupId::from([0xB1; 32]);
         let context = ContextId::from([0xB2; 32]);
-        let admin = PublicKey::from([0xEE; 32]);
-        let tee = PublicKey::from([0x01; 32]);
+        let admin = AccountId::from([0xEE; 32]);
+        // Two spellings of the same participant: the rows below name its
+        // account, the authorization gate takes the key it signs with, and the
+        // binding is what ties them.
+        let tee_pk = PublicKey::from([0x01; 32]);
+        let tee = crate::test_fixtures::enrol_member(store, &root, &tee_pk);
 
         // Distinct admin so the member is never short-circuited by the
         // `is_admin` creator carve-out in the function under test.
@@ -428,7 +469,7 @@ mod tests {
             .set_subgroup_visibility(&sub, VisibilityMode::Open)
             .expect("open sub");
         register_context_in_group(store, &sub, &context).expect("register context");
-        (root, sub, context, tee)
+        (root, sub, context, tee, tee_pk)
     }
 
     /// The authorization surface that actually gates apply must deny an
@@ -436,10 +477,10 @@ mod tests {
     #[test]
     fn flip_back_to_restricted_revokes_context_authorization() {
         let store = store();
-        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+        let (_root, sub, context, _tee, tee_pk) = seed_inherited_context_open(&store);
 
         assert!(
-            is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
             "precondition: an Open subgroup authorizes the inherited member"
         );
 
@@ -448,7 +489,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            !is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
             "flip-back must deny the inherited member at the apply gate"
         );
     }
@@ -461,9 +502,9 @@ mod tests {
     #[test]
     fn flip_back_to_restricted_leaves_stale_context_identity_row() {
         let store = store();
-        let (_root, sub, context, tee) = seed_inherited_context_open(&store);
+        let (_root, sub, context, _tee, tee_pk) = seed_inherited_context_open(&store);
         // The join that happened while the subgroup was Open.
-        put_identity(&store, &context, &tee, true);
+        put_identity(&store, &context, &tee_pk, true);
 
         CapabilitiesRepository::new(&store)
             .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
@@ -473,13 +514,13 @@ mod tests {
         assert!(
             store
                 .handle()
-                .has(&key::ContextIdentity::new(context, tee))
+                .has(&key::ContextIdentity::new(context, tee_pk))
                 .unwrap(),
             "the join row is not pruned on flip-back — the real gap"
         );
         // ...but it confers nothing: authorization is resolved live.
         assert!(
-            !is_currently_authorized_for_context(&store, &context, &tee).unwrap(),
+            !is_currently_authorized_for_context(&store, &context, &tee_pk).unwrap(),
             "a surviving join row must not confer authorization after the wall is back up"
         );
     }

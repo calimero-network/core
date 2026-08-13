@@ -145,6 +145,7 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Node-3 joins namespace
     type: join_namespace
@@ -153,6 +154,7 @@ steps:
     invitation: '{{invite_node3}}'
     outputs:
       identity_node3: memberIdentity
+      account_node3: memberAccount
 
   - name: Node-1 creates Open subgroup
     type: create_group_in_namespace
@@ -285,8 +287,8 @@ steps:
   - name: Assert node-2 absent after leave
     type: assert
     statements:
-      - "not_contains({{members_after_leave}}, {{identity_node2}})"
-      - "contains({{members_after_leave}}, {{identity_node3}})"
+      - "not_contains({{members_after_leave}}, {{account_node2}})"
+      - "contains({{members_after_leave}}, {{account_node3}})"
 
   # ── Phase 4: Departed node's write must NOT reach node-3 ──────────
   # Same negative-control discipline as the kick-rejoin and
@@ -363,8 +365,8 @@ steps:
   - name: Assert the leaver is still out
     type: assert
     statements:
-      - "not_contains({{members_after_failed_rejoin}}, {{identity_node2}})"
-      - "contains({{members_after_failed_rejoin}}, {{identity_node3}})"
+      - "not_contains({{members_after_failed_rejoin}}, {{account_node2}})"
+      - "contains({{members_after_failed_rejoin}}, {{account_node3}})"
 
   # ── Phase 6b: being re-added is how a leaver comes back ───────────
   # Leaving is not a ban — node-2 can return. It just has to be let
@@ -399,8 +401,8 @@ steps:
   - name: Assert the re-added leaver is back in the member list
     type: assert
     statements:
-      - "contains({{members_after_rejoin}}, {{identity_node2}})"
-      - "contains({{members_after_rejoin}}, {{identity_node3}})"
+      - "contains({{members_after_rejoin}}, {{account_node2}})"
+      - "contains({{members_after_rejoin}}, {{account_node3}})"
 
   # ── Phase 8: the re-added leaver must be able to AUTHOR again ──────
   # This is the property the flow previously left unasserted (a

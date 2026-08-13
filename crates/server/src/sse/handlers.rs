@@ -217,7 +217,9 @@ pub async fn handle_subscription(
                     .filter(|ctx| {
                         let caller_is_member =
                             auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| {
-                                state.ctx_client.has_member(ctx, pk).unwrap_or_else(|err| {
+                                let account =
+                                    crate::caller_account::for_context(&state.ctx_client, ctx, pk);
+                                state.ctx_client.has_member(ctx, pk, account).unwrap_or_else(|err| {
                                     warn!(%session_id, context_id=%ctx, %err, "has_member lookup failed; denying subscription");
                                     false
                                 })

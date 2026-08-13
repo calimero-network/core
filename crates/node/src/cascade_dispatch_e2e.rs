@@ -128,7 +128,11 @@ fn app_id_other() -> ApplicationId {
 /// and `admin` as both owner and admin identity (so cascade's
 /// per-descendant `can_manage_application` pre-scan passes for every
 /// matched group).
-fn meta_for(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMetaValue {
+fn meta_for(
+    admin: calimero_account::AccountId,
+    app_key: [u8; 32],
+    target: ApplicationId,
+) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
@@ -151,11 +155,14 @@ pub(crate) fn provision_group(
     app_key: [u8; 32],
     target: ApplicationId,
 ) {
+    // Enrolled so the rows name the account this key resolves to; the cascade's
+    // per-descendant admin pre-scan resolves the signer the same way.
+    let admin_account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta_for(admin, app_key, target))
+        .save(gid, &meta_for(admin_account, app_key, target))
         .expect("save_group_meta");
     MembershipRepository::new(store)
-        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .add_member(gid, &admin_account, GroupMemberRole::Admin)
         .expect("add admin");
 }
 
@@ -581,8 +588,12 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
 
     // The admin that initiates the upgrade on some other node.
     let peer_sk = PrivateKey::random(&mut rng);
+    // Enrolled at the anchor: the apply resolves the op's signer to an account
+    // before checking its authority, and an unbound key resolves to nothing.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &fx.ns, &peer_sk.public_key());
     MembershipRepository::new(&node.store)
-        .add_member(&fx.ns, &peer_sk.public_key(), GroupMemberRole::Admin)
+        .add_member(&fx.ns, &peer_account, GroupMemberRole::Admin)
         .expect("seat the initiating peer as admin");
 
     let mut events = pin!(node.node_client.receive_events());
@@ -652,8 +663,13 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
     let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
 
     let peer_sk = PrivateKey::random(&mut rng);
+    // Enrolled at the ANCHOR even though the row sits on the subgroup: bindings
+    // live at the namespace root and readers resolve up to it, so a binding
+    // written against the nested child would be invisible.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &fx.ns, &peer_sk.public_key());
     MembershipRepository::new(&node.store)
-        .add_member(&fx.g1, &peer_sk.public_key(), GroupMemberRole::Admin)
+        .add_member(&fx.g1, &peer_account, GroupMemberRole::Admin)
         .expect("seat the initiating peer as admin");
 
     let mut events = pin!(node.node_client.receive_events());
@@ -1630,8 +1646,13 @@ async fn fleet_completion_stamps_the_record_once() {
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
         .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
     MembershipRepository::new(&node.store)
-        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
         .expect("seat the peer");
 
     // The record a lazy upgrade leaves behind: completed as far as this node
@@ -1828,8 +1849,13 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
         .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
     MembershipRepository::new(&node.store)
-        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
         .expect("seat the peer");
 
     // The historical record: this migration is long done, the fleet has been
@@ -1951,8 +1977,13 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
         .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
     MembershipRepository::new(&node.store)
-        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
         .expect("seat the peer");
 
     // The old root migration, latch still armed months later.
@@ -2077,8 +2108,13 @@ async fn never_migrated_namespace_announces_nothing() {
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
         .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
     MembershipRepository::new(&node.store)
-        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
         .expect("seat the peer");
 
     let mut events = pin!(node.node_client.receive_events());

@@ -44,13 +44,18 @@ description: >
        it could not name, would drop this write — and a receiver that accepted
        it unresolved would let any key claim any account.
 
-    5. Stamps stay per device while the gate moves to accounts. The phone may
-       write the shared value (an account gate) and may NOT update the laptop's
-       authored entry (a per-device owner stamp), and the laptop still can. Both
-       halves matter: authorization keyed by device breaks step 4, and stamps
-       keyed by account make the phone the owner of the laptop's entry, so two
-       devices of one person silently overwrite each other's per-writer state.
-       Both mistakes compile — `AccountId` and `PublicKey` are both 32 bytes.
+    5. The authored plane, which is the same account gate over a different
+       principal. The phone updates an entry the LAPTOP filed, with no grant of
+       its own: an authored entry's owner is the account, so one person reaches
+       their own note from either machine. The signature still names the phone's
+       key, so this only passes if the receiver resolves that key to Alice's
+       account — the same resolution step 4 needs, on a second plane.
+
+       What stays per device is the per-writer state underneath: an LWW
+       tiebreak, a counter slot, an HLC seed. Moving THOSE onto accounts is what
+       makes two devices of one person clobber each other, and it is a different
+       mistake from this one. Both compile — `AccountId` and `PublicKey` are
+       both 32 bytes.
 
   What this does NOT cover (intentionally):
     * A deferral: a receiver that has not yet folded the binding must retry
@@ -390,29 +395,23 @@ steps:
     timeout: 60
     trigger_sync: true
 
-  # Same account, different device — and an authored entry's owner is the DEVICE.
-  # This must fail even though the phone may write the shared value above, which
-  # is exactly the gates-vs-stamps split. If stamps were account-keyed this
-  # would succeed, and one person's devices would clobber each other silently.
-  - name: The phone cannot update the laptop's authored entry
+  # Same account, different device — and an authored entry's owner is the
+  # ACCOUNT. So this SUCCEEDS, and that is the feature: one person reaches their
+  # own note from either machine. It used to be asserted the other way, when the
+  # owner stamp was the device id.
+  #
+  # It is also the step that needs the receiver-side resolution. The phone's
+  # action is signed by a key that appears in no owner stamp anywhere; a receiver
+  # has to resolve that key to Alice's account before it can match the entry's
+  # owner. This is the authored-plane twin of the shared-writer step above.
+  - name: The phone updates the laptop's authored entry
     type: call
     node: shared-account-node-3
     context_id: '{{context_id}}'
     method: authored_update
     args:
       key: notes
-      value: phone-should-not-land
-    expected_failure: true
-
-  # The other half: the owner check refuses the phone specifically, not everyone.
-  - name: The laptop can still update its own authored entry
-    type: call
-    node: shared-account-node-2
-    context_id: '{{context_id}}'
-    method: authored_update
-    args:
-      key: notes
-      value: laptop-wrote-this-again
+      value: phone-wrote-this
 
   - name: Settle before reading the authored entry cross-node
     type: wait_for_sync
@@ -434,10 +433,10 @@ steps:
     outputs:
       authored_n1: result
 
-  - name: Only the owning device's update landed
+  - name: The second device's update landed, and propagated
     type: json_assert
     statements:
-      - 'json_equal({{authored_n1}}, {"output": "laptop-wrote-this-again"})'
+      - 'json_equal({{authored_n1}}, {"output": "phone-wrote-this"})'
 
   # ── Phase 8: the identity relationship behind all of it ───────────
 

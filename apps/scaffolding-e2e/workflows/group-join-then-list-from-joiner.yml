@@ -112,6 +112,7 @@ steps:
     invitation: '{{invitation}}'
     outputs:
       member_identity_node2: memberIdentity
+      member_account_node2: memberAccount
 
   - name: Assert join returned a member identity
     type: assert
@@ -134,7 +135,7 @@ steps:
     type: assert
     statements:
       - "is_set({{joiner_members}})"
-      - "contains({{joiner_members}}, {{member_identity_node2}})"
+      - "contains({{joiner_members}}, {{member_account_node2}})"
 
   # The reported bug was a 500 from THIS endpoint on the joiner. The step
   # itself is the assertion: list_group_contexts raises on a non-2xx, so a
@@ -163,7 +164,7 @@ steps:
     type: assert
     statements:
       - "is_set({{admin_members}})"
-      - "contains({{admin_members}}, {{member_identity_node2}})"
+      - "contains({{admin_members}}, {{member_account_node2}})"
 
   - name: Node-1 lists group contexts (control)
     type: list_group_contexts

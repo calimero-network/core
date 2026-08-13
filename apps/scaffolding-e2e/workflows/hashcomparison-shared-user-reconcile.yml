@@ -183,6 +183,23 @@ steps:
   #     reconnect step, anything node-1 writes is invisible to
   #     node-2 over libp2p. ---
 
+  # By ACCOUNT: user storage is keyed per person, and an account is derived from
+  # a node's root rather than carried on the wire, so it has to be read off the
+  # node that owns it.
+  #
+  # Read here, before the partition, rather than beside the read that consumes
+  # it. node-1's account is fixed from startup, so nothing about this depends on
+  # sync — and placing it after the heal put a call between the reconciliation
+  # barrier and the cross-node read, which is both a convergence-lint finding and
+  # one more thing in flight while the partition is closing.
+  - name: Read node-1's account
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: my_account
+    outputs:
+      node1_account: result.output
+
   - name: Partition node-2 from the bridge
     type: script
     script: scripts/disconnect-node-from-bridge.sh
@@ -308,7 +325,7 @@ steps:
     context_id: '{{ctx}}'
     method: get_user_simple_for
     args:
-      user_key: '{{node1_id}}'
+      user_key: '{{node1_account}}'
     outputs:
       user_read_from_node2: result
 

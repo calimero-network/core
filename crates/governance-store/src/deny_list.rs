@@ -14,13 +14,14 @@
 //!    removal op than `cross-DAG check: rejecting state delta — author is
 //!    not a member`.
 //!
-//! Per-group rather than per-peer-id: the same identity can be a member of
+//! Per-group rather than per-peer-id: the same account can be a member of
 //! multiple groups, and connection-level (libp2p) gating on peer-id would
 //! drop legitimate traffic for the groups they still belong to. Filtering
-//! at the gossipsub-message-receive layer keyed by `(group_id, identity)`
+//! at the gossipsub-message-receive layer keyed by `(group_id, account)`
 //! is the right granularity — each context has its own gossip topic, so
 //! the deny set is scoped to exactly the contexts where the member was
-//! removed.
+//! removed. Keying by account rather than by signing key also means one
+//! removal silences every device the removed person holds.
 //!
 //! Entries are added when `MemberRemoved` / `MemberLeft` apply. They are
 //! cleared by any write of a direct member row for the same
@@ -42,6 +43,7 @@
 //! `add_member_with_keys` clears the entry when the row is written.
 
 use crate::{MembershipRepository, NamespaceRepository};
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
@@ -88,7 +90,7 @@ impl<'a> DenyListRepository<'a> {
     /// A `debug_assert!` enforces the contract in dev / test builds.
     /// It is compiled out in release so the production cost is zero —
     /// the assertion exists to catch misuse during development.
-    pub fn mark(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
+    pub fn mark(&self, group_id: &ContextGroupId, member: &AccountId) -> EyreResult<()> {
         // `unwrap_or(false)` so a store I/O error doesn't masquerade as a
         // contract violation — the assertion is meant to catch caller misuse
         // (marking before remove_group_member), not transient read failures.
@@ -113,7 +115,7 @@ impl<'a> DenyListRepository<'a> {
     /// Clear `member`'s deny-list entry for `group_id`. Idempotent —
     /// calling this on a non-denied member is a no-op. Invoked when a
     /// previously-removed member is re-added.
-    pub fn clear(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
+    pub fn clear(&self, group_id: &ContextGroupId, member: &AccountId) -> EyreResult<()> {
         let key = GroupDeniedMember::new(group_id.to_bytes(), *member);
         let mut handle = self.store.handle();
         handle
@@ -126,7 +128,7 @@ impl<'a> DenyListRepository<'a> {
     ///
     /// Hot-path callers (receive-side state-delta filter) call this on
     /// every incoming state delta for a group context. O(1) key lookup.
-    pub fn is_denied(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<bool> {
+    pub fn is_denied(&self, group_id: &ContextGroupId, member: &AccountId) -> EyreResult<bool> {
         let key = GroupDeniedMember::new(group_id.to_bytes(), *member);
         let handle = self.store.handle();
         handle
@@ -150,7 +152,7 @@ impl<'a> DenyListRepository<'a> {
     pub fn mark_inherited(
         &self,
         root_group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<()> {
         debug_assert!(
             !MembershipRepository::new(self.store)
@@ -174,7 +176,7 @@ impl<'a> DenyListRepository<'a> {
     pub fn clear_inherited(
         &self,
         root_group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<()> {
         let key = GroupInheritedDeniedMember::new(root_group_id.to_bytes(), *member);
         let mut handle = self.store.handle();
@@ -189,7 +191,7 @@ impl<'a> DenyListRepository<'a> {
     pub fn is_inherited_denied(
         &self,
         root_group_id: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> EyreResult<bool> {
         let key = GroupInheritedDeniedMember::new(root_group_id.to_bytes(), *member);
         let handle = self.store.handle();
@@ -215,7 +217,17 @@ impl<'a> DenyListRepository<'a> {
         let Some(group_id) = super::contexts::get_group_for_context(self.store, context_id)? else {
             return Ok(false);
         };
-        if self.is_denied(&group_id, author)? {
+        // The author signs with a device key; denial is recorded against the
+        // account that key speaks for. A key this node cannot resolve is
+        // reported as NOT denied — this filter is only the cheap early
+        // rejection in front of the authoritative cross-DAG membership check,
+        // so abstaining costs one wasted walk, while denying would silence a
+        // legitimate peer whose device binding this node has not applied yet.
+        let Some(author) = crate::member_account_in_namespace(self.store, &group_id, author)?
+        else {
+            return Ok(false);
+        };
+        if self.is_denied(&group_id, &author)? {
             return Ok(true);
         }
         // A current DIRECT member of the owning group is never inherited-denied:
@@ -224,45 +236,37 @@ impl<'a> DenyListRepository<'a> {
         // covers the subgroups they only *inherit* still stands. Skip the
         // inherited check for them — otherwise the namespace-wide root entry would
         // wrongly drop traffic to the very group they were just admitted to.
-        if MembershipRepository::new(self.store).has_direct_member(&group_id, author)? {
+        if MembershipRepository::new(self.store).has_direct_member(&group_id, &author)? {
             return Ok(false);
         }
         let root = NamespaceRepository::new(self.store).resolve(&group_id)?;
-        self.is_inherited_denied(&root, author)
+        self.is_inherited_denied(&root, &author)
     }
 
-    /// Every directly-denied member key under `group_id`.
+    /// Every directly-denied member account under `group_id`.
     ///
-    /// Exists so a caller holding **accounts** can answer "is this member
-    /// denied?" without ever needing to turn an account back into a key.
-    /// `AccountId` is a one-way hash of a member key, so the reverse lookup is
-    /// not computable; the only sound comparison is to read the deny list —
-    /// which is authoritative and always keyed by real keys — and map it
-    /// *forward* into account space.
-    ///
-    /// The alternative, caching a key-per-account map as ops are decoded, looks
-    /// cheaper but is not: a node rebuilds its projection from the persisted
-    /// op log, and those ops carry only accounts, so the cache would come back
-    /// empty after a restart and the deny check would silently stop matching.
-    /// Re-deriving from the live list has no such state to lose.
+    /// Callers hold accounts and the rows are keyed by account, so this is a
+    /// plain read — no translation in either direction. It used to return
+    /// member keys, which forced every caller to map the list forward into
+    /// account space because the reverse is a one-way hash.
     ///
     /// Returns direct denials only; inherited denials are a separate row family
     /// with their own accessor.
     ///
     /// # Errors
     /// Propagates the underlying store scan failure.
-    pub fn denied_members(&self, group_id: &ContextGroupId) -> EyreResult<Vec<PublicKey>> {
+    pub fn denied_members(&self, group_id: &ContextGroupId) -> EyreResult<Vec<AccountId>> {
         let gid = group_id.to_bytes();
         // Same scan-from-minimum convention as `clear_all_for_group`: `[0u8;
-        // 32]` is the lexicographic floor of the identity space, so a forward
+        // 32]` is the lexicographic floor of the account space, so a forward
         // iterator seeded there visits every row whose `group_id` matches.
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupDeniedMember::new(gid, PublicKey::from([0u8; 32])),
+            GroupDeniedMember::new(gid, AccountId::from([0u8; 32])),
             GROUP_DENIED_MEMBER_PREFIX,
             |k| k.group_id() == gid,
         )?;
-        Ok(keys.iter().map(GroupDeniedMember::identity).collect())
+        Ok(keys.iter().map(GroupDeniedMember::account).collect())
     }
 
     /// Remove every deny-list entry under `group_id`. Used during group
@@ -270,21 +274,21 @@ impl<'a> DenyListRepository<'a> {
     /// outlive the group it describes.
     pub fn clear_all_for_group(&self, group_id: &ContextGroupId) -> EyreResult<()> {
         let gid = group_id.to_bytes();
-        // The seek start key uses `[0u8; 32]` as the identity component —
-        // the lexicographic minimum of the 32-byte identity space, so no
-        // valid `PublicKey` can sort before it. RocksDB uses byte-wise
+        // The seek start key uses `[0u8; 32]` as the account component —
+        // the lexicographic minimum of the 32-byte account space, so no
+        // valid `AccountId` can sort before it. RocksDB uses byte-wise
         // comparison, so a forward iterator seeded here visits every
         // `GroupDeniedMember` row whose `group_id` matches `gid`. Same
         // scan-from-minimum convention as `delete_all_member_capabilities`.
         let keys = collect_keys_with_prefix(
             self.store,
-            GroupDeniedMember::new(gid, PublicKey::from([0u8; 32])),
+            GroupDeniedMember::new(gid, AccountId::from([0u8; 32])),
             GROUP_DENIED_MEMBER_PREFIX,
             |k| k.group_id() == gid,
         )?;
         let inherited_keys = collect_keys_with_prefix(
             self.store,
-            GroupInheritedDeniedMember::new(gid, PublicKey::from([0u8; 32])),
+            GroupInheritedDeniedMember::new(gid, AccountId::from([0u8; 32])),
             GROUP_INHERITED_DENIED_MEMBER_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -312,7 +316,7 @@ mod tests {
     fn is_denied_returns_false_when_unset() {
         let store = test_store();
         let repo = DenyListRepository::new(&store);
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
         assert!(!repo.is_denied(&test_group_id(), &pk).unwrap());
     }
 
@@ -321,7 +325,7 @@ mod tests {
         let store = test_store();
         let repo = DenyListRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         // Skip the debug_assert (member must be absent from materialized set
         // — already true since we never added them) and call mark directly.
@@ -334,7 +338,7 @@ mod tests {
         let store = test_store();
         let repo = DenyListRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.mark(&gid, &pk).unwrap();
         repo.clear(&gid, &pk).unwrap();
@@ -345,7 +349,7 @@ mod tests {
     fn clear_is_idempotent_when_unset() {
         let store = test_store();
         let repo = DenyListRepository::new(&store);
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
         // Clearing an absent entry must succeed silently.
         repo.clear(&test_group_id(), &pk).unwrap();
     }
@@ -355,7 +359,7 @@ mod tests {
         let store = test_store();
         let repo = DenyListRepository::new(&store);
         let gid = test_group_id();
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.mark(&gid, &pk).unwrap();
         repo.mark(&gid, &pk).unwrap();
@@ -368,7 +372,7 @@ mod tests {
         let repo = DenyListRepository::new(&store);
         let gid_a = test_group_id();
         let gid_b = ContextGroupId::from([0xBB; 32]);
-        let pk = PublicKey::from([0x01; 32]);
+        let pk = AccountId::from([0x01; 32]);
 
         repo.mark(&gid_a, &pk).unwrap();
         repo.mark(&gid_b, &pk).unwrap();

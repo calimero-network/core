@@ -7,7 +7,7 @@ use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use tracing::{error, info};
 
-use super::{parse_group_id, parse_identity};
+use super::{parse_account, parse_group_id};
 use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::parse_api_error;
@@ -27,8 +27,8 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let identity = match parse_identity(&identity_str) {
-        Ok(pk) => pk,
+    let identity = match parse_account(&identity_str) {
+        Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 

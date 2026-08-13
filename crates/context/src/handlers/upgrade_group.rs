@@ -927,7 +927,8 @@ fn validate_upgrade(
         .ok_or_else(|| eyre::eyre!("group not found"))?;
 
     // 2. Requester must be admin
-    MembershipRepository::new(datastore).require_admin(group_id, requester)?;
+    let requester_account = crate::member_account::require(datastore, group_id, requester)?;
+    MembershipRepository::new(datastore).require_admin(group_id, &requester_account)?;
 
     // 3. Verify node holds the key (skip if raw key was provided)
     if !has_raw_signing_key {
@@ -1367,8 +1368,13 @@ fn dispatch_cascade(
         Err(err) => return ActorResponse::reply(Err(err)),
     };
 
+    let requester_account =
+        match crate::member_account::require(&actor.datastore, &group_id, &requester) {
+            Ok(account) => account,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
     if let Err(err) =
-        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester)
+        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester_account)
     {
         return ActorResponse::reply(Err(err));
     }
@@ -1958,15 +1964,19 @@ mod tests {
                     app_key: [0x11; 32],
                     target_application_id: current_app,
                     created_at: 1_700_000_000,
-                    admin_identity: requester,
-                    owner_identity: requester,
+                    admin_identity: crate::test_support::account_for(&requester),
+                    owner_identity: crate::test_support::account_for(&requester),
                     migration: None,
                     auto_join: true,
                 },
             )
             .expect("save meta");
         MembershipRepository::new(&store)
-            .add_member(&group_id, &requester, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &requester),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         UpgradesRepository::new(&store)
             .save(

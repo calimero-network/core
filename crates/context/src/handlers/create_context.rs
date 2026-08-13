@@ -220,13 +220,14 @@ impl Prepared<'_> {
             .ok_or_eyre("identity_secret required for group context creation")?
             .public_key();
 
-        if !MembershipRepository::new(datastore).is_member(&group_id, &identity_pk)? {
+        let identity_account = crate::member_account::require(datastore, &group_id, &identity_pk)?;
+        if !MembershipRepository::new(datastore).is_member(&group_id, &identity_account)? {
             bail!("identity is not a member of group '{group_id:?}'");
         }
 
         if !MembershipRepository::new(datastore).is_admin_or_has_capability(
             &group_id,
-            &identity_pk,
+            &identity_account,
             MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
         )? {
             bail!(

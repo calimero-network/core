@@ -690,6 +690,50 @@ impl<S: StorageAdaptor> Interface<S> {
         crate::env::ed25519_verify(&sig_data.signature, signer.digest(), payload)
     }
 
+    /// Verify a [`User`](StorageType::User) action: the signature under the key
+    /// it names, and then that key's account against the stored `owner`.
+    ///
+    /// Two questions, deliberately separate, because `owner` stopped being a key
+    /// the moment it became an account — a content hash verifies nothing. The
+    /// signature is checked against [`SignatureData::signer`], and whether that
+    /// device speaks for `owner` is answered by `signer_account`, which the node
+    /// resolved at this action's causal cut.
+    ///
+    /// `signer_account` is never defaulted to the locally executing account: a
+    /// remote action would otherwise authorize itself. It is the same bridge,
+    /// and the same contract, that the `Shared` writer-set check runs on — see
+    /// [`ApplyContext::signer_account`].
+    ///
+    /// **`None` defers the ownership half; it does not satisfy it.** The sync
+    /// repair paths (HashComparison, snapshot, level-wise) apply through an
+    /// [`ApplyContext::empty`] because they carry no cut to resolve a signer's
+    /// account at, and resolving against whatever this receiver has folded would
+    /// answer a different question than the author did. Refusing there would
+    /// drop every legitimately repaired `User` entity instead; the `Shared` and
+    /// `SharedMember` arms take exactly this deferral, for exactly this reason.
+    ///
+    /// What makes the deferral safe is that it is not the only gate. The node
+    /// resolves a repaired leaf's author against the bindings — which live there
+    /// and not here — before handing it to this crate;
+    /// `calimero-node`'s `is_leaf_currently_authorized` checks that author's
+    /// membership AND, for a `User` leaf, that the author's account is the
+    /// entry's `owner`. Signature authenticity is still enforced here, on every
+    /// path, because that needs no bindings at all.
+    fn user_action_authorized(
+        sig_data: &crate::entities::SignatureData,
+        payload: &[u8],
+        owner: &AccountId,
+        signer_account: Option<&AccountId>,
+    ) -> bool {
+        if !Self::snapshot_signature_verifies(sig_data, payload) {
+            return false;
+        }
+        match signer_account {
+            Some(account) => account == owner,
+            None => true,
+        }
+    }
+
     /// Verify the writer's signature on a snapshot-supplied entity
     /// against the access-control rules in its metadata.
     ///
@@ -859,7 +903,17 @@ impl<S: StorageAdaptor> Interface<S> {
                 if sig_data.signature == [0u8; 64] {
                     return Err(StorageError::InvalidSignature);
                 }
-                if crate::env::ed25519_verify(&sig_data.signature, owner.digest(), &payload) {
+                // Signature only, like the two arms below. `owner` is an account
+                // and an account is a content hash, so it is not a key anything
+                // can verify against — the signature is checked against the
+                // device key the action names, and whether that device speaks
+                // for `owner` is a separate question this path cannot ask. A
+                // snapshot leaf carries no cut to resolve the signer's account
+                // at, and resolving it against whatever this receiver has folded
+                // would ask a different question than the author answered.
+                // Authorship is re-established the moment a delta writes it.
+                let _ = owner;
+                if Self::snapshot_signature_verifies(sig_data, &payload) {
                     Ok(())
                 } else {
                     Err(StorageError::InvalidSignature)
@@ -1533,10 +1587,11 @@ impl<S: StorageAdaptor> Interface<S> {
                         // unauthenticated stale action should still
                         // reject as `InvalidSignature`, not silently
                         // disappear.
-                        let verification_result = crate::env::ed25519_verify(
-                            &sig_data.signature,
-                            owner.digest(),
+                        let verification_result = Self::user_action_authorized(
+                            sig_data,
                             &payload,
+                            owner,
+                            ctx.signer_account.as_ref(),
                         );
 
                         if !verification_result {
@@ -2009,10 +2064,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // tie. Using `<` here unifies the tiebreak
                                 // across all storage types.
                                 let payload = action.payload_for_signing();
-                                let verification_result = crate::env::ed25519_verify(
-                                    &sig_data.signature,
-                                    owner.digest(),
+                                let verification_result = Self::user_action_authorized(
+                                    sig_data,
                                     &payload,
+                                    owner,
+                                    ctx.signer_account.as_ref(),
                                 );
                                 if !verification_result {
                                     return Err(Self::reject_action_signature(
@@ -2030,7 +2086,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 let last_nonce = *existing_metadata.updated_at;
                                 if new_nonce < last_nonce {
                                     return Err(StorageError::NonceReplay(Box::new((
-                                        *owner.as_ref(),
+                                        *owner.as_bytes(),
                                         new_nonce,
                                     ))));
                                 }
@@ -2916,14 +2972,18 @@ impl<S: StorageAdaptor> Interface<S> {
 
         // If this is a local user action, set the nonce
         if let StorageType::User { owner, .. } = metadata.storage_type {
-            if *owner == crate::env::device_id() {
+            if owner == AccountId::from(crate::env::account_id()) {
                 // Use the deletion timestamp as the nonce
                 metadata.storage_type = StorageType::User {
                     owner,
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
                         nonce: deleted_at,
-                        signer: None, // owner is already known for User
+                        // The DEVICE writing on the owner's behalf. Required
+                        // now that `owner` is an account: an account is a
+                        // content hash, so it is not what the signature
+                        // verifies against.
+                        signer: Some(crate::env::device_id().into()),
                     }),
                 };
             }
@@ -3880,14 +3940,16 @@ impl<S: StorageAdaptor> Interface<S> {
         // `apply_action`), so unconditionally stamping here is safe:
         // it only fires when the executor is the owner.
         if let StorageType::User { owner, .. } = metadata.storage_type {
-            if *owner == crate::env::device_id() {
+            if owner == AccountId::from(crate::env::account_id()) {
                 let nonce = *metadata.updated_at;
                 metadata.storage_type = StorageType::User {
                     owner,
                     signature_data: Some(SignatureData {
                         signature: [0; 64], // Placeholder, added by signer
                         nonce,
-                        signer: None, // owner is already known for User
+                        // The DEVICE writing on the owner's behalf — see the
+                        // matching stamp on the delete path.
+                        signer: Some(crate::env::device_id().into()),
                     }),
                 };
                 // Owner-driven convert (PR-6c): the owner's own write re-stamps

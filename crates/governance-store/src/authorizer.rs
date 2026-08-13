@@ -16,6 +16,7 @@
 //!
 //! [`NamespaceApplyCtx::require_namespace_admin`]: crate::ops::namespace::NamespaceApplyCtx
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 
@@ -68,6 +69,18 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<bool>;
 
+    /// Is `member` — already resolved to an account — an admin of `group` at the
+    /// cut? The account-typed sibling of [`is_admin_at_cut`](Self::is_admin_at_cut),
+    /// for gates that ask about the TARGET of an op rather than its signer. The
+    /// op already names that principal, so there is no key to resolve and none
+    /// to guess at. `None` = defer to live.
+    fn is_admin_account_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<bool>;
+
     /// Would removing/demoting `member` from `group` orphan its admins at the cut —
     /// i.e. is `member` a `group` admin AND the only Admin-role member there? Backs
     /// the circular last-admin invariants (`ensure_not_last_admin_removal` /
@@ -75,10 +88,16 @@ pub trait AtCutAuthorizer: Send + Sync {
     /// mutation), not the post-mutation live state. Mirrors live: `member` admin =
     /// direct Admin role or the genesis admin; "another admin" = any other Admin-role
     /// member ROW (the genesis admin alone doesn't count). `None` = defer to live.
+    ///
+    /// `member` is an [`AccountId`], not a key — unlike the `signer` above. That is
+    /// the split this trait draws: a `signer` question is about who authenticated
+    /// the op, so it names a key the projection resolves itself; a `member`
+    /// question is about whose grant is at stake, and the op already names that
+    /// principal directly.
     fn is_last_admin_at_cut(
         &self,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<bool>;
 
@@ -90,7 +109,7 @@ pub trait AtCutAuthorizer: Send + Sync {
     fn membership_path_at_cut(
         &self,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath>;
 
@@ -157,10 +176,19 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         None
     }
 
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
     fn is_last_admin_at_cut(
         &self,
         _group: &ContextGroupId,
-        _member: &PublicKey,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None
@@ -169,7 +197,7 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
     fn membership_path_at_cut(
         &self,
         _group: &ContextGroupId,
-        _member: &PublicKey,
+        _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
         None

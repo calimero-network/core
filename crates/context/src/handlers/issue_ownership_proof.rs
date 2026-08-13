@@ -135,7 +135,8 @@ pub(crate) fn build_ownership_proof(
 ) -> eyre::Result<OwnershipProofBuildOutput> {
     validate_proof_fields(audience, subject, nonce)?;
 
-    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
+    let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
+    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
         bail!("node is not a direct admin of this group");
     }
 
@@ -233,7 +234,8 @@ pub(crate) fn build_namespace_ownership_proof(
 ) -> eyre::Result<OwnershipProofBuildOutput> {
     validate_proof_fields(audience, subject, nonce)?;
 
-    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
+    let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
+    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_account)? {
         bail!("node is not a direct admin of this group");
     }
 
@@ -404,7 +406,11 @@ mod tests {
         let signing_pub = signing_priv.public_key();
 
         MembershipRepository::new(&store)
-            .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
@@ -466,6 +472,10 @@ mod tests {
         let group_id = ContextGroupId::from([0xAA; 32]);
         let context_id = ContextId::from([0xBB; 32]);
         let identity = PublicKey::from([0x44; 32]);
+        // Bound but never added as a member. The binding matters: an unbound key
+        // is refused one step earlier, for not resolving to any principal, and
+        // this test is about the direct-admin gate rather than that one.
+        let _ = crate::test_support::enrol(&store, &group_id, &identity);
 
         // Not added as a member at all — not a direct admin.
         let err = build_ownership_proof(
@@ -492,7 +502,11 @@ mod tests {
 
         // Admin row exists and context is registered, but no signing key.
         MembershipRepository::new(&store)
-            .add_member(&group_id, &identity, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &identity),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -567,7 +581,11 @@ mod tests {
         // Admin + signing key registered at the root (resolve_group_signing_key
         // walks up from the requested group, so a root key is reachable).
         MembershipRepository::new(&store)
-            .add_member(&root, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &root,
+                &crate::test_support::enrol(&store, &root, &signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&root, &signing_pub, signing_priv.as_bytes())
@@ -655,7 +673,11 @@ mod tests {
         );
 
         MembershipRepository::new(&store)
-            .add_member(&group_id, &node_identity, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &node_identity),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &node_identity, real_priv.as_bytes())
@@ -708,7 +730,11 @@ mod tests {
         let signing_pub = signing_priv.public_key();
 
         MembershipRepository::new(&store)
-            .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin");
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
@@ -753,6 +779,8 @@ mod tests {
         let store = test_store();
         let group_id = ContextGroupId::from([0xAA; 32]);
         let identity = PublicKey::from([0x44; 32]);
+        // Bound, but not a member — see `errors_when_node_is_not_direct_admin`.
+        let _ = crate::test_support::enrol(&store, &group_id, &identity);
 
         // Identity is not a member at all — not a direct admin.
         let err = build_namespace_ownership_proof(
@@ -785,8 +813,16 @@ mod tests {
         // the `is_direct_group_admin` gate passes for `child` — the only
         // thing standing between the caller and a namespace proof is the
         // namespace-root check.
+        // Enrolled at the ROOT, not the child: bindings live at the namespace
+        // anchor and every reader resolves up to it, so a row written against a
+        // subgroup goes invisible the moment that subgroup is nested — which is
+        // exactly what this test does two statements later.
         MembershipRepository::new(&store)
-            .add_member(&child, &signing_pub, GroupMemberRole::Admin)
+            .add_member(
+                &child,
+                &crate::test_support::enrol(&store, &root, &signing_pub),
+                GroupMemberRole::Admin,
+            )
             .expect("add admin at child");
         SigningKeysRepository::new(&store)
             .store_key(&child, &signing_pub, signing_priv.as_bytes())

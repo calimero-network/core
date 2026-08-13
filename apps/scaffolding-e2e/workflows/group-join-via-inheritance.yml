@@ -100,6 +100,7 @@ steps:
     invitation: '{{ns_invite}}'
     outputs:
       node2_identity: memberIdentity
+      node2_account: memberAccount
 
   - name: Node-1 creates Open subgroup inside namespace
     type: create_group_in_namespace
@@ -189,10 +190,14 @@ steps:
       # node-2 joined `subgroup` via inheritance and holds no explicit
       # `GroupMember` row. Before the #2371 fix it was absent from
       # `members[]` (surfaced only in `selfIdentity`); the admin-api
-      # handler now unions inherited members in, so node-2's identity
-      # (`inherit_member_pk`, exported by the join-via-inheritance step)
-      # must appear in the listed members.
-      - 'contains({{subgroup_members}}, {{inherit_member_pk}})'
+      # handler now unions inherited members in, so node-2 must appear
+      # in the listed members.
+      #
+      # Compared by ACCOUNT, not by the `memberPublicKey` the join step
+      # returns: the listing names members by the principal their rows are
+      # keyed by, and a key would never match one however present the
+      # member is.
+      - 'contains({{subgroup_members}}, {{node2_account}})'
 
   # ── Phase 2c: get_member_capabilities accepts the inherited joiner ─
   # Issue #2378 regression. `list_group_members` (Phase 2b) now reports
@@ -211,7 +216,7 @@ steps:
     type: get_member_capabilities
     node: join-inherit-node-2
     group_id: '{{subgroup_id}}'
-    member_id: '{{inherit_member_pk}}'
+    member_id: '{{node2_account}}'
     outputs:
       inherit_member_caps: capabilities
 

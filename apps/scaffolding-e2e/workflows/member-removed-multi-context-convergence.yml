@@ -97,7 +97,7 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{invite_node2}}'
     outputs:
-      identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Invite node-3 to namespace
     type: create_namespace_invitation
@@ -256,7 +256,7 @@ steps:
     node: e2e-node-1
     group_id: '{{namespace_id}}'
     members:
-      - '{{identity_node2}}'
+      - '{{account_node2}}'
 
   - name: Wait for MemberRemoved propagation to node-3
     type: wait_for_sync
@@ -277,7 +277,7 @@ steps:
   - name: Assert node-3's member list no longer contains node-2
     type: assert
     statements:
-      - "not_contains({{members_after_remove}}, {{identity_node2}})"
+      - "not_contains({{members_after_remove}}, {{account_node2}})"
 
   # Cross-check: node-1's view matches node-3's (the canonical
   # convergence the signed claims aim to guarantee).
@@ -292,7 +292,7 @@ steps:
   - name: Assert node-1 and node-3 agree on member set
     type: assert
     statements:
-      - "not_contains({{members_on_node1}}, {{identity_node2}})"
+      - "not_contains({{members_on_node1}}, {{account_node2}})"
 
   # Per-context state still consistent on remaining members:
   # node-1's earlier write to ctx_a is still visible on node-3

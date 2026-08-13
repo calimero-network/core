@@ -9,9 +9,9 @@
 
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
@@ -35,8 +35,8 @@ fn meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
         app_key,
         target_application_id: ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
-        admin_identity: PublicKey::from([0x01; 32]),
-        owner_identity: PublicKey::from([0x01; 32]),
+        admin_identity: AccountId::from([0x01; 32]),
+        owner_identity: AccountId::from([0x01; 32]),
         migration: None,
         auto_join: true,
     }

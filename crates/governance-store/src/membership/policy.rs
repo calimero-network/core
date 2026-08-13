@@ -1,7 +1,7 @@
 use crate::MembershipRepository;
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
@@ -68,7 +68,7 @@ impl<'a> MembershipPolicy<'a> {
     /// but unfolded, refuse: a live answer would depend on which concurrent role ops
     /// this replica has folded, so two replicas could disagree on whether the SAME op
     /// orphans the admin set — one applying it and one rejecting it forever.
-    fn would_orphan_admins(&self, member: &PublicKey) -> EyreResult<bool> {
+    fn would_orphan_admins(&self, member: &AccountId) -> EyreResult<bool> {
         if let Some(blocks) =
             self.authorizer
                 .is_last_admin_at_cut(&self.group_id, member, self.parents)
@@ -87,7 +87,7 @@ impl<'a> MembershipPolicy<'a> {
         Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
     }
 
-    pub fn ensure_not_last_admin_removal(&self, member: &PublicKey) -> EyreResult<()> {
+    pub fn ensure_not_last_admin_removal(&self, member: &AccountId) -> EyreResult<()> {
         if self.would_orphan_admins(member)? {
             bail!(MembershipError::LastAdmin);
         }
@@ -96,7 +96,7 @@ impl<'a> MembershipPolicy<'a> {
 
     pub fn ensure_not_last_admin_demotion(
         &self,
-        member: &PublicKey,
+        member: &AccountId,
         new_role: &GroupMemberRole,
     ) -> EyreResult<()> {
         if *new_role == GroupMemberRole::Admin {
@@ -108,11 +108,17 @@ impl<'a> MembershipPolicy<'a> {
         Ok(())
     }
 
+    /// The member who verified a TEE attestation must itself be a member.
+    ///
+    /// Takes the verifier's ACCOUNT: this is a membership question, and the
+    /// caller — which holds the op's signing key — resolves it first so an
+    /// unbound or revoked key refuses here rather than being promoted to a
+    /// stand-in that matches nothing.
     pub fn require_tee_attestation_verifier_membership(
         &self,
-        signer: &PublicKey,
+        verifier: &AccountId,
     ) -> EyreResult<()> {
-        if !self.membership.is_member(signer)? {
+        if !self.membership.is_member(verifier)? {
             bail!(MembershipError::TeeVerifierNotMember);
         }
         Ok(())
@@ -162,7 +168,7 @@ impl<'a> MembershipPolicy<'a> {
 
     pub fn admit_member_if_absent(
         &self,
-        member: &PublicKey,
+        member: &AccountId,
         role: &GroupMemberRole,
     ) -> EyreResult<()> {
         if !self.membership.is_member(member)? {

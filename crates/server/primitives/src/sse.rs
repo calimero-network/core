@@ -131,7 +131,6 @@ mod tests {
             GroupMembershipEvent, GroupMigrationEvent, GroupMigrationPayload, MembershipChange,
             MembershipChangePayload,
         };
-        use calimero_primitives::identity::PublicKey;
 
         let id = Hash::from([0x2bu8; 32]);
         // What the admin API emits for this id.
@@ -154,7 +153,7 @@ mod tests {
         let event = GroupMembershipEvent {
             group_id: id,
             payload: MembershipChangePayload::MemberJoined(MembershipChange {
-                member: PublicKey::from([9u8; 32]),
+                member: calimero_primitives::identity::AccountId::from([9u8; 32]),
                 role: None,
             }),
         };

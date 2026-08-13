@@ -41,7 +41,8 @@ async fn handle(
     for id in request.context_ids {
         let caller_is_member =
             caller.map(|key| {
-                state.ctx_client.has_member(&id, &key).unwrap_or_else(|err| {
+                let account = crate::caller_account::for_context(&state.ctx_client, &id, &key);
+                state.ctx_client.has_member(&id, &key, account).unwrap_or_else(|err| {
                 warn!(context_id=%id, %err, "has_member lookup failed; denying subscription");
                 false
             })
@@ -147,8 +148,19 @@ pub(crate) fn caller_may_observe_group(
 ) -> bool {
     let caller_is_member = caller.map(|key| {
         let gid = ContextGroupId::from(*group_id.as_bytes());
+        // Capabilities are granted to the account, so the caller's key resolves
+        // first; a key bound to none holds no capability and is denied.
+        let Some(account) = calimero_governance_store::member_account_in_namespace(
+            ctx_client.datastore(),
+            &gid,
+            key,
+        )
+        .ok()
+        .flatten() else {
+            return false;
+        };
         MembershipRepository::new(ctx_client.datastore())
-            .effective_capabilities(&gid, key)
+            .effective_capabilities(&gid, &account)
             .map(|caps| caps.is_some())
             .unwrap_or_else(|err| {
                 warn!(group_id=%group_id, %err, "group effective-membership lookup failed; denying subscription");
@@ -175,8 +187,19 @@ pub(crate) fn caller_may_observe_group_as_admin(
 ) -> bool {
     let caller_is_admin = caller.map(|key| {
         let gid = ContextGroupId::from(*group_id.as_bytes());
+        // Admin authority is held by the account, so the caller's key resolves
+        // first; a key bound to none holds no authority and is denied.
+        let Some(account) = calimero_governance_store::member_account_in_namespace(
+            ctx_client.datastore(),
+            &gid,
+            key,
+        )
+        .ok()
+        .flatten() else {
+            return false;
+        };
         MembershipRepository::new(ctx_client.datastore())
-            .is_admin(&gid, key)
+            .is_admin(&gid, &account)
             .unwrap_or_else(|err| {
                 warn!(group_id=%group_id, %err, "group admin lookup failed; denying admin-only detail");
                 false

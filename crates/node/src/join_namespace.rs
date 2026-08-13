@@ -183,10 +183,46 @@ pub async fn join_namespace(
         .map_err(|e| JoinError::Local(e.to_string()))?
         .is_none()
     {
-        let admin_identity = PublicKey::from(invitation.invitation.inviter_identity.to_bytes());
+        // The inviter hint goes to its OWN node-local row, and the meta admin
+        // stays the placeholder.
+        //
+        // Recorded because a joiner that has applied no DAG ops verifies nothing
+        // it receives — including the inviter's readiness beacons, which are the
+        // trigger that would fetch the state that ends that condition.
+        // `namespace_accounts` admits this hint while the admin is still the
+        // placeholder, which is exactly the cold-start window and no longer.
+        //
+        // NOT written as the admin, which is what an earlier version did.
+        if let Some(hint) = invitation.inviter_account {
+            MembershipRepository::new(store)
+                .set_bootstrap_inviter(group_id.to_bytes().into(), hint)
+                .map_err(|e| JoinError::Local(e.to_string()))?;
+        }
+
+        // The placeholder, never `invitation.inviter_account`.
+        //
+        // That hint rides in the UNSIGNED envelope — `inviter_signature` covers
+        // the inner `GroupInvitationFromAdmin` only — so anything that can relay
+        // an invitation can choose it. Seeding it here made it this node's
+        // `admin_identity`, which is the local root of trust for `is_admin` and
+        // for readiness-beacon, ack and heartbeat verification.
+        //
+        // The field's own documentation calls that safe because genesis
+        // overwrites a wrong value on arrival. It does not: `namespace_created`
+        // keys its established-check on `admin_identity != placeholder` and is
+        // "ALWAYS a no-op, NEVER Err" once one is set. So an attacker-chosen
+        // account would not have been reconciled — it would have been permanent.
+        //
+        // Master seeds the inviter's KEY, which is inside the signed body. This
+        // branch cannot: `admin_identity` is an account now, and a joiner that
+        // has synced nothing has no binding to resolve the key through. So it
+        // seeds no ADMIN and waits for genesis, which is authoritative. The
+        // beacon head start the hint was added for is kept above, in a row that
+        // confers nothing and stops being read the moment a real admin exists.
+        let seeded_admin = calimero_governance_store::placeholder_admin_identity();
         let meta = GroupMetaValue {
-            admin_identity,
-            owner_identity: admin_identity,
+            admin_identity: seeded_admin,
+            owner_identity: seeded_admin,
             target_application_id: ApplicationId::from([0u8; 32]),
             app_key: [0u8; 32],
             migration: None,
@@ -392,7 +428,7 @@ pub async fn await_namespace_ready(
     let join_account = calimero_context::join_credential::build(store, &group_id, &my_pk)
         .map_err(|e| ReadyError::PublishMemberJoined(format!("join credential: {e}")))?;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        member: my_pk,
+        member: join_account.cert.account,
         signed_invitation: invitation,
         joined_at: now_secs,
         account: join_account,
@@ -407,7 +443,7 @@ pub async fn await_namespace_ready(
     // store read fails we substitute defaults rather than fail the
     // whole join, since the caller's primary signal is `acked_by`.
     let members_learned = MembershipRepository::new(store)
-        .namespace_pubkeys(namespace_id.into())
+        .namespace_accounts(namespace_id.into())
         .map(|m| m.len())
         .unwrap_or(0);
 

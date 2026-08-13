@@ -36,25 +36,15 @@ use sha2::{Digest, Sha256};
 /// LIVE membership resolver — and the projection now keys `MemberAdded` by
 /// `cert.account` rather than a key-derived stand-in, so the account here is
 /// load-bearing, not filler.
-fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
-    use calimero_primitives::identity::PrivateKey;
-    let root = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
-    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
-    Box::new(
-        calimero_context_client::local_governance::JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
-                account: genesis.account_id(),
-                device: calimero_account::DeviceId::from([0x3E; 32]),
-                sign_pk: PrivateKey::random(&mut rand::rngs::OsRng).public_key(),
-                kem_pk: calimero_account::KemPublicKey::from([0x2B; 32]),
-                key_epoch: 0,
-                device_epoch: 0,
-                signature: [0x11; 64],
-            },
-            genesis,
-            chain: vec![],
-        },
-    )
+/// The joiner's credential, derived DETERMINISTICALLY from its signing key.
+///
+/// Deterministic because the op names the account this certifies and later
+/// assertions have to name the same one; a fresh random root per call would make
+/// every mention a different principal.
+fn test_join_account_for(
+    sign_pk: &calimero_primitives::identity::PublicKey,
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    calimero_context::test_support::credential(sign_pk)
 }
 
 fn store() -> Store {
@@ -68,7 +58,7 @@ fn hlc(ns: u64) -> HybridTimestamp {
     ))
 }
 
-fn meta(admin: PublicKey) -> GroupMetaValue {
+fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
@@ -104,6 +94,7 @@ fn sign_invitation(
         .sign(&Sha256::digest(&inv_bytes))
         .expect("sign invitation");
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
@@ -132,6 +123,7 @@ fn fold_subgroup_structure(
         signer: admin,
         nonce: 0,
         op: NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: subgroup.to_bytes().into(),
             parent_id: namespace.into(),
             restricted: true,
@@ -201,10 +193,16 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
 
     // Genesis base state (store seeds, NOT ops — exactly as create_group writes):
     // root + subgroup meta/admin, the subgroup nested + Open, root default cap.
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -236,9 +234,9 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .expect("sign join_ns");
@@ -254,9 +252,9 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .expect("sign join_sub");
@@ -267,7 +265,10 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // After the joins: both authorities must see the joiner in the subgroup
     // (live by inheritance walk; projection likewise).
     let live_member_after_join = MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner),
+        )
         .unwrap();
     assert!(
         live_member_after_join,
@@ -302,12 +303,12 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // is fold-vs-materialized-membership; `remove_member` yields the same
     // `is_member` result a real node's apply would, which is all `is_member` reads.
     let removal = GroupOp::MemberRemoved {
-        member: joiner,
+        member: calimero_context::test_support::account_for(&joiner),
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: Vec::new(),
     };
     MembershipRepository::new(&store)
-        .remove_member(&ns, &joiner)
+        .remove_member(&ns, &calimero_context::test_support::account_for(&joiner))
         .unwrap();
     let id3 = [0xA3; 32];
     let removal_env = ns_group_envelope(ns.to_bytes(), admin, ns);
@@ -322,7 +323,10 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
     // THE equivalence: after root removal, live revokes the inherited subgroup
     // access; the projection must NOT keep granting it (the over-grant).
     let live_member_after_removal = MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner),
+        )
         .unwrap();
     assert!(
         !live_member_after_removal,
@@ -358,10 +362,16 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     let ns = ContextGroupId::from([0x31; 32]);
     let subgroup = ContextGroupId::from([0x32; 32]);
 
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -391,9 +401,9 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -412,9 +422,9 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -437,12 +447,12 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     // rejoin would be rejected outright, no invitation able to readmit them;
     // that path is covered in `governance-store`.
     let leave = GroupOp::MemberRemoved {
-        member: joiner,
+        member: calimero_context::test_support::account_for(&joiner),
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: Vec::new(),
     };
     MembershipRepository::new(&store)
-        .remove_member(&ns, &joiner)
+        .remove_member(&ns, &calimero_context::test_support::account_for(&joiner))
         .unwrap();
     proj.ingest_op(&op_from_namespace_op(
         &ns_group_envelope(ns.to_bytes(), admin, ns),
@@ -453,7 +463,10 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
     ));
     // After leaving: not a member (both).
     assert!(!MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner)
+        )
         .unwrap());
     assert_eq!(
         proj.member_at_cut(&store, subgroup, &joiner, &[[0xB3; 32]]),
@@ -471,9 +484,9 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         vec![],
         3,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -488,7 +501,10 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
 
     // After rejoin: inherited subgroup access is restored — both authorities.
     let live = MembershipRepository::new(&store)
-        .is_member(&subgroup, &joiner)
+        .is_member(
+            &subgroup,
+            &calimero_context::test_support::account_for(&joiner),
+        )
         .unwrap();
     assert!(
         live,
@@ -528,10 +544,16 @@ fn projection_defers_when_cut_ancestry_incomplete() {
     let ns = ContextGroupId::from([0x41; 32]);
     let subgroup = ContextGroupId::from([0x42; 32]);
 
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -552,9 +574,9 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -565,16 +587,19 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store, &join_sub).unwrap();
     assert!(
         MembershipRepository::new(&store)
-            .is_member(&subgroup, &joiner)
+            .is_member(
+                &subgroup,
+                &calimero_context::test_support::account_for(&joiner)
+            )
             .unwrap(),
         "live: joiner inherits subgroup access"
     );
@@ -638,10 +663,16 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
     let subgroup = ContextGroupId::from([0x52; 32]);
 
     // Genesis base state (store seeds, as `create_group` writes).
+    // Enrolled at the ROOT: bindings live at the anchor and every reader
+    // resolves up to it, so a row written against the subgroup would be
+    // invisible the moment it is nested.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
     for g in [&ns, &subgroup] {
-        MetaRepository::new(&store).save(g, &meta(admin)).unwrap();
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
         MembershipRepository::new(&store)
-            .add_member(g, &admin, GroupMemberRole::Admin)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
             .unwrap();
     }
     NamespaceRepository::new(&store)
@@ -662,9 +693,9 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -675,9 +706,9 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
-            account: test_join_account(),
+            account: test_join_account_for(&joiner),
         }),
     )
     .unwrap();
@@ -783,12 +814,28 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 
     // The admin is a direct member of the ROOT ONLY — its subgroup access is
     // inherited, exactly like the namespace owner in the scenario.
-    MetaRepository::new(&store).save(&ns, &meta(admin)).unwrap();
+    // Keyed by the KEY-derived account throughout this test, unlike the suites
+    // above. Its whole premise is that the admin has no folded presence, so the
+    // projection can only reach it through the out-of-band root — and that path
+    // compares the ROOT's `admin_identity` against what a key resolves to with
+    // nothing folded, which is this derivation. An enrolment-derived account
+    // would be unreachable there, and the test would fail for its setup rather
+    // than for the behaviour it guards.
     MetaRepository::new(&store)
-        .save(&subgroup, &meta(admin))
+        .save(&ns, &meta(calimero_op_adapter::legacy_account_id(&admin)))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(
+            &subgroup,
+            &meta(calimero_op_adapter::legacy_account_id(&admin)),
+        )
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .add_member(
+            &ns,
+            &calimero_op_adapter::legacy_account_id(&admin),
+            GroupMemberRole::Admin,
+        )
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&ns, &subgroup)
@@ -832,7 +879,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         7,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: admin,
+            member: calimero_op_adapter::legacy_account_id(&admin),
             group_id: subgroup.to_bytes().into(),
             account: real_join_account_for(&admin, [0x7A; 32]),
         }),
@@ -862,7 +909,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         1,
         NamespaceOp::Root(RootOp::MemberJoined {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
             account: real_join_account_for(&joiner, [0x3E; 32]),
         }),
@@ -878,7 +925,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         vec![],
         2,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: joiner,
+            member: calimero_context::test_support::account_for(&joiner),
             group_id: subgroup.to_bytes().into(),
             account: real_join_account_for(&joiner, [0x3F; 32]),
         }),
@@ -897,5 +944,261 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         proj.member_at_cut(&store, ns, &admin, &[id2]),
         Some(true),
         "and its direct root membership too"
+    );
+}
+
+/// The founder must be an admin AT THE CUT on a node that has only synced.
+///
+/// A receiver learns everything from the ops it applies. Genesis is the only op
+/// that names the founder, so if the projection cannot answer "yes" here, every
+/// op the founder later signs is refused on every peer while the founder's own
+/// node accepts them all — the exact split the e2e cascade scenarios hit, where
+/// node 1 applied the upgrade and node 2 stayed on the old schema forever.
+#[test]
+fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
+    let store = store();
+    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_key = founder_sk.public_key();
+    let ns = ContextGroupId::from(*founder_key);
+
+    let credential = calimero_context::test_support::credential(&founder_key);
+    let genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
+        founder: credential.cert.account,
+        account: credential,
+    });
+    let signed = SignedNamespaceOp::sign(&founder_sk, (*founder_key).into(), vec![], 0, genesis)
+        .expect("sign genesis");
+
+    // Live half: exactly what a syncing receiver does with the op.
+    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+        .apply_signed_op(&signed)
+        .expect("receiver applies genesis");
+
+    // Projection half: the same op folded, which is what the at-cut gate reads.
+    let mut proj = ScopeProjections::new();
+    let genesis_id = [0xE0u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        None,
+        genesis_id,
+        hlc(0),
+        &[],
+    ));
+
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[genesis_id]),
+        Some(true),
+        "the founder's own key must resolve to its account and be admin at the \
+         genesis cut — otherwise peers refuse everything it signs"
+    );
+
+    // ...and it must STAY true once the founder creates a subgroup. This is the
+    // cut every later op cites, so an answer that only holds at genesis is an
+    // answer that holds nowhere in practice.
+    let subgroup = ContextGroupId::from([0xE1u8; 32]);
+    let created = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
+            group_id: subgroup.to_bytes().into(),
+            parent_id: (*founder_key).into(),
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+    let created_id = [0xE1u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &created,
+        None,
+        created_id,
+        hlc(1),
+        &[genesis_id],
+    ));
+
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[created_id]),
+        Some(true),
+        "the founder must still be admin of the ROOT after creating a subgroup"
+    );
+}
+
+/// The two planes must agree about who a key speaks for — at the same cut.
+///
+/// This is the invariant the whole account flip rests on: the live plane resolves
+/// a signer through the binding rows, the projection resolves it through the
+/// folded device links, and an op is authorized by whichever one answers. When
+/// they disagree the publisher accepts an op its peers refuse, and `scope_root`
+/// parts company with nothing able to reconcile it.
+///
+/// Exercised across the sequence that actually broke it: genesis, then a
+/// subgroup creation, then a second subgroup — because the regression only
+/// appeared once a `SubgroupCreated` had folded an admin under a key-derived id.
+#[test]
+fn both_planes_resolve_the_founder_identically_at_every_cut() {
+    let store = store();
+    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_key = founder_sk.public_key();
+    let ns = ContextGroupId::from(*founder_key);
+
+    let credential = calimero_context::test_support::credential(&founder_key);
+    let founder_account = credential.cert.account;
+    let signed_genesis = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::NamespaceCreated {
+            founder: founder_account,
+            account: credential,
+        }),
+    )
+    .expect("sign genesis");
+    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+        .apply_signed_op(&signed_genesis)
+        .expect("apply genesis");
+
+    let mut proj = ScopeProjections::new();
+    let mut cut = [0xF0u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &signed_genesis,
+        None,
+        cut,
+        hlc(0),
+        &[],
+    ));
+
+    for (nonce, sub) in [(1u64, [0xF1u8; 32]), (2, [0xF2u8; 32])] {
+        // Live plane: the resolver every gate in `calimero-governance-store` uses.
+        let live =
+            calimero_governance_store::member_account_in_namespace(&store, &ns, &founder_key)
+                .expect("live resolve");
+        assert_eq!(
+            live,
+            Some(founder_account),
+            "the live plane must resolve the founder to its credential's account"
+        );
+        // Projection plane: the at-cut gate every receiver uses.
+        assert_eq!(
+            proj.is_admin_at_cut(&store, ns, &founder_key, &[cut]),
+            Some(true),
+            "and the projection must agree the founder is admin at this cut"
+        );
+
+        let created = SignedNamespaceOp::sign(
+            &founder_sk,
+            (*founder_key).into(),
+            vec![],
+            nonce,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: calimero_account::AccountId::from([0x5C; 32]),
+                group_id: ContextGroupId::from(sub).to_bytes().into(),
+                parent_id: (*founder_key).into(),
+                restricted: true,
+            }),
+        )
+        .expect("sign GroupCreated");
+        let next = sub;
+        proj.ingest_op(&op_from_namespace_op(
+            &created,
+            None,
+            next,
+            hlc(nonce),
+            &[cut],
+        ));
+        cut = next;
+    }
+
+    // ...and still after the last one.
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[cut]),
+        Some(true),
+        "a subgroup creation must never cost the founder its own admin authority"
+    );
+}
+
+/// An explicit device binding must outrank the key-derived stand-in, even when
+/// the view carries authority under the stand-in.
+///
+/// Pins the precedence directly rather than through a scenario, because the
+/// scenario only exposed it by accident: `SubgroupCreated` folds its admin as a
+/// key-derived id, and while that id won, one subgroup creation was enough to
+/// make the founder resolve to a principal no account-keyed row knows. Anything
+/// that restores the old order — including deleting the legacy stand-in
+/// carelessly — fails here rather than three e2e suites later.
+#[test]
+fn an_explicit_binding_outranks_the_key_derived_stand_in() {
+    let store = store();
+    let founder_sk = PrivateKey::random(&mut OsRng);
+    let founder_key = founder_sk.public_key();
+    let ns = ContextGroupId::from(*founder_key);
+
+    let credential = calimero_context::test_support::credential(&founder_key);
+    let founder_account = credential.cert.account;
+    // The two ids for one key. They are different by construction, which is the
+    // whole reason the precedence matters.
+    assert_ne!(
+        founder_account,
+        calimero_op_adapter::legacy_account_id(&founder_key),
+        "the derived stand-in is not the account a credential certifies"
+    );
+
+    let signed = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        0,
+        NamespaceOp::Root(RootOp::NamespaceCreated {
+            founder: founder_account,
+            account: credential,
+        }),
+    )
+    .expect("sign genesis");
+    calimero_governance_store::NamespaceGovernance::new(&store, (*founder_key).into())
+        .apply_signed_op(&signed)
+        .expect("apply genesis");
+
+    let mut proj = ScopeProjections::new();
+    let genesis_id = [0xD0u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &signed,
+        None,
+        genesis_id,
+        hlc(0),
+        &[],
+    ));
+
+    // A GroupCreated folds `admin = legacy_account_id(signer)` — authority in the
+    // view under the STAND-IN, which is exactly the condition that used to make
+    // the stand-in win.
+    let created = SignedNamespaceOp::sign(
+        &founder_sk,
+        (*founder_key).into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
+            group_id: ContextGroupId::from([0xD1u8; 32]).to_bytes().into(),
+            parent_id: (*founder_key).into(),
+            restricted: true,
+        }),
+    )
+    .expect("sign GroupCreated");
+    let created_id = [0xD1u8; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &created,
+        None,
+        created_id,
+        hlc(1),
+        &[genesis_id],
+    ));
+
+    assert_eq!(
+        proj.is_admin_at_cut(&store, ns, &founder_key, &[created_id]),
+        Some(true),
+        "the binding must still decide who this key is, or the founder resolves \
+         to a principal the account-keyed rows have never heard of"
     );
 }

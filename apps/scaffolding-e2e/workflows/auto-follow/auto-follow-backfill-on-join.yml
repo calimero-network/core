@@ -89,7 +89,7 @@ steps:
     node: af-backfill-node-1
     namespace_id: "{{namespace_id}}"
     outputs:
-      node1_identity: publicKey
+      node1_account: account
 
   - name: Node-1 creates subgroup
     type: create_group_in_namespace
@@ -106,7 +106,7 @@ steps:
     type: set_member_auto_follow
     node: af-backfill-node-1
     group_id: "{{group_id}}"
-    member_id: "{{node1_identity}}"
+    member_id: "{{node1_account}}"
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
@@ -192,6 +192,7 @@ steps:
     invitation: "{{ns_invite}}"
     outputs:
       node2_identity: memberIdentity
+      node2_account: memberAccount
 
   - name: Node-1 adds node-2 to subgroup
     type: add_group_members
@@ -212,7 +213,7 @@ steps:
     type: set_member_auto_follow
     node: af-backfill-node-1
     group_id: "{{group_id}}"
-    member_id: "{{node2_identity}}"
+    member_id: "{{node2_account}}"
     auto_follow_contexts: true
     auto_follow_subgroups: false
 

@@ -1,3 +1,4 @@
+use calimero_account::AccountId;
 use calimero_governance_types::NamespaceId;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,13 +124,16 @@ fn timeout_classifier_assigns_per_op_kind() {
 
     // Cheap class: single-row writes, no inheritance walk.
     assert_eq!(
-        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::AdminChanged { new_admin: pk })),
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::AdminChanged {
+            new_admin: AccountId::from(*pk)
+        })),
         OP_ACK_CHEAP_TIMEOUT
     );
 
     // Member-change class: membership-table mutations, possible inheritance walks.
     assert_eq!(
         timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupCreated {
+            admin: calimero_account::AccountId::from([0x5C; 32]),
             group_id: [0u8; 32].into(),
             parent_id: [0u8; 32].into(),
             restricted: true,
@@ -186,7 +190,7 @@ fn mk_signed_op(sk: &PrivateKey, namespace_id: NamespaceId) -> SignedNamespaceOp
         Vec::new(),
         0,
         NamespaceOp::Root(RootOp::AdminChanged {
-            new_admin: sk.public_key(),
+            new_admin: AccountId::from(*sk.public_key()),
         }),
     )
     .expect("sign")
@@ -207,8 +211,12 @@ fn plant_namespace_role(
     role: GroupMemberRole,
 ) {
     let gid = ContextGroupId::from(namespace_id.to_bytes());
+    // Plant the row AND the binding: the ack/beacon verifiers resolve a signing
+    // key to its account before consulting the member set, so a row without a
+    // binding would leave every planted member's own ack unverifiable.
+    let account = crate::test_fixtures::enrol_member(store, &gid, pk);
     MembershipRepository::new(store)
-        .add_member(&gid, pk, role)
+        .add_member(&gid, &account, role)
         .expect("plant");
 }
 
@@ -613,6 +621,7 @@ fn invitation_from(
     let bytes = borsh::to_vec(&invitation).expect("borsh");
     let signature = inviter_sk.sign(&Sha256::digest(&bytes)).expect("sign");
     SignedGroupOpenInvitation {
+        inviter_account: None,
         invitation,
         inviter_signature: hex::encode(signature.to_bytes()),
         application_id: None,
@@ -738,13 +747,14 @@ async fn admission_provable_rejects_consumed_nonce() {
     plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
 
     let gid = ContextGroupId::from(ns.to_bytes());
+    // Bound, not a member: the consumption check resolves the beacon signer's
+    // key to an account before looking for a spent-invitation row, and a key it
+    // cannot resolve names no principal that could have spent anything — so
+    // without the binding this would pass by answering the wrong question.
+    let joiner_account = crate::test_fixtures::enrol_member(&store, &gid, &joiner_sk.public_key());
     let inv = invitation_from(&admin_sk, gid, 0);
     ReentryRepository::new(&store)
-        .mark_invitation_consumed(
-            &gid,
-            &joiner_sk.public_key(),
-            inv.invitation.invitation_nonce,
-        )
+        .mark_invitation_consumed(&gid, &joiner_account, inv.invitation.invitation_nonce)
         .expect("mark consumed");
     let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
 
@@ -899,5 +909,55 @@ fn classify_publish_readiness_not_ready_without_acks() {
     assert_eq!(
         classify_publish_readiness(true, 0, 3),
         PublishReadiness::Degraded
+    );
+}
+
+/// "I cannot resolve this signer yet" must not be reported as a failed check.
+///
+/// A joiner holds its namespace identity — and considers itself a member
+/// locally — before the op that publishes that membership reaches a peer, and
+/// that same op carries the device binding. So every join has a window where a
+/// receiver legitimately cannot verify the joiner's heartbeats. Collapsing that
+/// into the same verdict as a bad signature made each join look like a forgery
+/// attempt in the logs, which is what the migration-status e2e asserts against.
+#[tokio::test]
+async fn an_unresolvable_signer_is_not_yet_known_rather_than_refused() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [43u8; 32];
+
+    // Nothing planted: no binding, no member row — the state a peer is in
+    // before a joiner's op arrives.
+    let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
+    assert_eq!(
+        classify_migration_heartbeat(&store, &hb),
+        HeartbeatVerdict::NotYetKnown,
+        "a signer this replica cannot resolve is early, not hostile"
+    );
+    assert!(
+        !verify_migration_heartbeat(&store, &hb),
+        "...and is still not admitted to the rollup"
+    );
+}
+
+/// A signer this replica CAN resolve, who is simply not a member, is refused.
+///
+/// The other side of the split: once the binding is here, "not a member" is a
+/// real answer rather than a timing artifact, and it deserves the loud verdict.
+#[tokio::test]
+async fn a_resolvable_non_member_is_refused_not_deferred() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [44u8; 32];
+    let gid = ContextGroupId::from(ns_id);
+
+    // Bound, but never added to the namespace's member set.
+    let _ = crate::test_fixtures::enrol_member(&store, &gid, &sk.public_key());
+
+    let hb = signed_heartbeat(&sk, ns_id.into(), 2, 0);
+    assert_eq!(
+        classify_migration_heartbeat(&store, &hb),
+        HeartbeatVerdict::Refused,
+        "a resolvable non-member is a genuine refusal"
     );
 }

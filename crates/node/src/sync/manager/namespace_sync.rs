@@ -23,6 +23,38 @@ use tracing::{debug, info, warn};
 use super::SyncManager;
 use crate::sync::MAX_BACKFILL_OPS;
 
+/// The op kinds in a backfill response, for logging.
+///
+/// Decodes only far enough to name each op — an undecodable entry is reported
+/// as such rather than dropped, since "the responder sent something this build
+/// cannot read" is itself the answer when a backfill looks complete but leaves
+/// the receiver missing an op.
+fn backfill_op_kinds(deltas: &[([u8; 32], Vec<u8>)]) -> String {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    let mut kinds = Vec::with_capacity(deltas.len());
+    for (_delta_id, bytes) in deltas {
+        kinds.push(match borsh::from_slice::<SignedNamespaceOp>(bytes) {
+            Ok(op) => match op.op {
+                NamespaceOp::Root(root) => {
+                    let named = format!("{root:?}");
+                    named
+                        .split(|c: char| c == '{' || c == '(' || c.is_whitespace())
+                        .next()
+                        .unwrap_or("Root")
+                        .to_owned()
+                }
+                // Encrypted; the inner kind is not readable without the key,
+                // which is frequently the very thing that is missing.
+                NamespaceOp::Group { .. } => "Group(encrypted)".to_owned(),
+                _ => "Unknown".to_owned(),
+            },
+            Err(_) => "undecodable".to_owned(),
+        });
+    }
+    kinds.join(",")
+}
+
 /// What one walk over the mesh learned about who holds a subgroup key.
 ///
 /// The two failure variants exist to keep a distinction the old single-pass code
@@ -410,6 +442,13 @@ impl SyncManager {
                     Ok(k) => k,
                     Err(_) => break,
                 };
+                // `GroupDeviceBinding` shares this key's exact layout, so a
+                // binding row parses here and — on a namespace root, where the
+                // group id IS the namespace id — passes the id check too. Stop
+                // on the family, never on width plus id.
+                if !key.is_gov_op_row() {
+                    break;
+                }
                 if key.namespace_id() != namespace_id {
                     break;
                 }
@@ -446,6 +485,51 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Name the joiner behind a `NamespaceJoinRequest`, or say why not.
+    ///
+    /// Verification only — nothing is written. The responder needs the account
+    /// before it decides whether to serve anything, and applying the binding
+    /// first would let an unauthorized request mutate state on its way to being
+    /// refused.
+    ///
+    /// Three things have to hold, and the third is the one that is easy to miss:
+    ///
+    /// 1. the genesis hashes to the account the certificate claims, so the
+    ///    credential cannot name an account it does not descend from;
+    /// 2. the certificate chains to that genesis through the root-key handoffs
+    ///    (`verify_device_cert`, the same check the apply path runs);
+    /// 3. the certificate names THIS request's `joiner_public_key`. Without it a
+    ///    credential is a bearer token: anyone who observed one could replay it
+    ///    and be admitted as its owner, which is a worse hole than the one this
+    ///    check closes.
+    fn verified_joiner_account(
+        credential_bytes: &[u8],
+        joiner_public_key: &PublicKey,
+    ) -> Result<calimero_account::AccountId, String> {
+        let credential: calimero_context_client::local_governance::JoinAccountCredential =
+            borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
+
+        if credential.genesis.account_id() != credential.cert.account {
+            return Err("genesis does not derive the account the certificate claims".to_owned());
+        }
+
+        let verified = calimero_account::verify_device_cert(
+            credential.cert.account,
+            &credential.genesis,
+            &credential.chain,
+            &credential.cert,
+        )
+        .map_err(|e| format!("{e}"))?;
+
+        if AsRef::<[u8; 32]>::as_ref(&verified.sign_pk)
+            != AsRef::<[u8; 32]>::as_ref(joiner_public_key)
+        {
+            return Err("certificate names a different signing key than the request".to_owned());
+        }
+
+        Ok(credential.cert.account)
+    }
+
     /// Handle an incoming NamespaceJoinRequest on the responder side.
     ///
     /// Validates the invitation, wraps the group key for the joiner,
@@ -455,6 +539,7 @@ impl SyncManager {
         namespace_id: [u8; 32],
         invitation_bytes: &[u8],
         joiner_public_key: PublicKey,
+        joiner_credential_bytes: &[u8],
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
@@ -539,15 +624,45 @@ impl SyncManager {
         // perfectly ordinary re-sync or a retried join round — and since a
         // successful join consumes the invitation, gating them would reject every
         // repeat request they ever make with their own invitation.
+        // The joiner is named by KEY on the wire and the rows are keyed by
+        // ACCOUNT, so the request carries the credential that bridges the two —
+        // and this responder verifies it rather than trusting it.
+        //
+        // Refusing an unverifiable credential is the whole point. When the gate
+        // could not name a requester it admitted them, so a denied account that
+        // presented a device this responder held no binding for had its deny row
+        // go unread, and collected the backfill and the wrapped group key ahead
+        // of the apply-time check that does reject it.
+        let joiner_account =
+            match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
+                Ok(account) => account,
+                Err(reason) => {
+                    let msg = StreamMessage::Message {
+                        sequence_id: 0,
+                        payload: MessagePayload::NamespaceJoinRejected {
+                            reason: format!("join credential rejected: {reason}"),
+                        },
+                        next_nonce: nonce,
+                    };
+                    crate::sync::stream::send(stream, &msg, None).await?;
+                    return Ok(());
+                }
+            };
+
         let already_member = MembershipRepository::new(&store)
-            .has_direct_member(&group_id, &joiner_public_key)
+            .has_direct_member(&group_id, &joiner_account)
             .unwrap_or(false);
+        // Skipped for an identity that is already a member: the block governs
+        // RE-ENTRY, and a current member is not re-entering. They land here on a
+        // perfectly ordinary re-sync or a retried join round — and since a
+        // successful join consumes the invitation, gating them would reject every
+        // repeat request they ever make with their own invitation.
         let admission = if already_member {
             Ok(())
         } else {
             ReentryRepository::new(&store).require_invitation_admits(
                 &group_id,
-                &joiner_public_key,
+                &joiner_account,
                 invitation.invitation.invitation_nonce,
             )
         };
@@ -606,12 +721,17 @@ impl SyncManager {
             None => Vec::new(),
         };
 
-        // Pre-register the joiner as a group member and write ContextIdentity
-        // entries so that when the joiner opens a sync stream, this node's
-        // membership check (has_member) passes immediately.
+        // Pre-register the joiner as a group member so that when it opens a sync
+        // stream, this node's membership check passes immediately.
+        //
+        // Unconditional now: the request carries a verified credential, so every
+        // joiner that reaches this line — first-timer included — has an account
+        // to key the row under. It used to be skipped whenever the account could
+        // not be named, which was exactly the first-join case the optimisation
+        // exists for.
         if let Err(e) = MembershipRepository::new(&store).add_member(
             &group_id,
-            &joiner_public_key,
+            &joiner_account,
             calimero_primitives::context::GroupMemberRole::Member,
         ) {
             warn!(%e, "failed to pre-register joiner as group member");
@@ -738,7 +858,18 @@ impl SyncManager {
         // Open-chain inheritance walk. `MembershipPath::Inherited`
         // implies every intermediate ancestor was Open (see
         // `membership.rs:267`), so this is the proof of authorisation.
-        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_public_key)? {
+        let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
+            &store,
+            &subgroup_gid,
+            &joiner_public_key,
+        )?
+        else {
+            // A key bound to no account reaches the subgroup by no path.
+            return Err(eyre::eyre!(
+                "joiner identity is bound to no account in this namespace"
+            ));
+        };
+        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_account)? {
             MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
             MembershipPath::None => {
                 let msg = StreamMessage::Message {
@@ -929,6 +1060,11 @@ impl SyncManager {
                 Ok(k) => k,
                 Err(_) => break,
             };
+            // See the sibling walk above: a same-layout binding row would
+            // otherwise be read as a gov op.
+            if !key.is_gov_op_row() {
+                break;
+            }
             if key.namespace_id() != namespace_id {
                 break;
             }
@@ -1047,6 +1183,7 @@ impl SyncManager {
                     namespace_id: params.namespace_id,
                     invitation_bytes: params.invitation_bytes.clone(),
                     joiner_public_key: params.joiner_public_key,
+                    joiner_credential_bytes: params.joiner_credential_bytes.clone(),
                 },
                 next_nonce: rand::thread_rng().gen(),
             };
@@ -1215,6 +1352,18 @@ impl SyncManager {
                 ..
             })) => {
                 let ops_received = deltas.len();
+                // The kinds, not just the count. A backfill that returns the
+                // same tally every time is ambiguous in exactly the way that
+                // matters: an op the responder never had looks identical to one
+                // it served and this node dropped, and telling those apart
+                // otherwise means correlating two nodes' logs by timestamp and
+                // guessing. A device waiting on a `KeyDelivery` it missed on
+                // gossip is the case that made this worth logging.
+                debug!(
+                    namespace_id = %hex::encode(namespace_id),
+                    kinds = %backfill_op_kinds(&deltas),
+                    "namespace backfill contents"
+                );
                 info!(
                     namespace_id = %hex::encode(namespace_id),
                     ops = ops_received,
@@ -1387,21 +1536,54 @@ impl SyncManager {
             }
         };
 
-        // The device we ask as, when this node has enrolled one. Once a peer
-        // knows an account for our identity this is the only way it will serve
-        // us — without it, a revoked device would still be its member and would
-        // be handed the very key the rotation excluded it from. `None` on a node
-        // that has enrolled no device, which is served member-addressed only
-        // while its member has no account in the group (the bootstrap case).
+        // The device we ask as — MINTED here if this node has none yet, not just
+        // read.
+        //
+        // A responder that knows an account for our identity serves that account's
+        // devices and nothing else: identity addressing cannot be a fallback,
+        // because a revoked device would simply omit its id and be handed the very
+        // key the rotation excluded it from. So asking without a device is asking
+        // for nothing, and a node that has not enrolled yet would sit keyless —
+        // unable to decrypt any group op — until something else happened to enrol
+        // it.
+        //
+        // Read before minting, and mint only when there is nothing to read.
+        // `ensure_enrolled` is idempotent only for a device of THIS node's own
+        // account: handed a row belonging to another account it releases the slot
+        // and mints a replacement, which is exactly what a paired device is. So
+        // calling it unconditionally destroyed the pairing on the first pull —
+        // and the key already in flight named the device it destroyed, so it
+        // arrived, matched nothing, and was dropped. The link op that would have
+        // protected the row is itself encrypted under that key, so the pairing
+        // could never recover; the next pull just did it again.
+        //
+        // Asking as a device we already are is right regardless of whose account
+        // it speaks for: the point is to be addressable, not to be ourselves.
+        //
+        // Unless it has been REVOKED. Releasing a revoked row so a fresh device
+        // is minted is the one replacement `ensure_enrolled` must still perform —
+        // a node that revoked itself out of the namespace re-enters under a new
+        // id, and reusing the revoked one would ask for keys the revocation
+        // exists to withhold. Reading past that check skipped it, and the node
+        // came back as the device it had just revoked.
+        let devices = calimero_governance_store::NodeDeviceRepository::new(&store);
+        let device = match devices.reusable_device(&ns_gid) {
+            Ok(Some(existing)) => Some(existing.secret.device),
+            Ok(None) => devices
+                .ensure_enrolled(&ns_gid)
+                .map(|own| Some(own.secret.device))
+                .unwrap_or_else(|err| {
+                    debug!(%err, "failed to enrol this node's device for key recovery");
+                    None
+                }),
+            Err(err) => {
+                debug!(%err, "failed to read this node's device for key recovery");
+                None
+            }
+        };
         let requester = calimero_governance_store::KeyRequester {
             identity: requester_public_key,
-            device: calimero_governance_store::NodeDeviceRepository::new(&store)
-                .device_secret(&ns_gid)
-                .unwrap_or_else(|err| {
-                    debug!(%err, "failed to read node device identity for key recovery");
-                    None
-                })
-                .map(|own| own.device),
+            device,
         };
 
         // `(group_id, key_id)` pairs we're stranded on — we ask each peer for
@@ -2189,5 +2371,123 @@ mod open_subgroup_key_tests {
             "the per-peer tally must survive into the final error, and must show \
              the single round that actually ran: {msg}"
         );
+    }
+}
+
+/// The credential check that decides whether a join request gets named at all.
+///
+/// Every case here is a rejection the responder must make BEFORE it wraps the
+/// group key or serves backfill — the point of carrying a credential is that
+/// the deny-list gate downstream has an account to read its rows under.
+#[cfg(test)]
+mod joiner_credential_tests {
+    use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+    use calimero_context_client::local_governance::JoinAccountCredential;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use rand::rngs::OsRng;
+
+    use super::SyncManager;
+
+    /// An account root plus a credential certifying `sign_pk` under it.
+    fn credential_for(sign_pk: &PublicKey) -> (JoinAccountCredential, AccountGenesis) {
+        let root_sk = PrivateKey::random(&mut OsRng);
+        let genesis = AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let cert = sign_device_cert(
+            &root_sk,
+            genesis.account_id(),
+            DeviceId::from([0xD1; 32]),
+            sign_pk,
+            &KemPublicKey::from([0x2B; 32]),
+            0,
+            0,
+        )
+        .expect("the account root signs its own device cert");
+        (
+            JoinAccountCredential {
+                genesis,
+                chain: vec![],
+                cert,
+            },
+            genesis,
+        )
+    }
+
+    #[test]
+    fn a_credential_certifying_the_requesting_key_names_its_account() {
+        let joiner = PublicKey::from([0x11; 32]);
+        let (credential, genesis) = credential_for(&joiner);
+
+        let account =
+            SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
+                .expect("a well-formed credential for this key must resolve");
+
+        assert_eq!(
+            account,
+            genesis.account_id(),
+            "the resolved account must be the one the genesis derives, not one the \
+             certificate merely claims"
+        );
+    }
+
+    /// The replay guard, and the reason the check is not just `verify_device_cert`.
+    ///
+    /// A credential travels in the clear inside a join request, so any peer that
+    /// has served one holds a copy. If the responder did not tie it to the key
+    /// making THIS request, that copy would be a bearer token: replay it and be
+    /// admitted as its owner — including past a deny-list entry, which is worse
+    /// than the gap this whole change closes.
+    #[test]
+    fn a_credential_for_a_different_key_is_refused() {
+        let owner = PublicKey::from([0x11; 32]);
+        let (credential, _) = credential_for(&owner);
+
+        let attacker = PublicKey::from([0x22; 32]);
+        let err =
+            SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &attacker)
+                .expect_err(
+                    "a credential certifying someone else's key must not name this requester",
+                );
+
+        assert!(
+            err.contains("different signing key"),
+            "the refusal should say the certificate is for another key: {err}"
+        );
+    }
+
+    /// The certificate names the account; the genesis is what PROVES it. A
+    /// credential pairing one account's genesis with a certificate claiming
+    /// another is how a requester would try to wear an account it cannot derive.
+    #[test]
+    fn a_genesis_that_does_not_derive_the_claimed_account_is_refused() {
+        let joiner = PublicKey::from([0x11; 32]);
+        let (mut credential, _) = credential_for(&joiner);
+        let (other, _) = credential_for(&joiner);
+        credential.genesis = other.genesis;
+
+        let err =
+            SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
+                .expect_err("a genesis from another account must not certify this one");
+
+        assert!(
+            err.contains("genesis does not derive"),
+            "the refusal should name the mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn undecodable_credential_bytes_are_refused_not_ignored() {
+        let joiner = PublicKey::from([0x11; 32]);
+        let err = SyncManager::verified_joiner_account(b"not a credential", &joiner)
+            .expect_err("garbage must refuse rather than fall through to an unnamed admit");
+        assert!(err.contains("undecodable"), "{err}");
+    }
+
+    /// An empty credential is what an older initiator effectively sends. It must
+    /// refuse, not admit: "could not name them" was precisely the condition that
+    /// used to skip the deny-list check.
+    #[test]
+    fn an_absent_credential_is_refused() {
+        let joiner = PublicKey::from([0x11; 32]);
+        assert!(SyncManager::verified_joiner_account(&[], &joiner).is_err());
     }
 }

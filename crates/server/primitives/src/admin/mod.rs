@@ -5,7 +5,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey};
+use calimero_primitives::identity::{AccountId, ClientKey, ContextUser, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -1586,6 +1586,24 @@ impl Validate for AddGroupMembersApiRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberApiInput {
+    /// The only KEY-typed principal left on `/groups/:id/members`: every other
+    /// verb on this resource — the GET listing, remove, and the role /
+    /// capabilities / metadata / auto-follow updates — names members by
+    /// [`AccountId`]. A caller therefore has to know which encoding each
+    /// endpoint wants, and the two are rendered differently (bs58 vs 64-hex)
+    /// specifically so a mix-up fails loudly instead of resolving to the wrong
+    /// principal.
+    ///
+    /// It is a key because an add is the one call whose subject may not have an
+    /// account here yet. An operator adding someone holds the key that person
+    /// signs with; the account is a hash of a genesis this node learns only once
+    /// they have joined, so requiring one would make the endpoint uncallable in
+    /// exactly the case it exists for. The apply resolves this key to the
+    /// account the row is keyed by, and the listing is where the caller reads
+    /// that account back.
+    ///
+    /// This converges on accounts once an add can name an account that does not
+    /// exist locally yet.
     pub identity: PublicKey,
     pub role: GroupMemberRole,
 }
@@ -1593,7 +1611,9 @@ pub struct GroupMemberApiInput {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveGroupMembersApiRequest {
-    pub members: Vec<PublicKey>,
+    /// The members to remove, named by ACCOUNT — the principal the membership
+    /// rows are keyed by. `GET .../members` returns these same ids.
+    pub members: Vec<AccountId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }
@@ -1621,7 +1641,9 @@ pub struct ListGroupMembersApiResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberApiEntry {
-    pub identity: PublicKey,
+    /// The member's ACCOUNT. Renders as 64 hex characters, not the bs58 a key
+    /// renders as — a member is a person here, and a person may hold several keys.
+    pub identity: AccountId,
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -2361,7 +2383,11 @@ pub struct JoinGroupApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct JoinGroupApiResponseData {
     pub group_id: String,
+    /// The key the joiner signs with, bs58.
     pub member_identity: PublicKey,
+    /// The account that key joined as, 64 hex characters — the id every
+    /// member-addressing endpoint expects. See `NamespaceIdentityApiResponse`.
+    pub member_account: String,
     pub governance_op: String,
 }
 
@@ -3246,7 +3272,16 @@ pub struct ListNamespacesApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct NamespaceIdentityApiResponse {
     pub namespace_id: String,
+    /// The key this node signs with, bs58.
     pub public_key: String,
+    /// The account that key writes as, 64 hex characters.
+    ///
+    /// This — not `public_key` — is what every member-addressing endpoint takes
+    /// (`PUT .../members/{account}/...`, `RemoveGroupMembersApiRequest::members`).
+    /// The two encodings differ so one cannot be pasted where the other belongs,
+    /// which means a caller holding only the key has no way to name itself; this
+    /// field is that way.
+    pub account: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

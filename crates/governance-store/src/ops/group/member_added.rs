@@ -5,13 +5,13 @@ use super::super::super::build_auto_follow_set_if_enabled;
 use super::super::super::contexts::restore_member_context_identities;
 use super::context::GroupApplyCtx;
 use crate::{MembershipError, MembershipRepository, ReentryRepository};
+use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    member: &PublicKey,
+    member: &AccountId,
     role: &GroupMemberRole,
 ) -> EyreResult<()> {
     let signer = ctx.signer();

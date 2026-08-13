@@ -361,6 +361,21 @@ pub enum InitPayload {
         invitation_bytes: Vec<u8>,
         /// The joiner's public key for ECDH key wrapping
         joiner_public_key: PublicKey,
+        /// Borsh-serialized `JoinAccountCredential` — genesis, root-key chain,
+        /// and the device cert for `joiner_public_key`.
+        ///
+        /// Carried so the responder can NAME the requester before it serves
+        /// anything. The re-entry and deny-list rows are keyed by account, and
+        /// a request that arrives as a bare key leaves a previously-denied
+        /// account unnameable whenever it presents a device this responder holds
+        /// no binding for — so the gate could not read its own deny row, and
+        /// backfill plus the wrapped group key went out ahead of the apply-time
+        /// check that does reject them.
+        ///
+        /// The responder verifies it rather than trusting it, and must check the
+        /// cert names this same `joiner_public_key`: an unbound credential could
+        /// otherwise be replayed by anyone who observed one.
+        joiner_credential_bytes: Vec<u8>,
     },
 
     /// Direct request to materialise inherited membership in an Open

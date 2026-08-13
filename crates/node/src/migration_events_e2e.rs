@@ -133,8 +133,12 @@ fn seat_cohort(store: &Store, ns: &ContextGroupId, admin_sk: &PrivateKey, peer: 
     NamespaceRepository::new(store)
         .store_identity(ns, &admin_sk.public_key(), admin_sk.as_bytes(), &[0u8; 32])
         .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account = calimero_context::test_support::enrol(store, ns, &peer);
     MembershipRepository::new(store)
-        .add_member(ns, &peer, GroupMemberRole::Admin)
+        .add_member(ns, &peer_account, GroupMemberRole::Admin)
         .expect("seat the peer");
 }
 

@@ -118,14 +118,31 @@ fn account_for_author(
     key: &PublicKey,
     root: Option<(ContextGroupId, AccountId)>,
 ) -> AccountId {
+    // An explicit binding wins over the derived id. A folded `DeviceLinked` is a
+    // signed statement about THIS key; `legacy_account_id` is a guess that names a
+    // real principal nowhere now that the live plane keys every row by account.
+    //
+    // This order is the reverse of what it was, and the reversal is the point.
+    // While membership was key-keyed, preferring the binding made a member who
+    // enrolled a device resolve to an account the rows did not know, and the
+    // member vanished — so the derived id had to win. Keying the rows by account
+    // removes that hazard and introduces the mirror one: stale key-derived ids
+    // still enter this view (`SubgroupCreated.admin` folds one), and letting them
+    // win makes the founder stop being admin of its own namespace the moment it
+    // creates a subgroup. Every peer then refuses what the founder signs while
+    // the founder accepts it — which is a `scope_root` split, not a hiccup.
+    if let Some(binding) = view
+        .devices
+        .values()
+        .find(|binding| binding.sign_pk == *key)
+    {
+        return binding.account;
+    }
     let own = legacy_account_id(key);
     if view_knows_author(view, &own, root) {
         return own;
     }
-    view.devices
-        .values()
-        .find(|binding| binding.sign_pk == *key)
-        .map_or(own, |binding| binding.account)
+    own
 }
 
 /// Does this view carry any authority for `account` in its own name?
@@ -737,7 +754,16 @@ impl ScopeProjections {
         }
         // Projection couldn't decide (cold/partial fold or store fault) — fall back
         // to live, whose error legitimately propagates. (Live retires in #29b.)
-        MembershipRepository::new(store).is_member(group, member)
+        //
+        // The caller holds a signing key and the live rows name accounts, so the
+        // key is resolved here. A key bound to no account is reported as not a
+        // member: it holds no row under any principal this namespace knows.
+        let Some(member) =
+            calimero_governance_store::member_account_in_namespace(store, group, member)?
+        else {
+            return Ok(false);
+        };
+        MembershipRepository::new(store).is_member(group, &member)
     }
 
     /// The effective member-identity union across `groups`, folding the namespace
@@ -752,7 +778,7 @@ impl ScopeProjections {
         store: &Store,
         namespace_root: &ContextGroupId,
         groups: &[ContextGroupId],
-    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+    ) -> Option<std::collections::BTreeSet<AccountId>> {
         let namespace_id = NamespaceRepository::new(store)
             .resolve(namespace_root)
             .ok()?
@@ -767,7 +793,7 @@ impl ScopeProjections {
         let view = proj.acl_view_at(&scope, &heads)?;
         let mut out = std::collections::BTreeSet::new();
         for group in groups {
-            out.extend(Self::member_identities_in_view(
+            out.extend(Self::member_accounts_in_view(
                 &view,
                 store,
                 namespace_id,
@@ -814,13 +840,13 @@ impl ScopeProjections {
         namespace_id: [u8; 32],
         group: &ContextGroupId,
         heads: &[[u8; 32]],
-    ) -> Option<std::collections::BTreeSet<PublicKey>> {
+    ) -> Option<std::collections::BTreeSet<AccountId>> {
         let scope = ScopeId::from(namespace_id);
         if !self.cut_ancestry_complete(&scope, heads) {
             return None;
         }
         let view = self.acl_view_at(&scope, heads)?;
-        Some(Self::member_identities_in_view(
+        Some(Self::member_accounts_in_view(
             &view,
             store,
             namespace_id,
@@ -851,7 +877,7 @@ impl ScopeProjections {
     /// PARTIAL FOLD: the materialized fallback is all-or-nothing — a group with even
     /// one folded direct member is treated as fully folded, so a materialized
     /// `GroupMember` row that never entered the fold would be missing. This is a
-    /// property of the shared `member_identities_in_view` candidate universe (the
+    /// property of the shared `member_accounts_in_view` candidate universe (the
     /// merged count/cohort consumers share it), not new here. It is bounded by sync
     /// delivering a group's membership atomically — fully folded or fully
     /// materialized, not partial — which is why the e2e `membership-enum` plane held
@@ -867,10 +893,10 @@ impl ScopeProjections {
         namespace_id: [u8; 32],
         group: &ContextGroupId,
         heads: &[[u8; 32]],
-    ) -> Option<Vec<(PublicKey, GroupMemberRole)>> {
+    ) -> Option<Vec<(AccountId, GroupMemberRole)>> {
         // Fold the view ONCE: `auth_cut_context` gates `cut_ancestry_complete` and
         // builds the `acl_view_at` + root + cap. Both the validated id set and the
-        // per-member role derive from THIS view — `member_identities_in_view` is the
+        // per-member role derive from THIS view — `member_accounts_in_view` is the
         // pre-folded variant, so the ancestry walk runs once per request, not twice
         // (the gate `member_identities_with` would otherwise fold a second time).
         let (view, root, default_cap_base) = self.auth_cut_context(store, *group, heads)?;
@@ -941,23 +967,11 @@ impl ScopeProjections {
             };
             entries.push((id, role));
         }
-        // The fold answered in accounts; callers speak member keys. Same
-        // live-dictionary translation as `member_identities_in_view`, so an
-        // account the live rows can't name is dropped and logged rather than
-        // surfaced as an unnameable member.
-        let accounts: std::collections::BTreeSet<AccountId> =
-            entries.iter().map(|(id, _)| *id).collect();
-        let keys = Self::accounts_to_member_keys(store, group, &accounts);
-        let dictionary: std::collections::BTreeMap<AccountId, PublicKey> = keys
-            .into_iter()
-            .map(|pk| (legacy_account_id(&pk), pk))
-            .collect();
-        Some(
-            entries
-                .into_iter()
-                .filter_map(|(id, role)| dictionary.get(&id).map(|pk| (*pk, role)))
-                .collect(),
-        )
+        // The fold and the live rows now answer in the same space, so the
+        // enumeration is returned as-is. This used to translate every account
+        // back into a member key through a live-rows dictionary, and drop any
+        // account that dictionary could not name.
+        Some(entries)
     }
 
     /// The shared fold primitive for both [`ephemeral_projection`](Self::ephemeral_projection)
@@ -996,7 +1010,13 @@ impl ScopeProjections {
         if let Some(p) = self.member_at_cut(store, *group, member, heads) {
             return Ok(p);
         }
-        MembershipRepository::new(store).is_member(group, member)
+        // Same key→account resolution as `member_now_checked`'s live fallback.
+        let Some(member) =
+            calimero_governance_store::member_account_in_namespace(store, group, member)?
+        else {
+            return Ok(false);
+        };
+        MembershipRepository::new(store).is_member(group, &member)
     }
 
     /// The effective member-identity set of `group` from an already-folded `view`
@@ -1018,19 +1038,16 @@ impl ScopeProjections {
     /// — defer to live's full `list ∪ enumerate_inherited` for that group, so the
     /// set is neither a spurious subset (missing materialized direct rows) nor an
     /// under-count (missing inherited members the unfolded structure can't derive).
-    #[must_use]
-    pub fn member_identities_in_view(
-        view: &calimero_authz::AclView,
-        store: &Store,
-        namespace_id: [u8; 32],
-        group: &ContextGroupId,
-    ) -> std::collections::BTreeSet<PublicKey> {
-        let accounts = Self::member_accounts_in_view(view, store, namespace_id, group);
-        Self::accounts_to_member_keys(store, group, &accounts)
-    }
-
-    /// The account-space enumeration behind [`member_identities_in_view`]. The
-    /// fold answers in accounts; callers outside this module speak member keys.
+    /// The effective member set of `group` from an already-folded `view`.
+    ///
+    /// Candidate universe = every direct member of any group in the view plus the
+    /// group/root admins (a superset the walk narrows). Mirrors three live
+    /// behaviours: the deny asymmetry (a denied INHERITED member is excluded, a
+    /// direct member never is), the namespace-leave cascade (a subgroup member must
+    /// also be a namespace-ROOT member), and the MATERIALIZED FALLBACK — for a group
+    /// with no direct member folded, defer to live's full
+    /// `list ∪ enumerate_inherited` so the set is neither a spurious subset nor an
+    /// under-count.
     #[must_use]
     pub fn member_accounts_in_view(
         view: &calimero_authz::AclView,
@@ -1043,9 +1060,7 @@ impl ScopeProjections {
             .load(&root_group)
             .ok()
             .flatten()
-            // The genesis admin is stored live as a member key; the folded view
-            // is keyed by account, so map it forward at the boundary.
-            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
+            .map(|meta| (root_group, meta.admin_identity));
         let default_cap_base = CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
             .ok()
@@ -1061,7 +1076,7 @@ impl ScopeProjections {
         )
     }
 
-    /// [`member_identities_in_view`](Self::member_identities_in_view) with the
+    /// [`member_accounts_in_view`](Self::member_accounts_in_view) with the
     /// genesis `root` tuple + `default_cap_base` supplied by the caller instead of
     /// re-read here. `member_entries_with` passes the SAME values its role walk
     /// (`member_path_at_cut`) uses, so the candidate filter and the role resolution
@@ -1096,18 +1111,15 @@ impl ScopeProjections {
         }
 
         let deny = DenyListRepository::new(store);
-        // The deny list is keyed by member key; the candidates are accounts. An
-        // account is a one-way hash of a key, so the list is mapped FORWARD into
-        // account space rather than each account being translated back — the
-        // reverse direction is not computable, and caching it would not survive
-        // a projection rebuild from the persisted (account-only) op log. On a
-        // scan failure the set is empty, which matches the previous
-        // `unwrap_or(false)` per-lookup behaviour.
+        // Both the deny list and the candidates are accounts, so this is a plain
+        // read — it used to map the list forward into account space because the
+        // rows were keyed by member key and the reverse is a one-way hash. On a
+        // scan failure the set is empty, matching the previous `unwrap_or(false)`
+        // per-lookup behaviour.
         let denied_accounts: std::collections::BTreeSet<AccountId> = deny
             .denied_members(group)
             .unwrap_or_default()
-            .iter()
-            .map(legacy_account_id)
+            .into_iter()
             .collect();
         let mut result: std::collections::BTreeSet<AccountId> = candidates
             .into_iter()
@@ -1149,107 +1161,13 @@ impl ScopeProjections {
             // The fold has no opinion here, so anything less would under-include the
             // inherited side the unfolded structure can't derive.
             if let Ok(rows) = live.list(group, 0, usize::MAX) {
-                result.extend(rows.into_iter().map(|(pk, _)| legacy_account_id(&pk)));
+                result.extend(rows.into_iter().map(|(account, _)| account));
             }
             if let Ok(inherited) = live.enumerate_inherited(group) {
-                result.extend(inherited.into_iter().map(|(pk, _)| legacy_account_id(&pk)));
+                result.extend(inherited.into_iter().map(|(account, _)| account));
             }
         }
         result
-    }
-
-    /// Translate folded accounts back into the member keys callers speak in.
-    ///
-    /// An account is a one-way hash of a member key, so this direction is not
-    /// computable — it can only be recovered from a source that still holds the
-    /// keys. The live membership rows are that source, and the dictionary is
-    /// rebuilt from them on every call rather than cached: a cache populated
-    /// while decoding ops would come back **empty** after a restart, because a
-    /// node rebuilds its projection from the persisted op log and those ops
-    /// carry accounts only. Re-deriving has no state to lose.
-    ///
-    /// A folded account with no live row is dropped and logged. That case means
-    /// the fold is ahead of the materialized rows, which is the same divergence
-    /// this module already defers to live over — silently returning a member
-    /// whose key we cannot name would be worse than reporting the gap.
-    /// The member key one account maps to, without building the whole dictionary.
-    ///
-    /// [`accounts_to_member_keys`](Self::accounts_to_member_keys) is the right shape
-    /// for a *set* — its callers translate a whole enumeration at once. A caller
-    /// resolving a SINGLE account (the per-op shadow-compare) paid for a full
-    /// `list() + enumerate_inherited()` dictionary per op to look up one entry.
-    ///
-    /// This short-circuits on the first match and only touches the inherited rows
-    /// when the direct ones do not contain it. Still a scan — an `AccountId` is a
-    /// one-way hash, so the only way to invert it is to hash candidates until one
-    /// matches — but no map is allocated and the second query is now conditional.
-    ///
-    /// Re-derived per call rather than cached, for the same reason as its batch
-    /// sibling: a reverse map could only be populated while decoding ops, so it would
-    /// come back empty after a projection rebuild from the persisted (account-only)
-    /// op log, silently naming nobody.
-    pub(crate) fn member_key_for_account(
-        store: &Store,
-        group: &ContextGroupId,
-        account: AccountId,
-    ) -> Option<PublicKey> {
-        let live = MembershipRepository::new(store);
-        if let Ok(rows) = live.list(group, 0, usize::MAX) {
-            if let Some((pk, _)) = rows
-                .into_iter()
-                .find(|(pk, _)| legacy_account_id(pk) == account)
-            {
-                return Some(pk);
-            }
-        }
-        if let Ok(inherited) = live.enumerate_inherited(group) {
-            if let Some((pk, _)) = inherited
-                .into_iter()
-                .find(|(pk, _)| legacy_account_id(pk) == account)
-            {
-                return Some(pk);
-            }
-        }
-        tracing::warn!(
-            %account,
-            group = ?group,
-            "folded member account has no live membership row; cannot name it"
-        );
-        None
-    }
-
-    pub(crate) fn accounts_to_member_keys(
-        store: &Store,
-        group: &ContextGroupId,
-        accounts: &std::collections::BTreeSet<AccountId>,
-    ) -> std::collections::BTreeSet<PublicKey> {
-        let live = MembershipRepository::new(store);
-        let mut dictionary: std::collections::BTreeMap<AccountId, PublicKey> =
-            std::collections::BTreeMap::new();
-        if let Ok(rows) = live.list(group, 0, usize::MAX) {
-            for (pk, _) in rows {
-                let _ = dictionary.insert(legacy_account_id(&pk), pk);
-            }
-        }
-        if let Ok(inherited) = live.enumerate_inherited(group) {
-            for (pk, _) in inherited {
-                let _ = dictionary.insert(legacy_account_id(&pk), pk);
-            }
-        }
-
-        let mut keys = std::collections::BTreeSet::new();
-        for account in accounts {
-            if let Some(pk) = dictionary.get(account) {
-                let _ = keys.insert(*pk);
-            } else {
-                tracing::warn!(
-                    %account,
-                    group = ?group,
-                    "folded member account has no live membership row; omitting from enumeration"
-                );
-            }
-        }
-        keys
     }
 
     /// Walk a namespace's **persisted** governance DAG from its heads and return
@@ -1523,9 +1441,7 @@ impl ScopeProjections {
         let endorsers = bindings.endorsers_of(&group, binding.account).ok()?;
         endorsers
             .iter()
-            .any(|endorser| {
-                view.is_member_at_cut(group, &legacy_account_id(endorser), root, default_cap_base)
-            })
+            .any(|endorser| view.is_member_at_cut(group, endorser, root, default_cap_base))
             .then_some(true)
     }
 
@@ -1600,9 +1516,7 @@ impl ScopeProjections {
             .load(&root_group)
             .ok()
             .flatten()
-            // The genesis admin is stored live as a member key; the folded view
-            // is keyed by account, so map it forward at the boundary.
-            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
+            .map(|meta| (root_group, meta.admin_identity));
         // The namespace root's default member cap (CAN_JOIN_OPEN_SUBGROUPS is set
         // here at creation as a store write, not an op) — base fallback for the
         // inheritance walk's cap check. Immutable-base like the genesis admin.
@@ -1670,10 +1584,15 @@ impl ScopeProjections {
         // which errs toward member.)
         let group_wholly_unfolded = view.as_ref().is_none_or(|v| !v.groups.contains_key(&group));
         if group_wholly_unfolded
-            && MembershipRepository::new(store)
-                .role_of(&group, author)
+            && calimero_governance_store::member_account_in_namespace(store, &group, author)
                 .ok()
                 .flatten()
+                .and_then(|account| {
+                    MembershipRepository::new(store)
+                        .role_of(&group, &account)
+                        .ok()
+                        .flatten()
+                })
                 .is_some()
         {
             return Some(true);
@@ -1749,9 +1668,7 @@ impl ScopeProjections {
             .load(&root_group)
             .ok()
             .flatten()
-            // The genesis admin is stored live as a member key; the folded view
-            // is keyed by account, so map it forward at the boundary.
-            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
+            .map(|meta| (root_group, meta.admin_identity));
         let default_cap_base = CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
             .ok()
@@ -1785,6 +1702,21 @@ impl ScopeProjections {
         Some(view.is_authorized_admin(group, &account_for_author(&view, author, root), root))
     }
 
+    /// Is `member` an admin of `group` at the cut? The account-typed sibling of
+    /// [`is_admin_at_cut`](Self::is_admin_at_cut), for gates whose subject is the
+    /// op's TARGET rather than its signer — no key to resolve, so no resolution.
+    #[must_use]
+    pub fn is_admin_account_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, root, _) = self.auth_cut_context(store, group, heads)?;
+        Some(view.is_authorized_admin(group, member, root))
+    }
+
     /// How `member` reaches membership of `group` at the cut — the at-cut analogue of
     /// live's `check_path`, for the `MemberJoinedOpen` gate. `None` on incomplete
     /// ancestry (defer to live); otherwise the `member_path_at_cut` walk's verdict.
@@ -1793,16 +1725,11 @@ impl ScopeProjections {
         &self,
         store: &Store,
         group: ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         heads: &[[u8; 32]],
     ) -> Option<calimero_authz::MemberPathAtCut> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        Some(view.member_path_at_cut(
-            group,
-            &account_for_author(&view, member, root),
-            root,
-            default_cap_base,
-        ))
+        Some(view.member_path_at_cut(group, member, root, default_cap_base))
     }
 
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
@@ -1854,7 +1781,7 @@ impl ScopeProjections {
         &self,
         store: &Store,
         group: ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
@@ -1862,27 +1789,24 @@ impl ScopeProjections {
         // `member` is an admin: a direct `Admin` row, or the genesis admin (the
         // folded subgroup creator, or the namespace-root genesis admin).
         let member_is_admin = rows
-            .and_then(|m| m.get(&legacy_account_id(member)))
+            .and_then(|m| m.get(member))
             .is_some_and(|r| *r == GroupMemberRole::Admin)
-            || view.group_admin.get(&group) == Some(&legacy_account_id(member))
-            || root.as_ref().is_some_and(|(root_g, root_admin)| {
-                *root_g == group && *root_admin == legacy_account_id(member)
-            });
+            || view.group_admin.get(&group) == Some(member)
+            || root
+                .as_ref()
+                .is_some_and(|(root_g, root_admin)| *root_g == group && root_admin == member);
         if !member_is_admin {
             return Some(false);
         }
         // another admin = a distinct `Admin`-role ROW or the genesis founder
-        // (group_admin / namespace-root) when it is some other identity
+        // (group_admin / namespace-root) when it is some other account
         let has_other = rows.is_some_and(|m| {
             m.iter()
-                .any(|(k, r)| *r == GroupMemberRole::Admin && *k != legacy_account_id(member))
-        }) || view
-            .group_admin
-            .get(&group)
-            .is_some_and(|a| *a != legacy_account_id(member))
-            || root.as_ref().is_some_and(|(root_g, root_admin)| {
-                *root_g == group && *root_admin != legacy_account_id(member)
-            });
+                .any(|(k, r)| *r == GroupMemberRole::Admin && k != member)
+        }) || view.group_admin.get(&group).is_some_and(|a| a != member)
+            || root
+                .as_ref()
+                .is_some_and(|(root_g, root_admin)| *root_g == group && root_admin != member);
         Some(!has_other)
     }
 
@@ -1932,9 +1856,7 @@ impl ScopeProjections {
             .load(&root_group)
             .ok()
             .flatten()
-            // The genesis admin is stored live as a member key; the folded view
-            // is keyed by account, so map it forward at the boundary.
-            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
+            .map(|meta| (root_group, meta.admin_identity));
         let default_cap_base = CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
             .ok()
@@ -1985,7 +1907,7 @@ impl ScopeProjections {
             .load(&root_group)
             .ok()
             .flatten()
-            .map(|meta| (root_group, legacy_account_id(&meta.admin_identity)));
+            .map(|meta| (root_group, meta.admin_identity));
         let author_in_any = view
             .as_ref()
             .is_some_and(|v| v.is_scope_member(&account_for_author(v, author, root)));
@@ -2050,7 +1972,13 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<GroupMemberRole> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        match view.member_path_at_cut(group, &legacy_account_id(member), root, default_cap_base) {
+        // Resolved exactly as `member_at_cut` resolves it. Deriving the account
+        // from the key here instead made the two disagree: membership said the
+        // key was a member and the role lookup found nobody, which is the
+        // "member at cut but role unresolved" the caller then logged before
+        // guessing `Member`.
+        let account = account_for_author(&view, member, root);
+        match view.member_path_at_cut(group, &account, root, default_cap_base) {
             calimero_authz::MemberPathAtCut::None => None,
             calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
             calimero_authz::MemberPathAtCut::Inherited {
@@ -2067,7 +1995,7 @@ impl ScopeProjections {
             } => view
                 .groups
                 .get(&anchor)
-                .and_then(|m| m.get(&legacy_account_id(member)))
+                .and_then(|m| m.get(&account))
                 .cloned(),
         }
     }
@@ -2078,18 +2006,22 @@ impl ScopeProjections {
     /// equal-`hlc` governance ops (use [`Self::role_at_cut`] when causal
     /// resolution matters).
     #[must_use]
+    /// `member` is an ACCOUNT — the id the fold keys membership by. Callers
+    /// holding a signing key resolve it first (see
+    /// [`account_for_author`]); doing it here from the key alone would answer
+    /// about a principal the fold has never recorded.
     pub fn role_of(
         &self,
         scope: &ScopeId,
         group: &ContextGroupId,
-        member: &PublicKey,
+        member: &AccountId,
     ) -> Option<GroupMemberRole> {
         self.states
             .get(scope)?
             .acl_view()
             .groups
             .get(group)?
-            .get(&legacy_account_id(member))
+            .get(member)
             .cloned()
     }
 }
@@ -2164,8 +2096,9 @@ mod tests {
     /// `MemberJoinedOpen` inheritance proof.
     fn member_joined(group: ContextGroupId, member: PublicKey) -> RootOp {
         RootOp::MemberJoined {
-            member,
+            member: legacy_account_id(&member),
             signed_invitation: SignedGroupOpenInvitation {
+                inviter_account: None,
                 invitation: GroupInvitationFromAdmin {
                     inviter_identity: [0xA1; 32].into(),
                     group_id: group,
@@ -2205,7 +2138,10 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoinedOpen {
-                    member,
+                    // The account the credential certifies. The decode pairs the
+                    // two, and a member naming anything else folds as a Noop —
+                    // it cannot tell whose device it is looking at.
+                    member: account.cert.account,
                     group_id: group.into(),
                     account: account.clone(),
                 },
@@ -2241,6 +2177,7 @@ mod tests {
         let member = PublicKey::from([0x55; 32]);
         let group = ContextGroupId::from([0x44; 32]);
         let signed_invitation = SignedGroupOpenInvitation {
+            inviter_account: None,
             invitation: GroupInvitationFromAdmin {
                 inviter_identity: [0xA1; 32].into(),
                 group_id: group,
@@ -2259,7 +2196,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoined {
-                    member,
+                    member: account.cert.account,
                     signed_invitation,
                     account: account.clone(),
                 },
@@ -2278,7 +2215,7 @@ mod tests {
             op.payload,
             OpPayload::MemberJoinedWithDevice {
                 group,
-                member: legacy_account_id(&member),
+                member: account.cert.account,
                 role: GroupMemberRole::Admin,
                 genesis: account.genesis,
                 chain: account.chain.clone(),
@@ -2292,7 +2229,13 @@ mod tests {
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let op = op_from_namespace_op(
-            &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            &signed_root(
+                ns,
+                signer,
+                RootOp::AdminChanged {
+                    new_admin: legacy_account_id(&signer),
+                },
+            ),
             None,
             [0x99; 32],
             hlc(10),
@@ -2357,7 +2300,8 @@ mod tests {
         assert_eq!(
             op.author(),
             legacy_account_id(&signer),
-            "author is the rotation signer"
+            "author is the rotation signer, and a rotation entry names a KEY — so \
+             the adapter derives the author rather than resolving a binding"
         );
         assert_eq!(op.hlc, hlc(5));
         assert_eq!(
@@ -2526,16 +2470,23 @@ mod tests {
 
         let mut reg = ScopeProjections::new();
         // Before the join: nothing recorded.
-        assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
+        assert_eq!(
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            None
+        );
         reg.ingest_op(&join);
         // After: the member is recorded for the group, under the namespace scope.
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &member),
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
             Some(GroupMemberRole::Member),
         );
         // A different namespace's scope is unaffected (isolation across namespaces).
         assert_eq!(
-            reg.role_of(&ScopeId::from([0xEE; 32]), &group, &member),
+            reg.role_of(
+                &ScopeId::from([0xEE; 32]),
+                &group,
+                &legacy_account_id(&member)
+            ),
             None,
         );
     }
@@ -2554,7 +2505,7 @@ mod tests {
         let add = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberAdded {
-                member,
+                member: legacy_account_id(&member),
                 role: GroupMemberRole::Admin,
             }),
             [0xAB; 32],
@@ -2570,7 +2521,7 @@ mod tests {
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &member),
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
             Some(GroupMemberRole::Admin),
         );
 
@@ -2578,7 +2529,7 @@ mod tests {
         let remove = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberRemoved {
-                member,
+                member: legacy_account_id(&member),
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             }),
@@ -2587,7 +2538,10 @@ mod tests {
             &[[0xAB; 32]],
         );
         reg.ingest_op(&remove);
-        assert_eq!(reg.role_of(&ns_scope, &group, &member), None);
+        assert_eq!(
+            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            None
+        );
 
         // A truly out-of-model group op folds as a Noop node (still recorded).
         let other = op_from_namespace_op(
@@ -2620,7 +2574,13 @@ mod tests {
             &[],
         );
         let admin = op_from_namespace_op(
-            &signed_root(ns, signer, RootOp::AdminChanged { new_admin: signer }),
+            &signed_root(
+                ns,
+                signer,
+                RootOp::AdminChanged {
+                    new_admin: legacy_account_id(&signer),
+                },
+            ),
             None,
             [0xAA; 32],
             hlc(20),

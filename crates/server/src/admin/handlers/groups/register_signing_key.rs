@@ -44,9 +44,36 @@ pub async fn handler(
     let private_key = PrivateKey::from(private_key_bytes);
     let public_key = private_key.public_key();
 
-    // Verify the identity is a member of this group
+    // Verify the identity is a member of this group. The row names the account
+    // the key acts as; a key bound to none holds no row, which reads the same as
+    // "not a member" below.
     let handle = state.store.handle();
-    let member_key = GroupMember::new(group_id.to_bytes(), public_key);
+    // A store fault is not a membership verdict. Folded together, a failing
+    // RocksDB read tells the caller their identity is not a member — a 400
+    // blaming them for an outage, with nothing logged to say otherwise.
+    let account = match calimero_governance_store::member_account_in_namespace(
+        &state.store,
+        &group_id,
+        &public_key,
+    ) {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Identity is not a member of this group".into(),
+            }
+            .into_response();
+        }
+        Err(err) => {
+            error!(?err, group_id = %group_id_str, "failed to resolve the identity's account");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to resolve the identity's account".into(),
+            }
+            .into_response();
+        }
+    };
+    let member_key = GroupMember::new(group_id.to_bytes(), account);
     match handle.has(&member_key) {
         Ok(true) => {}
         Ok(false) => {

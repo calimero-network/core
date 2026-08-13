@@ -1,3 +1,4 @@
+use calimero_account::AccountId;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -47,7 +48,7 @@ impl<'a> GovernanceSigner<'a> {
         &self,
         group_id: &ContextGroupId,
         signer_sk: &PrivateKey,
-        removed_member: &PublicKey,
+        removed_member: &AccountId,
     ) -> EyreResult<Option<DeliveryReport>> {
         super::GroupGovernancePublisher::new(self.store, self.node_client, *group_id)
             .sign_apply_and_publish_removal(self.ack_router, signer_sk, removed_member)

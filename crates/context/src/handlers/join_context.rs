@@ -161,7 +161,10 @@ impl Handler<JoinContextRequest> for ContextManager {
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     bail!("group not found");
                 }
-                let membership_path = MembershipRepository::new(&datastore).check_path(&group_id, &joiner_identity, )?;
+                let joiner_account =
+                    crate::member_account::require(&datastore, &group_id, &joiner_identity)?;
+                let membership_path =
+                    MembershipRepository::new(&datastore).check_path(&group_id, &joiner_account)?;
                 let mut was_inherited = false;
                 match membership_path {
                     calimero_governance_store::MembershipPath::None => {
@@ -326,7 +329,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                     Ok(join_account) => {
                     let op = calimero_context_client::local_governance::NamespaceOp::Root(
                         calimero_context_client::local_governance::RootOp::MemberJoinedOpen {
-                            member: joiner_identity,
+                            member: join_account.cert.account,
                             group_id: group_id.to_bytes().into(),
                             account: join_account,
                         },
@@ -435,8 +438,8 @@ mod tests {
                     app_key: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     created_at: 1_700_000_000,
-                    admin_identity: pk,
-                    owner_identity: pk,
+                    admin_identity: crate::test_support::account_for(&pk),
+                    owner_identity: crate::test_support::account_for(&pk),
                     migration: None,
                     auto_join: true,
                 },

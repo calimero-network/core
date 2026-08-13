@@ -11,7 +11,7 @@ use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::entities::{Data, Element, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::store::MockedStorage;
-use crate::tests::common::{Page, Paragraph};
+use crate::tests::common::{create_test_owner, Page, Paragraph};
 
 const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
@@ -607,14 +607,15 @@ mod user_storage_signature_verification {
     use super::*;
     use crate::env;
     use crate::tests::common::{
-        create_signed_user_add_action, create_signed_user_update_action, create_test_keypair,
+        account_of_key, apply_ctx_for, create_signed_user_add_action,
+        create_signed_user_update_action, create_test_keypair,
     };
 
     #[test]
     fn user_action_with_valid_signature_succeeds() {
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // Create user-owned page
         let mut element = Element::root();
@@ -639,7 +640,7 @@ mod user_storage_signature_verification {
     fn user_action_with_invalid_signature_fails() {
         env::reset_for_testing();
 
-        let (_, owner) = create_test_keypair();
+        let (_, owner) = create_test_owner();
         let (wrong_signing_key, _) = create_test_keypair(); // Different key
 
         let mut element = Element::root();
@@ -649,12 +650,17 @@ mod user_storage_signature_verification {
 
         let nonce = env::time_now();
 
-        // Sign with WRONG key
+        // Signed by a key that is genuinely valid — just not one of the owner's.
+        // With `owner` an account, "wrong signer" is no longer a signature
+        // failure: the signature verifies fine under the key it names. What
+        // rejects it is that the key resolves to a DIFFERENT account, which only
+        // a resolved context can say. An empty context defers to the node-side
+        // gate instead; see `Interface::user_action_authorized`.
         let action =
             create_signed_user_add_action(&wrong_signing_key, owner, page.id(), serialized, nonce);
 
-        // Invalid signature should fail
-        let result = MainInterface::apply_action(action, &ApplyContext::empty());
+        let result =
+            MainInterface::apply_action(action, &apply_ctx_for(account_of_key(&wrong_signing_key)));
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
@@ -666,7 +672,7 @@ mod user_storage_signature_verification {
     fn user_action_without_signature_fails() {
         env::reset_for_testing();
 
-        let (_, owner) = create_test_keypair();
+        let (_, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -711,7 +717,7 @@ mod user_storage_signature_verification {
     fn user_action_with_corrupted_signature_fails() {
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -751,7 +757,7 @@ mod user_storage_signature_verification {
         crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // First, create the entity
         let mut element = Element::root();
@@ -802,7 +808,8 @@ mod user_storage_replay_protection {
     use super::*;
     use crate::env;
     use crate::tests::common::{
-        create_signed_user_add_action, create_signed_user_update_action, create_test_keypair,
+        account_of_key, apply_ctx_for, create_signed_user_add_action,
+        create_signed_user_update_action, create_test_keypair,
     };
 
     #[test]
@@ -837,7 +844,7 @@ mod user_storage_replay_protection {
         // exercise the right code path.
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -856,7 +863,7 @@ mod user_storage_replay_protection {
                 signature_data: Some(SignatureData {
                     signature: [0u8; 64], // placeholder, set below
                     nonce: hlc,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(&signing_key)),
                 }),
             },
             crdt_type: None,
@@ -929,7 +936,7 @@ mod user_storage_replay_protection {
         // `equal_nonce_delete_wins_like_public` (equal-HLC).
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -976,7 +983,7 @@ mod user_storage_replay_protection {
         // silently accept unauthenticated stale traffic.
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
         let (wrong_signing_key, _) = create_test_keypair();
 
         let mut element = Element::root();
@@ -1008,10 +1015,13 @@ mod user_storage_replay_protection {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
+        let result = MainInterface::apply_action(
+            action2,
+            &apply_ctx_for(account_of_key(&wrong_signing_key)),
+        );
         assert!(
             matches!(result, Err(StorageError::InvalidSignature)),
-            "stale upsert with invalid signature must reject as InvalidSignature, got {result:?}"
+            "stale upsert from a non-owner must reject as InvalidSignature, got {result:?}"
         );
     }
 
@@ -1020,7 +1030,7 @@ mod user_storage_replay_protection {
         crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -1063,7 +1073,7 @@ mod user_storage_replay_protection {
     fn out_of_order_nonces_are_silently_skipped_for_upsert() {
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -2691,20 +2701,18 @@ mod timestamp_drift_protection {
 /// - Delete actions for User storage
 #[cfg(test)]
 mod storage_type_edge_cases {
-    use calimero_primitives::identity::PublicKey;
     use ed25519_dalek::SigningKey;
 
     use super::*;
     use crate::address::Id;
     use crate::env;
     use crate::tests::common::{
-        create_signed_user_add_action, create_signed_user_update_action, create_test_keypair,
-        sign_action,
+        create_signed_user_add_action, create_signed_user_update_action, sign_action,
     };
 
     fn create_signed_delete_action(
         signing_key: &SigningKey,
-        owner: PublicKey,
+        owner: AccountId,
         id: Id,
         nonce: u64,
     ) -> Action {
@@ -2718,7 +2726,7 @@ mod storage_type_edge_cases {
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
                     nonce,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(signing_key)),
                 }),
             },
             crdt_type: None,
@@ -2746,7 +2754,7 @@ mod storage_type_edge_cases {
                 *signature_data = Some(SignatureData {
                     signature,
                     nonce,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(signing_key)),
                 });
             }
         }
@@ -2758,8 +2766,8 @@ mod storage_type_edge_cases {
     fn user_update_with_different_owner_fails() {
         env::reset_for_testing();
 
-        let (signing_key1, owner1) = create_test_keypair();
-        let (signing_key2, owner2) = create_test_keypair();
+        let (signing_key1, owner1) = create_test_owner();
+        let (signing_key2, owner2) = create_test_owner();
 
         // Create entity owned by owner1
         let mut element = Element::root();
@@ -2804,7 +2812,7 @@ mod storage_type_edge_cases {
     fn user_delete_with_valid_signature_succeeds() {
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
         let mut element = Element::root();
@@ -2834,8 +2842,8 @@ mod storage_type_edge_cases {
     fn user_delete_with_wrong_owner_fails() {
         env::reset_for_testing();
 
-        let (signing_key1, owner1) = create_test_keypair();
-        let (signing_key2, owner2) = create_test_keypair();
+        let (signing_key1, owner1) = create_test_owner();
+        let (signing_key2, owner2) = create_test_owner();
 
         // Create entity owned by owner1
         let mut element = Element::root();
@@ -2866,7 +2874,7 @@ mod storage_type_edge_cases {
     fn user_delete_without_signature_fails() {
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
         let mut element = Element::root();
@@ -2921,7 +2929,7 @@ mod storage_type_edge_cases {
 
         sleep(Duration::from_millis(2));
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // Try to update to User storage - should fail
         let nonce = env::time_now();
@@ -2951,7 +2959,7 @@ mod storage_type_edge_cases {
     fn cannot_change_user_to_public_storage() {
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
         let mut element = Element::root();
@@ -3005,7 +3013,7 @@ mod storage_type_edge_cases {
         crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         // Create user-owned entity
         let mut element = Element::root();
@@ -3072,7 +3080,7 @@ mod storage_type_edge_cases {
         crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
 
         let mut element = Element::root();
         element.set_user_domain(owner);
@@ -3102,7 +3110,7 @@ mod storage_type_edge_cases {
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
                     nonce: stored,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(&signing_key)),
                 }),
             },
             crdt_type: None,
@@ -3128,7 +3136,7 @@ mod storage_type_edge_cases {
                 *sd = Some(SignatureData {
                     signature,
                     nonce: stored,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(&signing_key)),
                 });
             }
         }
@@ -3191,7 +3199,7 @@ mod owner_driven_convert {
 
     /// Seed a `User` entry owned by `owner` (schema_version `None`, the legacy
     /// unmarked shape) as a child of the root, returning its `Id`.
-    fn seed_stale_user_entry(signing_key: &ed25519_dalek::SigningKey, owner: PublicKey) -> Id {
+    fn seed_stale_user_entry(signing_key: &ed25519_dalek::SigningKey, owner: AccountId) -> Id {
         let root = crate::tests::common::setup_root_for_main();
 
         // A non-root child so its id is distinct from the registered Public root.
@@ -3252,7 +3260,7 @@ mod owner_driven_convert {
         env::reset_for_testing();
         calimero_sdk::app::register_schema_version::<V2>();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
         let id = seed_stale_user_entry(&signing_key, owner);
 
         let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
@@ -3273,7 +3281,7 @@ mod owner_driven_convert {
             field_name: None,
             schema_version: None,
         };
-        env::with_device_id(*owner, || {
+        env::with_account_id(*owner.as_bytes(), || {
             assert!(!env::in_merge_mode(), "convert must run on the normal path");
             MainInterface::save_raw(id, b"v2-bytes".to_vec(), convert_meta)
                 .expect("owner convert write");
@@ -3306,7 +3314,7 @@ mod owner_driven_convert {
         env::reset_for_testing();
         calimero_sdk::app::register_schema_version::<V2>();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
         let (_, not_owner) = create_test_keypair();
         let id = seed_stale_user_entry(&signing_key, owner);
 
@@ -3346,7 +3354,7 @@ mod owner_driven_convert {
         env::reset_for_testing();
         calimero_sdk::app::register_schema_version::<V2>();
 
-        let (signing_key, owner) = create_test_keypair();
+        let (signing_key, owner) = create_test_owner();
         let id = seed_stale_user_entry(&signing_key, owner);
         let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
         let new_nonce = stored.updated_at() + 1_000_000;
@@ -3369,7 +3377,7 @@ mod owner_driven_convert {
         // as a fresh, monotonic, owner-signed delta — exactly the security
         // hazard PR-6c must avoid. Drive the owner write under
         // `with_merge_mode` and assert the entry stays unconverted.
-        let out = env::with_device_id(*owner, || {
+        let out = env::with_account_id(*owner.as_bytes(), || {
             env::with_merge_mode(|| MainInterface::save_raw(id, b"v2".to_vec(), convert_meta))
         });
         assert!(out.is_ok(), "the write itself still succeeds in merge mode");
@@ -3393,7 +3401,7 @@ mod owner_driven_convert {
     /// `ChildInfo` (for building a subsequent signed `Action::Update`).
     fn seed_user_entry_on<S: crate::store::StorageAdaptor>(
         signing_key: &ed25519_dalek::SigningKey,
-        owner: PublicKey,
+        owner: AccountId,
     ) -> (Id, crate::entities::ChildInfo) {
         let root_id = Id::root();
         let root_meta = Metadata::default();
@@ -3421,7 +3429,7 @@ mod owner_driven_convert {
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
                     nonce,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(signing_key)),
                 }),
             },
             crdt_type: None,
@@ -3468,7 +3476,7 @@ mod owner_driven_convert {
         env::reset_for_testing();
         calimero_sdk::app::register_schema_version::<V2>();
 
-        let (owner_sk, owner) = create_test_keypair();
+        let (owner_sk, owner) = create_test_owner();
 
         // Replica B starts with the legacy unmarked entry (the pre-convert shape).
         let (id, root) = seed_user_entry_on::<ReplicaB>(&owner_sk, owner);
@@ -3489,7 +3497,7 @@ mod owner_driven_convert {
                 signature_data: Some(SignatureData {
                     signature: [0; 64],
                     nonce: new_nonce,
-                    signer: None,
+                    signer: Some(crate::tests::common::pubkey_of(&owner_sk)),
                 }),
             },
             crdt_type: None,
