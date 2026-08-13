@@ -730,8 +730,18 @@ fn stamp_fleet_completion(
     announce: bool,
 ) {
     let repo = calimero_governance_store::UpgradesRepository::new(datastore);
-    let Ok(Some(mut record)) = repo.load(ns) else {
-        return;
+    // A store error is not "nothing to stamp": it leaves the latch armed on a
+    // convergence this process already watched, so it has to be visible.
+    let mut record = match repo.load(ns) {
+        Ok(Some(record)) => record,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::error!(
+                ?err,
+                "failed to load the record to stamp migration completion"
+            );
+            return;
+        }
     };
     let calimero_store::key::GroupUpgradeStatus::Completed {
         completed_at,
