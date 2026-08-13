@@ -653,6 +653,11 @@ async fn get_cascade_status() {
     assert_eq!(resp.data[0].group_id, GID);
     assert_eq!(resp.data[0].upgrade.to_version, "2.0.0");
     assert_eq!(resp.data[0].cascade_hlc.as_deref(), Some("hlc-abc"));
+    // The counters are `Option`, so a drifted wire name deserializes to `None`
+    // rather than erroring: only asserting the values makes a rename fail loudly.
+    assert_eq!(resp.data[0].upgrade.local_contexts_total, Some(3));
+    assert_eq!(resp.data[0].upgrade.local_contexts_swapped, Some(1));
+    assert_eq!(resp.data[0].upgrade.local_contexts_failed, Some(0));
 }
 
 #[tokio::test]

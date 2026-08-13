@@ -16,8 +16,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    CreateContextRequest, CreateContextResponseData, ReparentGroupApiRequest,
-    ReparentGroupApiResponse,
+    CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
+    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -83,6 +83,10 @@ wire_fixtures! {
     create_context_res: CreateContextResponseData => "contexts/create_context.res.json",
     reparent_req: ReparentGroupApiRequest => "groups/reparent.req.json",
     reparent_res: ReparentGroupApiResponse => "groups/reparent.res.json",
+    // Populated counters, not nulls: these three are `Option`, so a renamed
+    // field still deserializes and only a value proves the key survived.
+    upgrade_res: UpgradeGroupApiResponse => "groups/upgrade.res.json",
+    upgrade_status_res: GetGroupUpgradeStatusApiResponse => "groups/upgrade_status.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
 }
