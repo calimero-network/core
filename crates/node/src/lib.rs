@@ -56,6 +56,8 @@ mod delta_store_batch_test;
 mod delta_store_head_hashes_test;
 #[cfg(all(test, feature = "mock-attestation"))]
 mod local_governance_node_e2e;
+#[cfg(test)]
+mod migration_events_e2e;
 // Also on the ungated harness: no mock attestation, runs in the default
 // `cargo test`.
 #[cfg(test)]

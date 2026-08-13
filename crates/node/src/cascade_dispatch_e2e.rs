@@ -58,13 +58,13 @@ use crate::test_node_harness::{boot_test_node, TestNode};
 /// fixture seeds REAL blob bytes (a minimal wasm module with an embedded
 /// `calimero_abi_v1` section) and uses the returned ids — the cascade
 /// dispatch resolves the migration decision from these very blobs.
-struct AppBlobs {
+pub(crate) struct AppBlobs {
     /// Current bytecode: declares `state_version = 1`.
-    v1: [u8; 32],
+    pub(crate) v1: [u8; 32],
     /// Code-only target: also `state_version = 1` (1 → 1 ⇒ CodeOnly).
-    v2: [u8; 32],
+    pub(crate) v2: [u8; 32],
     /// Migration-declaring target: `state_version = 2` + a v1→v2 edge.
-    v2_migrating: [u8; 32],
+    pub(crate) v2_migrating: [u8; 32],
     /// Heterogeneous sibling key for the predicate-skip test.
     other: [u8; 32],
 }
@@ -72,7 +72,7 @@ struct AppBlobs {
 /// Minimal valid wasm module: magic + version, no sections.
 const EMPTY_WASM: [u8; 8] = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
 
-async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
+pub(crate) async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     use calimero_wasm_abi::embed::write_embedded_state_schema;
     use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
 
@@ -114,10 +114,10 @@ async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     }
 }
 
-fn app_id_v1() -> ApplicationId {
+pub(crate) fn app_id_v1() -> ApplicationId {
     ApplicationId::from([0xAA; 32])
 }
-fn app_id_v2() -> ApplicationId {
+pub(crate) fn app_id_v2() -> ApplicationId {
     ApplicationId::from([0xBB; 32])
 }
 fn app_id_other() -> ApplicationId {
@@ -144,7 +144,7 @@ fn meta_for(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> Group
 /// direct Admin row. The cascade apply arm's
 /// `can_manage_application` pre-scan requires direct admin (or
 /// inherited admin via an Open chain) on every matched descendant.
-fn provision_group(
+pub(crate) fn provision_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
@@ -164,7 +164,7 @@ fn provision_group(
 /// `new_app_key = app_meta.bytecode.blob_id()` for the target — so
 /// driving the test's target app_key through this field is what makes
 /// the apply arm rewrite descendants to `APP_KEY_V2`.
-fn install_application(
+pub(crate) fn install_application(
     store: &Store,
     app_id: ApplicationId,
     app_key: [u8; 32],
@@ -201,7 +201,7 @@ fn install_application(
 /// the execute write-gate (Test 2) needs the row to exist with a
 /// non-zero root_hash (otherwise `ExecuteError::Uninitialized` would
 /// preempt the `UpgradeInProgress` gate).
-fn register_context_for(
+pub(crate) fn register_context_for(
     store: &Store,
     group_id: &ContextGroupId,
     context_id: ContextId,
@@ -336,9 +336,9 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
 }
 
 /// Poll `events` for the next `NodeEvent::GroupMigration`, skipping every
-/// other variant, until `timeout` elapses. Shared by every test in this
-/// module (and Tasks 3, 6, 8) that observes a migration announcement.
-async fn next_migration_event(
+/// other variant, until `timeout` elapses. Shared by every test that observes
+/// a migration announcement, here and in `migration_events_e2e`.
+pub(crate) async fn next_migration_event(
     events: &mut (impl futures_util::Stream<Item = NodeEvent> + Unpin),
     timeout: Duration,
 ) -> Option<GroupMigrationEvent> {
@@ -1325,7 +1325,11 @@ async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
 /// context-config row `finalize_application_update` requires. Without both the
 /// propagator bails before `update_application` and the fixture can no longer
 /// observe whether a bytecode swap happened.
-fn provision_local_context_identity(store: &Store, context_id: ContextId, sk: &PrivateKey) {
+pub(crate) fn provision_local_context_identity(
+    store: &Store,
+    context_id: ContextId,
+    sk: &PrivateKey,
+) {
     let mut handle = store.handle();
     handle
         .put(
@@ -1570,7 +1574,7 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
 
 /// Deliver `heartbeat` to the running node exactly as gossipsub would: wrapped
 /// in the namespace-topic envelope, on `ns/<id>`, through `Handler<NetworkEvent>`.
-async fn deliver_heartbeat(
+pub(crate) async fn deliver_heartbeat(
     node: &TestNode,
     ns: ContextGroupId,
     heartbeat: SignedMigrationHeartbeat,
