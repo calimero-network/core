@@ -55,57 +55,30 @@ async fn handle(
         }
     }
 
-    // Authorize by effective (deny-list-aware) group membership, not is_member:
-    // a kicked inherited member keeps a path but is denied, and must not observe.
-    // Subscribe-time only, like may_observe_context. Admin authority is resolved
-    // in the same pass, since admin-only payloads ride the same subscription.
-    let mut subscribed_groups = Vec::with_capacity(request.group_ids.len());
-    let mut admin_groups = Vec::new();
-    let mut revoked_groups = Vec::new();
-    for group_id in request.group_ids {
-        let access = caller_group_access(
-            &state.ctx_client,
-            state.auth_enabled,
-            node_owner,
-            caller.as_ref(),
-            &group_id,
-        );
-        if !access.observe {
-            warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
-            revoked_groups.push(group_id);
-            continue;
-        }
-        if access.admin {
-            admin_groups.push(group_id);
-        } else {
-            revoked_groups.push(group_id);
-        }
-        subscribed_groups.push(group_id);
+    let groups = authorize_group_subscriptions(
+        &state.ctx_client,
+        state.auth_enabled,
+        node_owner,
+        caller.as_ref(),
+        request.group_ids,
+    );
+    for group_id in &groups.denied {
+        warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
     }
 
     // Acquire the write lock only to record the approved subscriptions.
     {
-        let mut inner = connection_state.inner.write().await;
+        let mut guard = connection_state.inner.write().await;
+        let inner = &mut *guard;
         for id in &subscribed {
             let _ = inner.subscriptions.insert(*id);
         }
-        for gid in &subscribed_groups {
-            let _ = inner.group_subscriptions.insert(*gid);
-        }
-        for gid in &admin_groups {
-            let _ = inner.admin_group_subscriptions.insert(*gid);
-        }
-        // A subscribe re-authorizes every group it names, so it must be able to
-        // take authority away too: a caller demoted since an earlier subscribe
-        // would otherwise keep the admin-only payloads until it reconnects. A
-        // group denied outright loses the plain subscription with it.
-        for gid in &revoked_groups {
-            let _ = inner.admin_group_subscriptions.remove(gid);
-            if !subscribed_groups.contains(gid) {
-                let _ = inner.group_subscriptions.remove(gid);
-            }
-        }
+        groups.apply(
+            &mut inner.group_subscriptions,
+            &mut inner.admin_group_subscriptions,
+        );
     }
+    let subscribed_groups = groups.subscribed;
 
     Ok(SubscribeResponse {
         context_ids: subscribed,
@@ -143,6 +116,86 @@ pub(crate) fn may_observe_group(
     } else {
         caller_is_member.unwrap_or(false)
     }
+}
+
+/// One subscribe request's group decisions, as four disjoint-by-construction
+/// sets: what to grant, and what to take back.
+///
+/// A subscribe re-authorizes every group it names, so it has to be able to
+/// remove authority as well as add it. Splitting `demoted` from `denied` keeps
+/// each set's meaning local: a demoted caller keeps the group and loses only the
+/// admin-only payloads, a denied one loses both.
+pub(crate) struct GroupSubscriptions {
+    /// May observe the group. The subscribe response echoes these.
+    pub(crate) subscribed: Vec<Hash>,
+    /// Also holds admin authority, so the payloads naming a descendant subgroup.
+    pub(crate) admin: Vec<Hash>,
+    /// May observe, but holds no admin authority now - whatever an earlier
+    /// subscribe granted comes off.
+    demoted: Vec<Hash>,
+    /// Refused outright; every authority an earlier subscribe granted comes off.
+    pub(crate) denied: Vec<Hash>,
+}
+
+impl GroupSubscriptions {
+    /// Fold the decisions into a connection's stored sets.
+    ///
+    /// Shared by both transports so a revocation cannot land on one and not the
+    /// other. It matters most on SSE, whose session outlives the connection: a
+    /// stale admin entry there is not bounded by reconnecting.
+    pub(crate) fn apply(&self, groups: &mut HashSet<Hash>, admin_groups: &mut HashSet<Hash>) {
+        for gid in &self.subscribed {
+            let _ = groups.insert(*gid);
+        }
+        for gid in &self.admin {
+            let _ = admin_groups.insert(*gid);
+        }
+        for gid in &self.demoted {
+            let _ = admin_groups.remove(gid);
+        }
+        for gid in &self.denied {
+            let _ = admin_groups.remove(gid);
+            let _ = groups.remove(gid);
+        }
+    }
+}
+
+/// Authorize a subscribe request's group ids, shared by the WS and SSE handlers
+/// so one transport cannot drift from the other on an authorization decision.
+///
+/// Authorizes by effective (deny-list-aware) group membership, not `is_member`:
+/// a kicked inherited member keeps a path but is denied, and must not observe.
+/// Subscribe-time only, like [`may_observe_context`]. Admin authority is
+/// resolved in the same pass, since admin-only payloads ride the same
+/// subscription. Reporting the denials is left to the caller, which knows how to
+/// name the connection in a log line.
+pub(crate) fn authorize_group_subscriptions(
+    ctx_client: &ContextClient,
+    auth_enabled: bool,
+    node_owner: bool,
+    caller: Option<&PublicKey>,
+    group_ids: impl IntoIterator<Item = Hash>,
+) -> GroupSubscriptions {
+    let mut decided = GroupSubscriptions {
+        subscribed: Vec::new(),
+        admin: Vec::new(),
+        demoted: Vec::new(),
+        denied: Vec::new(),
+    };
+    for group_id in group_ids {
+        let access = caller_group_access(ctx_client, auth_enabled, node_owner, caller, &group_id);
+        if !access.observe {
+            decided.denied.push(group_id);
+            continue;
+        }
+        if access.admin {
+            decided.admin.push(group_id);
+        } else {
+            decided.demoted.push(group_id);
+        }
+        decided.subscribed.push(group_id);
+    }
+    decided
 }
 
 /// What a connection may observe on one group. Named rather than a `bool` pair,

@@ -38,7 +38,9 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
-pub(crate) use subscribe::{caller_group_access, may_deliver_group_event, may_observe_context};
+pub(crate) use subscribe::{
+    authorize_group_subscriptions, may_deliver_group_event, may_observe_context,
+};
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
