@@ -90,6 +90,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
 
+      # calimero-store's borsh/serde impls sit behind default-OFF features, so
+      # the workspace `cargo test` above compiles none of the stored-format
+      # tests - the ones that pin what a node can still decode after an upgrade.
+      - name: Cargo test (calimero-store, all features)
+        if: ${{ !cancelled() }}
+        run: cargo test -p calimero-store --all-features
+
       - name: Cargo check (calimero-context-config)
         if: ${{ !cancelled() }}
         run: cargo check -p calimero-context-config

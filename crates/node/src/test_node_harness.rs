@@ -13,6 +13,8 @@
 //! adding one would silently drag `cascade_dispatch_e2e` back behind the
 //! feature gate.
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -316,5 +318,61 @@ pub(crate) async fn boot_test_node() -> TestNode {
         ns_beacon_sync_debounce,
         stream_opens,
         publishes,
+    }
+}
+
+/// Every `boot_test_node()` call site must carry `#[serial(boot_test_node)]`.
+///
+/// A boot rebinds process-global singletons (the `op_events` bridges, the
+/// TEE-admit subscriber), so an unannotated one does not fail on itself: it
+/// silently steals a concurrently running module's event stream mid-assertion.
+/// Scanning source text rather than the compiled crate is deliberate, so the
+/// `mock-attestation`-gated modules are covered by an ungated `cargo test` too.
+#[test]
+fn every_boot_test_node_call_site_is_serialized() {
+    let mut sources = Vec::new();
+    collect_rs_sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+    assert!(!sources.is_empty(), "found no sources to scan");
+
+    let mut offenders = Vec::new();
+    for path in sources {
+        // This file carries the pattern as a search needle, not as a call.
+        if path.ends_with(file!()) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read source");
+        for (idx, _) in text.match_indices("boot_test_node().await") {
+            let head = &text[..idx];
+            // The enclosing signature, then back to the blank line above it:
+            // that span is the item's doc comment and attributes.
+            let sig = head.rfind("\nasync fn ").unwrap_or(0);
+            let block_start = head[..sig].rfind("\n\n").map_or(0, |i| i + 1);
+            if !head[block_start..sig].contains("#[serial(boot_test_node)]") {
+                offenders.push(format!(
+                    "{}:{}",
+                    path.display(),
+                    head.matches('\n').count() + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "boot_test_node() without #[serial(boot_test_node)]: {offenders:#?}"
+    );
+}
+
+fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read_dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_rs_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
     }
 }
