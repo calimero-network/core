@@ -11,7 +11,7 @@ use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::entities::{Data, Element, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::store::MockedStorage;
-use crate::tests::common::{create_test_owner, Page, Paragraph};
+use crate::tests::common::{apply_ctx_for, create_test_owner, Page, Paragraph};
 
 const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
@@ -628,12 +628,58 @@ mod user_storage_signature_verification {
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce);
 
         // Valid signature should succeed
-        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action, &apply_ctx_for(owner)).is_ok());
 
         // Verify the page was added
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().title, "User Page");
+    }
+
+    /// **An unnameable writer is refused for `User`, exactly as for `Shared`.**
+    ///
+    /// The two arms disagreed until now: `Shared` bails in `resolve_signer` when
+    /// the signer cannot be named, while `User` accepted. That asymmetry dates
+    /// from when nothing reaching here could name a signer on any path. Both can
+    /// now — a local apply states the executing account, a repair resolves the
+    /// leaf's signer — so `None` no longer means "nobody asked", it means the
+    /// binding has not folded on this replica yet.
+    ///
+    /// Accepting it is the divergence the refusal exists to prevent: a peer that
+    /// HAS folded the binding refuses the same write, and the two keep different
+    /// state with nothing later to reconcile them.
+    #[test]
+    fn user_action_with_an_unnameable_writer_is_refused_and_retryable() {
+        env::reset_for_testing();
+
+        let (signing_key, owner) = create_test_owner();
+
+        let mut element = Element::root();
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("User Page", element);
+        let serialized = to_vec(&page).unwrap();
+        let nonce = env::time_now();
+
+        let mk = || {
+            create_signed_user_add_action(&signing_key, owner, page.id(), serialized.clone(), nonce)
+        };
+
+        // Cannot name the writer → refused, and nothing is written.
+        let unnamed = MainInterface::apply_action(mk(), &ApplyContext::empty());
+        assert!(
+            matches!(unnamed, Err(StorageError::InvalidSignature)),
+            "an unnameable writer must be refused for User, not admitted: {unnamed:?}"
+        );
+        assert!(
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_none(),
+            "a refused write must leave no trace"
+        );
+
+        // A timing refusal, not a verdict: the same write applies once named.
+        MainInterface::apply_action(mk(), &apply_ctx_for(owner))
+            .expect("the refused write applies once the writer can be named");
     }
 
     #[test]
@@ -700,7 +746,7 @@ mod user_storage_signature_verification {
         };
 
         // Missing signature should fail
-        let result = MainInterface::apply_action(action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidData(msg)) => {
@@ -744,7 +790,7 @@ mod user_storage_signature_verification {
         }
 
         // Corrupted signature should fail
-        let result = MainInterface::apply_action(action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
@@ -768,7 +814,7 @@ mod user_storage_signature_verification {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         // Wait a bit to ensure different timestamp
         sleep(Duration::from_millis(2));
@@ -788,7 +834,7 @@ mod user_storage_signature_verification {
             page.element().created_at(),
         );
 
-        assert!(MainInterface::apply_action(action2, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action2, &apply_ctx_for(owner)).is_ok());
 
         // Verify the update
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -894,13 +940,13 @@ mod user_storage_replay_protection {
         }
 
         // First apply succeeds.
-        assert!(MainInterface::apply_action(action.clone(), &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action.clone(), &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
         // Re-applying the exact same signed action must be
         // idempotent — not a NonceReplay rejection.
-        let result = MainInterface::apply_action(action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action, &apply_ctx_for(owner));
         assert!(
             result.is_ok(),
             "re-applying same signed action must be idempotent, got {result:?}"
@@ -952,7 +998,7 @@ mod user_storage_replay_protection {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -966,7 +1012,7 @@ mod user_storage_replay_protection {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action2, &apply_ctx_for(owner));
         assert!(
             result.is_ok(),
             "stale-but-signed upsert must be silently skipped, got {result:?}"
@@ -999,7 +1045,7 @@ mod user_storage_replay_protection {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1040,7 +1086,7 @@ mod user_storage_replay_protection {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         // Multiple updates with increasing nonces
         for i in 2..=5 {
@@ -1058,7 +1104,7 @@ mod user_storage_replay_protection {
                 page.element().created_at(),
             );
             assert!(
-                MainInterface::apply_action(action, &ApplyContext::empty()).is_ok(),
+                MainInterface::apply_action(action, &apply_ctx_for(owner)).is_ok(),
                 "Update {i} should succeed"
             );
         }
@@ -1089,7 +1135,7 @@ mod user_storage_replay_protection {
             serialized1.clone(),
             first_nonce,
         );
-        assert!(MainInterface::apply_action(action_first, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action_first, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(10));
 
@@ -1110,7 +1156,7 @@ mod user_storage_replay_protection {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(action_old, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action_old, &apply_ctx_for(owner));
         assert!(
             result.is_ok(),
             "stale-but-signed upsert must be silently skipped, got {result:?}"
@@ -2783,7 +2829,7 @@ mod storage_type_edge_cases {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner1)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2798,7 +2844,7 @@ mod storage_type_edge_cases {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action2, &apply_ctx_for(owner2));
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -2823,7 +2869,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2831,7 +2877,7 @@ mod storage_type_edge_cases {
         let nonce2 = env::time_now();
         let delete_action = create_signed_delete_action(&signing_key, owner, page.id(), nonce2);
 
-        assert!(MainInterface::apply_action(delete_action, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(delete_action, &apply_ctx_for(owner)).is_ok());
 
         // Verify entity is deleted
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -2854,7 +2900,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key1, owner1, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner1)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2862,7 +2908,7 @@ mod storage_type_edge_cases {
         let nonce2 = env::time_now();
         let delete_action = create_signed_delete_action(&signing_key2, owner2, page.id(), nonce2);
 
-        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(delete_action, &apply_ctx_for(owner2));
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
@@ -2885,7 +2931,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2906,7 +2952,7 @@ mod storage_type_edge_cases {
             },
         };
 
-        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(delete_action, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidData(msg)) => {
@@ -2942,7 +2988,7 @@ mod storage_type_edge_cases {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -2975,7 +3021,7 @@ mod storage_type_edge_cases {
             serialized.clone(),
             nonce,
         );
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2995,7 +3041,7 @@ mod storage_type_edge_cases {
             },
         };
 
-        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
+        let result = MainInterface::apply_action(action2, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -3029,7 +3075,7 @@ mod storage_type_edge_cases {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -3043,14 +3089,14 @@ mod storage_type_edge_cases {
             nonce2,
             page.element().created_at(),
         );
-        assert!(MainInterface::apply_action(action2, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action2, &apply_ctx_for(owner)).is_ok());
 
         sleep(Duration::from_millis(2));
 
         // Try to delete with old nonce (replay attack)
         let delete_action = create_signed_delete_action(&signing_key, owner, page.id(), nonce1);
 
-        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(delete_action, &apply_ctx_for(owner));
         assert!(result.is_err());
         match result {
             Err(StorageError::NonceReplay(_)) => {}
@@ -3090,7 +3136,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        assert!(MainInterface::apply_action(action1, &apply_ctx_for(owner)).is_ok());
 
         // The stored replay nonce after the add. Build a delete whose
         // signed nonce AND `deleted_at` both equal it — mirroring the
@@ -3142,7 +3188,7 @@ mod storage_type_edge_cases {
         }
 
         // Equal-HLC delete is accepted (not `NonceReplay`) and wins.
-        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
+        let result = MainInterface::apply_action(delete_action, &apply_ctx_for(owner));
         assert!(
             result.is_ok(),
             "equal-HLC signed delete must be accepted (delete-wins), got {result:?}"
@@ -3246,7 +3292,7 @@ mod owner_driven_convert {
             }
         }
 
-        MainInterface::apply_action(action, &ApplyContext::empty()).expect("seed user entry");
+        MainInterface::apply_action(action, &apply_ctx_for(owner)).expect("seed user entry");
 
         // Sanity: stored entry is the legacy unmarked shape.
         let stored = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
@@ -3458,7 +3504,7 @@ mod owner_driven_convert {
         {
             *m = metadata;
         }
-        Interface::<S>::apply_action(action, &ApplyContext::empty()).expect("seed user on replica");
+        Interface::<S>::apply_action(action, &apply_ctx_for(owner)).expect("seed user on replica");
         (id, root)
     }
 
@@ -3528,7 +3574,7 @@ mod owner_driven_convert {
         }
 
         // B applies the replicated convert via the normal apply path.
-        InterfaceB::apply_action(update, &ApplyContext::empty()).expect("B applies convert delta");
+        InterfaceB::apply_action(update, &apply_ctx_for(owner)).expect("B applies convert delta");
 
         let after = Index::<ReplicaB>::get_metadata(id).unwrap().unwrap();
         assert_eq!(

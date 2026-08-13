@@ -360,7 +360,11 @@ async fn run_initiator_impl<T: SyncTransport>(
         if !remote_deleted.is_empty() {
             let applied =
                 apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                    crate::sync::hash_comparison_protocol::apply_remote_tombstones(&remote_deleted)
+                    crate::sync::hash_comparison_protocol::apply_remote_tombstones(
+                        context_client.map(ContextClient::datastore),
+                        context_id,
+                        &remote_deleted,
+                    )
                 })
                 .await;
             stats.entities_merged += applied;
