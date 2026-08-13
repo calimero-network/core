@@ -311,10 +311,11 @@ async fn a_member_sees_started_then_fleet_progress_then_completed() {
     let mut seen = collect_migration_events(&mut events).await;
 
     // A member spawns no propagator: its contexts migrate lazily, on access.
-    // Landing the context on the target application row stands in for the
-    // migrate this fixture has no runnable wasm to execute, and is what moves
-    // this node's own self-report up to the target.
+    // The activation stands in for the migrate this fixture has no runnable wasm
+    // to execute; registering the context alone would not do, since an install
+    // moves the application row without migrating anything.
     register_context_for(&node.store, &ns, ctx, app_id_v2());
+    calimero_context::activation::record_activation(&node.store, &ctx, blobs.v2_migrating);
 
     let started_at = now_millis();
     seen.extend(heartbeat_burst(&node, &mut events, ns, &peer_sk, 1, started_at).await);
