@@ -312,13 +312,6 @@ steps:
   #     back with downgraded provenance. Post-redesign, name + data
   #     match the LWW winner of the two writes node-1 issued. ---
 
-  - name: Node-1 reports its identity (used to read its User entity)
-    type: get_namespace_identity
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      node1_id: publicKey
-
   - name: Read node-1's User entity from node-2
     type: call
     node: e2e-node-2
@@ -363,8 +356,13 @@ steps:
       - 'json_equal({{authored_read_from_node2}}, {"output": "bio-final"})'
 
   # AuthoredMap exposes the owner of each entry — confirm it is
-  # node-1's identity, not the default-Public fallback that the
+  # node-1's ACCOUNT, not the default-Public fallback that the
   # v1 silent storage-type-flip bug would have produced.
+  #
+  # By account since #3399: an entry is owned by the person, so that a second
+  # device of theirs can edit it. This compared against the node's bs58 signing
+  # key until now, and went stale silently — the step was simply never reached,
+  # because reconciliation timed out three steps earlier.
   - name: Read AuthoredMap entry owner from node-2
     type: call
     node: e2e-node-2
@@ -378,7 +376,7 @@ steps:
   - name: Assert AuthoredMap entry owner is node-1
     type: json_assert
     statements:
-      - 'json_equal({{authored_owner_from_node2}}, {"output": "{{node1_id}}"})'
+      - 'json_equal({{authored_owner_from_node2}}, {"output": "{{node1_account}}"})'
 
   # And the pre-partition baseline state is still present on
   # node-2 — reconcile must not have wiped pre-divergence writes.
