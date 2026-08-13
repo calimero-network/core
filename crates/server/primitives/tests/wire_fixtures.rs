@@ -32,7 +32,7 @@ fn check<T: DeserializeOwned + Serialize>(rel: &str) -> Result<(), String> {
     let raw =
         std::fs::read_to_string(&path).map_err(|e| format!("{rel}: cannot read fixture: {e}"))?;
 
-    // Deserialize into the DTO — a removed/renamed required field fails right here.
+    // Deserialize into the DTO - a removed/renamed required field fails right here.
     let typed: T = serde_json::from_str(&raw)
         .map_err(|e| format!("{rel}: does not deserialize into {}: {e}", type_name::<T>()))?;
     let canonical = serde_json::to_value(&typed).map_err(|e| format!("{rel}: {e}"))?;

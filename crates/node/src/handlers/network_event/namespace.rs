@@ -44,14 +44,14 @@ pub(super) fn handle_namespace_governance_delta(
     let op = match msg {
         NamespaceTopicMsg::Op(op) => op,
         NamespaceTopicMsg::Ack(ack) => {
-            // Phase 4: route the ack to whatever in-flight
+            // Route the ack to whatever in-flight
             // `publish_and_await_ack` caller is waiting on this op_hash.
             // `route` returns false if no subscriber registered - fine,
             // it just means the publish completed already (or wasn't ours).
             let _ = this.clients.context.ack_router().route(ack);
             return;
         }
-        // Phase 7.3: forward readiness variants to the dedicated
+        // Forward readiness variants to the dedicated
         // submodule. Beacon receive verifies + inserts into the cache;
         // probe receive forwards to the rate-limited
         // `EmitOutOfCycleBeacon` handler on `ReadinessManager`.
@@ -226,7 +226,7 @@ impl NamespaceDeltaApply {
             .await;
         }
 
-        // Proactive backfill fires ONLY for `Pending` — the DAG accepted the op
+        // Proactive backfill fires ONLY for `Pending` - the DAG accepted the op
         // but can't apply it until missing parents arrive. `Applied` is the
         // happy path; `Duplicate` means we already have the op (common on
         // gossip rebroadcast) and a backfill for it would pull the whole
@@ -235,7 +235,7 @@ impl NamespaceDeltaApply {
         // We MUST fetch from `source` first before handing off to
         // `resolve_namespace_pending`: that helper seeds its `ParentPullBudget`
         // with the initial peer already marked tried, so passing `source`
-        // straight to it means `source` is never actually queried — which in a
+        // straight to it means `source` is never actually queried - which in a
         // 2-node mesh silently does nothing. Empty `delta_ids` means "give me
         // everything for this namespace" on the responder side.
         if matches!(outcome, NamespaceApplyOutcome::Pending) {
@@ -283,11 +283,11 @@ impl NamespaceDeltaApply {
     /// in-memory reverse view.
     ///
     /// The signer just authored a namespace governance op, so they are a member
-    /// of the namespace root group — whose id IS the namespace id. We record the
+    /// of the namespace root group - whose id IS the namespace id. We record the
     /// observation under that root group; the cold-start peer resolver unions
     /// the root group's bucket into every context in the namespace, so a root
     /// member becomes a dial target for any of the namespace's contexts. Returns
-    /// `None` — an in-memory-only observation — when the signer has no resolvable
+    /// `None` - an in-memory-only observation - when the signer has no resolvable
     /// root-group role (e.g. a subgroup-only member) or the store read fails. The
     /// cache is a routing hint, never a trust gate, so a miss costs at most the
     /// durable write, never correctness.
@@ -328,7 +328,7 @@ impl NamespaceDeltaApply {
 
         // Drive the migration-heartbeat emitter on the same applied edge:
         // recompute the node's facts from the now-updated local governance state
-        // and post them — seeding the namespace into the emitter (so its
+        // and post them - seeding the namespace into the emitter (so its
         // periodic keep-alive tick goes live) and edge-triggering an on-change
         // heartbeat when the target schema / residue changed. Best-effort: a
         // `None` address drops the signal and the next applied op re-drives it.
@@ -347,9 +347,9 @@ impl NamespaceDeltaApply {
         // nonce was monotonic, and the op applied. Consumed by anchor-preferred
         // sync peer selection. Resolve the signer's root-group role so the
         // observation also writes through to the DURABLE peer-identity cache:
-        // that is what gives a context joined purely via governance — one that
+        // that is what gives a context joined purely via governance - one that
         // has never received a state delta, so the state-delta observe path
-        // never ran for it — dial targets on a cold cache. Without this the
+        // never ran for it - dial targets on a cold cache. Without this the
         // node has no one to dial for that context and sync goes dark even
         // though the members are online.
         let membership = self.resolve_signer_membership(namespace_id, &signer);
@@ -396,7 +396,7 @@ impl NamespaceDeltaApply {
 
         // Prompt key recovery on receipt: a gossiped Group op we couldn't
         // decrypt is now buffered awaiting its key. Trigger a direct key pull
-        // immediately rather than waiting for a sync tick — this is the ONLY
+        // immediately rather than waiting for a sync tick - this is the ONLY
         // recovery trigger for a namespace/subgroup member that holds no local
         // context (e.g. a Restricted-subgroup member just added via
         // `add_group_members`): the per-context interval recovery never runs for
@@ -431,18 +431,17 @@ pub(super) fn handle_namespace_state_heartbeat(
         return;
     }
 
-    // Phase 11.2 (#2237): the heartbeat is now liveness-only. The
-    // active catch-up arms (republishing ops the peer is missing,
-    // backfilling ops we are missing, and the cross-peer
-    // `resolve_namespace_pending` fan-out) are gone. With the
-    // three-phase contract in place (Phase 5+6+7+8):
+    // The heartbeat is liveness-only. The active catch-up arms
+    // (republishing ops the peer is missing, backfilling ops we are
+    // missing, and the cross-peer `resolve_namespace_pending` fan-out)
+    // are gone, because the ack/readiness contract covers them:
     //
     //   * `publish_and_await_ack_namespace` blocks the publisher until
     //     at least one mesh peer applies + acks, so a freshly-applied
     //     op is already known to be on at least one receiver before the
     //     publisher returns.
     //   * `parent_pull` runs on every gossip op whose parents are
-    //     missing locally — that's the on-receive recovery path.
+    //     missing locally - that's the on-receive recovery path.
     //   * `ReadinessBeacon` carries `applied_through` and `dag_head`,
     //     so peers detect divergence and pick a sync partner via
     //     `pick_sync_partner` without needing the heartbeat to
@@ -453,9 +452,9 @@ pub(super) fn handle_namespace_state_heartbeat(
     // already performs, and makes the system noisier without making it
     // more correct (a genuinely stuck DAG is recovered by the join /
     // probe / beacon flow, not by the heartbeat). We still log the
-    // divergence detection at debug for observability — operators
+    // divergence detection at debug for observability - operators
     // chasing a wedged namespace can grep for the `peer_heads` count
-    // mismatch — but no remediation runs from here.
+    // mismatch - but no remediation runs from here.
     let context_client = this.clients.context.clone();
 
     let _ignored = ctx.spawn(
@@ -487,7 +486,7 @@ pub(super) fn handle_namespace_state_heartbeat(
                 %source,
                 we_missing,
                 peer_missing,
-                "namespace heartbeat: divergence detected (liveness-only — recovery via \
+                "namespace heartbeat: divergence detected (liveness-only - recovery via \
                  publish_and_await_ack / parent_pull / readiness beacon)"
             );
         }
@@ -509,7 +508,7 @@ const PARENT_PULL_MAX_BACKOFF_SHIFT: u32 = 4;
 ///
 /// Uses empty-body `NamespaceBackfillRequest` (semantics: "give me everything
 /// for this namespace", per `handle_namespace_backfill_request`) because
-/// callers don't know which specific ancestor ids are still missing — the
+/// callers don't know which specific ancestor ids are still missing - the
 /// pending chain can be arbitrarily deep, and the responder caps at
 /// `MAX_BACKFILL_OPS` per response anyway.
 #[allow(
@@ -646,7 +645,7 @@ async fn fetch_and_apply_namespace_backfill(
             rand::thread_rng().gen()
         },
         // Sentinel party id; backfill serves only already-signed deltas, which
-        // the requester re-verifies on receipt — no proof of possession.
+        // the requester re-verifies on receipt - no proof of possession.
         pop: None,
     };
 
@@ -666,8 +665,8 @@ async fn fetch_and_apply_namespace_backfill(
             // `MemberLeft` ops applying via the backfill path. Same
             // reasoning as the gossip-receive path: once the DAG
             // marks the op `Applied`, any later gossipsub delivery of
-            // the same op becomes `Duplicate` and the apply work —
-            // including the post-apply hash check — is skipped. If
+            // the same op becomes `Duplicate` and the apply work -
+            // including the post-apply hash check - is skipped. If
             // divergence surfaces here and we drop it, no later path
             // will re-emit it. Defer firing until after the batch
             // so the apply loop is contiguous.
@@ -715,7 +714,7 @@ async fn fetch_and_apply_namespace_backfill(
                 sync_manager.reconcile_after_divergence(report).await;
             }
             if any_applied {
-                // FSM notify after the batch — same rationale as the
+                // FSM notify after the batch - same rationale as the
                 // gossip-receive path (line 120).
                 node_client.notify_namespace_op_applied(namespace_id);
 
@@ -734,7 +733,7 @@ async fn fetch_and_apply_namespace_backfill(
                 crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
                 // PR-6b Task 6b.5: backfilled cascade-upgrade ops may have
                 // advanced this node's target schema and triggered a lazy
-                // binary advance — drain absorbed straggler deltas the loaded
+                // binary advance - drain absorbed straggler deltas the loaded
                 // reader can now read (verbatim replay). Same hook as the
                 // gossip-apply path.
                 crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
@@ -750,7 +749,7 @@ async fn fetch_and_apply_namespace_backfill(
 /// are not yet local (the pending queue is non-empty).
 ///
 /// Surfaces query errors to the caller rather than swallowing them with
-/// `unwrap_or(0)` — an error here is *not* the same signal as "zero pending
+/// `unwrap_or(0)` - an error here is *not* the same signal as "zero pending
 /// ops", and collapsing the two caused the cross-peer retry loop to exit as
 /// if the DAG were fully resolved when the real state was unknown. Mirrors
 /// the data-delta path's `get_missing_parents()`, where a query failure is
@@ -804,12 +803,12 @@ async fn emit_namespace_ack(
         }
     };
     // `PrivateKey` zeroizes its inner buffer on drop, but the `[u8; 32]`
-    // returned by `get_namespace_identity` is `Copy` — constructing the
+    // returned by `get_namespace_identity` is `Copy` - constructing the
     // `PrivateKey` leaves the original tuple field intact on the stack
     // until the function returns. Zeroize the leftover bytes explicitly
     // so the only remaining copy is inside the `PrivateKey`. (Systemic
     // fix lives at `get_namespace_identity` returning a `PrivateKey`
-    // directly — out of scope for Phase 4.)
+    // directly.)
     let signer_sk = PrivateKey::from(identity.1);
     identity.1.zeroize();
     identity.2.zeroize();
@@ -833,7 +832,7 @@ async fn emit_namespace_ack(
     // then unwraps `payload` as `NamespaceTopicMsg`. Publishing the inner
     // `NamespaceTopicMsg` raw would deserialize-fail at the receiver and
     // be silently dropped, defeating the ack. `delta_id`/`parent_ids` are
-    // not DAG-bound for an Ack — they're discarded by the receive path.
+    // not DAG-bound for an Ack - they're discarded by the receive path.
     let envelope = BroadcastMessage::NamespaceGovernanceDelta {
         namespace_id,
         delta_id: [0u8; 32],
@@ -848,7 +847,7 @@ async fn emit_namespace_ack(
         }
     };
     if let Err(err) = network_client.publish(topic, bytes).await {
-        // Non-fatal — ack is fire-and-forget; sender will time out and retry.
+        // Non-fatal - ack is fire-and-forget; sender will time out and retry.
         debug!(%err, "ack: publish failed; sender will retry on timeout");
     }
 }
