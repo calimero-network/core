@@ -119,6 +119,11 @@ pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
 #[derive(Debug, Default)]
 pub struct MigrationStatusCache {
     entries: Mutex<BTreeMap<([u8; 32], PublicKey), CacheEntry>>,
+    /// Last `all_migrated` this PROCESS rolled up per namespace, the on-change
+    /// reference for [`on_heartbeat_facts_changed`]'s completion announcement.
+    /// Deliberately not persisted: completion is a transition, and a node that
+    /// just booted has observed none.
+    all_migrated: Mutex<HashMap<[u8; 32], bool>>,
 }
 
 impl MigrationStatusCache {
@@ -276,6 +281,16 @@ impl MigrationStatusCache {
         g.get(&(ns, peer))
             .filter(|e| now.duration_since(e.received_at) <= ttl)
             .cloned()
+    }
+
+    /// Record the `all_migrated` just rolled up for `ns`, returning the one
+    /// this process recorded before it (`None` on the first rollup after boot).
+    /// Poison recovery matches [`entries_lock`](Self::entries_lock).
+    fn swap_all_migrated(&self, ns: [u8; 32], all_migrated: bool) -> Option<bool> {
+        self.all_migrated
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(ns, all_migrated)
     }
 }
 
@@ -621,7 +636,7 @@ pub(crate) fn namespace_member_reports(
 
 /// React to a heartbeat that moved a peer's reported facts: recompute the
 /// namespace rollup, mirror its counters to subscribers, and stamp the real
-/// completion timestamp on the false-to-true `all_migrated` edge.
+/// completion timestamp on the `all_migrated` edge this process observed.
 ///
 /// The recompute walks the namespace subtree, so it is not free - it runs only
 /// on a genuine facts change (bounded by the on-change heartbeat rate plus the
@@ -654,6 +669,7 @@ pub(crate) fn on_heartbeat_facts_changed(
     if status.target_version == 0 {
         return;
     }
+    let previously = cache.swap_all_migrated(namespace_id, status.rollup.all_migrated);
 
     calimero_context::migration_events::emit(
         node_client,
@@ -669,7 +685,13 @@ pub(crate) fn on_heartbeat_facts_changed(
     );
 
     if status.rollup.all_migrated {
-        stamp_fleet_completion(datastore, node_client, &ns, status.target_version);
+        stamp_fleet_completion(
+            datastore,
+            node_client,
+            &ns,
+            status.target_version,
+            previously == Some(false),
+        );
     }
 }
 
@@ -686,6 +708,12 @@ pub(crate) fn on_heartbeat_facts_changed(
 /// every descendant, so a root record left behind by an older migration would
 /// otherwise announce its own stale `to_version` on someone else's convergence.
 ///
+/// `announce` is the third guard, and it governs only the event: a completion
+/// is an event about a TRANSITION, so it is emitted solely on a false-to-true
+/// `all_migrated` edge this process actually watched. Every installation that
+/// ever upgraded boots holding an armed latch on a migration that finished long
+/// ago; that case still writes the stamp, silently, to disarm it.
+///
 /// Namespace-root record only: a bare `upgrade_group` on a subgroup writes no
 /// root record and so gets no completion stamp, the same asymmetry
 /// `resolve_group_target_version` already carries.
@@ -694,6 +722,7 @@ fn stamp_fleet_completion(
     node_client: &NodeClient,
     ns: &calimero_context_config::types::ContextGroupId,
     target_version: u32,
+    announce: bool,
 ) {
     let repo = calimero_governance_store::UpgradesRepository::new(datastore);
     let Ok(Some(mut record)) = repo.load(ns) else {
@@ -718,6 +747,9 @@ fn stamp_fleet_completion(
     let to_version = record.to_version.clone();
     if let Err(err) = repo.save(ns, &record) {
         tracing::error!(?err, "failed to stamp migration completion");
+        return;
+    }
+    if !announce {
         return;
     }
 

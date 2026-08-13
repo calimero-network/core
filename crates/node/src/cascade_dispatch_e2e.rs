@@ -1387,6 +1387,11 @@ async fn deliver_heartbeat(
 /// done, and the initiator has no other way to learn that moment: the rollup's
 /// `all_migrated` edge is it. This stamps the record and announces once, and a
 /// later heartbeat that still rolls up green announces nothing more.
+///
+/// The edge has to be one THIS PROCESS watched, so the fleet rolls up red here
+/// before it rolls up green - see
+/// `first_rollup_after_boot_backfills_the_stamp_without_announcing` for what
+/// happens when a node only ever sees the green side.
 #[tokio::test]
 #[serial(boot_test_node)]
 async fn fleet_completion_stamps_the_record_once() {
@@ -1445,10 +1450,46 @@ async fn fleet_completion_stamps_the_record_once() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("wall clock")
         .as_millis() as u64;
+    // The peer is a version behind, so the first rollup this process computes
+    // is red. That is the `false` half of the edge the completion announces.
     deliver_heartbeat(
         &node,
         ns,
-        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms).expect("sign heartbeat"),
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                ..facts
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    let pending = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the first heartbeat must announce the fleet rollup");
+    match pending.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated,
+            in_progress,
+            total,
+            ..
+        } => {
+            assert_eq!(total, 2, "total is the COHORT size, not a node-local count");
+            assert_eq!(migrated, 1, "this node only; the peer is still behind");
+            assert_eq!(in_progress, 1, "the peer");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms + 1_000)
+            .expect("sign heartbeat"),
     )
     .await;
 
@@ -1507,7 +1548,7 @@ async fn fleet_completion_stamps_the_record_once() {
                 authored_remaining: 1,
                 ..facts
             },
-            now_ms + 1_000,
+            now_ms + 2_000,
         )
         .expect("sign heartbeat"),
     )
@@ -1536,6 +1577,118 @@ async fn fleet_completion_stamps_the_record_once() {
         Some(stamped_at),
         "the stamp is written once, not refreshed on every recompute"
     );
+}
+
+/// A node that boots onto an already-converged fleet observed no transition.
+///
+/// Every installation that ever upgraded carries a root record sitting at
+/// `Completed { completed_at: None }`, so the first rollup after boot finds an
+/// armed latch over a green fleet. The version is right and the stamp is owed,
+/// but the event is not: `MigrationCompleted` announces a false-to-true edge,
+/// and this process never saw one. Announcing anyway would banner a migration
+/// that finished months ago to every member subscriber of every such namespace,
+/// once, on the first heartbeat after deploying this build.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x75; 32]);
+    let app_key = [0xB5; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xCB; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .expect("store namespace identity");
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_sk.public_key(), GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The historical record: this migration is long done, the fleet has been
+    // green for months, and nothing has ever stamped it.
+    UpgradesRepository::new(&node.store)
+        .save(
+            &ns,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 0,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::Completed { completed_at: None },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 2,
+            },
+        )
+        .expect("save upgrade record");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 2,
+                residue_auto: 0,
+                synced_up_to_hlc: 0,
+                authored_remaining: 0,
+                migration_failed: None,
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    // The rollup really is green at the target, so the completion path is
+    // reached - the unobserved edge, not a red fleet, is what withholds below.
+    let progress = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup");
+    match progress.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "this node plus the peer");
+            assert_eq!(migrated, 2, "both are already at the target");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "a completion this process never watched happen must not be announced"
+    );
+
+    // The stamp is still written: it is the latch, and leaving it armed would
+    // re-run this decision on every heartbeat for the life of the namespace.
+    match UpgradesRepository::new(&node.store)
+        .load(&ns)
+        .expect("load record")
+        .expect("record exists")
+        .status
+    {
+        GroupUpgradeStatus::Completed {
+            completed_at: Some(_),
+        } => {}
+        other => panic!("the backfill must disarm the latch, got {other:?}"),
+    }
 }
 
 /// The completion stamp must describe the migration the rollup measured.
