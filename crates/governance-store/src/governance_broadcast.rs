@@ -223,6 +223,59 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
     signer_is_namespace_member(store, beacon.namespace_id, &beacon.peer_pubkey)
 }
 
+/// Whether THIS node is a member of `namespace_id` that holds no governance
+/// state yet — stranded, and unable to verify anyone.
+///
+/// The mirror of [`beacon_admission_provable`], and it exists for the mirrored
+/// circularity. That one lets an established member pull from a joiner it
+/// cannot yet recognise. This one lets a joiner pull from an established member
+/// it cannot yet recognise: [`verify_readiness_beacon`] requires the signer to
+/// be a known member, and a node that has applied no governance ops knows no
+/// members — so it drops every beacon, including the ones advertising exactly
+/// the state that would end that condition.
+///
+/// A join whose direct request found no reachable peer lands precisely here: it
+/// records membership, gets no key and no ops, and is then deaf to the only
+/// pull trigger it has.
+///
+/// Membership is read from this node's own namespace IDENTITY, not from the
+/// membership rows — the rows are the governance state it is missing, so
+/// requiring them would restate the circularity. The identity is written by the
+/// join before any of that exists, which is what makes it usable here and what
+/// keeps a stranger to the namespace out.
+///
+/// Grants nothing, exactly as its mirror does not: no membership row, no cache
+/// entry, no trust in the beacon's contents. It says only that pulling
+/// governance from this peer is worth a round trip. The beacon's signature is
+/// still checked by the caller, the pull is authenticated, the caller's
+/// debounce rate-limits it, and every op fetched still faces the full apply
+/// path. A node with no state risks nothing but the round trip.
+#[must_use]
+pub fn receiver_is_stranded_in_namespace(store: &Store, namespace_id: NamespaceId) -> bool {
+    let group_id = ContextGroupId::from(namespace_id.to_bytes());
+
+    // Ours to join at all? Absent identity ⇒ not our namespace ⇒ stay deaf.
+    if !matches!(
+        crate::NamespaceRepository::new(store).identity_record(&group_id),
+        Ok(Some(_))
+    ) {
+        return false;
+    }
+
+    // Stranded only while we hold nothing. An established member already
+    // passes `verify_readiness_beacon` and must keep going through it, so that
+    // this never widens the gate for a node that can actually check.
+    let handle = store.handle();
+    match handle.get(&calimero_store::key::NamespaceGovHead::new(
+        namespace_id.to_bytes(),
+    )) {
+        Ok(Some(head)) => !head.dag_heads.iter().any(|h| *h != [0u8; 32]),
+        Ok(None) => true,
+        // A failed read is datastore-level: claim nothing.
+        Err(_) => false,
+    }
+}
+
 /// Whether a beacon whose signer is not (yet) a known member carries an
 /// invitation proving it was admitted to the namespace.
 ///

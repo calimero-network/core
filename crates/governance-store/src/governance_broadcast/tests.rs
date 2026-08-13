@@ -961,3 +961,78 @@ async fn a_resolvable_non_member_is_refused_not_deferred() {
         "a resolvable non-member is a genuine refusal"
     );
 }
+
+// ---------------------------------------------------------------------------
+// receiver_is_stranded_in_namespace — the joiner's half of the beacon
+// circularity. See `beacon_admission_provable` for the established member's.
+// ---------------------------------------------------------------------------
+
+/// Give this node a namespace identity — what a join writes before it holds any
+/// governance state, and the only thing a stranded node can be recognised by.
+fn plant_own_identity(store: &Store, namespace_id: NamespaceId) {
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    crate::NamespaceRepository::new(store)
+        .store_identity(
+            &ContextGroupId::from(namespace_id.to_bytes()),
+            &sk.public_key(),
+            &[7u8; 32],
+            &[9u8; 32],
+        )
+        .expect("store identity");
+}
+
+/// **The case that left `group-join-mesh-not-ready` unable to converge.**
+///
+/// A join whose direct request found no reachable peer records membership and
+/// returns with no key and no ops. `verify_readiness_beacon` needs the signer to
+/// be a known member, and this node knows no members — so every beacon is
+/// dropped, including the ones advertising the state that would end that.
+#[tokio::test]
+async fn a_member_holding_no_governance_state_is_stranded() {
+    let store = empty_store();
+    let ns_id: NamespaceId = [42u8; 32].into();
+    plant_own_identity(&store, ns_id);
+
+    assert!(
+        receiver_is_stranded_in_namespace(&store, ns_id),
+        "a member with no governance head must be allowed to pull"
+    );
+}
+
+/// The guard that keeps this from widening the gate generally: an established
+/// member has state, so it keeps going through `verify_readiness_beacon` and
+/// this escape hatch never opens for it.
+#[tokio::test]
+async fn a_member_that_holds_state_is_not_stranded() {
+    let store = empty_store();
+    let ns_id: NamespaceId = [42u8; 32].into();
+    plant_own_identity(&store, ns_id);
+
+    let mut handle = store.handle();
+    handle
+        .put(
+            &calimero_store::key::NamespaceGovHead::new(ns_id.to_bytes()),
+            &calimero_store::key::NamespaceGovHeadValue {
+                dag_heads: vec![[3u8; 32]],
+                sequence: 1,
+            },
+        )
+        .expect("plant a non-empty head");
+    drop(handle);
+
+    assert!(
+        !receiver_is_stranded_in_namespace(&store, ns_id),
+        "a node that can verify beacons must keep going through verification"
+    );
+}
+
+/// And a stranger stays deaf: no identity means this is not our namespace, so
+/// an unverifiable beacon for it is still just noise.
+#[tokio::test]
+async fn a_stranger_to_the_namespace_is_not_stranded() {
+    let store = empty_store();
+    assert!(!receiver_is_stranded_in_namespace(
+        &store,
+        [42u8; 32].into()
+    ));
+}

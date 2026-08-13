@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
 use calimero_governance_store::governance_broadcast::{
-    beacon_admission_provable, verify_readiness_beacon,
+    beacon_admission_provable, receiver_is_stranded_in_namespace, verify_readiness_beacon,
 };
 use calimero_governance_store::now_millis;
 use libp2p::PeerId;
@@ -110,10 +110,23 @@ pub(super) fn handle_readiness_beacon(
     beacon: SignedReadinessBeacon,
 ) {
     if !verify_readiness_beacon(&manager.datastore, &beacon) {
-        // Pull from a provable non-member instead of dropping it, targeting the
-        // signer: it is the only peer that holds its own not-yet-gossiped join op.
+        // Two ways an unverifiable beacon is still worth a pull, and they are
+        // mirror images:
+        //
+        //   * the SIGNER proves admission — an established member pulling from a
+        //     joiner it cannot yet recognise, targeting the signer because it is
+        //     the only peer holding its own not-yet-gossiped join op;
+        //   * WE are stranded — a joiner pulling from an established member it
+        //     cannot yet recognise, because verification needs membership rows
+        //     that are exactly the governance state we are missing.
+        //
+        // The second is why a node that joined while the mesh was unreachable
+        // never converged after a heal: it records membership, receives no ops,
+        // and is then deaf to the only pull trigger it has. Neither branch
+        // grants anything — see `beacon_admission_provable`.
         if beacon_ts_within_drift(beacon.ts_millis, now_millis())
-            && beacon_admission_provable(&manager.datastore, &beacon)
+            && (beacon_admission_provable(&manager.datastore, &beacon)
+                || receiver_is_stranded_in_namespace(&manager.datastore, beacon.namespace_id))
         {
             spawn_beacon_divergence_sync(
                 manager,
