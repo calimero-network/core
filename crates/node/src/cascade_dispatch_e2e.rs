@@ -25,9 +25,11 @@ use std::time::Duration;
 use calimero_context_client::group::{
     GetGroupUpgradeStatusRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
 };
-use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
+use calimero_context_client::local_governance::{
+    GroupOp, NamespaceTopicMsg, SignedGroupOp, SignedMigrationHeartbeat,
+};
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::register_context_in_group;
+use calimero_governance_store::{apply_local_signed_group_op, register_context_in_group};
 use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
@@ -35,6 +37,7 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::events::{GroupMigrationEvent, GroupMigrationPayload, NodeEvent};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
     GroupUpgradeStatus, GroupUpgradeValue,
@@ -350,6 +353,35 @@ async fn next_migration_event(
     }
 }
 
+/// Poll `events` for the next `MigrationStarted`, skipping the other migration
+/// phases. Tests that count announcements need this rather than
+/// [`next_migration_event`]: a live propagator interleaves `CascadeProgress`.
+async fn next_migration_started(
+    events: &mut (impl futures_util::Stream<Item = NodeEvent> + Unpin),
+    timeout: Duration,
+) -> Option<GroupMigrationEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next_migration_event(events, remaining).await {
+            Some(event) => {
+                if matches!(
+                    event.payload,
+                    GroupMigrationPayload::MigrationStarted { .. }
+                ) {
+                    return Some(event);
+                }
+            }
+            None => return None,
+        }
+    }
+}
+
+/// How long to wait for a *surplus* announcement before calling it absent. The
+/// duplicates this guards against are emitted on the same apply as the first
+/// event, so they are already in the channel by the time we look.
+const NO_SECOND_EVENT_WINDOW: Duration = Duration::from_millis(750);
+
 /// Test 1 — emitter happy path on a single node.
 ///
 /// Drives a real `ContextManager` actor through `UpgradeGroupRequest {
@@ -499,7 +531,7 @@ async fn cascade_emits_migration_started_on_the_namespace_root() {
         .await
         .expect("cascade upgrade should succeed");
 
-    let event = next_migration_event(&mut events, Duration::from_secs(5))
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
         .await
         .expect("a MigrationStarted must reach subscribers");
     match event.payload {
@@ -523,6 +555,159 @@ async fn cascade_emits_migration_started_on_the_namespace_root() {
         event.group_id.as_bytes(),
         &fx.ns.to_bytes(),
         "routed on the namespace root, not a descendant"
+    );
+    // The initiator applies the op it published, so it must announce from the
+    // apply and nowhere else - an emitter-side announcement on top would show
+    // up here as a second event.
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "the initiator announces once, not once per emit site"
+    );
+}
+
+/// The gap this closes: `send_event` reaches only the emitting node's own
+/// clients, so a member's node has to announce the migration it APPLIES. This
+/// node never runs `upgrade_group` - it only folds a peer's op.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn receiver_announces_a_cascade_it_did_not_initiate() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
+
+    // The admin that initiates the upgrade on some other node.
+    let peer_sk = PrivateKey::random(&mut rng);
+    MembershipRepository::new(&node.store)
+        .add_member(&fx.ns, &peer_sk.public_key(), GroupMemberRole::Admin)
+        .expect("seat the initiating peer as admin");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let op = SignedGroupOp::sign(
+        &peer_sk,
+        fx.ns.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::CascadeUpgrade {
+            from_app_key: blobs.v1.into(),
+            app_key: blobs.v2_migrating.into(),
+            target_application_id: app_id_v2(),
+            to_state_version: 2,
+            migration: Some(b"migrate_v1_to_v2".to_vec()),
+            cascade_hlc: HybridTimestamp::zero(),
+        },
+    )
+    .expect("sign CascadeUpgrade");
+    apply_local_signed_group_op(&node.store, &op).expect("receiver applies the peer's cascade");
+
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("a node that applies the op must announce it, initiator or not");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            from_version,
+            to_version,
+            to_state_version,
+            local_contexts_total,
+        } => {
+            assert_eq!(from_version, "0.1.0");
+            assert_eq!(to_version, "0.2.0");
+            assert_eq!(
+                to_state_version, 2,
+                "the initiator's resolved version rides on the op"
+            );
+            assert_eq!(
+                local_contexts_total, 3,
+                "one context per matched descendant on this node (NS, G1, G2)"
+            );
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert_eq!(
+        event.group_id.as_bytes(),
+        &fx.ns.to_bytes(),
+        "routed on the namespace root, not a descendant"
+    );
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "one announcement for the whole cascade, not one per matched descendant"
+    );
+}
+
+/// A plain one-group upgrade reaches receivers too, and announces once per
+/// upgrade rather than once per rung of a multi-hop ladder.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
+
+    let peer_sk = PrivateKey::random(&mut rng);
+    MembershipRepository::new(&node.store)
+        .add_member(&fx.g1, &peer_sk.public_key(), GroupMemberRole::Admin)
+        .expect("seat the initiating peer as admin");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let rung = |nonce: u64, app_key: [u8; 32]| {
+        SignedGroupOp::sign(
+            &peer_sk,
+            fx.g1.to_bytes().into(),
+            vec![],
+            nonce,
+            GroupOp::TargetApplicationSet {
+                app_key: app_key.into(),
+                target_application_id: app_id_v2(),
+            },
+        )
+        .expect("sign TargetApplicationSet")
+    };
+
+    // Intermediate rung: lands on a blob that is not the target's bytecode, so
+    // the upgrade has not arrived yet and nothing is announced.
+    apply_local_signed_group_op(&node.store, &rung(1, blobs.other))
+        .expect("receiver applies the intermediate rung");
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "an intermediate ladder rung is not its own migration"
+    );
+
+    apply_local_signed_group_op(&node.store, &rung(2, blobs.v2_migrating))
+        .expect("receiver applies the final rung");
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the single-group path must announce on the receiver too");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            to_version,
+            to_state_version,
+            local_contexts_total,
+            ..
+        } => {
+            assert_eq!(to_version, "0.2.0");
+            assert_eq!(
+                to_state_version, 2,
+                "read from the local application row, not the 0 sentinel"
+            );
+            assert_eq!(local_contexts_total, 1, "G1 holds one context here");
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert_eq!(
+        event.group_id.as_bytes(),
+        &fx.ns.to_bytes(),
+        "routed on the namespace root a client subscribes with, not on G1"
     );
 }
 
@@ -933,6 +1118,10 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .store_key(&gid, &admin_pk, admin_sk.as_bytes())
         .expect("store signing key");
 
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
     let response = node
         .context_client
         .upgrade_group(UpgradeGroupRequest {
@@ -945,6 +1134,31 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .await
         .expect("multi-hop lazy upgrade should succeed");
     assert_eq!(response.group_id, gid);
+
+    // The initiator announces from the apply like every receiver does, and a
+    // two-rung ladder is still one migration.
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the single-group path must announce on the initiator too");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            to_version,
+            to_state_version,
+            local_contexts_total,
+            ..
+        } => {
+            assert_eq!(to_version, "0.3.0");
+            assert_eq!(to_state_version, 3, "the ladder's final target");
+            assert_eq!(local_contexts_total, 1);
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "one announcement per upgrade, not one per ladder rung"
+    );
 
     let meta = MetaRepository::new(&node.store)
         .load(&gid)

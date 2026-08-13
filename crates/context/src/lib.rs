@@ -758,10 +758,11 @@ impl Actor for ContextManager {
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
 
-        // Forwards membership OpEvents to connected clients as `NodeEvent::GroupMembership`.
-        // `shutdown` before `spawn` rebinds to this instance's `node_client` on restart.
+        // Forwards membership + migration OpEvents to connected clients as
+        // `NodeEvent::GroupMembership` / `NodeEvent::GroupMigration`. `shutdown` before
+        // `spawn` rebinds to this instance's handles on restart.
         membership_events::shutdown();
-        membership_events::spawn(self.node_client.clone());
+        membership_events::spawn(self.node_client.clone(), self.datastore.clone());
 
         // Transparent per-subgroup TEE admission (proposal.md §12d, Phase 1).
         // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE

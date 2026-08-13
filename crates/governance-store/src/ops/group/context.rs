@@ -20,6 +20,7 @@ use crate::{
     PermissionChecker,
 };
 use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -88,6 +89,43 @@ impl<'a> GroupApplyCtx<'a> {
 
     pub(crate) fn queue_event(&mut self, event: crate::op_events::OpEvent) {
         self.pending_events.push(event);
+    }
+
+    /// Queue the member-facing migration announcement for an upgrade op.
+    ///
+    /// `to_state_version` is `None` for ops that don't carry one, in which case
+    /// it comes off the local application row. Every lookup here is
+    /// best-effort: an announcement is observational, so a store error must
+    /// degrade the event rather than fail the apply and diverge this replica.
+    pub(crate) fn queue_migration_started(
+        &mut self,
+        previous_application_id: &ApplicationId,
+        target_application_id: &ApplicationId,
+        to_state_version: Option<u32>,
+        local_contexts_total: u32,
+    ) {
+        let row = |id: &ApplicationId| {
+            self.store
+                .handle()
+                .get(&calimero_store::key::ApplicationMeta::new(*id))
+                .ok()
+                .flatten()
+        };
+        let version = |id: &ApplicationId| {
+            row(id).map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
+        };
+        let from_version = version(previous_application_id);
+        let to_state_version = to_state_version
+            .or_else(|| row(target_application_id).map(|app| app.state_version))
+            .unwrap_or_default();
+        let to_version = version(target_application_id);
+        self.queue_event(crate::op_events::OpEvent::MigrationStarted {
+            group_id: self.group_id.to_bytes(),
+            from_version,
+            to_version,
+            to_state_version,
+            local_contexts_total,
+        });
     }
 
     pub(crate) fn store(&self) -> &'a Store {

@@ -11,7 +11,10 @@
 //! `cascade_hlc`.
 
 use super::context::GroupApplyCtx;
-use crate::{GroupSettingsService, NamespaceRepository, UpgradesRepository};
+use crate::{
+    GroupSettingsService, MetaRepository, MetadataRepository, NamespaceRepository,
+    UpgradesRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead};
@@ -74,7 +77,18 @@ pub(crate) fn apply(
         .get(&NamespaceGovHead::new(ns.to_bytes()))?
         .map(|head| head.sequence);
 
+    // The signed group's pre-cascade target, for the announcement's `from`
+    // side. Read before the walk below rewrites it. Non-fatal like every other
+    // read the announcement needs: it is observational, so it must not be able
+    // to fail the apply and diverge this replica.
+    let previous_application_id = MetaRepository::new(store)
+        .load(group_id)
+        .ok()
+        .flatten()
+        .map(|meta| meta.target_application_id);
+
     let mut any_applied = false;
+    let mut local_contexts_total: u32 = 0;
     for entry in entries {
         if !entry.matched {
             tracing::debug!(
@@ -138,6 +152,11 @@ pub(crate) fn apply(
         );
 
         any_applied = true;
+        local_contexts_total = local_contexts_total.saturating_add(
+            MetadataRepository::new(store)
+                .count_contexts(&gid)
+                .unwrap_or_default() as u32,
+        );
     }
     if !any_applied {
         tracing::debug!(
@@ -145,6 +164,18 @@ pub(crate) fn apply(
             signed_group = %hex::encode(group_id.to_bytes()),
             from_app_key = %hex::encode(from_app_key),
             "CascadeUpgrade: no descendants matched"
+        );
+    }
+    // One announcement for the whole cascade, keyed on the signed group the
+    // bridge resolves to a namespace root. `to_state_version` rides on the op:
+    // it is the initiator's resolved value, so every node reports the same
+    // target even when it has not fetched the bytecode yet.
+    if let Some(previous_application_id) = previous_application_id.filter(|_| any_applied) {
+        ctx.queue_migration_started(
+            &previous_application_id,
+            target_application_id,
+            Some(to_state_version),
+            local_contexts_total,
         );
     }
     // Cascade variants never produce per-op divergence reports — the

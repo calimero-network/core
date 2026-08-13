@@ -184,19 +184,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     )
                     .await?
                 };
-                // First point this path knows the target state version; the
-                // synchronous InProgress record above still carries 0.
-                crate::migration_events::emit(
-                    &node_client,
-                    &datastore,
-                    &group_id,
-                    GroupMigrationPayload::MigrationStarted {
-                        from_version: from_version.clone(),
-                        to_version: to_version.clone(),
-                        to_state_version: target_state_version,
-                        local_contexts_total: total_contexts as u32,
-                    },
-                );
                 let migration_bytes = rungs
                     .last()
                     .and_then(|r| r.migration.as_ref())
@@ -1609,20 +1596,6 @@ fn dispatch_cascade(
 
     ActorResponse::r#async(publish_task.map(move |publish_result, act, ctx| {
         let (migration, target_state_version) = publish_result?;
-        // One event for the whole cascade: `local_contexts_total` is this
-        // node's context count summed across every matched descendant, not a
-        // per-subgroup number.
-        crate::migration_events::emit(
-            &node_client,
-            &datastore,
-            &group_id,
-            GroupMigrationPayload::MigrationStarted {
-                from_version: from_version.clone(),
-                to_version: to_version.clone(),
-                to_state_version: target_state_version,
-                local_contexts_total: pre_spawn_totals.iter().sum(),
-            },
-        );
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
         // After successful publish + local apply, spawn one propagator
