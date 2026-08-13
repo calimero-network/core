@@ -95,13 +95,16 @@ pub enum GroupMigrationPayload {
         failed: usize,
         total: usize,
     },
-    /// One subgroup's local context swaps advanced on the emitting node.
+    /// One subgroup's local context swaps advanced on the emitting node. Named
+    /// like [`Self::MigrationStarted`]'s counter and for the same reason: the
+    /// sibling `MigrationProgress.total` is the cohort size, and a subscriber
+    /// reading a bare `total` off this stream cannot tell the two apart.
     #[serde(rename_all = "camelCase")]
     CascadeProgress {
         #[serde(with = "crate::hash::hex_repr")]
         subgroup_id: Hash,
-        completed: u32,
-        total: u32,
+        local_contexts_swapped: u32,
+        local_contexts_total: u32,
     },
     /// Every pinned-cohort member reported the target. This is the moment
     /// `completed_at` becomes knowable under lazy upgrades.
@@ -358,13 +361,21 @@ mod tests {
     fn cascade_progress_carries_a_hex_subgroup_id() {
         let v = serde_json::to_value(GroupMigrationPayload::CascadeProgress {
             subgroup_id: Hash::from([0x31; 32]),
-            completed: 3,
-            total: 5,
+            local_contexts_swapped: 3,
+            local_contexts_total: 5,
         })
         .expect("serialize");
         assert_eq!(v["type"], "CascadeProgress");
         assert_eq!(v["data"]["subgroupId"], hex::encode([0x31; 32]));
-        assert_eq!(v["data"]["completed"], 3);
+        assert_eq!(v["data"]["localContextsSwapped"], 3);
+        assert_eq!(
+            v["data"]["localContextsTotal"], 5,
+            "node-local, never the cohort total the sibling variant carries"
+        );
+        assert!(
+            v["data"].get("total").is_none(),
+            "a bare `total` here would collide with MigrationProgress's cohort size"
+        );
     }
 
     // The untagged NodeEvent resolves each variant by its payload tag. The two

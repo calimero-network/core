@@ -1193,8 +1193,8 @@ mod tests {
             group_id: group,
             payload: GroupMigrationPayload::CascadeProgress {
                 subgroup_id: subgroup,
-                completed: 1,
-                total: 2,
+                local_contexts_swapped: 1,
+                local_contexts_total: 2,
             },
         })
     }

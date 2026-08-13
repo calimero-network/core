@@ -577,8 +577,8 @@ async fn cascade_progress_mirrors_the_persisted_counters() {
         };
         let GroupMigrationPayload::CascadeProgress {
             subgroup_id,
-            completed,
-            total,
+            local_contexts_swapped: completed,
+            local_contexts_total: total,
         } = event.payload
         else {
             continue;

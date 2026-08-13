@@ -264,8 +264,8 @@ mod tests {
         };
         let cascade = GroupMigrationPayload::CascadeProgress {
             subgroup_id: Hash::from([0xccu8; 32]),
-            completed: 1,
-            total: 2,
+            local_contexts_swapped: 1,
+            local_contexts_total: 2,
         };
 
         for (payload, member_gets, name) in

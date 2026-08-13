@@ -1148,8 +1148,8 @@ pub(crate) async fn propagate_upgrade(
                         &group_id,
                         GroupMigrationPayload::CascadeProgress {
                             subgroup_id: Hash::from(group_id.to_bytes()),
-                            completed,
-                            total: total_contexts as u32,
+                            local_contexts_swapped: completed,
+                            local_contexts_total: total_contexts as u32,
                         },
                     );
                     continue;
@@ -1234,8 +1234,8 @@ pub(crate) async fn propagate_upgrade(
                 &group_id,
                 GroupMigrationPayload::CascadeProgress {
                     subgroup_id: Hash::from(group_id.to_bytes()),
-                    completed,
-                    total: total_contexts as u32,
+                    local_contexts_swapped: completed,
+                    local_contexts_total: total_contexts as u32,
                 },
             );
         }
@@ -1301,8 +1301,8 @@ pub(crate) async fn propagate_upgrade(
         &group_id,
         GroupMigrationPayload::CascadeProgress {
             subgroup_id: Hash::from(group_id.to_bytes()),
-            completed,
-            total: total_contexts as u32,
+            local_contexts_swapped: completed,
+            local_contexts_total: total_contexts as u32,
         },
     );
 
