@@ -1494,6 +1494,11 @@ pub struct MigrationStatus {
     pub expected_members: usize,
     /// The governance HLC the cohort was pinned at (migration expand-entry).
     pub cohort_pinned_at_hlc: Option<HybridTimestamp>,
+    /// When this node watched the cohort converge, read off the stored upgrade
+    /// record: the durable answer, unlike `rollup.all_migrated`, which is
+    /// recomputed from in-TTL heartbeats and lapses when a member goes quiet.
+    /// The pure rollup below has no record to read and leaves it `None`.
+    pub fleet_completed_at: Option<u64>,
     pub rollup: MigrationStatusRollup,
     pub members: Vec<MemberMigrationStatus>,
 }
@@ -1603,6 +1608,7 @@ pub fn compute_migration_status_rollup(
         target_version,
         expected_members: total,
         cohort_pinned_at_hlc,
+        fleet_completed_at: None,
         rollup: MigrationStatusRollup {
             migrated,
             in_progress,

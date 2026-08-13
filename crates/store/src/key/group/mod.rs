@@ -1313,7 +1313,13 @@ pub enum GroupUpgradeStatus {
     Completed {
         /// Unix timestamp when the last context was upgraded, or `None` when
         /// each context self-migrates independently without coordination.
+        /// NODE-LOCAL: it says nothing about the rest of the cohort.
         completed_at: Option<u64>,
+        /// Unix timestamp when this node watched the whole cohort converge on
+        /// [`GroupUpgradeValue::to_state_version`]. Separate from the local
+        /// stamp above because the node that ran the upgrade sets that one
+        /// itself, long before the fleet is done.
+        fleet_completed_at: Option<u64>,
     },
 }
 
@@ -3263,6 +3269,7 @@ mod tests {
                 initiated_by: PrimitivePublicKey::from([0x06; 32]),
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
+                    fleet_completed_at: Some(1_700_002_000),
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
@@ -3277,8 +3284,12 @@ mod tests {
             assert_eq!(decoded.to_state_version, 4);
             assert_eq!(decoded.migration, None);
             match decoded.status {
-                GroupUpgradeStatus::Completed { completed_at } => {
+                GroupUpgradeStatus::Completed {
+                    completed_at,
+                    fleet_completed_at,
+                } => {
                     assert_eq!(completed_at, Some(1_700_001_000));
+                    assert_eq!(fleet_completed_at, Some(1_700_002_000));
                 }
                 other => panic!("expected Completed, got {other:?}"),
             }
@@ -3302,7 +3313,10 @@ mod cascade_hlc_borsh_tests {
             migration: Some(vec![1, 2, 3]),
             initiated_at: 1_700_000_000,
             initiated_by: PrimitivePublicKey::from([7u8; 32]),
-            status: GroupUpgradeStatus::Completed { completed_at: None },
+            status: GroupUpgradeStatus::Completed {
+                completed_at: None,
+                fleet_completed_at: None,
+            },
             cascade_hlc,
             cascade_seq: None,
             to_state_version: 2,
@@ -3337,9 +3351,12 @@ mod cascade_hlc_borsh_tests {
         PrimitivePublicKey::from([7u8; 32])
             .serialize(&mut bytes)
             .unwrap();
-        (GroupUpgradeStatus::Completed { completed_at: None })
-            .serialize(&mut bytes)
-            .unwrap();
+        (GroupUpgradeStatus::Completed {
+            completed_at: None,
+            fleet_completed_at: None,
+        })
+        .serialize(&mut bytes)
+        .unwrap();
         // Push the `Some` tag (0x01) with no HybridTimestamp body — truncated.
         bytes.push(0x01u8);
 

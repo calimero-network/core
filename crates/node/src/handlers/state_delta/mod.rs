@@ -2430,7 +2430,10 @@ mod tests {
                             migration: None,
                             initiated_at: 1_700_000_000,
                             initiated_by: dummy_pk,
-                            status: GroupUpgradeStatus::Completed { completed_at: None },
+                            status: GroupUpgradeStatus::Completed {
+                                completed_at: None,
+                                fleet_completed_at: None,
+                            },
                             cascade_hlc: Some(cascade_hlc),
                             cascade_seq: None,
                             to_state_version: 2,

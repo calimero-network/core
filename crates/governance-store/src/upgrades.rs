@@ -134,7 +134,10 @@ mod tests {
         let gid = test_group_id();
         repo.save(
             &gid,
-            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
+            &sample_upgrade(GroupUpgradeStatus::Completed {
+                completed_at: None,
+                fleet_completed_at: None,
+            }),
         )
         .unwrap();
         repo.delete(&gid).unwrap();
@@ -158,7 +161,10 @@ mod tests {
         .unwrap();
         repo.save(
             &gid_completed,
-            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
+            &sample_upgrade(GroupUpgradeStatus::Completed {
+                completed_at: None,
+                fleet_completed_at: None,
+            }),
         )
         .unwrap();
         let in_progress = repo.enumerate_in_progress().unwrap();

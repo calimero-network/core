@@ -87,6 +87,7 @@ pub async fn handler(
                     target_version: status.target_version,
                     expected_members: status.expected_members,
                     cohort_pinned_at_hlc: status.cohort_pinned_at_hlc.map(|ts| ts.to_string()),
+                    fleet_completed_at: status.fleet_completed_at,
                     rollup: MigrationStatusRollupApiData {
                         migrated: status.rollup.migrated,
                         in_progress: status.rollup.in_progress,

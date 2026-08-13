@@ -1601,10 +1601,10 @@ pub(crate) async fn deliver_heartbeat(
         .expect("deliver NetworkEvent to node actor");
 }
 
-/// `completed_at` is `None` under lazy upgrades until the fleet is actually
-/// done, and the initiator has no other way to learn that moment: the rollup's
-/// `all_migrated` edge is it. This stamps the record and announces once, and a
-/// later heartbeat that still rolls up green announces nothing more.
+/// `fleet_completed_at` is `None` until the fleet is actually done, and no node
+/// has another way to learn that moment: the rollup's `all_migrated` edge is it.
+/// This stamps the record and announces once, and a later heartbeat that still
+/// rolls up green announces nothing more.
 ///
 /// The edge has to be one THIS PROCESS watched, so the fleet rolls up red here
 /// before it rolls up green - see
@@ -1645,7 +1645,10 @@ async fn fleet_completion_stamps_the_record_once() {
                 migration: None,
                 initiated_at: 0,
                 initiated_by: admin_pk,
-                status: GroupUpgradeStatus::Completed { completed_at: None },
+                status: GroupUpgradeStatus::Completed {
+                    completed_at: None,
+                    fleet_completed_at: None,
+                },
                 cascade_hlc: None,
                 cascade_seq: None,
                 to_state_version: 2,
@@ -1744,7 +1747,9 @@ async fn fleet_completion_stamps_the_record_once() {
         .expect("record exists")
         .status
     {
-        GroupUpgradeStatus::Completed { completed_at } => completed_at,
+        GroupUpgradeStatus::Completed {
+            fleet_completed_at, ..
+        } => fleet_completed_at,
         other => panic!("expected Completed, got {other:?}"),
     };
     assert_eq!(
@@ -1800,9 +1805,9 @@ async fn fleet_completion_stamps_the_record_once() {
 /// A node that boots onto an already-converged fleet observed no transition.
 ///
 /// Every installation that ever upgraded carries a root record sitting at
-/// `Completed { completed_at: None }`, so the first rollup after boot finds an
-/// armed latch over a green fleet. The version is right and the stamp is owed,
-/// but the event is not: `MigrationCompleted` announces a false-to-true edge,
+/// `Completed { fleet_completed_at: None, .. }`, so the first rollup after boot
+/// finds an armed latch over a green fleet. The version is right and the stamp
+/// is owed, but the event is not: `MigrationCompleted` announces a false-to-true edge,
 /// and this process never saw one. Announcing anyway would banner a migration
 /// that finished months ago to every member subscriber of every such namespace,
 /// once, on the first heartbeat after deploying this build.
@@ -1838,7 +1843,10 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
                 migration: None,
                 initiated_at: 0,
                 initiated_by: admin_pk,
-                status: GroupUpgradeStatus::Completed { completed_at: None },
+                status: GroupUpgradeStatus::Completed {
+                    completed_at: None,
+                    fleet_completed_at: None,
+                },
                 cascade_hlc: None,
                 cascade_seq: None,
                 to_state_version: 2,
@@ -1903,7 +1911,8 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
         .status
     {
         GroupUpgradeStatus::Completed {
-            completed_at: Some(_),
+            fleet_completed_at: Some(_),
+            ..
         } => {}
         other => panic!("the backfill must disarm the latch, got {other:?}"),
     }
@@ -1912,7 +1921,7 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
 /// The completion stamp must describe the migration the rollup measured.
 ///
 /// Every installation that ever upgraded carries a root record sitting at
-/// `Completed { completed_at: None }`, so the first heartbeat on an
+/// `Completed { fleet_completed_at: None, .. }`, so the first heartbeat on an
 /// already-converged fleet finds an armed latch. The rollup's target is the max
 /// across the root AND every descendant: once a subgroup has been upgraded past
 /// the root, a green fleet is the subgroup's migration converging, and stamping
@@ -1953,7 +1962,10 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
         migration: None,
         initiated_at: 0,
         initiated_by: admin_pk,
-        status: GroupUpgradeStatus::Completed { completed_at: None },
+        status: GroupUpgradeStatus::Completed {
+            completed_at: None,
+            fleet_completed_at: None,
+        },
         cascade_hlc: None,
         cascade_seq: None,
         to_state_version: 2,
@@ -2034,7 +2046,10 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
         .expect("record exists")
         .status
     {
-        GroupUpgradeStatus::Completed { completed_at: None } => {}
+        GroupUpgradeStatus::Completed {
+            fleet_completed_at: None,
+            ..
+        } => {}
         other => panic!("the unmeasured record must be left untouched, got {other:?}"),
     }
 }

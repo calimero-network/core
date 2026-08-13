@@ -65,7 +65,9 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
             Some(*failed),
             None,
         ),
-        GroupUpgradeStatus::Completed { completed_at } => {
+        // `completed_at` is this node's own swap. Fleet convergence is a
+        // different question, answered by the migration-status rollup.
+        GroupUpgradeStatus::Completed { completed_at, .. } => {
             ("completed", None, None, None, *completed_at)
         }
     };

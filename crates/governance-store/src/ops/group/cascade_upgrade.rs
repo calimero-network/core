@@ -17,7 +17,9 @@ use crate::{
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_store::key::{GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead};
+use calimero_store::key::{
+    ApplicationMeta, GroupUpgradeStatus, GroupUpgradeValue, NamespaceGovHead,
+};
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
@@ -87,6 +89,23 @@ pub(crate) fn apply(
         .flatten()
         .map(|meta| meta.target_application_id);
 
+    // Semver strings for the per-descendant record, resolved from this node's
+    // own application rows: nothing on the wire carries them, and the empty
+    // strings this used to write are what a receiver's completion banner
+    // renders. Same local lookup, same `unknown` fallback, as the announcement.
+    let version_of = |id: &ApplicationId| {
+        store
+            .handle()
+            .get(&ApplicationMeta::new(*id))
+            .ok()
+            .flatten()
+            .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
+    };
+    let to_version = version_of(target_application_id);
+    let from_version = previous_application_id
+        .as_ref()
+        .map_or_else(|| "unknown".to_owned(), version_of);
+
     let mut any_applied = false;
     let mut local_contexts_total: u32 = 0;
     for entry in entries {
@@ -119,19 +138,26 @@ pub(crate) fn apply(
         // the cascade migration bytes. `cascade_hlc` is never cleared.
         let repo = UpgradesRepository::new(store);
         let mut value = repo.load(&gid)?.unwrap_or_else(|| GroupUpgradeValue {
-            from_version: String::new(),
-            to_version: String::new(),
+            from_version: from_version.clone(),
+            to_version: to_version.clone(),
             migration: migration.clone(),
             initiated_at: 0,
             initiated_by: *signer,
-            status: GroupUpgradeStatus::Completed { completed_at: None },
+            status: GroupUpgradeStatus::Completed {
+                completed_at: None,
+                fleet_completed_at: None,
+            },
             cascade_hlc: None,
             cascade_seq: None,
             to_state_version,
         });
         // Overwrite on an existing record too: a stale value from a prior
-        // upgrade reads as a satisfied target, which is a false green.
+        // upgrade reads as a satisfied target, which is a false green. The
+        // versions go the same way - the completion event reads `to_version`
+        // off this record, so a stale one banners the previous migration.
         value.to_state_version = to_state_version;
+        value.from_version = from_version.clone();
+        value.to_version = to_version.clone();
         // Reflect THIS cascade's migration bytes on an existing record too, so
         // the record's `migration` matches the `GroupMeta.migration` we just
         // wrote (the authoritative source the migrate runs from); otherwise an

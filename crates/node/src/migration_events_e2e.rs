@@ -6,15 +6,16 @@
 //! heartbeat receive reaction, and the fleet-completion latch - so the order is
 //! an emergent property of the whole node, not of any one of them.
 //!
-//! Two arcs, because no single node sees all four:
+//! Two arcs, because only one node sees all four:
 //!
 //! * The admin's node runs the propagator, so it alone sees `CascadeProgress` -
-//!   and its propagator stamps `completed_at` on the group record, which closes
-//!   the fleet-completion latch (`stamp_fleet_completion` writes only over
-//!   `Completed { completed_at: None }`). It cannot reach `MigrationCompleted`.
-//! * A member's node folds the same op without a propagator, so its record keeps
-//!   the unstamped `Completed`, and the fleet rollup is what completes it. It
-//!   never sees `CascadeProgress`, which is admin-only on the wire anyway.
+//!   and it must still reach `MigrationCompleted`, because the admin who ran the
+//!   upgrade is the participant most waiting to hear it finished. The propagator
+//!   stamps `completed_at` (its own contexts are swapped); the fleet latch is a
+//!   separate field, so that stamp does not close it.
+//! * A member's node folds the same op without a propagator, so it never sees
+//!   `CascadeProgress`, which is admin-only on the wire anyway. The versions in
+//!   its record come from its own application rows, not the op.
 //!
 //! The harness wires a `StubNetworkActor`, so the peer half of the fleet is a
 //! second member identity whose signed heartbeats are fed through the real
@@ -138,7 +139,8 @@ fn seat_cohort(store: &Store, ns: &ContextGroupId, admin_sk: &PrivateKey, peer: 
 }
 
 /// The admin's arc: one announcement for the whole cascade, its own contexts'
-/// swaps streamed as they land, and the fleet frames after the announcement.
+/// swaps streamed as they land, the fleet frames after the announcement, and the
+/// completion the admin ran the upgrade to hear.
 ///
 /// The announcement is not ordered against `CascadeProgress` and this test does
 /// not claim it is. `MigrationStarted` reaches subscribers through the op-event
@@ -213,10 +215,10 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
         "every event is keyed on the namespace root a client subscribed with"
     );
 
-    // The propagator wrote its own `completed_at` the moment this node's
-    // contexts were swapped, which closes the fleet-completion latch: the stamp
-    // is the latch, and `stamp_fleet_completion` only ever writes over
-    // `Completed { completed_at: None }`.
+    // Both stamps, written by different things about different questions: the
+    // propagator's the moment this node's own contexts were swapped, the fleet's
+    // when the cohort converged. Latching the fleet on the local stamp is what
+    // used to leave this node - the admin's - the only one never told.
     assert!(
         matches!(
             UpgradesRepository::new(&node.store)
@@ -225,15 +227,21 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
                 .expect("record exists")
                 .status,
             GroupUpgradeStatus::Completed {
-                completed_at: Some(_)
+                completed_at: Some(_),
+                fleet_completed_at: Some(_),
             }
         ),
-        "the propagator must have settled the root record"
+        "the propagator's local stamp must not swallow the fleet's"
     );
     assert_eq!(
         count(&tags, "MigrationCompleted"),
-        0,
-        "a locally-stamped record has no fleet completion left to announce: {tags:?}"
+        1,
+        "the admin who ran the upgrade must be told it finished: {tags:?}"
+    );
+    assert_eq!(
+        tags.last(),
+        Some(&"MigrationCompleted"),
+        "completed comes last on the admin's arc too: {tags:?}"
     );
 }
 
@@ -322,6 +330,18 @@ async fn a_member_sees_started_then_fleet_progress_then_completed() {
         0,
         "a member runs no propagator, so it has no local swaps to stream: {tags:?}"
     );
+    // The banner renders this string. Nothing on the wire carries it: the
+    // receiver's record is built by the cascade apply, which resolves it from
+    // this node's own application row.
+    match &seen.last().expect("asserted above").payload {
+        GroupMigrationPayload::MigrationCompleted { to_version, .. } => {
+            assert_eq!(
+                to_version, "0.2.0",
+                "a member must name the version it reached"
+            );
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    }
     assert!(
         seen.iter().all(|e| e.group_id.as_bytes() == &ns.to_bytes()),
         "every event is keyed on the namespace root a client subscribed with"

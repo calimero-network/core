@@ -8,6 +8,7 @@ use calimero_context_client::group::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{MembershipRepository, NamespaceRepository, UpgradesRepository};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupUpgradeStatus;
 use eyre::bail;
 
 use crate::ContextManager;
@@ -116,13 +117,22 @@ pub fn compute_namespace_rollup(
     mut report_for: impl FnMut(&PublicKey) -> Option<MemberMigrationReport>,
 ) -> eyre::Result<MigrationStatus> {
     let upgrade = UpgradesRepository::new(store).load(namespace_id)?;
-    Ok(compute_migration_status_rollup(
+    let status = compute_migration_status_rollup(
         max_subtree_target_version(store, namespace_id)?,
         upgrade.as_ref().and_then(|u| u.cascade_hlc),
         upgrade.as_ref().and_then(|u| u.cascade_seq),
         &collect_migration_cohort(store, namespace_id)?,
         &mut report_for,
-    ))
+    );
+    Ok(MigrationStatus {
+        fleet_completed_at: match upgrade.map(|u| u.status) {
+            Some(GroupUpgradeStatus::Completed {
+                fleet_completed_at, ..
+            }) => fleet_completed_at,
+            _ => None,
+        },
+        ..status
+    })
 }
 
 impl Handler<GetMigrationStatusRequest> for ContextManager {
@@ -389,7 +399,10 @@ mod tests {
             "1",
             "2",
             2,
-            calimero_store::key::GroupUpgradeStatus::Completed { completed_at: None },
+            calimero_store::key::GroupUpgradeStatus::Completed {
+                completed_at: None,
+                fleet_completed_at: None,
+            },
         );
         assert_eq!(super::derive_target_version(Some(&rec)), 2);
     }

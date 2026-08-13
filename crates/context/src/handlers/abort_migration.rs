@@ -217,7 +217,10 @@ mod tests {
             migration,
             initiated_at: 1_700_000_000,
             initiated_by: PublicKey::from([0xAB; 32]),
-            status: GroupUpgradeStatus::Completed { completed_at: None },
+            status: GroupUpgradeStatus::Completed {
+                completed_at: None,
+                fleet_completed_at: None,
+            },
             cascade_hlc: None,
             cascade_seq: None,
             to_state_version: 2,

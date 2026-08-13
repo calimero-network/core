@@ -1985,6 +1985,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 initiated_by: PublicKey::from([0x01; 32]),
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
+                    fleet_completed_at: None,
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
@@ -8683,7 +8684,10 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
                         migration: None,
                         initiated_at: 0,
                         initiated_by: admin_pk,
-                        status: GroupUpgradeStatus::Completed { completed_at: None },
+                        status: GroupUpgradeStatus::Completed {
+                            completed_at: None,
+                            fleet_completed_at: None,
+                        },
                         cascade_hlc: None,
                         cascade_seq: None,
                         // The stale value the false green came from.

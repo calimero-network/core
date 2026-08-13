@@ -2843,7 +2843,10 @@ mod tests {
 
     #[test]
     fn upgrade_blocks_write_completed() {
-        let status = GroupUpgradeStatus::Completed { completed_at: None };
+        let status = GroupUpgradeStatus::Completed {
+            completed_at: None,
+            fleet_completed_at: None,
+        };
         assert!(
             !upgrade_blocks_write(&status),
             "Completed should not block writes"
@@ -2854,6 +2857,7 @@ mod tests {
     fn upgrade_blocks_write_completed_with_timestamp() {
         let status = GroupUpgradeStatus::Completed {
             completed_at: Some(1_700_000_000),
+            fleet_completed_at: None,
         };
         assert!(
             !upgrade_blocks_write(&status),
@@ -2967,7 +2971,13 @@ mod tests {
     #[test]
     fn should_block_flag_off_completed_does_not_block() {
         assert!(
-            !should_block(false, &GroupUpgradeStatus::Completed { completed_at: None }),
+            !should_block(
+                false,
+                &GroupUpgradeStatus::Completed {
+                    completed_at: None,
+                    fleet_completed_at: None,
+                }
+            ),
             "Completed never blocks, regardless of the flag"
         );
     }

@@ -1810,6 +1810,11 @@ pub struct GetMigrationStatusApiResponse {
     /// `null` when there is no migration record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cohort_pinned_at_hlc: Option<String>,
+    /// Unix timestamp when this node watched the cohort converge, or `null`
+    /// while it has not. Durable, unlike `rollup.allMigrated`, which is
+    /// recomputed from in-TTL heartbeats and lapses when a member goes quiet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_completed_at: Option<u64>,
     pub rollup: MigrationStatusRollupApiData,
     pub members: Vec<MemberMigrationStatusApiEntry>,
 }
@@ -3058,6 +3063,7 @@ mod tests {
             target_version: 2,
             expected_members: 3,
             cohort_pinned_at_hlc: Some("hlc-abc".into()),
+            fleet_completed_at: None,
             rollup: MigrationStatusRollupApiData {
                 migrated: 1,
                 in_progress: 0,
@@ -3106,6 +3112,8 @@ mod tests {
         assert_eq!(json["targetVersion"], 2);
         assert_eq!(json["expectedMembers"], 3);
         assert_eq!(json["cohortPinnedAtHlc"], "hlc-abc");
+        // A cohort that has not converged has no fleet timestamp to carry.
+        assert!(json.get("fleetCompletedAt").is_none());
         assert_eq!(json["rollup"]["allMigrated"], false);
         assert_eq!(json["rollup"]["migrated"], 1);
         assert_eq!(json["rollup"]["unknown"], 1);
@@ -3138,6 +3146,7 @@ mod tests {
             target_version: 0,
             expected_members: 0,
             cohort_pinned_at_hlc: None,
+            fleet_completed_at: Some(1_700_002_000),
             rollup: MigrationStatusRollupApiData {
                 migrated: 0,
                 in_progress: 0,
@@ -3153,6 +3162,10 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("cohortPinnedAtHlc").is_none());
         assert_eq!(json["rollup"]["allMigrated"], false);
+        // The durable answer outlives the live rollup: a member that converged
+        // and then went quiet turns `allMigrated` back off, and this does not
+        // follow it.
+        assert_eq!(json["fleetCompletedAt"], 1_700_002_000u64);
     }
 
     fn ownership_req(nonce: &str) -> IssueOwnershipProofApiRequest {
