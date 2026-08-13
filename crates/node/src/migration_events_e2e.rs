@@ -223,19 +223,35 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
     // propagator's the moment this node's own contexts were swapped, the fleet's
     // when the cohort converged. Latching the fleet on the local stamp is what
     // used to leave this node - the admin's - the only one never told.
+    let GroupUpgradeStatus::Completed {
+        completed_at,
+        fleet_completed_at,
+    } = UpgradesRepository::new(&node.store)
+        .load(&ns)
+        .expect("load record")
+        .expect("record exists")
+        .status
+    else {
+        panic!("the cascade settled, so the record must be Completed");
+    };
     assert!(
-        matches!(
-            UpgradesRepository::new(&node.store)
-                .load(&ns)
-                .expect("load record")
-                .expect("record exists")
-                .status,
-            GroupUpgradeStatus::Completed {
-                completed_at: Some(_),
-                fleet_completed_at: Some(_),
-            }
-        ),
+        completed_at.is_some() && fleet_completed_at.is_some(),
         "the propagator's local stamp must not swallow the fleet's"
+    );
+    // The admin route answers from that same record, through this same rollup.
+    // A stamp the read cannot surface is a field no operator ever sees, however
+    // correctly the latch wrote it. Reports resolve to `unknown` here on
+    // purpose: the durable answer is the record's, not the live cohort's.
+    assert_eq!(
+        calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+            &node.store,
+            &ns,
+            |_| None,
+        )
+        .expect("rollup")
+        .fleet_completed_at,
+        fleet_completed_at,
+        "the admin read must surface the stamp the fleet latch wrote"
     );
     assert_eq!(
         count(&tags, "MigrationCompleted"),
