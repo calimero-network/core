@@ -104,7 +104,7 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 /// `state` is present on upsert and absent on TTL/disconnect expiry
 /// (`removed = true`). `contextId` rides on the flattened [`ContextEvent`].
 ///
-/// # Security — `author` is cryptographically authenticated
+/// # Security — `author` is identity-authenticated, not membership-checked
 ///
 /// The presence envelope is encrypted under the context **group key** and
 /// **signed** by `author`'s identity key over `(context_id, author, seq,
@@ -113,9 +113,16 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 /// before the slice reaches the awareness store or this event is emitted, so
 /// a group-key holder cannot forge another member's `author`. A message that
 /// fails verification is silently dropped and never surfaces as an event.
-/// Presence remains transient and never persisted, but by the time clients
-/// see `author` here it has been authenticated the same way a state-delta
-/// author is.
+///
+/// This authenticates *identity* only — it does not prove current group
+/// membership; a member removed from the group is cut off by group-key
+/// rotation, not by this check. Unlike a state-delta envelope, the presence
+/// envelope binds no `governance_position`, and the receive path performs no
+/// membership or authorization check. An ex-member who still holds a
+/// pre-rotation group key can publish presence signed by their own (valid)
+/// identity key until that key is rotated out. Presence remains transient
+/// and never persisted, but clients MUST NOT treat `author` here as proof of
+/// current membership (e.g. for access control).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EphemeralPayload {
