@@ -1,4 +1,4 @@
-name: 11 — Scenario "field split" (v1 → v2-field-split, 2-node)
+name: 11 - Scenario "field split" (v1 → v2-field-split, 2-node)
 description: >
   2-node per-context migration for the field-split scenario.
   v1 carries a single `address: LwwRegister<String>` field; v2 splits
@@ -8,7 +8,7 @@ description: >
   back to street = whole address with city/postcode empty.
   Topology: namespace + one Open subgroup + one context in the
   subgroup. Upgrade is `upgrade_group(group=subgroup, target=v2,
-  migrate=migrate_v1_to_v2)` — per-context (cascade=false). Acts as
+  migrate=migrate_v1_to_v2)` - per-context (cascade=false). Acts as
   the schema-reshape row of the per-scenario matrix. Cross-node
   assertions prove the split-field shape reaches node 2 via context-
   sync gossip.
@@ -111,7 +111,7 @@ steps:
     context_id: "{{ctx_id}}"
 
   # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
-  - name: Write v1 state — set_name
+  - name: Write v1 state - set_name
     type: call
     node: app-migration-split-1
     context_id: "{{ctx_id}}"
@@ -119,7 +119,7 @@ steps:
     args:
       name: "customer-7"
 
-  - name: Write v1 state — set_address (3-part comma-separated)
+  - name: Write v1 state - set_address (3-part comma-separated)
     type: call
     node: app-migration-split-1
     context_id: "{{ctx_id}}"
@@ -150,7 +150,7 @@ steps:
       - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "name": "customer-7", "address": "221B Baker Street, London, NW1 6XE"}})'
 
   # Negative: v2-only setter not yet callable under v1.
-  - name: Negative — set_street is not exported by v1
+  - name: Negative - set_street is not exported by v1
     type: call
     node: app-migration-split-1
     context_id: "{{ctx_id}}"
@@ -161,7 +161,7 @@ steps:
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   # The upgrade sets the target + migration method on the subgroup meta
-  # and returns without running a propagator — each node self-migrates on
+  # and returns without running a propagator - each node self-migrates on
   # its next access below.
   - name: Install scenario-field-split-v2 on node 1
     type: install_application
@@ -174,7 +174,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
@@ -212,27 +212,47 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  # Both nodes self-migrated via the lazy path — assert the migration
-  # logs on EACH after its triggering read above.
-  - name: Assert lazy migration ran on node 1
-    type: assert_log_present
-    nodes:
-      - app-migration-split-1
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # schema_info cannot prove a migration ran: the version string it returns is a
+  # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
+  # v1 bytes too. The rollup carries each member's ABI STATE version instead.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-split-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
-    type: assert_log_present
-    nodes:
-      - app-migration-split-2
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-split-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
 
   - name: Assert v2 schema on node 1 (address parsed into three fields, name preserved)
     type: json_assert
@@ -293,7 +313,7 @@ steps:
       - 'json_subset({{v2_schema_after_node2}}, {"output": {"postcode": "NW1 6XF"}})'
 
   # Negative: v1-only setter is no longer callable under v2.
-  - name: Negative — set_address is gone in v2
+  - name: Negative - set_address is gone in v2
     type: call
     node: app-migration-split-1
     context_id: "{{ctx_id}}"

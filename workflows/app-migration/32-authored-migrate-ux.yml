@@ -1,9 +1,9 @@
-name: 32 — One-tap migrate_my_entries (PR-6e, node-log validated)
+name: 32 - One-tap migrate_my_entries (node-log validated)
 description: >
   The explicit, one-signature "migrate my authored data" flow, on top of the
   6c owner-driven convert. After a namespace cascades v1 → v2, each owner's
   identity-gated AuthoredMap notes are carried through but stay stamped at the
-  v1 schema (1) — below the v2 target (2) — until re-signed. Instead of waiting
+  v1 schema (1) - below the v2 target (2) - until re-signed. Instead of waiting
   for an organic per-entry edit, each owner calls the SDK-macro-generated
   `migrate_my_entries()` export ONCE; it sweeps every note that owner owns and
   is still below target, re-writing each through the owner-driven convert
@@ -11,7 +11,7 @@ description: >
 
   Discriminating assertions:
     - PRE-convert: each carried note reports note_schema_version == 1 (carried,
-      not yet converted) — proving migrate alone does NOT convert authored data.
+      not yet converted) - proving migrate alone does NOT convert authored data.
     - The one-tap call is OWNER-SCOPED: node 1's call converts only its 2 notes
       (converted == 2), node 2's only its 1 (converted == 1); neither touches
       the other's. remaining == 0 after each owner's single call.
@@ -171,7 +171,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
@@ -229,7 +229,7 @@ steps:
     statements:
       - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "note_count": 3}})'
 
-  # Phase 6b: PRE-convert — carried notes are still stamped at v1 (schema 1).
+  # Phase 6b: PRE-convert - carried notes are still stamped at v1 (schema 1).
   # This proves migrate alone does NOT convert identity-gated data; it waits
   # for the owner. (If this read itself converted, the value would be 2.)
   - name: Read node 1's own note schema_version BEFORE convert
@@ -277,7 +277,7 @@ steps:
       - 'json_equal({{convert_node2}}, {"output": {"converted": 1, "remaining": 0}})'
 
   # Phase 7a: RACE-FREE PERSISTENCE ORACLE. Each node reads its OWN note right
-  # after its OWN one-tap — no replication involved. This is the authoritative
+  # after its OWN one-tap - no replication involved. This is the authoritative
   # proof the convert actually PERSISTED the re-stamp on the originator (a
   # `converted` count alone is computed before the guard save and would not
   # catch an LWW-dropped write). If these are 2, the convert works.
@@ -307,12 +307,40 @@ steps:
       - 'json_equal({{local_n1a}}, {"output": 2})'
       - 'json_equal({{local_n2a}}, {"output": 2})'
 
-  # Phase 7b: give the converted deltas time to gossip + apply on the peer.
-  # (wait_for_sync can return instantly on a trivially-matching DAG-head check,
-  # racing the convert delta, so wait explicitly before cross-node assertions.)
-  - name: Wait for converted notes to replicate as normal signed deltas
-    type: wait
-    seconds: 15
+  # Phase 7b: CAUSAL BARRIER for the cross-node reads in Phase 9.
+  #
+  # The convert re-stamps each entry without changing its value, so it leaves
+  # the context root hash where it was and a wait_for_sync over that hash
+  # returns on its first poll whether or not the convert replicated. An INSERT
+  # does move the hash, and each barrier insert is causally after that node's
+  # own convert, so converging on it implies the convert landed. Do not replace
+  # these with a bare wait: the gate is the point.
+  - name: Node 1 writes a barrier note after its convert
+    type: call
+    node: app-migration-ux-1
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n1-barrier"
+      text: "node1-post-convert-barrier"
+
+  - name: Node 2 writes a barrier note after its convert
+    type: call
+    node: app-migration-ux-2
+    context_id: "{{ctx_id}}"
+    method: set_note
+    args:
+      key: "n2-barrier"
+      text: "node2-post-convert-barrier"
+
+  - name: Wait for both barrier notes, and the converts before them, to converge
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-ux-1
+      - app-migration-ux-2
+    timeout: 90
+    trigger_sync: true
 
   # Phase 8: NEGATIVE node-log validation.
   - name: Assert the owner gate never tripped on either node
@@ -331,24 +359,10 @@ steps:
     patterns:
       - "Dropping state delta — HLC fence: stale schema after cascade migration"
 
-  # Phase 9: CONVERGENCE — every note is at schema 2 on BOTH nodes, and values
+  # Phase 9: CONVERGENCE - every note is at schema 2 on BOTH nodes, and values
   # are preserved. node 2 sees node 1's converted notes at v2 (the convert
-  # replicated as ordinary signed deltas).
-  # Phase 9 asserts CROSS-NODE convergence, so it has to wait for it. Without
-  # this, the reads below race the deltas they are asserting on: node 1's own
-  # note is local and node 1's note on node 2 has had the whole convert phase to
-  # propagate, but node 2's note on node 1 is the last write to travel and reads
-  # back `null` under CI load — a failure that looks like a migration bug and is
-  # really a missing barrier.
-  - name: Wait for the converted notes to converge on both nodes
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-ux-1
-      - app-migration-ux-2
-    timeout: 90
-    trigger_sync: true
-
+  # replicated as ordinary signed deltas). The barrier in Phase 7b is what makes
+  # these reads a convergence assertion rather than a timing one.
   - name: Read node 1's note schema_version AFTER convert (node 1)
     type: call
     node: app-migration-ux-1
@@ -423,7 +437,7 @@ steps:
       - "owner-driven convert: re-stamped identity-gated entry schema_version"
     min_matches: 1
 
-  # Phase 9b: IDEMPOTENT — a second one-tap on node 1 converts nothing.
+  # Phase 9b: IDEMPOTENT - a second one-tap on node 1 converts nothing.
   - name: Node 1 calls migrate_my_entries again (idempotent)
     type: call
     node: app-migration-ux-1
