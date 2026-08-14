@@ -73,10 +73,7 @@ fn upgrade_with_hlc(cascade_hlc: Option<HybridTimestamp>) -> GroupUpgradeValue {
         migration: None,
         initiated_at: 1_700_000_000,
         initiated_by: PublicKey::from([0x01; 32]),
-        status: GroupUpgradeStatus::Completed {
-            completed_at: None,
-            fleet_completed_at: None,
-        },
+        status: GroupUpgradeStatus::Completed { completed_at: None },
         cascade_hlc,
         cascade_seq: None,
         to_state_version: 2,

@@ -262,10 +262,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
                 // Contexts upgrade individually on demand; there is no single
                 // "all done" moment, so completed_at is None.
-                let completed_status = GroupUpgradeStatus::Completed {
-                    completed_at: None,
-                    fleet_completed_at: None,
-                };
+                let completed_status = GroupUpgradeStatus::Completed { completed_at: None };
 
                 let upgrade_value = GroupUpgradeValue {
                     from_version,
@@ -1293,7 +1290,6 @@ pub(crate) async fn propagate_upgrade(
         // re-completion after a retry re-arms it.
         GroupUpgradeStatus::Completed {
             completed_at: Some(now),
-            fleet_completed_at: None,
         }
     } else {
         // Keep as InProgress with the final counts so manual retry can pick it up

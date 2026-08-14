@@ -1666,10 +1666,7 @@ async fn fleet_completion_stamps_the_record_once() {
                 migration: None,
                 initiated_at: 0,
                 initiated_by: admin_pk,
-                status: GroupUpgradeStatus::Completed {
-                    completed_at: None,
-                    fleet_completed_at: None,
-                },
+                status: GroupUpgradeStatus::Completed { completed_at: None },
                 cascade_hlc: None,
                 cascade_seq: None,
                 to_state_version: 2,
@@ -1762,21 +1759,15 @@ async fn fleet_completion_stamps_the_record_once() {
         other => panic!("expected MigrationCompleted, got {other:?}"),
     };
 
-    let record_at = |store: &Store| match UpgradesRepository::new(store)
-        .load(&ns)
-        .expect("load record")
-        .expect("record exists")
-        .status
-    {
-        GroupUpgradeStatus::Completed {
-            fleet_completed_at, ..
-        } => fleet_completed_at,
-        other => panic!("expected Completed, got {other:?}"),
+    let stamp = |store: &Store| {
+        UpgradesRepository::new(store)
+            .fleet_completed_at(&ns)
+            .expect("read stamp")
     };
     assert_eq!(
-        record_at(&node.store),
+        stamp(&node.store),
         Some(stamped_at),
-        "the announced timestamp is the one persisted on the record"
+        "the announced timestamp is the one persisted"
     );
 
     // A newer heartbeat carrying different facts (the peer now owes authored
@@ -1814,19 +1805,196 @@ async fn fleet_completion_stamps_the_record_once() {
             .await
             .map(|e| format!("{:?}", e.payload)),
         None,
-        "completion must not re-announce while the record already carries a stamp"
+        "completion must not re-announce while the stamp is already written"
     );
     assert_eq!(
-        record_at(&node.store),
+        stamp(&node.store),
         Some(stamped_at),
         "the stamp is written once, not refreshed on every recompute"
+    );
+}
+
+/// Write the `Completed` record a shipped binary wrote, as raw bytes rather
+/// than through this binary's own encoder. `status` sits mid-struct, so a field
+/// added inside the variant shifts `cascade_hlc`, `cascade_seq` and
+/// `to_state_version` and the row stops decoding.
+fn put_shipped_completed_record(store: &Store, ns: &ContextGroupId, initiated_by: PublicKey) {
+    use borsh::BorshSerialize;
+    use calimero_store::layer::WriteLayer;
+
+    let mut bytes = Vec::new();
+    "0.1.0".to_owned().serialize(&mut bytes).unwrap();
+    "0.2.0".to_owned().serialize(&mut bytes).unwrap();
+    None::<Vec<u8>>.serialize(&mut bytes).unwrap();
+    0u64.serialize(&mut bytes).unwrap();
+    initiated_by.serialize(&mut bytes).unwrap();
+    // `Completed`: variant tag, then `completed_at` and nothing else.
+    bytes.push(1);
+    None::<u64>.serialize(&mut bytes).unwrap();
+    // `cascade_hlc` then `cascade_seq`, both absent (one `0` tag each).
+    bytes.extend_from_slice(&[0, 0]);
+    2u32.serialize(&mut bytes).unwrap();
+
+    store
+        .clone()
+        .put(
+            &key::GroupUpgradeKey::new(ns.to_bytes()),
+            calimero_store::slice::Slice::from(&bytes[..]),
+        )
+        .expect("write the shipped-layout record");
+}
+
+/// The whole fleet-progress feature, driven off the record every namespace that
+/// has already migrated once holds the moment its node upgrades.
+///
+/// The heartbeat reaction opens with the namespace rollup, which opens with
+/// this read. A record it cannot decode leaves `MigrationProgress` and
+/// `MigrationCompleted` dark on that namespace on every beat forever, and
+/// re-arms the completion latch each time instead of stamping it - silently,
+/// because the reaction only warns and returns. Every other test here builds
+/// its record in-process, so none of them read a row this binary did not write.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_record_a_shipped_binary_wrote_still_drives_the_fleet_latch() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x79; 32]);
+    let app_key = [0xB7; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xCD; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .expect("store namespace identity");
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    put_shipped_completed_record(&node.store, &ns, admin_pk);
+
+    // The admin read answers from this row too, and it is the same rollup the
+    // heartbeat reaction below runs.
+    assert_eq!(
+        calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+            &node.store,
+            &ns,
+            |_| None,
+        )
+        .expect("the admin read must answer over a stored record")
+        .target_version,
+        2,
+    );
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let facts = MigrationFacts {
+        schema_version: 2,
+        residue_auto: 0,
+        synced_up_to_hlc: 0,
+        authored_remaining: 0,
+        migration_failed: None,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    // Red first, so the completion announces an edge this process watched.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                ..facts
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("a stored record must not silence the fleet frames")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the first heartbeat must announce the fleet rollup"
+    );
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms + 1_000)
+            .expect("sign heartbeat"),
+    )
+    .await;
+    match next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup")
+        .payload
+    {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "this node plus the peer");
+            assert_eq!(migrated, 2, "both are at the target");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    let stamped_at = match next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the all_migrated edge must announce completion")
+        .payload
+    {
+        GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at,
+        } => {
+            assert_eq!(
+                to_version, "0.2.0",
+                "the version comes off the stored record"
+            );
+            completed_at
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    };
+
+    // The latch is stamped, not re-armed: a read that errors makes
+    // `stamp_fleet_completion` return false forever, re-arming on every beat.
+    assert_eq!(
+        UpgradesRepository::new(&node.store)
+            .fleet_completed_at(&ns)
+            .expect("read stamp"),
+        Some(stamped_at),
+    );
+    assert_eq!(
+        calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+            &node.store,
+            &ns,
+            |_| None,
+        )
+        .expect("rollup")
+        .fleet_completed_at,
+        Some(stamped_at),
+        "the admin read must surface the stamp the fleet latch wrote"
     );
 }
 
 /// A node that boots onto an already-converged fleet observed no transition.
 ///
 /// Every installation that ever upgraded carries a root record sitting at
-/// `Completed { fleet_completed_at: None, .. }`, so the first rollup after boot
+/// `Completed` with no fleet stamp, so the first rollup after boot
 /// finds an armed latch over a green fleet. The version is right and the stamp
 /// is owed, but the event is not: `MigrationCompleted` announces a false-to-true edge,
 /// and this process never saw one. Announcing anyway would banner a migration
@@ -1869,10 +2037,7 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
                 migration: None,
                 initiated_at: 0,
                 initiated_by: admin_pk,
-                status: GroupUpgradeStatus::Completed {
-                    completed_at: None,
-                    fleet_completed_at: None,
-                },
+                status: GroupUpgradeStatus::Completed { completed_at: None },
                 cascade_hlc: None,
                 cascade_seq: None,
                 to_state_version: 2,
@@ -1930,24 +2095,19 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
 
     // The stamp is still written: it is the latch, and leaving it armed would
     // re-run this decision on every heartbeat for the life of the namespace.
-    match UpgradesRepository::new(&node.store)
-        .load(&ns)
-        .expect("load record")
-        .expect("record exists")
-        .status
-    {
-        GroupUpgradeStatus::Completed {
-            fleet_completed_at: Some(_),
-            ..
-        } => {}
-        other => panic!("the backfill must disarm the latch, got {other:?}"),
-    }
+    assert!(
+        UpgradesRepository::new(&node.store)
+            .fleet_completed_at(&ns)
+            .expect("read stamp")
+            .is_some(),
+        "the backfill must disarm the latch"
+    );
 }
 
 /// The completion stamp must describe the migration the rollup measured.
 ///
 /// Every installation that ever upgraded carries a root record sitting at
-/// `Completed { fleet_completed_at: None, .. }`, so the first heartbeat on an
+/// `Completed` with no fleet stamp, so the first heartbeat on an
 /// already-converged fleet finds an armed latch. The rollup's target is the max
 /// across the root AND every descendant: once a subgroup has been upgraded past
 /// the root, a green fleet is the subgroup's migration converging, and stamping
@@ -1993,10 +2153,7 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
         migration: None,
         initiated_at: 0,
         initiated_by: admin_pk,
-        status: GroupUpgradeStatus::Completed {
-            completed_at: None,
-            fleet_completed_at: None,
-        },
+        status: GroupUpgradeStatus::Completed { completed_at: None },
         cascade_hlc: None,
         cascade_seq: None,
         to_state_version: 2,
@@ -2077,10 +2234,7 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
         .expect("record exists")
         .status
     {
-        GroupUpgradeStatus::Completed {
-            fleet_completed_at: None,
-            ..
-        } => {}
+        GroupUpgradeStatus::Completed { .. } => {}
         other => panic!("the unmeasured record must be left untouched, got {other:?}"),
     }
 }

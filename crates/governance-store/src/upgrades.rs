@@ -1,7 +1,7 @@
 use calimero_context_config::types::ContextGroupId;
-use calimero_store::handle::HandleError;
 use calimero_store::key::{
-    GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue, GROUP_UPGRADE_PREFIX,
+    GroupFleetCompletion, GroupUpgradeKey, GroupUpgradeStatus, GroupUpgradeValue,
+    GROUP_UPGRADE_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -24,10 +24,14 @@ impl<'a> UpgradesRepository<'a> {
         Self { store }
     }
 
+    /// Writing the record clears [`Self::fleet_completed_at`]: that stamp is an
+    /// observation about the record as last written, and the next migration is
+    /// recorded by overwriting this one (the lazy path writes `Completed`
+    /// directly, with no `InProgress` in between).
     pub fn save(&self, group_id: &ContextGroupId, upgrade: &GroupUpgradeValue) -> EyreResult<()> {
         let mut handle = self.store.handle();
-        let key = GroupUpgradeKey::new(group_id.to_bytes());
-        handle.put(&key, upgrade)?;
+        handle.put(&GroupUpgradeKey::new(group_id.to_bytes()), upgrade)?;
+        handle.delete(&GroupFleetCompletion::new(group_id.to_bytes()))?;
         Ok(())
     }
 
@@ -39,16 +43,27 @@ impl<'a> UpgradesRepository<'a> {
 
     pub fn delete(&self, group_id: &ContextGroupId) -> EyreResult<()> {
         let mut handle = self.store.handle();
-        let key = GroupUpgradeKey::new(group_id.to_bytes());
-        handle.delete(&key)?;
+        handle.delete(&GroupUpgradeKey::new(group_id.to_bytes()))?;
+        handle.delete(&GroupFleetCompletion::new(group_id.to_bytes()))?;
+        Ok(())
+    }
+
+    /// When this node watched the whole cohort converge on the stored record's
+    /// `to_state_version`, or `None` while that is still outstanding.
+    pub fn fleet_completed_at(&self, group_id: &ContextGroupId) -> EyreResult<Option<u64>> {
+        let handle = self.store.handle();
+        Ok(handle.get(&GroupFleetCompletion::new(group_id.to_bytes()))?)
+    }
+
+    pub fn set_fleet_completed_at(&self, group_id: &ContextGroupId, at: u64) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        handle.put(&GroupFleetCompletion::new(group_id.to_bytes()), &at)?;
         Ok(())
     }
 
     /// Scans all `GroupUpgradeKey` entries and returns
     /// `(group_id, upgrade_value)` pairs where status is `InProgress`.
-    /// Used for crash recovery on startup. A row that fails to decode is
-    /// skipped rather than fatal - recovery must not be blocked by a record
-    /// it has no use for.
+    /// Used for crash recovery on startup.
     pub fn enumerate_in_progress(&self) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
         let keys = collect_keys_with_prefix(
             self.store,
@@ -59,22 +74,8 @@ impl<'a> UpgradesRepository<'a> {
         let handle = self.store.handle();
         let mut results = Vec::new();
         for key in keys {
-            let upgrade = match handle.get(&key) {
-                Ok(Some(upgrade)) => upgrade,
-                Ok(None) => continue,
-                // A record this binary cannot decode is not one recovery can act
-                // on, and it must not strand the upgrades that decode fine: a
-                // `Completed` row an older binary wrote is unreadable here, and
-                // every node carries those the moment it upgrades.
-                Err(HandleError::CodecError(err)) => {
-                    tracing::warn!(
-                        group_id = %hex::encode(key.group_id()),
-                        %err,
-                        "skipping an undecodable group upgrade record during recovery scan"
-                    );
-                    continue;
-                }
-                Err(HandleError::LayerError(err)) => return Err(err),
+            let Some(upgrade) = handle.get(&key)? else {
+                continue;
             };
             if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
                 results.push((ContextGroupId::from(key.group_id()), upgrade));
@@ -152,10 +153,7 @@ mod tests {
         let gid = test_group_id();
         repo.save(
             &gid,
-            &sample_upgrade(GroupUpgradeStatus::Completed {
-                completed_at: None,
-                fleet_completed_at: None,
-            }),
+            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
         )
         .unwrap();
         repo.delete(&gid).unwrap();
@@ -179,10 +177,7 @@ mod tests {
         .unwrap();
         repo.save(
             &gid_completed,
-            &sample_upgrade(GroupUpgradeStatus::Completed {
-                completed_at: None,
-                fleet_completed_at: None,
-            }),
+            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
         )
         .unwrap();
         let in_progress = repo.enumerate_in_progress().unwrap();
@@ -190,36 +185,56 @@ mod tests {
         assert_eq!(in_progress[0].0, gid_progress);
     }
 
-    /// A row this binary cannot decode - notably a `Completed` record written
-    /// before `fleet_completed_at` existed, which every node holds the moment it
-    /// upgrades - must not strand the in-progress upgrades recovery exists to
-    /// resume.
+    /// Both readers of this key answer an undecodable row the same way: loudly.
+    /// Tolerating it in one of them makes that reader report "no upgrade
+    /// record", which every migration caller reads as "no migration in flight" -
+    /// a false green over a record that says otherwise.
     #[test]
-    fn enumerate_in_progress_survives_an_undecodable_record() {
+    fn an_undecodable_record_fails_loud_in_both_readers() {
         use calimero_store::layer::WriteLayer;
         use calimero_store::slice::Slice;
 
         let mut store = test_store();
-        let gid_progress = test_group_id();
-        UpgradesRepository::new(&store)
-            .save(
-                &gid_progress,
-                &sample_upgrade(GroupUpgradeStatus::InProgress {
-                    total: 5,
-                    completed: 0,
-                    failed: 0,
-                }),
+        let gid = test_group_id();
+        store
+            .put(
+                &GroupUpgradeKey::new(gid.to_bytes()),
+                Slice::from(&b"not a GroupUpgradeValue"[..]),
             )
             .unwrap();
-        let undecodable = GroupUpgradeKey::new([0xCC; 32]);
-        store
-            .put(&undecodable, Slice::from(&b"not a GroupUpgradeValue"[..]))
-            .unwrap();
 
-        let in_progress = UpgradesRepository::new(&store)
-            .enumerate_in_progress()
-            .unwrap();
-        assert_eq!(in_progress.len(), 1);
-        assert_eq!(in_progress[0].0, gid_progress);
+        let repo = UpgradesRepository::new(&store);
+        assert!(repo.load(&gid).is_err(), "load must not report Ok(None)");
+        assert!(repo.enumerate_in_progress().is_err());
+    }
+
+    /// The stamp answers "did this node watch the cohort converge on the record
+    /// as it now stands", so writing the record retires it: the next migration
+    /// is recorded by overwriting this one, and a surviving stamp would both
+    /// report the old convergence and latch the new completion shut.
+    #[test]
+    fn writing_the_record_clears_the_fleet_stamp() {
+        let store = test_store();
+        let repo = UpgradesRepository::new(&store);
+        let gid = test_group_id();
+        repo.save(
+            &gid,
+            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
+        )
+        .unwrap();
+        repo.set_fleet_completed_at(&gid, 1_700_002_000).unwrap();
+        assert_eq!(repo.fleet_completed_at(&gid).unwrap(), Some(1_700_002_000));
+
+        // A second migration, recorded the way the lazy path records one.
+        repo.save(
+            &gid,
+            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
+        )
+        .unwrap();
+        assert_eq!(repo.fleet_completed_at(&gid).unwrap(), None);
+
+        repo.set_fleet_completed_at(&gid, 1_700_003_000).unwrap();
+        repo.delete(&gid).unwrap();
+        assert_eq!(repo.fleet_completed_at(&gid).unwrap(), None);
     }
 }

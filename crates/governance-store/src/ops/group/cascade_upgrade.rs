@@ -133,10 +133,7 @@ pub(crate) fn apply(
             migration: migration.clone(),
             initiated_at: 0,
             initiated_by: *signer,
-            status: GroupUpgradeStatus::Completed {
-                completed_at: None,
-                fleet_completed_at: None,
-            },
+            status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
             cascade_seq: None,
             to_state_version,
