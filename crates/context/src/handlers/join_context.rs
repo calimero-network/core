@@ -367,11 +367,12 @@ impl Handler<JoinContextRequest> for ContextManager {
 }
 
 /// The namespaces this node should sync when resolving a context->group
-/// mapping: exactly the distinct namespace roots it holds an identity in.
+/// mapping: exactly the distinct namespace roots it takes part in.
 ///
-/// A join can only ultimately succeed in a namespace the node has an identity
-/// in (the join later requires `NamespaceRepository::resolve_identity` for the
-/// context's owning group), so this is the tightest plausibly-owning set. It
+/// A join can only ultimately succeed in a namespace the node takes part in (the
+/// join later requires `NamespaceRepository::resolve_identity` for the context's
+/// owning group, which answers `None` where it does not), so this is the tightest
+/// plausibly-owning set. It
 /// deliberately does NOT enumerate every known group and resolve each to its
 /// root — that re-synced a namespace once per subgroup and wasted fan-out and
 /// network syncs on namespaces the node can never join into. `iter_identities`

@@ -85,9 +85,9 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         let device_repo = NodeDeviceRepository::new(&store);
 
         // The account root is what certifies the device, and it is also what
-        // decides *which* account this node can pair into: the genesis is
-        // derived from the root secret and the namespace id, so this node can
-        // only ever certify devices for the account it owns here.
+        // decides *which* account this node can pair into: the genesis is the
+        // content address of this node's root key, so it can only ever certify
+        // devices for the one account that root owns.
         let account_root = match device_repo.ensure_account_root() {
             Ok(root) => root,
             Err(err) => return ActorResponse::reply(Err(err)),

@@ -42,10 +42,10 @@ static ACCOUNT_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// This node's account root — the one key that survives losing every device.
 ///
-/// Node-level, not per-namespace: it is what certifies a replacement device after
-/// total loss, so it cannot live in the state being replaced. Per-namespace account
-/// ids stay distinct because the nonce is derived per namespace rather than shared,
-/// which is what lets recovery and unlinkability hold at once.
+/// Node-level: it is what certifies a replacement device after total loss, so it
+/// cannot live in the state being replaced. It is also the whole of the account's
+/// derivation — the account is this root's content address — so the phrase that
+/// backs this key up restores the account itself, with nothing to keep beside it.
 // Deliberately NOT `Clone`: `PrivateKey` is not, and that is the right default for
 // a recovery key — every copy is another place it can leak from, and none of them
 // are covered by the original's wipe.
