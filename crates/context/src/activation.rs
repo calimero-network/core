@@ -32,6 +32,32 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
+/// The ABI state version the context's activated bytecode declares, if it was
+/// resolvable when the activation was recorded.
+pub fn activated_state_version(store: &Store, context_id: &ContextId) -> Option<u32> {
+    store
+        .handle()
+        .get(&calimero_store::key::ContextActivatedStateVersion::new(
+            *context_id,
+        ))
+        .ok()
+        .flatten()
+        .map(|v| v.state_version)
+}
+
+/// Record the state version `context_id`'s newly-activated bytecode declares.
+/// Best-effort, like [`record_activation`]: without it the rollup falls back to
+/// the install row, which under-reports rather than over-reports.
+pub fn record_activated_state_version(store: &Store, context_id: &ContextId, state_version: u32) {
+    let mut handle = store.handle();
+    if let Err(err) = handle.put(
+        &calimero_store::key::ContextActivatedStateVersion::new(*context_id),
+        &calimero_store::types::ContextActivatedStateVersion { state_version },
+    ) {
+        debug!(%context_id, %err, "failed to record activated state version");
+    }
+}
+
 /// Whether this context's STATE has reached the bytecode its group records as
 /// current (`marker == group.app_key`), or `None` when there is no group
 /// bytecode signal to compare against - no group, no meta, or a zero `app_key`.
