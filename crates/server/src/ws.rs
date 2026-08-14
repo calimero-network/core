@@ -30,7 +30,7 @@ use serde_json::{
 };
 use tokio::spawn;
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use tokio::time::interval;
+use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
@@ -560,13 +560,57 @@ async fn handle_commands(
     }
 }
 
+/// What a health-check tick should do about the client's liveness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HealthCheck {
+    /// An outstanding ping went unanswered past its grace period.
+    Close,
+    /// Nothing is outstanding: probe the client.
+    Ping,
+    /// A ping is outstanding but still within its grace period.
+    Wait,
+}
+
+/// Decide a tick's action. The deadline applies only to a ping that is actually
+/// outstanding, so neither an unpinged client nor a late timer can close a
+/// connection; `ping_sent_at` is `None` until the first ping goes out, and a
+/// pong at or after the send answers it (timestamps are whole seconds, so a
+/// sub-second round trip lands on the same one).
+const fn health_check_action(
+    now: u64,
+    last_pong: u64,
+    ping_sent_at: Option<u64>,
+    pong_timeout_secs: u64,
+) -> HealthCheck {
+    let Some(sent_at) = ping_sent_at else {
+        return HealthCheck::Ping;
+    };
+
+    if last_pong >= sent_at {
+        return HealthCheck::Ping;
+    }
+
+    if now.saturating_sub(sent_at) > pong_timeout_secs {
+        HealthCheck::Close
+    } else {
+        HealthCheck::Wait
+    }
+}
+
 async fn handle_health_check(
     connection_id: ConnectionId,
     state: Arc<ServiceState>,
     connection_state: ConnectionState,
 ) {
     let mut ping_timer = interval(Duration::from_secs(state.config.ping_interval_secs));
+    // A starved task must not fire a burst of catch-up ticks: every tick is a
+    // heartbeat, so a late one restarts the interval instead of compounding.
+    ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let _ = ping_timer.tick().await; // First tick completes immediately
+
+    // Timestamp of the ping awaiting a pong, `None` when none is outstanding.
+    // Owned by this task alone, so it needs no synchronization of its own.
+    let mut ping_sent_at = None;
 
     loop {
         let _ = ping_timer.tick().await;
@@ -577,43 +621,96 @@ async fn handle_health_check(
             break;
         }
 
-        // Check for pong timeout
         let last_pong = connection_state
             .inner
             .read()
             .await
             .last_pong
             .load(Ordering::Relaxed);
-        let elapsed = unix_timestamp().saturating_sub(last_pong);
 
-        if elapsed > state.config.ping_interval_secs + state.config.pong_timeout_secs {
-            warn!(
-                %connection_id,
-                elapsed_secs = elapsed,
-                timeout_secs = state.config.ping_interval_secs + state.config.pong_timeout_secs,
-                "Client failed to respond to ping, closing connection"
-            );
+        match health_check_action(
+            unix_timestamp(),
+            last_pong,
+            ping_sent_at,
+            state.config.pong_timeout_secs,
+        ) {
+            HealthCheck::Wait => {}
+            HealthCheck::Close => {
+                warn!(
+                    %connection_id,
+                    timeout_secs = state.config.pong_timeout_secs,
+                    "Client failed to respond to ping, closing connection"
+                );
 
-            // Close connection due to timeout
-            if let Err(err) = connection_state
-                .commands
-                .send(Command::Close(
-                    close_code::PROTOCOL_ERROR,
-                    "Ping timeout".to_owned(),
-                ))
-                .await
-            {
-                error!(%connection_id, %err, "Failed to send close command");
+                if let Err(err) = connection_state
+                    .commands
+                    .send(Command::Close(
+                        close_code::PROTOCOL_ERROR,
+                        "Ping timeout".to_owned(),
+                    ))
+                    .await
+                {
+                    error!(%connection_id, %err, "Failed to send close command");
+                }
+                break;
             }
-            break;
+            HealthCheck::Ping => {
+                debug!(%connection_id, "Sending ping to client");
+                if let Err(err) = connection_state.commands.send(Command::Ping(vec![])).await {
+                    error!(%connection_id, %err, "Failed to send ping command");
+                    break;
+                }
+                ping_sent_at = Some(unix_timestamp());
+            }
         }
+    }
+}
 
-        // Send ping to check if client is alive
-        debug!(%connection_id, "Sending ping to client");
-        if let Err(err) = connection_state.commands.send(Command::Ping(vec![])).await {
-            error!(%connection_id, %err, "Failed to send ping command");
-            break;
-        }
+#[cfg(test)]
+mod health_check_tests {
+    use super::{health_check_action, HealthCheck};
+
+    const TIMEOUT: u64 = 10;
+
+    #[test]
+    fn never_pinged_client_survives_an_arbitrarily_late_tick() {
+        assert_eq!(
+            health_check_action(1_000_000, 1_000, None, TIMEOUT),
+            HealthCheck::Ping
+        );
+    }
+
+    #[test]
+    fn responsive_client_survives_a_late_tick() {
+        // Pong answered the outstanding ping; the tick then ran hours late.
+        assert_eq!(
+            health_check_action(1_010_000, 1_001, Some(1_000), TIMEOUT),
+            HealthCheck::Ping
+        );
+    }
+
+    #[test]
+    fn pong_in_the_ping_second_answers_it() {
+        assert_eq!(
+            health_check_action(1_100, 1_000, Some(1_000), TIMEOUT),
+            HealthCheck::Ping
+        );
+    }
+
+    #[test]
+    fn unanswered_ping_closes_once_the_grace_period_expires() {
+        assert_eq!(
+            health_check_action(1_011, 999, Some(1_000), TIMEOUT),
+            HealthCheck::Close
+        );
+    }
+
+    #[test]
+    fn unanswered_ping_is_spared_within_the_grace_period() {
+        assert_eq!(
+            health_check_action(1_010, 999, Some(1_000), TIMEOUT),
+            HealthCheck::Wait
+        );
     }
 }
 
@@ -815,6 +912,7 @@ mod tests {
     //! connection lifecycle, subscribe/unsubscribe, ping/pong, cleanup, event
     //! broadcasting, and the `execute` plumbing.
 
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -843,7 +941,8 @@ mod tests {
     use futures_util::{SinkExt, Stream, StreamExt};
     use serde_json::{json, Value};
     use tempfile::TempDir;
-    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{broadcast, mpsc, RwLock};
     use tokio::time::sleep;
     use tokio_tungstenite::connect_async;
@@ -857,6 +956,7 @@ mod tests {
     /// store's temp dir alive for the duration of the test.
     struct TestServer {
         url: String,
+        addr: SocketAddr,
         state: Arc<ServiceState>,
         event_sender: broadcast::Sender<NodeEvent>,
         _blob_dir: TempDir,
@@ -867,16 +967,20 @@ mod tests {
     }
 
     async fn spawn_test_ws() -> TestServer {
-        spawn_test_ws_full(false, None).await
+        spawn_test_ws_full(false, None, WsConfig::new(true)).await
     }
 
     // Auth-enabled server with an authenticated (non-owner) caller, so the
     // per-request subscribe auth gates actually run.
     async fn spawn_test_ws_authed(caller: PublicKey) -> TestServer {
-        spawn_test_ws_full(true, Some(caller)).await
+        spawn_test_ws_full(true, Some(caller), WsConfig::new(true)).await
     }
 
-    async fn spawn_test_ws_full(auth_enabled: bool, caller: Option<PublicKey>) -> TestServer {
+    async fn spawn_test_ws_full(
+        auth_enabled: bool,
+        caller: Option<PublicKey>,
+        config: WsConfig,
+    ) -> TestServer {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
 
         let blob_dir = TempDir::new().unwrap();
@@ -915,7 +1019,7 @@ mod tests {
             node_client,
             ctx_client,
             connections: RwLock::default(),
-            config: WsConfig::new(true),
+            config,
             auth_enabled,
             events_fanout: std::sync::Once::new(),
         });
@@ -934,6 +1038,7 @@ mod tests {
 
         TestServer {
             url: format!("ws://{addr}/ws"),
+            addr,
             state,
             event_sender,
             _server: server,
@@ -1616,6 +1721,80 @@ mod tests {
         .unwrap_or(false);
 
         assert!(got_pong, "server should answer a ping with a pong");
+    }
+
+    /// End-to-end cover for the health check: an idle client that answers pings
+    /// keeps getting pinged and is never closed. Reading the socket is what
+    /// sends the pongs, since tungstenite answers pings from the read path.
+    #[tokio::test]
+    async fn responsive_idle_client_keeps_being_pinged_and_is_never_closed() {
+        let mut config = WsConfig::new(true);
+        config.ping_interval_secs = 1;
+        config.pong_timeout_secs = 1;
+
+        let server = spawn_test_ws_full(false, None, config).await;
+        let (_write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let mut pings = 0_u32;
+        let _ = tokio::time::timeout(Duration::from_millis(4_000), async {
+            while let Some(Ok(msg)) = read.next().await {
+                match msg {
+                    Message::Ping(_) => pings += 1,
+                    Message::Close(frame) => {
+                        panic!("server closed a responsive client: {frame:?}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+
+        assert!(pings >= 2, "expected repeated server pings, got {pings}");
+    }
+
+    /// A client that never answers is still closed. Driven over a raw socket
+    /// because a tungstenite client answers pings from its read path, which
+    /// would make "unresponsive" depend on when the test happens to poll.
+    #[tokio::test]
+    async fn unresponsive_client_is_closed() {
+        let mut config = WsConfig::new(true);
+        config.ping_interval_secs = 1;
+        config.pong_timeout_secs = 1;
+
+        let server = spawn_test_ws_full(false, None, config).await;
+        let mut socket = TcpStream::connect(server.addr).await.unwrap();
+
+        socket
+            .write_all(
+                format!(
+                    "GET /ws HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+                     Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                    server.addr
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        // Server frames are unmasked and the pings it sends carry no payload,
+        // so the byte stream is `89 00` repeated until the close frame's `88`.
+        let closed = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut buf = [0_u8; 1024];
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => return false,
+                    Ok(n) => {
+                        if buf[..n].contains(&0x88) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(closed, "server should close a client that never pongs");
     }
 
     #[tokio::test]
