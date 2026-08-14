@@ -144,10 +144,9 @@ impl Handler<JoinContextRequest> for ContextManager {
                     group_id.ok_or_else(|| eyre::eyre!("context does not belong to any group"))?;
 
                 // Resolve joiner identity from node namespace identity.
-                let (joiner_identity, _) =
-                    NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
-                        .map(|(pk, sk, _sender)| (pk, sk))
-                        .ok_or_else(|| {
+                let (joiner_identity, _) = NamespaceRepository::new(&datastore)
+                    .resolve_identity(&group_id)?
+                    .ok_or_else(|| {
                             eyre::eyre!(
                             "node has no namespace identity for this group; join the group first"
                         )
@@ -223,7 +222,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
                 let ns_identity = NamespaceRepository::new(&datastore).identity(&ns_id)?
                     .ok_or_else(|| eyre::eyre!("namespace identity not found"))?;
-                let (_pk, sk_bytes, _sender) = ns_identity;
+                let (_pk, sk_bytes) = ns_identity;
 
                 let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
                 let config = if !context_client.has_context(&context_id)? {
@@ -425,7 +424,7 @@ mod tests {
     fn store_identity(store: &Store, namespace: &ContextGroupId) {
         let sk = PrivateKey::from([0x33; 32]);
         NamespaceRepository::new(store)
-            .store_identity(namespace, &sk.public_key(), sk.as_bytes(), &[0x44; 32])
+            .store_identity(namespace, &sk.public_key(), sk.as_bytes())
             .expect("store identity");
     }
 

@@ -884,10 +884,10 @@ mod recipient_tests {
     /// membership gate requires: the account's epoch-0 root key IS a member key.
     /// Link one device of `member_sk`'s account, returning it and the account.
     ///
-    /// The account's genesis nonce is fixed per member, NOT per device — two
-    /// calls with different `device_seed`s are two devices of ONE person. It
-    /// used to vary with the device, which silently made every device its own
-    /// account and could not model the case these tests are about.
+    /// The account is fixed per member, NOT per device — two calls with
+    /// different `device_seed`s are two devices of ONE person. The account used
+    /// to vary with the device, which silently made every device its own account
+    /// and could not model the case these tests are about.
     fn link_device(
         store: &Store,
         gid: ContextGroupId,

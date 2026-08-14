@@ -560,9 +560,21 @@ pub fn delete_namespace_local_state(
     handle.delete(&NamespaceIdentity::new(ns_bytes))?;
     drop(handle);
 
-    // Forward secrecy, same reasoning as the group keyring delete above: this
-    // node's device agreement secret is the only thing that can open scope keys
-    // wrapped for it, so it must not outlive the node's membership.
-    crate::NodeDeviceRepository::new(store).delete(namespace_id)?;
+    // The device is NOT deleted here, and that is a change in posture worth
+    // stating. Its agreement secret is node-level — every other namespace this
+    // node belongs to opens its scope keys with the same one — so a purge scoped
+    // to a single namespace cannot take it without evicting the node from
+    // everywhere at once.
+    //
+    // What the property rests on instead, all still done above: the group keyring
+    // is deleted, so the wrapped scope keys this secret could open are gone; every
+    // stored governance op for the namespace is deleted; and removal triggers a
+    // group-key rotation, so nothing it could still unwrap stays current. What is
+    // lost is the defence-in-depth case of ciphertext retained OUTSIDE the keyring.
+    //
+    // Recovering the strong version means rotating the device's keys rather than
+    // deleting them — `DeviceCert::device_epoch` exists for exactly that, "the same
+    // device with fresh keys" — which needs the account root to sign a fresh
+    // certificate.
     Ok(())
 }

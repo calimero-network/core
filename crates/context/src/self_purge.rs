@@ -315,7 +315,7 @@ pub(crate) fn decide_purge_action(
     // would also work; using `ns_id` just removes the apparent ambiguity
     // flagged in PR review.
     let self_pk = match NamespaceRepository::new(store).resolve_identity(&ns_id) {
-        Ok(Some((pk, _sk, _sender))) => pk,
+        Ok(Some((pk, _sk))) => pk,
         Ok(None) => {
             // Not our namespace; nothing to purge. The most common case
             // for the listener.
@@ -1586,7 +1586,7 @@ mod tests {
             .store_key(&ns_id, &self_pk, &[0xEE; 32])
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .store_identity(&ns_id, &self_pk, &[0x11; 32])
             .unwrap();
 
         // Sanity: pre-condition state landed.
@@ -1640,7 +1640,7 @@ mod tests {
             )
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .store_identity(&ns_id, &self_pk, &[0x11; 32])
             .unwrap();
 
         // Nested subgroup under the namespace root.
@@ -2896,7 +2896,7 @@ mod tests {
             )
             .expect("add owner admin");
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+            .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
             .expect("store our ns identity");
 
         // The stranded subgroup + its key + the context it registers.

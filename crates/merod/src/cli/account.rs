@@ -334,43 +334,28 @@ impl ImportCommand {
         println!("Imported account root {}", root.public_key());
 
         // Report what the store actually holds rather than asserting the clean
-        // case. On a wiped node there are no rows and "none yet" is true; on a
-        // forced import over a live node it is exactly wrong, and that is the
-        // situation where an operator most needs to know which namespaces just lost
-        // their device.
-        if outcome.released.is_empty() && outcome.retained.is_empty() {
+        // case. On a wiped node there is no row and "none yet" is true; on a forced
+        // import over a live node it is exactly wrong, and that is the situation
+        // where an operator most needs to know the device just went.
+        if !outcome.released && !outcome.retained {
             println!(
-                "Devices are not restored: this node holds none in any namespace yet. \
-                 Enrol one per namespace (`meroctl account create <NAMESPACE_ID>`) and \
-                 a peer will deliver the current scope key."
+                "No device is restored: this node holds none yet. Enrol one \
+                 (`meroctl account create <NAMESPACE_ID>`) and a peer will deliver \
+                 the current scope key."
+            );
+        } else if outcome.released {
+            println!();
+            println!(
+                "Dropped the device that belonged to the replaced root — its id is \
+                 spent. Enrol again (`meroctl account create <NAMESPACE_ID>`); a peer \
+                 delivers the current scope key to the new device."
             );
         } else {
-            if !outcome.released.is_empty() {
-                println!();
-                println!(
-                    "Dropped {} device(s) that belonged to the replaced root — their ids \
-                     are spent, and each namespace needs a fresh enrolment:",
-                    outcome.released.len()
-                );
-                for namespace in &outcome.released {
-                    println!("  {namespace:?}");
-                }
-                println!(
-                    "Enrol again per namespace (`meroctl account create <NAMESPACE_ID>`); \
-                     a peer delivers the current scope key to the new device."
-                );
-            }
-            if !outcome.retained.is_empty() {
-                println!();
-                println!(
-                    "Kept {} device(s) paired into an account this root does not own — \
-                     replacing this node's root does not affect them:",
-                    outcome.retained.len()
-                );
-                for namespace in &outcome.retained {
-                    println!("  {namespace:?}");
-                }
-            }
+            println!();
+            println!(
+                "Kept the device paired into an account this root does not own — \
+                 replacing this node's root does not affect it."
+            );
         }
 
         Ok(())

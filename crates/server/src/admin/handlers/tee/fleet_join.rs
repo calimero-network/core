@@ -47,7 +47,7 @@ pub async fn handler(
     );
 
     // Use namespace identity (per-root-group keypair) instead of a throwaway identity
-    let (ns_id, our_public_key, our_sk, _sender) =
+    let (ns_id, our_public_key, our_sk) =
         match NamespaceRepository::new(&state.store).get_or_create_identity(&group_id) {
             Ok(result) => result,
             Err(err) => {

@@ -630,7 +630,7 @@ fn self_account_for_group(store: &Store, group_id: &ContextGroupId) -> Option<Ac
 /// we're not a member, so auto-follow doesn't apply).
 fn self_pk_for_group(store: &Store, group_id: &ContextGroupId) -> Option<PublicKey> {
     match NamespaceRepository::new(store).resolve_identity(group_id) {
-        Ok(Some((pk, _, _))) => Some(pk),
+        Ok(Some((pk, _))) => Some(pk),
         Ok(None) => None,
         Err(err) => {
             warn!(
@@ -870,7 +870,7 @@ mod tests {
                 .save(&gid, &sample_meta(account))
                 .expect("save_group_meta");
             NamespaceRepository::new(&store)
-                .store_identity(&gid, &pk, sk.as_bytes(), &[0u8; 32])
+                .store_identity(&gid, &pk, sk.as_bytes())
                 .expect("store_namespace_identity");
             MembershipRepository::new(&store)
                 .add_member(&gid, &account, GroupMemberRole::Member)

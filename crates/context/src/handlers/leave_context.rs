@@ -89,7 +89,7 @@ impl Handler<LeaveContextRequest> for ContextManager {
                                 )
                             })?;
                     match NamespaceRepository::new(&datastore).resolve_identity(&group_id)? {
-                        Some((pk, _, _)) => member_public_keys.push(pk),
+                        Some((pk, _)) => member_public_keys.push(pk),
                         None => bail!(
                             "no local identity for context {}; nothing to leave",
                             context_id

@@ -212,8 +212,7 @@ pub fn restore_member_context_identities(
     // namespace identity speaking for `member`; on every other peer it speaks
     // for someone else (or for nobody) and the function is a no-op.
     let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
-    let Some((local_pk, _private_key, _sender_key)) =
-        NamespaceRepository::new(store).identity(&namespace_id)?
+    let Some((local_pk, _private_key)) = NamespaceRepository::new(store).identity(&namespace_id)?
     else {
         return Ok(());
     };
@@ -260,8 +259,7 @@ fn owned_namespace_marker(store: &Store, context_id: &ContextId) -> EyreResult<O
         return Ok(None); // standalone context — no namespace identity
     };
     let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
-    let Some((local_pk, _private_key, _sender_key)) =
-        NamespaceRepository::new(store).identity(&namespace_id)?
+    let Some((local_pk, _private_key)) = NamespaceRepository::new(store).identity(&namespace_id)?
     else {
         return Ok(None); // this node holds no identity for the namespace
     };
@@ -301,7 +299,7 @@ pub fn resolve_local_signing_key(
     };
     let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
     match NamespaceRepository::new(store).identity(&namespace_id)? {
-        Some((ns_pk, ns_sk, _sender)) if ns_pk == *public_key => Ok(Some(ns_sk)),
+        Some((ns_pk, ns_sk)) if ns_pk == *public_key => Ok(Some(ns_sk)),
         _ => Ok(None),
     }
 }

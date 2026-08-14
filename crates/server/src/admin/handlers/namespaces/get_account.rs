@@ -71,7 +71,7 @@ pub async fn handler(
     // A missing device is a real answer; a failed READ is not, and reporting the two
     // the same way would tell an operator "not enrolled" when the truth is "could
     // not look".
-    let device = match calimero_governance_store::NodeDeviceRepository::new(store).get(&namespace) {
+    let device = match calimero_governance_store::NodeDeviceRepository::new(store).get() {
         Ok(enrolled) => enrolled.map(|enrolled| hex::encode(enrolled.device().as_bytes())),
         Err(err) => {
             error!(error = ?err, "Failed to read this node's device row");

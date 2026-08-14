@@ -27,7 +27,6 @@ pub const MAX_NAMESPACE_DEPTH: usize = calimero_context_config::MAX_NAMESPACE_DE
 pub struct NamespaceIdentityRecord {
     pub public_key: PublicKey,
     pub private_key: [u8; 32],
-    pub sender_key: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -549,7 +548,7 @@ impl<'a> NamespaceRepository<'a> {
     ) -> EyreResult<Option<crate::ResolvedIdentity>> {
         Ok(self
             .identity_record(namespace_id)?
-            .map(|record| (record.public_key, record.private_key, record.sender_key)))
+            .map(|record| (record.public_key, record.private_key)))
     }
 
     /// As [`Self::identity`], as a record.
@@ -573,7 +572,6 @@ impl<'a> NamespaceRepository<'a> {
             Some(val) => Ok(Some(NamespaceIdentityRecord {
                 public_key: PublicKey::from(val.public_key),
                 private_key: val.private_key,
-                sender_key: val.sender_key,
             })),
             None => Ok(None),
         }
@@ -591,7 +589,6 @@ impl<'a> NamespaceRepository<'a> {
         namespace_id: &ContextGroupId,
         public_key: &PublicKey,
         private_key: &[u8; 32],
-        sender_key: &[u8; 32],
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
         handle.put(
@@ -599,7 +596,6 @@ impl<'a> NamespaceRepository<'a> {
             &NodeIdentityValue {
                 public_key: **public_key,
                 private_key: *private_key,
-                sender_key: *sender_key,
             },
         )?;
         self.note_participation(namespace_id)
@@ -663,7 +659,7 @@ impl<'a> NamespaceRepository<'a> {
     ) -> EyreResult<Option<crate::ResolvedIdentity>> {
         Ok(self
             .resolve_identity_record(group_id)?
-            .map(|record| (record.public_key, record.private_key, record.sender_key)))
+            .map(|record| (record.public_key, record.private_key)))
     }
 
     pub fn resolve_identity_record(
@@ -679,13 +675,12 @@ impl<'a> NamespaceRepository<'a> {
     pub fn get_or_create_identity(
         &self,
         group_id: &ContextGroupId,
-    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32])> {
         let bundle = self.get_or_create_identity_bundle(group_id)?;
         Ok((
             bundle.namespace_id,
             bundle.identity.public_key,
             bundle.identity.private_key,
-            bundle.identity.sender_key,
         ))
     }
 
@@ -711,21 +706,14 @@ impl<'a> NamespaceRepository<'a> {
 
         let private_key = PrivateKey::random(&mut OsRng);
         let public_key = private_key.public_key();
-        let sender_key = PrivateKey::random(&mut OsRng);
 
-        self.store_identity(
-            &ns_id,
-            &public_key,
-            private_key.as_bytes(),
-            sender_key.as_bytes(),
-        )?;
+        self.store_identity(&ns_id, &public_key, private_key.as_bytes())?;
 
         Ok(ResolvedNamespaceIdentity {
             namespace_id: ns_id,
             identity: NamespaceIdentityRecord {
                 public_key,
                 private_key: *private_key.as_bytes(),
-                sender_key: *sender_key.as_bytes(),
             },
         })
     }
@@ -824,16 +812,14 @@ mod tests {
         let ns_id = gid(1);
         let pk = PublicKey::from([0x42; 32]);
         let sk = [0xAB; 32];
-        let sender = [0xCD; 32];
 
-        repo.store_identity(&ns_id, &pk, &sk, &sender).unwrap();
-        let (loaded_pk, loaded_sk, loaded_sender) = repo
+        repo.store_identity(&ns_id, &pk, &sk).unwrap();
+        let (loaded_pk, loaded_sk) = repo
             .identity(&ns_id)
             .unwrap()
             .expect("identity must round-trip");
         assert_eq!(loaded_pk, pk);
         assert_eq!(loaded_sk, sk);
-        assert_eq!(loaded_sender, sender);
     }
 
     /// One node signs with one key, in every namespace it takes part in.

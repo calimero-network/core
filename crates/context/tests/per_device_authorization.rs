@@ -439,7 +439,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns, &admin, &[0x11; 32], &[0u8; 32])
+        .store_identity(&ns, &admin, &[0x11; 32])
         .unwrap();
 
     // A credential the joiner can actually present: certified by its own account

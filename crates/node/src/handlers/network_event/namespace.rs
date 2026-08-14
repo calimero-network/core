@@ -824,7 +824,6 @@ async fn emit_namespace_ack(
     // directly — out of scope for Phase 4.)
     let signer_sk = PrivateKey::from(identity.1);
     identity.1.zeroize();
-    identity.2.zeroize();
 
     let ack = match sign_ack(&signer_sk, op_hash) {
         Ok(ack) => ack,

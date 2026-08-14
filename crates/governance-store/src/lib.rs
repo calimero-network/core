@@ -150,7 +150,7 @@ use self::local_state::{append_op_log_entry, set_op_head};
 use self::upgrades::extract_application_id;
 
 /// A resolved member identity: public key plus its two associated 32-byte keys.
-pub type ResolvedIdentity = (PublicKey, [u8; 32], [u8; 32]);
+pub type ResolvedIdentity = (PublicKey, [u8; 32]);
 
 /// The all-zeros sentinel written as the placeholder `admin_identity` /
 /// `owner_identity` by the bootstrap KeyDelivery seed
@@ -641,7 +641,7 @@ impl<'a> GroupHandle<'a> {
     }
     pub fn get_or_create_namespace_identity(
         &self,
-    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32])> {
         NamespaceRepository::new(self.store).get_or_create_identity(&self.group_id)
     }
 
@@ -699,17 +699,11 @@ impl<'a> NamespaceHandle<'a> {
             .identity(&ContextGroupId::from(self.namespace_id.to_bytes()))
     }
 
-    pub fn store_identity(
-        &self,
-        pk: &PublicKey,
-        sk: &[u8; 32],
-        sender: &[u8; 32],
-    ) -> EyreResult<()> {
+    pub fn store_identity(&self, pk: &PublicKey, sk: &[u8; 32]) -> EyreResult<()> {
         NamespaceRepository::new(self.store).store_identity(
             &ContextGroupId::from(self.namespace_id.to_bytes()),
             pk,
             sk,
-            sender,
         )
     }
 

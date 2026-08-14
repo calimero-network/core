@@ -40,7 +40,6 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // they can't inherit membership into any subgroup.
                 let (joiner_identity, sk_bytes) = NamespaceRepository::new(&datastore)
                     .resolve_identity(&group_id)?
-                    .map(|(pk, sk, _)| (pk, sk))
                     .ok_or(JoinSubgroupInheritanceError::NoNamespaceIdentity)?;
 
                 let joiner_account =

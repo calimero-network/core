@@ -735,7 +735,7 @@ impl MigrationEmitter {
                 return;
             }
         };
-        let (peer_pubkey, mut sk_bytes, mut sender_key) = identity;
+        let (peer_pubkey, mut sk_bytes) = identity;
         // Publish only what a receiver could actually verify. Every receiver
         // gates a heartbeat on the sender resolving to a current member, and
         // this node holds a namespace identity from early in the join —
@@ -752,7 +752,6 @@ impl MigrationEmitter {
             &peer_pubkey,
         ) {
             sk_bytes.zeroize();
-            sender_key.zeroize();
             tracing::debug!(
                 ?ns_id,
                 "MigrationHeartbeat: this node is not yet a verifiable member here; \
@@ -763,7 +762,6 @@ impl MigrationEmitter {
         // `sender_key` is unused on this path — zeroize immediately. `sk_bytes`
         // is consumed into `PrivateKey::from(...)`; because `[u8; 32]: Copy`
         // that move leaves a stack copy we zeroize after signing.
-        sender_key.zeroize();
 
         let ts_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1804,7 +1802,7 @@ mod tests {
 
         // This node's namespace identity (what its heartbeat would be signed by).
         NamespaceRepository::new(&store)
-            .store_identity(&ContextGroupId::from(ns), &self_pk, &[7u8; 32], &[8u8; 32])
+            .store_identity(&ContextGroupId::from(ns), &self_pk, &[7u8; 32])
             .unwrap();
 
         // Stranded subgroup context (subgroup-only upgrade record, as in #37).

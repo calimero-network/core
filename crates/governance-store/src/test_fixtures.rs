@@ -167,7 +167,7 @@ pub(super) fn bootstrap_namespace_with_admin_account(
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
     ((admin_sk, admin_pk), admin_account)
 }

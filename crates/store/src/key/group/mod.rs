@@ -1896,7 +1896,6 @@ impl Debug for NodeIdentity {
 pub struct NodeIdentityValue {
     pub public_key: [u8; 32],
     pub private_key: [u8; 32],
-    pub sender_key: [u8; 32],
 }
 
 /// Redacted by hand, never derived. `private_key` is what this node signs every
@@ -1907,7 +1906,6 @@ impl Debug for NodeIdentityValue {
         f.debug_struct("NodeIdentityValue")
             .field("public_key", &self.public_key)
             .field("private_key", &"[redacted]")
-            .field("sender_key", &"[redacted]")
             .finish()
     }
 }
@@ -2439,39 +2437,33 @@ impl FromKeyParts for GroupAccountEndorser {
     }
 }
 
-/// This node's own device identity within one namespace (see
-/// [`NODE_DEVICE_IDENTITY_PREFIX`]). Key layout `prefix(1) + namespace_id(32)`
-/// = 33 bytes; one row per namespace, because a node is a distinct replica in
-/// each namespace it participates in and must not reuse one KEM secret across
-/// them.
+/// This node's device — a **singleton**, keyed by nothing but its own prefix
+/// (see [`NODE_DEVICE_IDENTITY_PREFIX`]).
 ///
-/// Deliberately a row family of its own rather than two more fields on
-/// `ContextIdentity`. That struct is `#[expect(clippy::exhaustive_structs)]`
-/// with construction sites all over the node, so widening it would touch every
-/// one of them — and a device secret has a different lifetime anyway: it is
-/// minted once when the device enrolls, never rotated in place, and deleted
-/// when the namespace is purged.
+/// Node-level rather than per-namespace, because a device is one installation.
+/// A row per namespace made one laptop into five devices, each with its own
+/// replica id and agreement key, for a distinction nothing downstream wanted:
+/// the certificate binds one device to one signing key, and that key is
+/// node-level too.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct NodeDeviceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+pub struct NodeDeviceIdentity(Key<(GroupPrefix,)>);
 
 impl NodeDeviceIdentity {
     #[must_use]
-    pub fn new(namespace_id: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from([NODE_DEVICE_IDENTITY_PREFIX])
-            .concat(GenericArray::from(namespace_id))))
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_IDENTITY_PREFIX])))
     }
+}
 
-    #[must_use]
-    pub fn namespace_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
-        id
+impl Default for NodeDeviceIdentity {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl AsKeyParts for NodeDeviceIdentity {
-    type Components = (GroupPrefix, GroupIdComponent);
+    type Components = (GroupPrefix,);
 
     fn column() -> Column {
         Column::Group
@@ -2492,9 +2484,7 @@ impl FromKeyParts for NodeDeviceIdentity {
 
 impl Debug for NodeDeviceIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NodeDeviceIdentity")
-            .field("namespace_id", &self.namespace_id())
-            .finish()
+        f.debug_tuple("NodeDeviceIdentity").finish()
     }
 }
 

@@ -48,7 +48,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // namespace, so this always succeeds for valid (non-root) targets.
         let namespace_identity =
             match NamespaceRepository::new(&self.datastore).resolve_identity(&group_id) {
-                Ok(Some((pk, sk, _sender))) => (pk, sk),
+                Ok(Some((pk, sk))) => (pk, sk),
                 Ok(None) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                 "no local namespace identity for group '{group_id:?}': cannot sign cascade delete"

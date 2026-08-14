@@ -157,7 +157,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // its own root cannot name, so it has no standing to certify a second
         // one — it would mint a certificate for an account it does not hold and
         // the link would be refused downstream.
-        match device_repo.get(&namespace_id) {
+        match device_repo.get() {
             Ok(Some(enrolled)) if enrolled.account == account => {}
             Ok(Some(enrolled)) => {
                 return ActorResponse::reply(Err(eyre::eyre!(

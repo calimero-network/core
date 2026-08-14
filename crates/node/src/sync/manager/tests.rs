@@ -430,7 +430,7 @@ mod key_recovery_trigger {
         let sk_bytes = rand::Rng::gen::<[u8; 32]>(&mut rng);
         let my_id = PrivateKey::from(sk_bytes).public_key();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
+            .store_identity(&ns_gid, &my_id, &sk_bytes)
             .unwrap();
         MembershipRepository::new(&store)
             .add_member(

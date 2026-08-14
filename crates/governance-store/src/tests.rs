@@ -3799,7 +3799,7 @@ fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
 
     // This node's namespace identity (`gid` resolves to itself — no parent).
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &ns_member_pk, &ns_sk, &[0u8; 32])
+        .store_identity(&gid, &ns_member_pk, &ns_sk)
         .unwrap();
 
     // No row at all → not a local identity here.
@@ -3877,7 +3877,7 @@ fn restore_member_context_identities_writes_missing_marker_rows() {
     // itself — no parent). Storing it for `member` makes this node the local
     // rejoiner; the function re-creates its keyless membership markers.
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &sk_bytes)
         .unwrap();
 
     restore_member_context_identities(&store, &gid, &member).unwrap();
@@ -3921,7 +3921,7 @@ fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
     // Namespace identity belongs to a different pk → still a no-op for
     // `member`.
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &someone_else_pk, &[0x55; 32], &[0u8; 32])
+        .store_identity(&gid, &someone_else_pk, &[0x55; 32])
         .unwrap();
     restore_member_context_identities(&store, &gid, &member).unwrap();
     assert!(
@@ -3943,7 +3943,7 @@ fn restore_member_context_identities_is_idempotent() {
     // This node is the local rejoiner — namespace identity stored for
     // `member`.
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &original_sk, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &original_sk)
         .unwrap();
 
     // Pre-existing keyed row from a (notional) successful prior `join_context`.
@@ -3987,7 +3987,7 @@ fn restore_member_context_identities_leaves_existing_rows_untouched() {
     let ctx = ContextId::from([0xD2; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &sk_bytes)
         .unwrap();
 
     // Pre-existing keyed row.
@@ -4053,7 +4053,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     let member = enrol_member(&store, &gid, &member_pk);
     let member_sk_bytes = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &member_sk_bytes)
         .unwrap();
 
     // Pre-state: member already added once + has ContextIdentity for
@@ -4183,7 +4183,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     let member = enrol_member(&store, &ns_gid, &member_pk);
     let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
         .unwrap();
 
     // Pre-state: member was a direct subgroup member with a context
@@ -4336,7 +4336,7 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
     // `member_pk`. Without this gate the `restore_member_context_identities`
     // call would no-op (correctly — peers don't own the rejoiner's sk).
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
         .unwrap();
 
     // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
@@ -4512,7 +4512,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     // the rejoiner's pk.
     let admin_sk_bytes = *admin_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let rejoiner_pk = PrivateKey::random(&mut rng).public_key();
@@ -4580,7 +4580,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
 
     let ns_pk = PublicKey::from([0x11; 32]);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_id, &ns_pk, &[0x22; 32], &[0x33; 32])
+        .store_identity(&ns_id, &ns_pk, &[0x22; 32])
         .unwrap();
 
     {
@@ -4613,7 +4613,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     let other_ns_bytes = other_ns_id.to_bytes();
     let (other_pk, _other_account) = enrolled(&store, &other_ns_id, 0x55);
     NamespaceRepository::new(&store)
-        .store_identity(&other_ns_id, &other_pk, &[0x66; 32], &[0x77; 32])
+        .store_identity(&other_ns_id, &other_pk, &[0x66; 32])
         .unwrap();
     {
         let mut handle = store.handle();
@@ -4730,7 +4730,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
 
     let ns_bytes = ns_id.to_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_id, &admin_pk, &[0x22; 32], &[0x33; 32])
+        .store_identity(&ns_id, &admin_pk, &[0x22; 32])
         .unwrap();
     {
         let mut handle = store.handle();
@@ -5271,7 +5271,7 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
     let member = enrol_member(&store, &ns_gid, &member_pk);
     let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&subgroup, &member, GroupMemberRole::Member)
@@ -5741,7 +5741,7 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
     let node_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let node_sk = PrivateKey::from(node_sk_bytes);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes)
         .unwrap();
 
     // Signed by a stranger who is no member of the group, let alone one with
@@ -5788,7 +5788,7 @@ fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
 
     // This node IS the joiner — the op below is its own.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes)
         .unwrap();
 
     // The same invitation the peer test refuses, from an inviter this node
@@ -7961,7 +7961,7 @@ mod auto_follow_tests {
             .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+            .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
             .unwrap();
 
         let op = SignedNamespaceOp::sign(
@@ -9322,7 +9322,7 @@ mod rotation_gate_alignment {
         let sk = PrivateKey::from(sk_bytes);
         let pk = sk.public_key();
         NamespaceRepository::new(store)
-            .store_identity(ns_gid, &pk, &sk_bytes, &[0u8; 32])
+            .store_identity(ns_gid, &pk, &sk_bytes)
             .unwrap();
         pk
     }

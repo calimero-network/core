@@ -132,7 +132,6 @@ mod tests {
                     &key::NodeIdentityValue {
                         public_key,
                         private_key,
-                        sender_key: [0u8; 32],
                     },
                 )
                 .unwrap();

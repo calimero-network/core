@@ -58,7 +58,7 @@ pub async fn handler(
         let requester = match requester {
             Some(pk) => pk,
             None => match NamespaceRepository::new(&state.store).resolve_identity(&namespace_id) {
-                Ok(Some((pk, _, _))) => pk,
+                Ok(Some((pk, _))) => pk,
                 Ok(None) => {
                     return ApiError {
                         status_code: StatusCode::BAD_REQUEST,

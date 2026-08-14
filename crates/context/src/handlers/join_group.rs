@@ -47,7 +47,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("invitation expired")));
         }
 
-        let (ns_id, joiner_identity, sk_bytes, _) =
+        let (ns_id, joiner_identity, sk_bytes) =
             match self.get_or_create_namespace_identity(&group_id) {
                 Ok(result) => result,
                 Err(err) => {

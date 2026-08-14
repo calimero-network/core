@@ -306,7 +306,6 @@ fn start_readiness_manager(
             &ContextGroupId::from(NS),
             &joiner_sk.public_key(),
             joiner_sk.as_bytes(),
-            &[7u8; 32],
         )
         .expect("store namespace identity");
 
