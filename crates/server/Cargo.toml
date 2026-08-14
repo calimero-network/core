@@ -56,6 +56,9 @@ mero-auth.workspace = true
 mock-attestation = ["calimero-tee-attestation/mock-attestation"]
 
 [dev-dependencies]
+# Stub `NodeManager` actor for the JSON-RPC handler tests that must reach the
+# node client (see `jsonrpc/test_support.rs`).
+actix.workspace = true
 color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }

@@ -303,6 +303,10 @@ pub struct SetEphemeralResponse {}
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum SetEphemeralError {
+    /// The authenticated caller is not a member of the target context, so it
+    /// may not publish presence into it.
+    #[error("caller is not a member of this context")]
+    Unauthorized,
     /// No owned identity found for the context — the node is not a member.
     #[error("no owned identity found for context")]
     NoOwnedIdentity,
@@ -398,6 +402,10 @@ impl GetEphemeralResponse {
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum GetEphemeralError {
+    /// The authenticated caller is not a member of the target context, so it
+    /// may not read the (decrypted) presence snapshot for it.
+    #[error("caller is not a member of this context")]
+    Unauthorized,
     /// Any node-level or internal error.
     #[error("get_ephemeral failed: {0}")]
     InternalError(String),

@@ -17,7 +17,7 @@ use calimero_server_primitives::jsonrpc::{
     SetEphemeralError, SetEphemeralRequest, SetEphemeralResponse,
 };
 use futures_util::StreamExt;
-use tracing::debug;
+use tracing::{debug, error};
 
 use super::{Request, RpcError, ServiceState};
 use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
@@ -29,10 +29,33 @@ impl Request for SetEphemeralRequest {
     async fn handle(
         self,
         state: Arc<ServiceState>,
-        _auth_key: Option<AuthenticatedKey>,
-        _auth_node_owner: Option<AuthenticatedNodeOwner>,
+        auth_key: Option<AuthenticatedKey>,
+        auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
+
+        // Authorization first, before any work: without this gate any caller
+        // who can reach the endpoint could publish presence into a context it
+        // is not a member of, signed under whatever identity this node owns
+        // there — indistinguishable from a legitimate publish. The three auth
+        // paths (key / node-owner / no-auth mode) resolve exactly as they do
+        // for `execute` — see `super::caller_identity`.
+        let caller = super::caller_identity(
+            &state,
+            auth_key.as_ref(),
+            auth_node_owner.as_ref(),
+            "set_ephemeral",
+        )?;
+
+        if !crate::execute::caller_authorized_for_context(&state.ctx_client, &context_id, &caller)
+            .map_err(|err| {
+            error!(%err, %context_id, "Membership lookup failed during set_ephemeral");
+            RpcError::MethodCallError(SetEphemeralError::InternalError(
+                "internal error during membership verification".to_owned(),
+            ))
+        })? {
+            return Err(RpcError::MethodCallError(SetEphemeralError::Unauthorized));
+        }
 
         // Reject oversize slices up front with the typed `SliceTooLarge` error
         // so the client learns the exact cap, rather than a stringified opaque
@@ -61,7 +84,17 @@ impl Request for SetEphemeralRequest {
             let mut members = pin!(members);
             match members.next().await {
                 Some(Ok((public_key, _))) => public_key,
-                Some(Err(_)) | None => {
+                // Keep "the lookup failed" and "there is no owned identity"
+                // distinct: a transient store I/O error reported as
+                // `NoOwnedIdentity` would tell the client to stop retrying on
+                // a condition that is actually transient.
+                Some(Err(err)) => {
+                    error!(%context_id, %err, "set_ephemeral: owned-identity lookup failed");
+                    return Err(RpcError::MethodCallError(SetEphemeralError::InternalError(
+                        err.to_string(),
+                    )));
+                }
+                None => {
                     debug!(%context_id, "set_ephemeral: no owned identity for context");
                     return Err(RpcError::MethodCallError(
                         SetEphemeralError::NoOwnedIdentity,
@@ -190,77 +223,33 @@ mod tests {
 }
 
 /// Handler-path tests: drive `SetEphemeralRequest::handle` against a real
-/// (in-memory-backed) `ServiceState` to prove the oversize guard returns the
-/// typed `SliceTooLarge` BEFORE any node round-trip (the size check is the
-/// first statement in the handler, so the stub clients are never reached).
+/// (in-memory-backed) `ServiceState` — the authorization gate, the oversize
+/// guard, and the ordering between them.
 #[cfg(test)]
 mod handler_tests {
-    use std::sync::Arc;
-
-    use calimero_blobstore::config::BlobStoreConfig;
-    use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-    use calimero_context_client::client::ContextClient;
-    use calimero_network_primitives::client::NetworkClient;
-    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_primitives::context::ContextId;
-    use calimero_primitives::events::{NodeEvent, EPHEMERAL_MAX_BYTES};
+    use calimero_primitives::events::EPHEMERAL_MAX_BYTES;
+    use calimero_primitives::identity::PublicKey;
     use calimero_server_primitives::jsonrpc::{SetEphemeralError, SetEphemeralRequest};
-    use calimero_store::db::InMemoryDB;
-    use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
-    use tempfile::TempDir;
-    use tokio::sync::{broadcast, mpsc};
 
-    use super::super::{Request, RpcError, ServiceState};
+    use super::super::test_support::{seed_context_member, state_with, TestState};
+    use super::super::{Request, RpcError};
+    use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 
-    async fn minimal_state() -> (Arc<ServiceState>, TempDir) {
-        let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let blob_dir = TempDir::new().expect("tempdir");
-        let blob_store = BlobStore::new(
-            store.clone(),
-            FileSystem::new(&BlobStoreConfig::new(
-                blob_dir.path().to_path_buf().try_into().expect("utf8 path"),
-            ))
-            .await
-            .expect("blob fs"),
-        );
-        let blob_manager = BlobManager::new(blob_store);
-
-        let (event_sender, _) = broadcast::channel::<NodeEvent>(16);
-        let (ctx_sync_tx, _r0) = mpsc::channel(8);
-        let (ns_sync_tx, _r1) = mpsc::channel(8);
-        let (ns_join_tx, _r2) = mpsc::channel(8);
-        let (open_subgroup_join_tx, _r3) = mpsc::channel(8);
-        let sync_client =
-            SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-        let node_client = NodeClient::new(
-            store.clone(),
-            blob_manager,
-            NetworkClient::new(LazyRecipient::new()),
-            LazyRecipient::new(),
-            event_sender,
-            sync_client,
-            None,
-        );
-        let ctx_client = ContextClient::new(store, node_client.clone(), LazyRecipient::new());
-
-        let state = Arc::new(ServiceState {
-            ctx_client,
-            node_client,
-            auth_enabled: false,
-        });
-        (state, blob_dir)
+    /// No-auth mode: no extensions, and the node actor is never reached.
+    async fn no_auth_state() -> TestState {
+        state_with(false, LazyRecipient::new()).await
     }
 
     #[tokio::test]
     async fn oversize_slice_returns_typed_slice_too_large() {
-        let (state, _blob_dir) = minimal_state().await;
+        let t = no_auth_state().await;
         let ctx_id = ContextId::from([0x05; 32]);
         let oversized = vec![0xAB_u8; EPHEMERAL_MAX_BYTES + 1];
         let req = SetEphemeralRequest::new(ctx_id, oversized);
 
-        let result = req.handle(state, None, None).await;
+        let result = req.handle(t.state.clone(), None, None).await;
 
         match result {
             Err(RpcError::MethodCallError(SetEphemeralError::SliceTooLarge { size, max })) => {
@@ -280,12 +269,12 @@ mod handler_tests {
         // A slice exactly at the cap must NOT trip the size guard; it proceeds
         // to author resolution, which fails (no context) with NoOwnedIdentity —
         // proving the boundary is `> max`, not `>= max`.
-        let (state, _blob_dir) = minimal_state().await;
+        let t = no_auth_state().await;
         let ctx_id = ContextId::from([0x06; 32]);
         let at_cap = vec![0xCD_u8; EPHEMERAL_MAX_BYTES];
         let req = SetEphemeralRequest::new(ctx_id, at_cap);
 
-        let result = req.handle(state, None, None).await;
+        let result = req.handle(t.state.clone(), None, None).await;
 
         assert!(
             matches!(
@@ -293,6 +282,117 @@ mod handler_tests {
                 Err(RpcError::MethodCallError(SetEphemeralError::NoOwnedIdentity))
             ),
             "at-cap slice must clear the size guard and fail later at identity resolution, got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Authorization
+    // -----------------------------------------------------------------------
+
+    /// A token-authenticated key that is NOT a member of the target context
+    /// must be refused. Without this gate the caller could publish presence
+    /// into any context it can name, signed under whatever identity this node
+    /// owns there.
+    #[tokio::test]
+    async fn non_member_key_is_refused() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let ctx_id = ContextId::from([0x07; 32]);
+        let stranger = PublicKey::from([0xEE; 32]);
+
+        let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
+            .handle(t.state.clone(), Some(AuthenticatedKey(stranger)), None)
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RpcError::MethodCallError(SetEphemeralError::Unauthorized))
+            ),
+            "a non-member key must be refused, got {result:?}"
+        );
+    }
+
+    /// The gate runs BEFORE the size guard, so a non-member learns nothing
+    /// about the request beyond "refused" — and an oversize payload from a
+    /// stranger is rejected on the cheaper check.
+    #[tokio::test]
+    async fn non_member_key_is_refused_before_the_size_guard() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let ctx_id = ContextId::from([0x08; 32]);
+        let stranger = PublicKey::from([0xEF; 32]);
+
+        let result = SetEphemeralRequest::new(ctx_id, vec![0u8; EPHEMERAL_MAX_BYTES + 1])
+            .handle(t.state.clone(), Some(AuthenticatedKey(stranger)), None)
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RpcError::MethodCallError(SetEphemeralError::Unauthorized))
+            ),
+            "authorization must be decided before the size guard, got {result:?}"
+        );
+    }
+
+    /// A member key clears the gate: it fails later, at owned-identity
+    /// resolution, which is a different error than the refusal above.
+    #[tokio::test]
+    async fn member_key_passes_the_gate() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let ctx_id = ContextId::from([0x09; 32]);
+        let member = PublicKey::from([0xAA; 32]);
+        seed_context_member(&t.store, ctx_id, member);
+
+        let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
+            .handle(t.state.clone(), Some(AuthenticatedKey(member)), None)
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RpcError::MethodCallError(
+                    SetEphemeralError::NoOwnedIdentity
+                ))
+            ),
+            "a member must clear the gate and fail later at identity resolution, got {result:?}"
+        );
+    }
+
+    /// Node-owner auth skips the membership check, exactly as `execute` does.
+    #[tokio::test]
+    async fn node_owner_skips_the_membership_check() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let ctx_id = ContextId::from([0x0A; 32]);
+
+        let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
+            .handle(t.state.clone(), None, Some(AuthenticatedNodeOwner))
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RpcError::MethodCallError(
+                    SetEphemeralError::NoOwnedIdentity
+                ))
+            ),
+            "node-owner auth must not be membership-checked, got {result:?}"
+        );
+    }
+
+    /// Auth enabled but no extension injected == a misconfigured guard. Reject
+    /// rather than silently granting node-owner privileges.
+    #[tokio::test]
+    async fn auth_enabled_without_extensions_is_rejected() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let ctx_id = ContextId::from([0x0B; 32]);
+
+        let result = SetEphemeralRequest::new(ctx_id, vec![1, 2, 3])
+            .handle(t.state.clone(), None, None)
+            .await;
+
+        assert!(
+            matches!(result, Err(RpcError::InternalError(_))),
+            "a missing auth extension under auth_enabled must be rejected, got {result:?}"
         );
     }
 }

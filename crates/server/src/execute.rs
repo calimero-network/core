@@ -9,6 +9,7 @@
 use std::pin::pin;
 
 use calimero_context_client::client::ContextClient;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
 use futures_util::StreamExt;
@@ -29,6 +30,31 @@ pub(crate) enum CallerIdentity<'a> {
     /// username/password auth). The auth layer already validated the token;
     /// the caller is implicitly authorized for all contexts.
     NodeOwner,
+}
+
+/// Whether `caller` may act on `context_id`.
+///
+/// `CallerIdentity::Key` is checked against context membership (resolving the
+/// account the key acts as first, since membership rows are account-keyed).
+/// `CallerIdentity::NodeOwner` is always authorized — the auth layer already
+/// confirmed the caller owns this node.
+///
+/// Shared by every transport-level handler that gates on context membership
+/// (`execute`, `set_ephemeral`, `get_ephemeral`) so the gate cannot drift
+/// between them. `Err` means the lookup itself failed and the caller must
+/// fail closed, not that the caller is a non-member.
+pub(crate) fn caller_authorized_for_context(
+    ctx_client: &ContextClient,
+    context_id: &ContextId,
+    caller: &CallerIdentity<'_>,
+) -> eyre::Result<bool> {
+    match *caller {
+        CallerIdentity::Key(key) => {
+            let account = crate::caller_account::for_context(ctx_client, context_id, key);
+            ctx_client.has_member(context_id, key, account)
+        }
+        CallerIdentity::NodeOwner => Ok(true),
+    }
 }
 
 /// Execute a context method call against the runtime.
@@ -60,10 +86,8 @@ pub(crate) async fn execute_request(
     // Verify the caller is a member of the target context before doing
     // anything else. This prevents a valid token from being used to execute
     // against contexts the caller has no membership in.
-    if let CallerIdentity::Key(key) = caller {
-        let account = crate::caller_account::for_context(ctx_client, &request.context_id, key);
-        let is_member = ctx_client
-            .has_member(&request.context_id, key, account)
+    if matches!(caller, CallerIdentity::Key(_)) {
+        let is_member = caller_authorized_for_context(ctx_client, &request.context_id, &caller)
             .map_err(|err| {
                 error!(%err, "Membership lookup failed during execute");
                 ExecutionError::FunctionCallError(

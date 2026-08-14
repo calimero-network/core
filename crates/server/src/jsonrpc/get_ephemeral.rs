@@ -9,6 +9,7 @@ use std::sync::Arc;
 use calimero_server_primitives::jsonrpc::{
     EphemeralEntryValue, GetEphemeralError, GetEphemeralRequest, GetEphemeralResponse,
 };
+use tracing::error;
 
 use super::{Request, RpcError, ServiceState};
 use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
@@ -20,9 +21,36 @@ impl Request for GetEphemeralRequest {
     async fn handle(
         self,
         state: Arc<ServiceState>,
-        _auth_key: Option<AuthenticatedKey>,
-        _auth_node_owner: Option<AuthenticatedNodeOwner>,
+        auth_key: Option<AuthenticatedKey>,
+        auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
+        // Authorization first: the snapshot is DECRYPTED presence (cursors,
+        // typing state) for the requested context. Without this gate any
+        // caller who can reach the endpoint could read live presence for a
+        // context it is not a member of, by guessing a ContextId. The three
+        // auth paths (key / node-owner / no-auth mode) resolve exactly as they
+        // do for `execute` — see `super::caller_identity`.
+        let caller = super::caller_identity(
+            &state,
+            auth_key.as_ref(),
+            auth_node_owner.as_ref(),
+            "get_ephemeral",
+        )?;
+
+        if !crate::execute::caller_authorized_for_context(
+            &state.ctx_client,
+            &self.context_id,
+            &caller,
+        )
+        .map_err(|err| {
+            error!(%err, context_id=%self.context_id, "Membership lookup failed during get_ephemeral");
+            RpcError::MethodCallError(GetEphemeralError::InternalError(
+                "internal error during membership verification".to_owned(),
+            ))
+        })? {
+            return Err(RpcError::MethodCallError(GetEphemeralError::Unauthorized));
+        }
+
         let entries = state
             .node_client
             .ephemeral_snapshot(self.context_id)
@@ -146,6 +174,120 @@ mod tests {
         assert!(
             matches!(payload, RequestPayload::GetEphemeral(_)),
             "wrong variant: {payload:?}"
+        );
+    }
+}
+
+/// Handler-path tests: drive `GetEphemeralRequest::handle` against a real
+/// (in-memory-backed) `ServiceState` to prove the authorization gate runs
+/// before the snapshot is read, and that a member still gets the snapshot.
+#[cfg(test)]
+mod handler_tests {
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_server_primitives::jsonrpc::{GetEphemeralError, GetEphemeralRequest};
+    use calimero_utils_actix::LazyRecipient;
+
+    use super::super::test_support::{seed_context_member, state_with, stub_node_manager};
+    use super::super::{Request, RpcError};
+    use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
+
+    /// A token-authenticated key that is NOT a member of the target context
+    /// must be refused. The snapshot is DECRYPTED presence, so without this
+    /// gate any caller could read live cursors/typing state for a context it
+    /// has no membership in, just by naming the ContextId.
+    #[actix::test]
+    async fn non_member_key_is_refused() {
+        let author = PublicKey::from([0xAA; 32]);
+        let node_manager = stub_node_manager(vec![(author, vec![1, 2, 3], 10)]);
+        let t = state_with(true, node_manager).await;
+        let ctx_id = ContextId::from([0x11; 32]);
+        let stranger = PublicKey::from([0xEE; 32]);
+
+        let result = GetEphemeralRequest::new(ctx_id)
+            .handle(t.state.clone(), Some(AuthenticatedKey(stranger)), None)
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RpcError::MethodCallError(GetEphemeralError::Unauthorized))
+            ),
+            "a non-member key must be refused, got {result:?}"
+        );
+    }
+
+    /// A member key clears the gate and receives the snapshot — the refusal
+    /// above is about membership, not a blanket failure of the endpoint.
+    #[actix::test]
+    async fn member_key_receives_the_snapshot() {
+        let author = PublicKey::from([0xAA; 32]);
+        let node_manager = stub_node_manager(vec![(author, vec![1, 2, 3], 10)]);
+        let t = state_with(true, node_manager).await;
+        let ctx_id = ContextId::from([0x12; 32]);
+        let member = PublicKey::from([0xBB; 32]);
+        seed_context_member(&t.store, ctx_id, member);
+
+        let response = GetEphemeralRequest::new(ctx_id)
+            .handle(t.state.clone(), Some(AuthenticatedKey(member)), None)
+            .await
+            .expect("a member must be served the snapshot");
+
+        let entry = response
+            .entries
+            .get(&author.to_string())
+            .expect("snapshot entry keyed by author");
+        assert_eq!(entry.state, vec![1, 2, 3]);
+        assert_eq!(entry.age_ms, 10);
+    }
+
+    /// Node-owner auth skips the membership check, exactly as `execute` does.
+    #[actix::test]
+    async fn node_owner_skips_the_membership_check() {
+        let author = PublicKey::from([0xAA; 32]);
+        let node_manager = stub_node_manager(vec![(author, vec![7], 1)]);
+        let t = state_with(true, node_manager).await;
+        let ctx_id = ContextId::from([0x13; 32]);
+
+        let response = GetEphemeralRequest::new(ctx_id)
+            .handle(t.state.clone(), None, Some(AuthenticatedNodeOwner))
+            .await
+            .expect("node owner must be served the snapshot");
+
+        assert_eq!(response.entries.len(), 1);
+    }
+
+    /// No-auth mode (the intentional no-auth deployment) still serves the
+    /// snapshot — the carve-out must not be tightened by this gate.
+    #[actix::test]
+    async fn no_auth_mode_still_serves_the_snapshot() {
+        let author = PublicKey::from([0xAA; 32]);
+        let node_manager = stub_node_manager(vec![(author, vec![7], 1)]);
+        let t = state_with(false, node_manager).await;
+        let ctx_id = ContextId::from([0x14; 32]);
+
+        let response = GetEphemeralRequest::new(ctx_id)
+            .handle(t.state.clone(), None, None)
+            .await
+            .expect("no-auth mode must behave as it did before the gate");
+
+        assert_eq!(response.entries.len(), 1);
+    }
+
+    /// Auth enabled but no extension injected == a misconfigured guard. Reject
+    /// rather than silently granting node-owner privileges.
+    #[actix::test]
+    async fn auth_enabled_without_extensions_is_rejected() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let ctx_id = ContextId::from([0x15; 32]);
+
+        let result = GetEphemeralRequest::new(ctx_id)
+            .handle(t.state.clone(), None, None)
+            .await;
+
+        assert!(
+            matches!(result, Err(RpcError::InternalError(_))),
+            "a missing auth extension under auth_enabled must be rejected, got {result:?}"
         );
     }
 }
