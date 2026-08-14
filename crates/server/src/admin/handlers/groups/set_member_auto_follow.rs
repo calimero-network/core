@@ -17,7 +17,7 @@ use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
-    Path((group_id_str, identity_str)): Path<(String, String)>,
+    Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<SetMemberAutoFollowApiRequest>,
@@ -27,14 +27,14 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let target = match parse_account(&identity_str) {
+    let target = match parse_account(&account_str) {
         Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 
     info!(
         group_id=%group_id_str,
-        identity=%identity_str,
+        identity=%account_str,
         contexts=req.auto_follow_contexts,
         subgroups=req.auto_follow_subgroups,
         "Setting member auto-follow flags"
@@ -61,7 +61,7 @@ pub async fn handler(
         Ok(()) => {
             info!(
                 group_id=%group_id_str,
-                identity=%identity_str,
+                identity=%account_str,
                 "Member auto-follow flags updated"
             );
             ApiResponse {
@@ -72,7 +72,7 @@ pub async fn handler(
         Err(err) => {
             error!(
                 group_id=%group_id_str,
-                identity=%identity_str,
+                identity=%account_str,
                 error=?err,
                 "Failed to set member auto-follow flags"
             );

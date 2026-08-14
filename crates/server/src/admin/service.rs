@@ -209,7 +209,7 @@ pub(crate) fn setup(
             post(groups::leave_group::handler),
         )
         .route(
-            "/groups/:group_id/members/:identity/role",
+            "/groups/:group_id/members/:account/role",
             put(groups::update_member_role::handler),
         )
         .route(
@@ -217,7 +217,7 @@ pub(crate) fn setup(
             get(groups::set_group_metadata::get_handler).put(groups::set_group_metadata::handler),
         )
         .route(
-            "/groups/:group_id/members/:identity/metadata",
+            "/groups/:group_id/members/:account/metadata",
             get(groups::set_member_metadata::get_handler).put(groups::set_member_metadata::handler),
         )
         .route(
@@ -282,12 +282,12 @@ pub(crate) fn setup(
             post(leave_context::handler),
         )
         .route(
-            "/groups/:group_id/members/:identity/capabilities",
+            "/groups/:group_id/members/:account/capabilities",
             get(groups::get_member_capabilities::handler)
                 .put(groups::set_member_capabilities::handler),
         )
         .route(
-            "/groups/:group_id/members/:identity/auto-follow",
+            "/groups/:group_id/members/:account/auto-follow",
             put(groups::set_member_auto_follow::handler),
         )
         .route(

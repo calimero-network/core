@@ -17,7 +17,7 @@ use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
-    Path((group_id_str, identity_str)): Path<(String, String)>,
+    Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<SetMemberCapabilitiesApiRequest>,
@@ -27,12 +27,12 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let member = match parse_account(&identity_str) {
+    let member = match parse_account(&account_str) {
         Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, identity=%identity_str, capabilities=req.capabilities, "Setting member capabilities");
+    info!(group_id=%group_id_str, identity=%account_str, capabilities=req.capabilities, "Setting member capabilities");
 
     let requester = match resolve_requester(auth_key, req.requester) {
         Ok(r) => r,
@@ -52,14 +52,14 @@ pub async fn handler(
 
     match result {
         Ok(()) => {
-            info!(group_id=%group_id_str, identity=%identity_str, "Member capabilities updated");
+            info!(group_id=%group_id_str, identity=%account_str, "Member capabilities updated");
             ApiResponse {
                 payload: SetMemberCapabilitiesApiResponse {},
             }
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to set member capabilities");
+            error!(group_id=%group_id_str, identity=%account_str, error=?err, "Failed to set member capabilities");
             err.into_response()
         }
     }
