@@ -17,6 +17,7 @@ pub const PRESENCE_TTL_MS: u64 = 7_000;
 /// node's enforcement and the server's pre-validation can never drift.
 pub use calimero_primitives::events::EPHEMERAL_MAX_BYTES;
 
+pub mod auth;
 pub(crate) mod inbound;
 pub(crate) mod outbound;
 pub mod store;
