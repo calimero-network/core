@@ -170,3 +170,88 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     );
     assert!(!received.removed, "an upsert must not be marked removed");
 }
+
+/// A forged `author` driven through the production dispatch must produce no
+/// presence event. Companion to the positive routing test above: that one
+/// fails if the match arm is deleted, this one fails if the signature check
+/// is — it is the negative twin, proving the rejection survives the real
+/// `Handler<NetworkEvent>` dispatch, not just the unit-level
+/// `resolve_and_decrypt` call in `handlers::ephemeral::inbound`.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn forged_author_produces_no_presence_event() {
+    let node = boot_test_node().await;
+
+    let context_id = ContextId::from([0xF1u8; 32]);
+    let group_id = ContextGroupId::from([0xF3u8; 32]);
+    register_context_in_group(&node.store, &group_id, &context_id)
+        .expect("register_context_in_group");
+    let group_key_bytes = [0x42u8; 32];
+    let key_id = GroupKeyring::new(&node.store, group_id)
+        .store_key(&group_key_bytes)
+        .expect("store_key");
+
+    // Ciphertext decrypts cleanly under the current group key — the only
+    // thing wrong with this message is the authorship claim.
+    let slice = b"cursor={x:1,y:1}";
+    let nonce = [0x11u8; NONCE_LEN];
+    let sk = PrivateKey::from(group_key_bytes);
+    let ciphertext = SharedKey::from_sk(&sk)
+        .encrypt_with_nonce(slice.to_vec(), nonce)
+        .expect("encrypt");
+
+    // Attacker signs with their own key but claims the victim as author.
+    let attacker = PrivateKey::from([0xF4u8; 32]);
+    let victim = PrivateKey::from([0xF5u8; 32]).public_key();
+    let seq = 1u64;
+    let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
+        context_id,
+        victim,
+        seq,
+        key_id,
+        &ciphertext,
+    )
+    .expect("payload");
+    let signature = attacker.sign(&payload).expect("sign").to_bytes();
+
+    let mut events = Box::pin(node.node_client.receive_events());
+
+    let topic = format!("context/{}", hex::encode(context_id.as_ref()));
+    let event = ephemeral_network_event(
+        libp2p::PeerId::random(),
+        &topic,
+        context_id,
+        victim,
+        seq,
+        key_id,
+        nonce,
+        ciphertext,
+        signature,
+    );
+    node.node_addr
+        .send(event)
+        .await
+        .expect("deliver Ephemeral NetworkEvent to node actor");
+
+    // No presence event must arrive. A short window is enough: the positive
+    // test above observes its event well within this budget.
+    let got = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.next().await {
+                Some(NodeEvent::Context(ctx_event)) => {
+                    if let ContextEventPayload::Ephemeral(payload) = ctx_event.payload {
+                        break payload;
+                    }
+                }
+                Some(_) => {}
+                None => panic!("event stream closed"),
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        got.is_err(),
+        "a forged author must not produce a presence event, got {got:?}"
+    );
+}
