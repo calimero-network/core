@@ -54,6 +54,10 @@ pub enum EphemeralOutboundError {
     /// The group has no current encryption key.
     #[error("no current group key")]
     NoGroupKey,
+    /// The author is not a local signing identity for this context, so the
+    /// envelope cannot be signed. Presence is not publishable without it.
+    #[error("no local signing key for the ephemeral author")]
+    NoLocalSigningKey,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +135,24 @@ pub(crate) async fn do_publish_ephemeral(
         .encrypt(slice)
         .ok_or_else(|| eyre::eyre!("AEAD encrypt failed for ephemeral slice"))?;
 
+    // Sign the envelope. `author` and `seq` ride outside the AEAD, so the
+    // signature is what makes them tamper-evident; the receive path refuses
+    // anything that does not verify.
+    let signing_key =
+        calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?
+            .ok_or(EphemeralOutboundError::NoLocalSigningKey)?;
+    let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
+        context_id,
+        author,
+        seq,
+        record.key_id,
+        &ciphertext,
+    )?;
+    let signature = PrivateKey::from(signing_key)
+        .sign(&signature_payload)
+        .map_err(|err| eyre::eyre!("failed to sign ephemeral envelope: {err}"))?
+        .to_bytes();
+
     // Build and serialize the wire message.
     let msg = BroadcastMessage::Ephemeral {
         context_id,
@@ -139,9 +161,7 @@ pub(crate) async fn do_publish_ephemeral(
         key_id: record.key_id,
         nonce,
         ciphertext: Cow::Owned(ciphertext),
-        // Placeholder superseded by Task 3, which signs the canonical payload
-        // via `auth::ephemeral_signature_payload`.
-        signature: [0u8; 64],
+        signature,
     };
     let bytes = borsh::to_vec(&msg)?;
 
@@ -333,7 +353,7 @@ mod tests {
     use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_node_primitives::sync::snapshot::BroadcastMessage;
     use calimero_primitives::context::ContextId;
-    use calimero_primitives::identity::PublicKey;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
@@ -446,6 +466,16 @@ mod tests {
         (group_id, key_id, group_key_bytes)
     }
 
+    /// Seed the `ContextIdentity` row that marks `sk` as a local signing
+    /// identity for `context_id`, so `resolve_local_signing_key` finds it.
+    fn store_local_identity(store: &Store, context_id: &ContextId, sk: &PrivateKey) {
+        let key = calimero_store::key::ContextIdentity::new(*context_id, sk.public_key());
+        let value = calimero_store::types::ContextIdentity {
+            private_key: Some(*sk.as_bytes()),
+        };
+        store.handle().put(&key, &value).expect("put identity");
+    }
+
     // -----------------------------------------------------------------------
     // Test 1: `do_publish_ephemeral` publishes exactly one message on the
     //          derived context topic with seq==1 on the first call.
@@ -455,9 +485,11 @@ mod tests {
     async fn publishes_exactly_one_ephemeral_on_context_topic() {
         let store = fresh_store();
         let context_id = ContextId::from([0x01u8; 32]);
-        let author = PublicKey::from([0x02u8; 32]);
+        let author_sk = PrivateKey::from([0x02u8; 32]);
+        let author = author_sk.public_key();
 
         let (_group_id, _key_id, _group_key_bytes) = seed_group_key(&store, context_id);
+        store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
         let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
@@ -505,9 +537,11 @@ mod tests {
     async fn second_call_seq_increments() {
         let store = fresh_store();
         let context_id = ContextId::from([0x03u8; 32]);
-        let author = PublicKey::from([0x04u8; 32]);
+        let author_sk = PrivateKey::from([0x04u8; 32]);
+        let author = author_sk.public_key();
 
         let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+        store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
         let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
@@ -579,9 +613,11 @@ mod tests {
     async fn heartbeat_republish_sends_fresh_message() {
         let store = fresh_store();
         let context_id = ContextId::from([0x07u8; 32]);
-        let author = PublicKey::from([0x08u8; 32]);
+        let author_sk = PrivateKey::from([0x08u8; 32]);
+        let author = author_sk.public_key();
 
         let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+        store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
         let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
@@ -663,5 +699,60 @@ mod tests {
 
         let msgs = published.lock().expect("lock").clone();
         assert_eq!(msgs.len(), 0, "no publish on error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: the published envelope carries a signature that verifies under
+    //          the author's identity key. This is the send-side half of the
+    //          anti-impersonation guarantee.
+    // -----------------------------------------------------------------------
+
+    #[actix::test]
+    async fn published_message_carries_a_verifiable_signature() {
+        use crate::handlers::ephemeral::auth::verify_ephemeral_signature;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x71u8; 32]);
+
+        let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+
+        // The author must be a local signing identity, or signing cannot
+        // resolve a key. `store_local_identity` seeds the ContextIdentity row
+        // that `resolve_local_signing_key` reads.
+        let sk = PrivateKey::from([0x74u8; 32]);
+        let author = sk.public_key();
+        store_local_identity(&store, &context_id, &sk);
+
+        let (network_client, published) = recording_network_client();
+        let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
+        let ctx_client = ContextClient::new(store, nc_for_ctx, LazyRecipient::new());
+
+        do_publish_ephemeral(
+            &network_client,
+            &ctx_client,
+            context_id,
+            author,
+            3,
+            b"hi".to_vec(),
+        )
+        .await
+        .expect("publish");
+
+        let sent = published.lock().expect("lock").clone();
+        assert_eq!(sent.len(), 1, "exactly one publish");
+        let msg: BroadcastMessage<'_> = borsh::from_slice(&sent[0].1).expect("decode");
+        let BroadcastMessage::Ephemeral {
+            author: got_author,
+            seq,
+            key_id,
+            ciphertext,
+            signature,
+            ..
+        } = msg
+        else {
+            panic!("expected Ephemeral");
+        };
+        verify_ephemeral_signature(context_id, got_author, seq, key_id, &ciphertext, &signature)
+            .expect("published signature must verify");
     }
 }
