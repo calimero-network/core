@@ -32,6 +32,8 @@ pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
+/// Node-local fleet-convergence stamp for the group at `GROUP_UPGRADE_PREFIX`.
+pub const GROUP_FLEET_COMPLETION_PREFIX: u8 = 0x48;
 pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
@@ -392,6 +394,60 @@ impl FromKeyParts for GroupUpgradeKey {
 impl Debug for GroupUpgradeKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupUpgradeKey")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
+/// Unix timestamp when this node watched the whole cohort converge on the
+/// group's [`GroupUpgradeValue::to_state_version`].
+/// Key: `prefix(1) + group_id(32)` -> `u64`.
+///
+/// Node-local, and kept out of [`GroupUpgradeValue`] so that recording it can
+/// never change that record's stored layout: this observation is written on an
+/// observability path, long after the governance ops that write the record.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupFleetCompletion(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupFleetCompletion {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_FLEET_COMPLETION_PREFIX])
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupFleetCompletion {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupFleetCompletion {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupFleetCompletion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupFleetCompletion")
             .field("group_id", &self.group_id())
             .finish()
     }
@@ -1329,13 +1385,9 @@ pub enum GroupUpgradeStatus {
     Completed {
         /// Unix timestamp when the last context was upgraded, or `None` when
         /// each context self-migrates independently without coordination.
-        /// NODE-LOCAL: it says nothing about the rest of the cohort.
+        /// NODE-LOCAL: it says nothing about the rest of the cohort, which
+        /// [`GroupFleetCompletion`] answers.
         completed_at: Option<u64>,
-        /// Unix timestamp when this node watched the whole cohort converge on
-        /// [`GroupUpgradeValue::to_state_version`]. Separate from the local
-        /// stamp above because the node that ran the upgrade sets that one
-        /// itself, long before the fleet is done.
-        fleet_completed_at: Option<u64>,
     },
 }
 
@@ -3139,6 +3191,18 @@ mod tests {
     }
 
     #[test]
+    fn group_fleet_completion_key_roundtrip() {
+        let gid = [0x44; 32];
+        let key = GroupFleetCompletion::new(gid);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_FLEET_COMPLETION_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+        // Same width and the same id bytes as the upgrade row it stamps, so the
+        // prefix is the only thing keeping a prefix-bounded scan off it.
+        assert_ne!(GROUP_FLEET_COMPLETION_PREFIX, GROUP_UPGRADE_PREFIX);
+    }
+
+    #[test]
     fn group_upgrade_ladder_key_roundtrip() {
         let gid = [0x47; 32];
         let key = GroupUpgradeLadder::new(gid);
@@ -3418,7 +3482,6 @@ mod tests {
                 initiated_by: PrimitivePublicKey::from([0x06; 32]),
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
-                    fleet_completed_at: Some(1_700_002_000),
                 },
                 cascade_hlc: None,
                 cascade_seq: None,
@@ -3433,12 +3496,8 @@ mod tests {
             assert_eq!(decoded.to_state_version, 4);
             assert_eq!(decoded.migration, None);
             match decoded.status {
-                GroupUpgradeStatus::Completed {
-                    completed_at,
-                    fleet_completed_at,
-                } => {
+                GroupUpgradeStatus::Completed { completed_at } => {
                     assert_eq!(completed_at, Some(1_700_001_000));
-                    assert_eq!(fleet_completed_at, Some(1_700_002_000));
                 }
                 other => panic!("expected Completed, got {other:?}"),
             }
@@ -3462,10 +3521,7 @@ mod cascade_hlc_borsh_tests {
             migration: Some(vec![1, 2, 3]),
             initiated_at: 1_700_000_000,
             initiated_by: PrimitivePublicKey::from([7u8; 32]),
-            status: GroupUpgradeStatus::Completed {
-                completed_at: None,
-                fleet_completed_at: None,
-            },
+            status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc,
             cascade_seq: None,
             to_state_version: 2,
@@ -3500,12 +3556,9 @@ mod cascade_hlc_borsh_tests {
         PrimitivePublicKey::from([7u8; 32])
             .serialize(&mut bytes)
             .unwrap();
-        (GroupUpgradeStatus::Completed {
-            completed_at: None,
-            fleet_completed_at: None,
-        })
-        .serialize(&mut bytes)
-        .unwrap();
+        (GroupUpgradeStatus::Completed { completed_at: None })
+            .serialize(&mut bytes)
+            .unwrap();
         // Push the `Some` tag (0x01) with no HybridTimestamp body — truncated.
         bytes.push(0x01u8);
 
@@ -3564,13 +3617,14 @@ mod cascade_hlc_borsh_tests {
         assert_eq!(err.kind(), borsh::io::ErrorKind::InvalidData);
     }
 
-    /// `fleet_completed_at` was added to `Completed` with no migration path, so
-    /// a record an older binary wrote does not decode. `status` is not the last
-    /// field, so the missing bytes shift `cascade_hlc`, `cascade_seq` and
-    /// `to_state_version` rather than simply truncating - this pins that the
-    /// shift is caught instead of read as those fields.
+    /// The `Completed` layout a shipped binary writes, byte for byte, decoded by
+    /// this one. `status` is not the last field, so a field added inside the
+    /// variant shifts `cascade_hlc`, `cascade_seq` and `to_state_version` and
+    /// every stored record on every already-migrated namespace stops decoding.
+    /// Node-local additions go in their own key ([`GroupFleetCompletion`]) so
+    /// this stays true.
     #[test]
-    fn a_completed_record_written_before_fleet_completed_at_fails_loud() {
+    fn the_completed_layout_a_shipped_binary_writes_still_decodes() {
         let mut bytes = Vec::new();
         "1.0.0".to_owned().serialize(&mut bytes).unwrap();
         "2.0.0".to_owned().serialize(&mut bytes).unwrap();
@@ -3579,21 +3633,29 @@ mod cascade_hlc_borsh_tests {
         PrimitivePublicKey::from([7u8; 32])
             .serialize(&mut bytes)
             .unwrap();
-        // `Completed` as the older binary wrote it: variant tag and
-        // `completed_at`, with no `fleet_completed_at` behind it.
+        // `Completed`: variant tag, then `completed_at` and nothing else.
         bytes.push(1u8);
         Some(1_700_001_000u64).serialize(&mut bytes).unwrap();
         None::<HybridTimestamp>.serialize(&mut bytes).unwrap();
         None::<u64>.serialize(&mut bytes).unwrap();
         2u32.serialize(&mut bytes).unwrap();
 
-        let err = GroupUpgradeValue::try_from_slice(&bytes)
-            .expect_err("a pre-fleet_completed_at record must not decode");
+        let decoded = GroupUpgradeValue::try_from_slice(&bytes)
+            .expect("a stored Completed record must decode");
+        match decoded.status {
+            GroupUpgradeStatus::Completed { completed_at } => {
+                assert_eq!(completed_at, Some(1_700_001_000));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        // The trailing fields read their own bytes, not shifted ones.
+        assert_eq!(decoded.cascade_hlc, None);
+        assert_eq!(decoded.cascade_seq, None);
+        assert_eq!(decoded.to_state_version, 2);
         assert_eq!(
-            err.kind(),
-            borsh::io::ErrorKind::InvalidData,
-            "the break must stay a loud decode error; a tolerant impl that read \
-             one of these into the wrong field would be silent corruption"
+            to_vec(&decoded).unwrap(),
+            bytes,
+            "this binary must write back the same bytes it read"
         );
     }
 }

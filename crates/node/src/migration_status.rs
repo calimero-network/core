@@ -744,11 +744,11 @@ pub(crate) fn on_heartbeat_facts_changed(
 
 /// Write the fleet-convergence timestamp, once.
 ///
-/// Guarded on `Completed { fleet_completed_at: None, .. }`: an `InProgress`
-/// record still holds this node's `validate_upgrade` rule-4 mutex and must never
-/// be released from an observability path. The stamp is also the idempotence
-/// latch - once `fleet_completed_at` is `Some`, every later heartbeat finds the
-/// guard closed and announces nothing, and that survives a restart.
+/// Guarded on a `Completed` record: an `InProgress` one still holds this node's
+/// `validate_upgrade` rule-4 mutex and must never be released from an
+/// observability path. The stamp is also the idempotence latch - once
+/// `fleet_completed_at` is set, every later heartbeat finds the guard closed and
+/// announces nothing, and that survives a restart.
 ///
 /// It is deliberately NOT `completed_at`, which is the node-local "my own
 /// contexts are swapped" stamp the cascade propagator writes. Latching on that
@@ -780,7 +780,7 @@ fn stamp_fleet_completion(
     announce: bool,
 ) -> bool {
     let repo = calimero_governance_store::UpgradesRepository::new(datastore);
-    let mut record = match repo.load(ns) {
+    let record = match repo.load(ns) {
         Ok(Some(record)) => record,
         Ok(None) => return true,
         Err(err) => {
@@ -791,13 +791,20 @@ fn stamp_fleet_completion(
             return false;
         }
     };
-    let calimero_store::key::GroupUpgradeStatus::Completed {
-        completed_at,
-        fleet_completed_at: None,
-    } = record.status
-    else {
+    if !matches!(
+        record.status,
+        calimero_store::key::GroupUpgradeStatus::Completed { .. }
+    ) {
         return true;
-    };
+    }
+    match repo.fleet_completed_at(ns) {
+        Ok(None) => {}
+        Ok(Some(_)) => return true,
+        Err(err) => {
+            tracing::error!(?err, "failed to read the migration completion stamp");
+            return false;
+        }
+    }
     if record.to_state_version != target_version {
         return true;
     }
@@ -805,15 +812,11 @@ fn stamp_fleet_completion(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    record.status = calimero_store::key::GroupUpgradeStatus::Completed {
-        completed_at,
-        fleet_completed_at: Some(now),
-    };
-    let to_version = record.to_version.clone();
-    if let Err(err) = repo.save(ns, &record) {
+    if let Err(err) = repo.set_fleet_completed_at(ns, now) {
         tracing::error!(?err, "failed to stamp migration completion");
         return false;
     }
+    let to_version = record.to_version;
     if !announce {
         return true;
     }
@@ -1484,10 +1487,7 @@ mod tests {
                     migration: None,
                     initiated_at: 0,
                     initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
-                    status: GroupUpgradeStatus::Completed {
-                        completed_at: None,
-                        fleet_completed_at: None,
-                    },
+                    status: GroupUpgradeStatus::Completed { completed_at: None },
                     cascade_hlc: None,
                     cascade_seq: None,
                     to_state_version: 2,
@@ -1721,10 +1721,7 @@ mod tests {
                     migration: None,
                     initiated_at: 0,
                     initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
-                    status: GroupUpgradeStatus::Completed {
-                        completed_at: None,
-                        fleet_completed_at: None,
-                    },
+                    status: GroupUpgradeStatus::Completed { completed_at: None },
                     cascade_hlc: None,
                     cascade_seq: None,
                     to_state_version: 2,
@@ -1784,7 +1781,6 @@ mod tests {
                     initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
                     status: calimero_store::key::GroupUpgradeStatus::Completed {
                         completed_at: None,
-                        fleet_completed_at: None,
                     },
                     cascade_hlc: None,
                     cascade_seq: None,
