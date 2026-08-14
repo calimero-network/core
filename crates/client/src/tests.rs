@@ -191,12 +191,12 @@ async fn list_group_members() {
 async fn a_caller_finds_itself_by_matching_its_account() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(format!("/admin-api/namespaces/{GID}/account")))
+        .and(path("/admin-api/identity"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {
                 "accountId": ZERO_HEX_ACCOUNT,
-                "namespaceId": GID,
                 "deviceId": null,
+                "publicKey": ZERO_BS58,
             }})),
         )
         .expect(1)
@@ -214,7 +214,7 @@ async fn a_caller_finds_itself_by_matching_its_account() {
         .await;
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let me = client.get_namespace_account(GID).await.unwrap();
+    let me = client.get_node_identity().await.unwrap();
     let members = client.list_group_members(GID).await.unwrap();
 
     assert!(

@@ -7,8 +7,8 @@ use calimero_server_primitives::admin::{
     GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse,
     LeaveGroupApiResponse, LeaveNamespaceApiResponse, ListGroupContextsApiResponse,
     ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
-    ListSubgroupsApiResponse, NamespaceAccountApiResponse, NamespaceApiResponse,
-    NamespaceIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
+    ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
+    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
     RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
     RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
     SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
@@ -73,24 +73,24 @@ impl Report for CreateAccountApiResponse {
     }
 }
 
-impl Report for NamespaceAccountApiResponse {
+impl Report for NodeIdentityApiResponse {
     fn report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
-            Cell::new("Account").fg(Color::Green),
+            Cell::new("Node Identity").fg(Color::Green),
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
-        let _ = table.add_row(vec!["Namespace", &self.data.namespace_id]);
-        // Absent until `account create` runs here. The account id above is still
-        // real — it is derived — but no device speaks for it yet.
+        // Absent until this node enrols somewhere. The account above is still
+        // real — it is derived from the root — but no device speaks for it yet.
         let _ = table.add_row(vec![
             "Device ID",
             self.data
                 .device_id
                 .as_deref()
-                .unwrap_or("none - run `account create` to enroll this node"),
+                .unwrap_or("none - run `account create <NAMESPACE_ID>` to enroll this node"),
         ]);
+        let _ = table.add_row(vec!["Signing key", &self.data.public_key]);
         println!("{table}");
     }
 }

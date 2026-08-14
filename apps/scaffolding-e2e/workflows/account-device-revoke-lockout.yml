@@ -331,18 +331,18 @@ steps:
 
   # One identity, two replicas — the whole point of the feature.
   - name: The two devices authored as one account but distinct replicas
-    type: account_show
+    type: get_namespace_identity
     node: account-revoke-node-2
     namespace_id: '{{namespace_id}}'
     outputs:
-      laptop_shown: accountId
+      laptop_shown: account
 
   - name: What the phone speaks for
-    type: account_show
+    type: get_namespace_identity
     node: account-revoke-node-3
     namespace_id: '{{namespace_id}}'
     outputs:
-      phone_shown: accountId
+      phone_shown: account
 
   # The feature in two assertions, now readable in the scenario instead of buried
   # in a shell script comparing temp files. Same account means the second device

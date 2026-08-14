@@ -3245,6 +3245,33 @@ pub struct ListNamespacesApiResponse {
     pub data: Vec<NamespaceApiResponse>,
 }
 
+/// Who this node is, with no namespace involved.
+///
+/// Each field is node-level: one root key is one account everywhere, a node is
+/// one device, and it signs with one key. The namespaced endpoints this replaces
+/// took a namespace and returned the same answer regardless, which read as
+/// though the answer varied by scope.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeIdentityApiResponseData {
+    /// Hex-encoded `AccountId` this node writes as.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId`, or `None` when the node has not enrolled yet.
+    pub device_id: Option<String>,
+    /// The key this node signs ops with, base58.
+    ///
+    /// The device's signing key, not the account root — the root signs
+    /// certificates and handoffs and never an op, so a signature on the wire
+    /// verifies against this one.
+    pub public_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeIdentityApiResponse {
+    pub data: NodeIdentityApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NamespaceIdentityApiResponse {
