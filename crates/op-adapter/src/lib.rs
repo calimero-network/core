@@ -549,6 +549,20 @@ mod tests {
     /// `payload_from_root_op` FOLDS, and the bridge deliberately still keys
     /// membership by `legacy_account_id(member)` until slice B moves the live plane
     /// too — so nothing here reads the credential, it only has to be present.
+    /// The [`Authorship`] for an op whose author is named directly.
+    ///
+    /// [`legacy_authorship`] derives the account by hashing the signing key, which
+    /// couples a test to the stand-in bridge even when all it wanted was "some
+    /// author". This states the principal and the key separately, which is what
+    /// the two fields actually mean.
+    fn authorship_of(account: AccountId, device_key: PublicKey) -> Authorship {
+        Authorship {
+            account,
+            device: DeviceId::from(*account.as_bytes()),
+            device_key,
+        }
+    }
+
     /// A credential that actually VERIFIES for `sign_pk`. The filler fixture
     /// above cannot fold a device now that the shared predicate checks the
     /// certificate, so any test asserting the device half needs this one.
@@ -655,7 +669,7 @@ mod tests {
             [7u8; 32],
             ScopeId::from([9u8; 32]),
             vec![],
-            legacy_authorship(root.public_key()),
+            authorship_of(AccountId::from([0xA0; 32]), root.public_key()),
             hlc(1),
             payload,
             [0u8; 32],
@@ -745,7 +759,7 @@ mod tests {
             [7u8; 32],
             ScopeId::from([9u8; 32]),
             vec![],
-            legacy_authorship(root.public_key()),
+            authorship_of(AccountId::from([0xA0; 32]), root.public_key()),
             hlc(1),
             payload_from_group_op(
                 group,
@@ -765,7 +779,7 @@ mod tests {
             [8u8; 32],
             ScopeId::from([9u8; 32]),
             vec![[7u8; 32]],
-            legacy_authorship(root.public_key()),
+            authorship_of(AccountId::from([0xA0; 32]), root.public_key()),
             hlc(2),
             OpPayload::DeviceRevoked { account, device },
             [0u8; 32],
@@ -929,7 +943,7 @@ mod tests {
             });
             let payload = set_writers_payload(object, entries.last().expect("just pushed"));
             let parents: Vec<[u8; 32]> = prev_id.into_iter().collect();
-            let authorship = legacy_authorship(admin);
+            let authorship = authorship_of(AccountId::from([1u8; 32]), admin);
             let id = Op::compute_id(scope, &parents, &authorship, &h, &payload);
             ops.push(Op::from_parts(
                 id, scope, parents, authorship, h, payload, [0u8; 32], [0u8; 64],
@@ -989,7 +1003,7 @@ mod tests {
         let op = Op::new(
             scope,
             vec![],
-            legacy_authorship(admin),
+            authorship_of(AccountId::from([1u8; 32]), admin),
             entry.delta_hlc,
             payload,
             [0u8; 32],
@@ -1380,15 +1394,19 @@ mod tests {
     fn membership_plane_fold_add_remove_readd() {
         let scope = ScopeId::from([0u8; 32]);
         let group = ContextGroupId::from([3u8; 32]);
-        let admin = PublicKey::from([1u8; 32]);
-        let m = PublicKey::from([0x55; 32]);
+        // Principals, named. This test folds add/remove/re-add on the membership
+        // plane, which is keyed by account — the keys it used to hash through the
+        // legacy stand-in were only a route to one.
+        let admin_key = PublicKey::from([1u8; 32]);
+        let admin = AccountId::from([1u8; 32]);
+        let m = AccountId::from([0x55; 32]);
 
         let build = |ns: u64, payload: OpPayload| -> Op {
             let h = hlc(ns);
             Op::new(
                 scope,
                 vec![],
-                legacy_authorship(admin),
+                authorship_of(admin, admin_key),
                 h,
                 payload,
                 [0u8; 32],
@@ -1402,49 +1420,33 @@ mod tests {
                 10,
                 OpPayload::MemberAdded {
                     group,
-                    member: legacy_account_id(&m),
+                    member: m,
                     role: GroupMemberRole::Member,
                 },
             ),
-            build(
-                20,
-                OpPayload::MemberRemoved {
-                    group,
-                    member: legacy_account_id(&m),
-                },
-            ),
+            build(20, OpPayload::MemberRemoved { group, member: m }),
             build(
                 30,
                 OpPayload::MemberAdded {
                     group,
-                    member: legacy_account_id(&m),
+                    member: m,
                     role: GroupMemberRole::Admin,
                 },
             ),
         ];
         let groups = ScopeState::from_ops(&ops).acl_view().groups;
         assert_eq!(
-            groups
-                .get(&group)
-                .and_then(|g| g.get(&legacy_account_id(&m))),
+            groups.get(&group).and_then(|g| g.get(&m)),
             Some(&GroupMemberRole::Admin),
             "re-add after remove wins with the new role"
         );
 
         // Same set ending in Remove@40 → member absent.
         let mut ops2 = ops;
-        ops2.push(build(
-            40,
-            OpPayload::MemberRemoved {
-                group,
-                member: legacy_account_id(&m),
-            },
-        ));
+        ops2.push(build(40, OpPayload::MemberRemoved { group, member: m }));
         let groups2 = ScopeState::from_ops(&ops2).acl_view().groups;
         assert_eq!(
-            groups2
-                .get(&group)
-                .and_then(|g| g.get(&legacy_account_id(&m))),
+            groups2.get(&group).and_then(|g| g.get(&m)),
             None,
             "final removal drops the member"
         );
