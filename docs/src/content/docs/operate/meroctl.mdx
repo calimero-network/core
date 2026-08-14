@@ -125,13 +125,10 @@ meroctl --node node1 app ls
 | `generate` (`new`)                 | Generate a new identity keypair.                  | —                                                            |
 | `use <IDENTITY>`                   | Set the default identity for a context.           | `IDENTITY`, `--context`, `--force`                          |
 | `alias`                            | Manage identity aliases.                          | subcommand                                                    |
-| `grant`                            | **Removed.** Parses but errors, pointing you to `group members set-caps`. | identity, capability, `--context`, `--as`                   |
-| `revoke`                           | **Removed.** Parses but errors, pointing you to `group members set-caps`. | identity, capability, `--context`, `--as`                   |
 
 <Aside type="note">
-  Per-context capability `grant`/`revoke` have been removed. The commands still
-  parse for compatibility but immediately error, directing you to manage
-  capabilities through the group instead (`group members set-capabilities`).
+  Per-context capability `grant`/`revoke` are gone. Manage capabilities through
+  the group instead (`group members set-capabilities`).
 </Aside>
 
 ```sh
