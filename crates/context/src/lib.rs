@@ -35,6 +35,7 @@ mod cache;
 pub mod config;
 pub mod error;
 pub mod governance_dag;
+mod group_key_pull;
 pub mod handlers;
 pub mod hlc_fence;
 pub mod join_credential;
