@@ -621,6 +621,18 @@ impl ContextManager {
         requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
     ) -> eyre::Result<GovernancePreflight> {
+        // Before the identity read. Both checks fail for a group that does not
+        // exist, so the order decides which error the caller sees, and "not
+        // found" names the actual problem — "this node has no signing identity
+        // there" reads like a provisioning fault on a group that was never
+        // there at all.
+        if MetaRepository::new(&self.datastore)
+            .load(group_id)?
+            .is_none()
+        {
+            eyre::bail!("group '{group_id:?}' not found");
+        }
+
         // The node signs with one key, and it is right here. What this used to do
         // was take the pair, throw the private half away, and look the same key up
         // in a per-group store that was populated by best-effort copies of it —
@@ -645,12 +657,6 @@ impl ContextManager {
             None => node_pk,
         };
 
-        if MetaRepository::new(&self.datastore)
-            .load(group_id)?
-            .is_none()
-        {
-            eyre::bail!("group '{group_id:?}' not found");
-        }
         if require_admin {
             // The caller presents a signing key; admin authority is held by the
             // account it acts as.
