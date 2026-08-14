@@ -393,6 +393,21 @@ steps:
       - account-revoke-node-2
     context_id: '{{context_id}}'
 
+  # The rotation is OWED, not immediate, and that is the shape of the model
+  # rather than a gap. Revoking is the account's authority and node-2 holds the
+  # account, but it joined as a plain member — peers accept a rotation only from
+  # an admin at the cut. So the revocation stops the device writing at once, and
+  # node-1's rotation listener discharges the pending row a moment later.
+  #
+  # Asserted on node-1 because node-1 is the admin that discharges it. Until it
+  # lands the revoked device can still READ, which is exactly what this scenario
+  # exists to prove does not persist.
+  - name: The admin's listener discharged the owed rotation
+    type: assert_log_present
+    nodes: [account-revoke-node-1]
+    patterns:
+      - "pending rotation discharged"
+
   # ── Phase 6: the revoked device is out, the survivor is not ───────
 
   - name: The revoked device can no longer write
