@@ -104,21 +104,23 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 /// `state` is present on upsert and absent on TTL/disconnect expiry
 /// (`removed = true`). `contextId` rides on the flattened [`ContextEvent`].
 ///
-/// # Security — `author` is NOT cryptographically authenticated
+/// # Security — `author` is cryptographically authenticated
 ///
-/// The presence message is encrypted under the context **group key** but is
-/// **not signed**. Any context member holding the group key can therefore
-/// publish an `Ephemeral` update carrying another member's `author`. This sits
-/// within the existing member trust boundary — every member can already write
-/// context state via `execute` — and presence is transient and never
-/// persisted, so it is not a new escalation. But clients MUST NOT treat the
-/// presence `author` as an authenticated identity (e.g. for access control);
-/// it is a best-effort display hint only.
+/// The presence envelope is encrypted under the context **group key** and
+/// **signed** by `author`'s identity key over `(context_id, author, seq,
+/// key_id, sha256(ciphertext))` (`calimero-node`'s
+/// `handlers::ephemeral::auth`). The receive path verifies this signature
+/// before the slice reaches the awareness store or this event is emitted, so
+/// a group-key holder cannot forge another member's `author`. A message that
+/// fails verification is silently dropped and never surfaces as an event.
+/// Presence remains transient and never persisted, but by the time clients
+/// see `author` here it has been authenticated the same way a state-delta
+/// author is.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EphemeralPayload {
-    /// The peer whose presence slice this update belongs to. **Not
-    /// cryptographically authenticated** — see the type-level security note.
+    /// The peer whose presence slice this update belongs to. Verified against
+    /// an ed25519 signature on receipt — see the type-level security note.
     pub author: PublicKey,
     /// Decrypted slice bytes on upsert; absent when `removed` is `true`.
     #[serde(skip_serializing_if = "Option::is_none")]

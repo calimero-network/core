@@ -5,13 +5,14 @@
 //! with `Duration::ZERO`, a single-shot non-blocking lookup) to decrypt the
 //! sealed presence slice before handing it to the in-memory `AwarenessStore`.
 //!
-//! **Security — the wire `author` is not authenticated.** Presence messages are
-//! encrypted under the group key but not signed, so any context member holding
-//! the key can publish an `Ephemeral` carrying another member's `author`. This
-//! is within the existing member trust boundary (all members can already write
-//! context state via `execute`) and presence is transient/non-persisted — but
-//! the decrypted `author` on the emitted event MUST NOT be treated by clients
-//! as an authenticated identity. See [`EphemeralPayload`] for the full note.
+//! **Security — the wire `author` is signed.** Every presence envelope carries
+//! an ed25519 signature, by `author`'s identity key, over `(context_id,
+//! author, seq, key_id, sha256(ciphertext))` — see
+//! [`crate::handlers::ephemeral::auth`]. `resolve_and_decrypt` verifies this
+//! signature after AEAD decryption and before the plaintext is handed to the
+//! `AwarenessStore`; a mismatch (including a group-key holder stamping another
+//! member's `author`) is a silent drop, same as an unknown `key_id` or a failed
+//! AEAD decrypt. See [`EphemeralPayload`] for the client-facing note.
 //!
 //! [`EphemeralPayload`]: calimero_primitives::events::EphemeralPayload
 
@@ -33,19 +34,24 @@ use crate::NodeManager;
 // Inner async logic (testable without actix)
 // ---------------------------------------------------------------------------
 
-/// Resolve the group key for `context_id` and decrypt `ciphertext`.
+/// Resolve the group key for `context_id`, decrypt `ciphertext`, and verify
+/// the envelope signature.
 ///
 /// Returns `None` when the `key_id` is unknown (unknown group or key not in
-/// keyring) or when the AEAD authentication fails. Both cases are silent
+/// keyring), when the AEAD authentication fails, or when the envelope
+/// signature does not verify under `author`. All three cases are silent
 /// drops — ephemeral presence is best-effort.
 ///
 /// Never writes to the DAG, RocksDB, or any persistent store.
 pub(crate) async fn resolve_and_decrypt(
     context_client: &ContextClient,
     context_id: ContextId,
+    author: PublicKey,
+    seq: u64,
     key_id: [u8; 32],
     nonce: Nonce,
     ciphertext: Vec<u8>,
+    signature: [u8; 64],
 ) -> Option<Vec<u8>> {
     // Derive the ContextGroupId the same way the state-delta handler does:
     // `get_group_for_context` reads the context-tree row that
@@ -91,19 +97,50 @@ pub(crate) async fn resolve_and_decrypt(
         }
     };
 
+    // `SharedKey::decrypt` consumes `ciphertext` by value, but the signature
+    // verify below needs the exact bytes that arrived on the wire — capture
+    // them before decrypting.
+    let ciphertext_for_verify = ciphertext.clone();
+
     // AEAD decrypt. `SharedKey::from_sk` derives the symmetric key from the
     // stored group private key; `decrypt` returns `None` on authentication
     // failure (wrong key or tampered ciphertext). Drop silently either way —
     // a decryption failure on the ephemeral path should not produce a log
     // storm; only debug-level is emitted.
     let plaintext = calimero_crypto::SharedKey::from_sk(&key).decrypt(ciphertext, nonce);
-    if plaintext.is_none() {
+    let plaintext = match plaintext {
+        Some(plaintext) => plaintext,
+        None => {
+            debug!(
+                %context_id,
+                "ephemeral: AEAD decrypt failed — dropping"
+            );
+            return None;
+        }
+    };
+
+    // Envelope signature. Sits after decryption so the ed25519 verify stays
+    // off the path for traffic that could not produce valid ciphertext, and
+    // before the awareness store so a forged author never becomes visible
+    // state.
+    if let Err(err) = crate::handlers::ephemeral::auth::verify_ephemeral_signature(
+        context_id,
+        author,
+        seq,
+        key_id,
+        &ciphertext_for_verify,
+        &signature,
+    ) {
         debug!(
             %context_id,
-            "ephemeral: AEAD decrypt failed — dropping"
+            %author,
+            %err,
+            "ephemeral: envelope signature verification failed — dropping"
         );
+        return None;
     }
-    plaintext
+
+    Some(plaintext)
 }
 
 // ---------------------------------------------------------------------------
@@ -162,16 +199,23 @@ pub(crate) fn handle_ephemeral_broadcast(
     ciphertext: Vec<u8>,
     signature: [u8; 64],
 ) {
-    // Verified in Task 4; threaded through here so the wire change lands on its own.
-    let _ = &signature;
-
     let context_client = this.clients.context.clone();
     let node_client = this.clients.node.clone();
 
     let _ignored = ctx.spawn(
         async move {
-            // Resolve key + decrypt: the only async work.
-            resolve_and_decrypt(&context_client, context_id, key_id, nonce, ciphertext).await
+            // Resolve key + decrypt + verify signature: the only async work.
+            resolve_and_decrypt(
+                &context_client,
+                context_id,
+                author,
+                seq,
+                key_id,
+                nonce,
+                ciphertext,
+                signature,
+            )
+            .await
         }
         .into_actor(this)
         .map(move |plaintext, actor, _ctx| {
@@ -309,21 +353,41 @@ mod tests {
     async fn decryptable_slice_emits_event_and_populates_store() {
         let store = fresh_store();
         let context_id = ContextId::from([0x01u8; 32]);
-        let author = PublicKey::from([0x02u8; 32]);
+        let author_sk = PrivateKey::from([0x02u8; 32]);
+        let author = author_sk.public_key();
+        let seq = 1u64;
 
         let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
         let slice = b"cursor={x:42,y:10}";
         let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, slice);
+        let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
+            context_id,
+            author,
+            seq,
+            key_id,
+            &ciphertext,
+        )
+        .expect("payload");
+        let signature = author_sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
         let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
 
         let (node_client, mut event_rx, _tmp) = node_client_with_rx(fresh_store()).await;
 
-        // Resolve + decrypt the ciphertext.
-        let plaintext = resolve_and_decrypt(&ctx_client, context_id, key_id, nonce, ciphertext)
-            .await
-            .expect("should decrypt — key is seeded");
+        // Resolve + decrypt + verify the ciphertext.
+        let plaintext = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            seq,
+            key_id,
+            nonce,
+            ciphertext,
+            signature,
+        )
+        .await
+        .expect("should decrypt — key is seeded and signature is valid");
 
         assert_eq!(
             plaintext.as_slice(),
@@ -374,6 +438,7 @@ mod tests {
     async fn unknown_key_id_is_dropped_silently() {
         let store = fresh_store();
         let context_id = ContextId::from([0x03u8; 32]);
+        let author = PrivateKey::from([0x09u8; 32]).public_key();
 
         // Seed the group so context resolution works, but use a wrong key_id.
         let (_group_id, _real_key_id, group_key_bytes) = seed_group_key(&store, context_id);
@@ -383,11 +448,22 @@ mod tests {
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
         let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
 
-        // key_id that was never stored.
+        // key_id that was never stored. The key lookup fails before
+        // verification would even run, so the signature bytes below are
+        // deliberately garbage — this exercises the earlier gate.
         let wrong_key_id = [0x00u8; 32];
 
-        let result =
-            resolve_and_decrypt(&ctx_client, context_id, wrong_key_id, nonce, ciphertext).await;
+        let result = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            1,
+            wrong_key_id,
+            nonce,
+            ciphertext,
+            [0u8; 64],
+        )
+        .await;
 
         // Must return None — unknown key_id → silent drop.
         assert!(
@@ -406,6 +482,83 @@ mod tests {
             other => panic!("expected empty channel, got {other:?}"),
         }
         drop(node_client_check);
+    }
+
+    // -----------------------------------------------------------------------
+    // THE regression guard for this whole plan: a message signed by A but
+    // claiming B as author must be dropped, even though it decrypts cleanly
+    // under the shared group key.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn forged_author_is_dropped() {
+        use crate::handlers::ephemeral::auth::ephemeral_signature_payload;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x81u8; 32]);
+
+        let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
+        let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"forged");
+
+        // Attacker holds the group key and signs correctly — with their OWN
+        // key — but stamps the victim's public key as `author`.
+        let attacker = PrivateKey::from([0x84u8; 32]);
+        let victim = PrivateKey::from([0x85u8; 32]).public_key();
+        let payload = ephemeral_signature_payload(context_id, victim, 1, key_id, &ciphertext)
+            .expect("payload");
+        let signature = attacker.sign(&payload).expect("sign").to_bytes();
+
+        let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
+        let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
+
+        let out = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            victim,
+            1,
+            key_id,
+            nonce,
+            ciphertext,
+            signature,
+        )
+        .await;
+
+        assert!(out.is_none(), "a forged author must not decrypt through");
+    }
+
+    // Positive control: a correctly signed message still passes, so the guard
+    // above is proving something.
+    #[tokio::test]
+    async fn correctly_signed_message_passes() {
+        use crate::handlers::ephemeral::auth::ephemeral_signature_payload;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x86u8; 32]);
+
+        let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
+        let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"genuine");
+        let sk = PrivateKey::from([0x89u8; 32]);
+        let author = sk.public_key();
+        let payload = ephemeral_signature_payload(context_id, author, 1, key_id, &ciphertext)
+            .expect("payload");
+        let signature = sk.sign(&payload).expect("sign").to_bytes();
+
+        let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
+        let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
+
+        let out = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            1,
+            key_id,
+            nonce,
+            ciphertext,
+            signature,
+        )
+        .await;
+
+        assert_eq!(out.as_deref(), Some(b"genuine".as_ref()));
     }
 
     // -----------------------------------------------------------------------

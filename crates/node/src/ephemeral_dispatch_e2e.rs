@@ -78,7 +78,9 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     let node = boot_test_node().await;
 
     let context_id = ContextId::from([0xE1u8; 32]);
-    let author = PublicKey::from([0xE2u8; 32]);
+    let author_sk = PrivateKey::from([0xE2u8; 32]);
+    let author = author_sk.public_key();
+    let seq = 1u64;
 
     // Seed the group key into the SAME store the actor's context_client reads,
     // and register the context into the group so `get_group_for_context`
@@ -99,6 +101,19 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
         .encrypt_with_nonce(slice.to_vec(), nonce)
         .expect("encrypt");
 
+    // Sign the envelope over the ciphertext that will actually go on the
+    // wire, the same way the outbound path does — a literal signature would
+    // fail verification now that the receive path checks it.
+    let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
+        context_id,
+        author,
+        seq,
+        key_id,
+        &ciphertext,
+    )
+    .expect("signature payload");
+    let signature = author_sk.sign(&signature_payload).expect("sign").to_bytes();
+
     // Subscribe to the node event sink BEFORE dispatching, so the emit from
     // the (async, ctx.spawn'd) handler is observed. `receive_events()`
     // subscribes eagerly at call time.
@@ -111,11 +126,11 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
         &topic,
         context_id,
         author,
-        1,
+        seq,
         key_id,
         nonce,
         ciphertext,
-        [7u8; 64],
+        signature,
     );
     node.node_addr
         .send(event)
