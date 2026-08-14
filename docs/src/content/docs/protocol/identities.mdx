@@ -20,9 +20,9 @@ Every node has an Ed25519 keypair used only by the network layer. Its public key
 
 ## Member identity — authoring operations
 
-Authority lives in the **member identity**: an Ed25519 keypair held **per namespace**, generated on first use and persisted. It is the `author` on every operation and the key that signs an operation's `id` (see [Operations & the DAG](/protocol/operations/)). Membership, roles, and capabilities (defined in [Governance](/protocol/governance/)) are all expressed in terms of member public keys.
+Authority lives in the **member identity**: a single Ed25519 keypair per node, generated on first use and persisted. It is the `author` on every operation and the key that signs an operation's `id` (see [Operations & the DAG](/protocol/operations/)). Membership, roles, and capabilities (defined in [Governance](/protocol/governance/)) are expressed in terms of the **account** this key writes as, not the key itself.
 
-Because identity is per namespace, the same node participating in two namespaces presents two unrelated member keys — identity isolation across application instances, independent of the single transport identity underneath.
+One key, not one per namespace. It is recorded as the node's device signing key, and a device is one installation rather than one installation per scope. A key that varied by namespace would also have bought nothing: it is published in every namespace's device binding, so it correlates a node across namespaces exactly as a shared one does.
 
 :::note[One key, or one person?]
 A member identity is one key on one node. That is enough to answer "who authored this", but not "which person is this" — a second device of the same user is, at this layer, an unrelated member. [Accounts & Devices](/protocol/accounts/) adds the identity above this one: a person or agent whose current key set is projected state, so several devices can be the same *someone* and any one of them can be revoked without touching the others.

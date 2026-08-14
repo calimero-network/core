@@ -569,7 +569,7 @@ impl NodeClient {
         &self,
         context: &Context,
         sender: &PublicKey,
-        sender_key: &PrivateKey,
+        encryption_key: &PrivateKey,
         artifact: Vec<u8>,
         delta_id: [u8; 32],
         parent_ids: Vec<[u8; 32]>,
@@ -595,7 +595,7 @@ impl NodeClient {
             "Sending state delta"
         );
 
-        let shared_key = SharedKey::from_sk(sender_key);
+        let shared_key = SharedKey::from_sk(encryption_key);
 
         // Seal the expected post-apply root hash and the execution events
         // together with the storage delta so none of them ride the gossip

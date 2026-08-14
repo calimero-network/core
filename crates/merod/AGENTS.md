@@ -98,9 +98,9 @@ It is not a secret — it authorises exactly one revocation of one device. What 
 cannot do is name a device the account does not own (the stored binding is checked
 before publishing and again on every replica) or rotate the scope key (admin only).
 
-`--namespace` is required because an account id is per-namespace: the same root
-owns a different account in each, and a proof for the wrong one verifies against
-its own genesis while authorising nothing.
+The proof names a device and the account it belongs to, and one root owns one
+account everywhere — so there is no namespace to supply. Publication is still
+per-DAG: it takes effect in a group once published there.
 
 Full model, the recovery procedure, and what does *not* come back:
 [protocol/accounts](../../docs/src/content/docs/protocol/accounts.mdx#backing-up-and-recovering-an-account).

@@ -269,7 +269,7 @@ Requiring it rather than printing it for comparison is the point: an advisory st
 
 **The key delivery must be a cleartext root operation.** The pairing device holds no scope key, so a device-addressed envelope carried inside an *encrypted* group operation would be unreadable by its only recipient — the same bootstrap deadlock again. `KeyDelivery` being a root operation is what breaks the cycle.
 
-The new device is **never a member**. It obtains a namespace identity and a gossip subscription — both membership-free operations — and its entire right to participate comes from being a device of the account. Because a node holds at most one device per namespace, "two devices" means two nodes.
+The new device is **never a member**. It records participation in the namespace and takes a gossip subscription — both membership-free operations — and its entire right to participate comes from being a device of the account. Because a node holds exactly one device, "two devices" means two nodes.
 
 Only the **current** scope key is delivered. Peers retain rotated-out keys, so history *could* be handed back, but that would make every newly paired device a full-history reader — a capability decision that deserves its own change. The paired device converges on forward state and cannot decrypt operations sealed under retired epochs.
 
@@ -328,7 +328,7 @@ The sync **pull** path obeys the same rule. A key request names the device it as
 
 Revocation is **terminal**: the `DeviceId` is spent for good, so re-enrolling that machine mints a fresh one. That permanence is what stops a replica id from ever being reused.
 
-The tombstone therefore has to release the node's own device slot as well as the group's binding. A node holds one device per namespace, so a spent id left in place would leave enrolment minting certificates every peer refuses — locked out of the namespace by its own revocation, and locally indistinguishable from success.
+The tombstone therefore has to release the node's own device slot as well as the group's binding. A node holds one device, so a spent id left in place would leave enrolment minting certificates every peer refuses — locked out by its own revocation, and locally indistinguishable from success.
 
 Two authorities, either of which suffices:
 
@@ -396,10 +396,10 @@ Two things the proof deliberately cannot do:
   self-service path — the device stops writing immediately and can read until an
   admin rotates.
 
-Because the account id is per-namespace, `--namespace` is required. One root owns
-a different account in each, so a proof minted against the wrong one is
-well-formed, verifies against its own genesis, and authorises nothing where it is
-published.
+A proof names an account, and one root owns one account everywhere — so a proof
+minted while pointed at one namespace verifies against the same account reached
+from any other. Publication is still per-DAG: it takes effect in a group once it
+has been published there.
 
 ## Per-device authorization
 
@@ -467,7 +467,7 @@ Recovery means *prove who you are, then enrol fresh* — not *restore the old ma
 | Crate / module | What it owns |
 | --- | --- |
 | `crates/account` | The primitives: `AccountId`, `DeviceId`, `AccountGenesis`, `DeviceCert`, `RootKeyHandoff`, `DeviceRevocation`, and their sign/verify functions. No storage, no policy. |
-| `crates/governance-store/src/node_device.rs` | This node's own secrets: the `NodeAccountRoot` singleton and the per-namespace `NodeDeviceIdentity` row. Node-local, never gossiped. |
+| `crates/governance-store/src/node_device.rs` | This node's own secrets: the `NodeAccountRoot` and `NodeDeviceIdentity` singletons. Node-local, never gossiped. |
 | `crates/governance-store/src/account_bindings.rs` | The replicated view: device bindings, revocation tombstones, per-account root keys, and the endorser set. |
 | `crates/governance-store/src/ops/group/account_ops.rs` | Apply handlers for link, revoke, and rotate — the authorization gates. |
 | `crates/governance-store/src/group_keys.rs` | Both wrap modes, the device-first recipient resolution, and the pull-path equivalent. |
@@ -479,7 +479,7 @@ Account operations travel as `GroupOp` variants because that is the transport th
 
 ## Backing up and recovering an account
 
-### One root, one account per namespace
+### One root, one account, everywhere
 
 Worth being precise about the cardinalities, because `meroctl account create` /
 merobox's `account_create` read as if they mint something new each time, and they
@@ -488,12 +488,15 @@ do not:
 | | scope |
 | --- | --- |
 | account **root** — the secret you back up | **one per node.** Node-level, no namespace in its key |
-| account **id** | **one per namespace**, derived: `H(genesis(root_pk, KDF(root_secret, namespace_id)))` |
-| **device** | **one per namespace.** `NodeDeviceIdentity` is keyed by namespace |
+| account **id** | **one per root**, derived: `H(genesis(root_pk))`. The same in every namespace |
+| **device** | **one per node.** `NodeDeviceIdentity` is a singleton |
+| namespace **participation** | one row per namespace, carrying no key material — the index of where this node takes part |
 
-So a node does present several account ids — one for each namespace it takes part
-in, and mutually unlinkable to anyone without the root — but never two accounts in
-the *same* namespace. What is genuinely many-to-one is **devices per account**, via
+None of the identity layer varies by namespace. It used to: the account carried a
+per-namespace salt so a member of two namespaces could not tell two accounts were
+one person. That property did not hold — the genesis names the same root key
+wherever it is published, and one PeerId serves every namespace — so it was cost
+without benefit. What is genuinely many-to-one is **devices per account**, via
 [pairing](#pairing-a-second-device): several machines, one account, one grant.
 
 `account create` is therefore an *ensure*, not a create. It derives the account for
@@ -587,7 +590,7 @@ What comes back, and what does not:
 
 | | after recovery |
 | --- | --- |
-| the account id, per namespace | **identical** — it is derived from the root and the namespace id |
+| the account id | **identical** — it is the content address of the root, and the root is what the phrase restores |
 | writer grants and membership naming that account | **still apply**, because they name the account, not the machine |
 | devices | **gone.** They died with the disk; enrol new ones. The old device ids stay revocable but never return |
 | the node's own identity keypair | **new**, so the old member row is dead and the node needs a fresh invitation to the namespace |

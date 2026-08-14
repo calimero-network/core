@@ -157,7 +157,7 @@ Because the whole envelope is cleartext (see the observer section above), confid
 :::
 
 :::caution[The two `SharedKey` semantics are easy to conflate]
-`from_sk` (symmetric, group key) and `new` (ECDH, key delivery) are different trust models that share one API. Watch out for the broadcast path's variable named `sender_key` (`client.rs:528`): despite the name it is the **group key**, fed to `SharedKey::from_sk` — not an ECDH agreement with any "sender." A code reader who assumes `sender_key` implies `new(...)` will mis-model the encryption.
+`from_sk` (symmetric, group key) and `new` (ECDH, key delivery) are different trust models that share one API, so read which one a call site uses before assuming its trust model. The broadcast path used to make this harder than it needed to be by calling its group key `sender_key`; it is `encryption_key` now, and nothing on that path implies an ECDH agreement with a "sender".
 :::
 
 :::caution[At-rest encryption is off unless KMS is wired up]
