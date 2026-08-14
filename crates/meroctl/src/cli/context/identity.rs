@@ -1,13 +1,10 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use clap::Parser;
-use eyre::{OptionExt, Result, WrapErr};
+use eyre::Result;
 
 use crate::cli::Environment;
-use crate::output::ErrorLine;
 
-pub mod alias;
 pub mod generate;
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -27,20 +24,8 @@ pub enum ContextIdentitySubcommand {
         #[arg(long, help = "Show only owned identities")]
         owned: bool,
     },
-    #[command(about = "Manage identity aliases")]
-    Alias(alias::ContextIdentityAliasCommand),
     #[command(about = "Generate a new identity keypair", alias = "new")]
     Generate(generate::GenerateCommand),
-    #[command(about = "Set default identity for a context")]
-    Use {
-        #[arg(help = "The identity to set as default")]
-        identity: PublicKey,
-        #[arg(help = "The context to set the identity for")]
-        #[arg(long, short, default_value = "default")]
-        context: Alias<ContextId>,
-        #[arg(long, short, help = "Force overwrite if alias already exists")]
-        force: bool,
-    },
 }
 
 impl ContextIdentityCommand {
@@ -49,57 +34,7 @@ impl ContextIdentityCommand {
             ContextIdentitySubcommand::List { context, owned } => {
                 list_identities(environment, Some(context), owned).await
             }
-            ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
-
-            ContextIdentitySubcommand::Use {
-                identity,
-                context,
-                force,
-            } => {
-                let client = environment.client()?.clone();
-                let resolve_response = client.resolve_alias(context, None).await?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-                let default_alias: Alias<PublicKey> =
-                    "default".parse().expect("'default' is a valid alias name");
-
-                let lookup_result = client.lookup_alias(default_alias, Some(context_id)).await?;
-
-                if let Some(existing_identity) = lookup_result.data.value {
-                    if existing_identity == identity {
-                        environment.output.write(&ErrorLine(&format!(
-                            "Default alias already points to '{existing_identity}'. Use --force to overwrite."
-                        )));
-                        return Ok(());
-                    }
-
-                    if !force {
-                        environment.output.write(&ErrorLine(&format!(
-                            "Default alias already points to '{existing_identity}'. Use --force to overwrite."
-                        )));
-                        return Ok(());
-                    }
-                    environment.output.write(&ErrorLine(&format!(
-                        "Overwriting existing default alias from '{existing_identity}' to '{identity}'"
-                    )));
-                    let _ = client
-                        .delete_alias(default_alias, Some(context_id))
-                        .await
-                        .wrap_err("Failed to delete existing default alias")?;
-                }
-
-                let res = client
-                    .create_alias_generic(default_alias, Some(context_id), identity)
-                    .await?;
-
-                environment.output.write(&res);
-
-                Ok(())
-            }
         }
     }
 }

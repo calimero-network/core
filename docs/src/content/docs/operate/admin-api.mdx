@@ -338,16 +338,12 @@ the path parameter — these are reproduced exactly as routed below.
 | POST | `/admin-api/identity/context` | Generate a new context identity (keypair). |
 | POST | `/admin-api/alias/create/context` | Create an alias for a context. |
 | POST | `/admin-api/alias/create/application` | Create an alias for an application. |
-| POST | `/admin-api/alias/create/identity/:context` | Create an alias for an identity within a context. |
 | POST | `/admin-api/alias/lookup/context/:name` | Resolve a context alias. |
 | POST | `/admin-api/alias/lookup/application/:name` | Resolve an application alias. |
-| POST | `/admin-api/alias/lookup/identity/:context/:name` | Resolve an identity alias within a context. |
 | POST | `/admin-api/alias/delete/context/:name` | Delete a context alias. |
 | POST | `/admin-api/alias/delete/application/:name` | Delete an application alias. |
-| POST | `/admin-api/alias/delete/identity/:context/:name` | Delete an identity alias within a context. |
 | GET | `/admin-api/alias/list/context` | List context aliases. |
 | GET | `/admin-api/alias/list/application` | List application aliases. |
-| GET | `/admin-api/alias/list/identity/:context` | List identity aliases within a context. |
 
 <Aside type="note">
 Alias `lookup` and `delete` are routed as `POST` (not `GET`/`DELETE`) — the

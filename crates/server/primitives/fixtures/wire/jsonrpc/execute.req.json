@@ -3,6 +3,5 @@
     "key": "demo"
   },
   "contextId": "11111111111111111111111111111111",
-  "method": "get_value",
-  "substitute": []
+  "method": "get_value"
 }

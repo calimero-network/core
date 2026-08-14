@@ -516,7 +516,6 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
             &fx.admin_pk,
             "__calimero_sync_next".to_owned(),
             Vec::new(),
-            Vec::new(),
             None,
         )
         .await

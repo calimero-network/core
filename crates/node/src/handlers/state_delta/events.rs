@@ -265,7 +265,6 @@ pub(super) async fn execute_event_handlers_parsed(
                     our_identity,
                     handler_name.clone(),
                     event.data.clone(),
-                    vec![],
                     None,
                 )
                 .await

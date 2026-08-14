@@ -28,19 +28,20 @@ One key, not one per namespace. It is recorded as the node's device signing key,
 A member identity is one key on one node. That is enough to answer "who authored this", but not "which person is this" — a second device of the same user is, at this layer, an unrelated member. [Accounts & Devices](/protocol/accounts/) adds the identity above this one: a person or agent whose current key set is projected state, so several devices can be the same *someone* and any one of them can be revoked without touching the others.
 :::
 
-### Choosing the executor
+### The executor
 
-A node is not limited to one member key per context. It can hold **several**
-member keypairs for the same context — each a `ContextIdentity` whose private key
-the node manages (`crates/context/primitives/src/client/crypto.rs`) — so one
-process can act as multiple distinct authors.
+A node owns exactly one member identity per context, so the **executor** — the
+key that authors and signs the resulting operation — is resolved, never named.
+`execute_request` (`crates/server/src/execute.rs`) looks up the node's owned
+identity for the target context and passes it to the runtime; callers cannot
+supply one.
 
-Because of that, every execute call names an **executor**: the `executor: PublicKey`
-on `ExecuteRequest` (`crates/context/primitives/src/messages.rs`) selects which of
-those member keys authors and signs the resulting operation. A context also carries
-a **default** member key — stored as the `default` identity alias — so calls that
-don't name an executor fall back to it. Picking the executor is therefore picking
-*who* the write is attributed to, from among the keys this node controls.
+Authentication and attribution are therefore separate. When a request arrives
+with a verified key, that key gates access via the context-membership check, but
+the identity handed to the WASM guest is the node's own. An application that
+inspects `executor` sees the node, not the caller — a deliberate design, and one
+with a known consequence: a context member whose in-application permissions are
+lower than the node owner's can still execute at the higher privilege level.
 
 ## Scope key — reading a scope
 

@@ -53,9 +53,6 @@ pub const MAX_METHOD_NAME_LENGTH: usize = 256;
 /// Maximum size for JSON arguments in execution requests (10 MB)
 pub const MAX_ARGS_JSON_SIZE: usize = 10 * 1024 * 1024;
 
-/// Maximum number of substitute aliases in execution requests
-pub const MAX_SUBSTITUTE_ALIASES: usize = 100;
-
 /// Validation error types
 #[derive(Clone, Debug, ThisError)]
 pub enum ValidationError {
@@ -95,13 +92,6 @@ pub enum ValidationError {
         field: &'static str,
         min: u64,
         actual: u64,
-    },
-
-    #[error("Field '{field}' contains too many items: {actual} (max {max})")]
-    TooManyItems {
-        field: &'static str,
-        max: usize,
-        actual: usize,
     },
 
     #[error("Field '{field}' is required but was empty")]
@@ -239,23 +229,6 @@ pub mod helpers {
                 field,
                 max: MAX_PAGINATION_LIMIT as u64,
                 actual: value as u64,
-            })
-        } else {
-            None
-        }
-    }
-
-    /// Validate collection size
-    pub fn validate_collection_size<T>(
-        value: &[T],
-        field: &'static str,
-        max: usize,
-    ) -> Option<ValidationError> {
-        if value.len() > max {
-            Some(ValidationError::TooManyItems {
-                field,
-                max,
-                actual: value.len(),
             })
         } else {
             None

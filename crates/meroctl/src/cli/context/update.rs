@@ -56,13 +56,6 @@ pub struct UpdateCommand {
         requires = "path"
     )]
     watch: bool,
-
-    #[arg(
-        long = "as",
-        help = "Public key of the executor",
-        default_value = "default"
-    )]
-    pub executor: Alias<PublicKey>,
 }
 
 impl UpdateCommand {
@@ -76,12 +69,16 @@ impl UpdateCommand {
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let executor_id = client
-            .resolve_alias(self.executor, Some(context_id))
+        // The node owns exactly one identity per context, so the executor is
+        // resolved rather than named: an app upgrade is authorized against this
+        // key server-side before any bytecode is swapped.
+        let executor_id = *client
+            .get_context_identities(&context_id, true)
             .await?
-            .value()
-            .copied()
-            .ok_or_eyre("unable to resolve")?;
+            .data
+            .identities
+            .first()
+            .ok_or_eyre("no owned identity found for this context")?;
 
         match self {
             Self {
