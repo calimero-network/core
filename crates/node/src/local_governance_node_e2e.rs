@@ -368,7 +368,7 @@ fn provision_tee_owner_with_sk(
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(gid, &owner_pk, owner_sk.as_bytes())
+        .replace_identity(gid, &owner_pk, owner_sk.as_bytes())
         .expect("store_namespace_identity");
 
     // Policy lives on the namespace governance op log; admin-signed.
@@ -840,7 +840,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     //    `auto_follow.contexts = true` (set by `add_member` at admission), which
     //    the inheritance fall-through must honor via the root anchor.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
+        .replace_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to the TEE");
 
     // 4) Bind the auto-follow handler to THIS node's store/client. Like
@@ -1125,7 +1125,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // is the inherited-only TEE (root anchor, no open_sub row) — the path Fix B
     // changed. (See `root_admitted_tee_auto_follows_open_subgroup_context`.)
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
+        .replace_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to T");
 
     // Rebind the process-global auto-follow handler to this node's store/client.
@@ -1205,7 +1205,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // doing its job; the test simply must not be the evicted party while it
     // inspects an evicted party's aftermath.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &owner_pk, owner_sk.as_bytes())
+        .replace_identity(&ns_gid, &owner_pk, owner_sk.as_bytes())
         .expect("re-point namespace identity back to the owner");
 
     // Subscribe to the op-events broadcast BEFORE applying, so we can observe the
@@ -1555,7 +1555,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     //    subgroup), bind the auto-follow handler, register a context in the
     //    born-Open subgroup, and assert the TEE auto-joins it via inheritance.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
+        .replace_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to the TEE");
 
     calimero_context::auto_follow::shutdown();
@@ -1808,7 +1808,7 @@ async fn restricted_ctx_redriven_after_group_created() {
     // unwraps the `KeyDelivery` envelope with THIS key, so the envelope below
     // must be wrapped for `member_pk`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .expect("store receiver namespace identity");
 
     // ---- The Restricted subgroup (NOT yet created on the receiver) -----------
@@ -2047,7 +2047,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         )
         .expect("add owner as namespace-root admin");
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .expect("store receiver namespace identity");
 
     // ---- The namespace key: the receiver HOLDS it (delivered with its join) --
@@ -2405,7 +2405,7 @@ async fn tee_matrix_restricted_late_join() {
         )
         .expect("add owner as namespace-root admin");
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .expect("store receiver namespace identity");
 
     // The Restricted subgroup: id + key minted owner-side. The receiver does
@@ -2711,7 +2711,7 @@ async fn drive_open_auto_follow_replication(
     // node's namespace identity; point it at the inherited-only TEE so the
     // inheritance fall-through (root anchor, no subgroup row) is exercised.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(ns_gid, tee_pk, tee_sk.as_bytes())
+        .replace_identity(ns_gid, tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to the TEE");
 
     calimero_context::auto_follow::shutdown();

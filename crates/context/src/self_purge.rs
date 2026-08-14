@@ -2896,7 +2896,7 @@ mod tests {
             )
             .expect("add owner admin");
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
+            .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
             .expect("store our ns identity");
 
         // The stranded subgroup + its key + the context it registers.
