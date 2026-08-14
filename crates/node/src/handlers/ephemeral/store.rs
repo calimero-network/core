@@ -147,6 +147,17 @@ impl AwarenessStore {
             .collect()
     }
 
+    /// All contexts currently holding at least one entry.
+    ///
+    /// Used to drive the TTL sweep: it must cover every context the store
+    /// knows about, not just the ones a given node has locally published to
+    /// (a receive-only node — a read-only viewer, a TEE node, a peer who has
+    /// not yet moved their own cursor — never appears in the caller's local
+    /// publish map, but its remote entries still need to expire on schedule).
+    pub fn contexts(&self) -> impl Iterator<Item = ContextId> + '_ {
+        self.inner.keys().copied()
+    }
+
     /// Explicitly remove `author` from `ctx` (e.g. on disconnect).
     ///
     /// Returns `Some(Diff::Remove)` if the author was present, `None` otherwise.

@@ -109,20 +109,39 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 /// The presence envelope is encrypted under the context **group key** and
 /// **signed** by `author`'s identity key over `(context_id, author, seq,
 /// key_id, sha256(ciphertext))` (`calimero-node`'s
-/// `handlers::ephemeral::auth`). The receive path verifies this signature
-/// before the slice reaches the awareness store or this event is emitted, so
-/// a group-key holder cannot forge another member's `author`. A message that
-/// fails verification is silently dropped and never surfaces as an event.
+/// `handlers::ephemeral::auth`). For **remotely-received** presence, the
+/// receive path verifies this signature before the slice reaches the
+/// awareness store or this event is emitted, so a group-key holder cannot
+/// forge another member's `author`; a message that fails verification is
+/// silently dropped and never surfaces as an event. **Locally-originated**
+/// presence (the setting client's own slice) is echoed into this same event
+/// type without a signature at all — it never leaves the node unsigned, but a
+/// consumer of this type should not assume every instance it ever observes
+/// passed through signature verification.
 ///
-/// This authenticates *identity* only — it does not prove current group
-/// membership; a member removed from the group is cut off by group-key
-/// rotation, not by this check. Unlike a state-delta envelope, the presence
-/// envelope binds no `governance_position`, and the receive path performs no
-/// membership or authorization check. An ex-member who still holds a
-/// pre-rotation group key can publish presence signed by their own (valid)
-/// identity key until that key is rotated out. Presence remains transient
-/// and never persisted, but clients MUST NOT treat `author` here as proof of
-/// current membership (e.g. for access control).
+/// This authenticates *identity*, at the moment of signing, only — it proves
+/// neither current group membership nor freshness:
+///
+/// * **Membership.** A member removed from the group is *intended* to be cut
+///   off by group-key rotation, not by this check, but that is conditional on
+///   the receiving node's own keyring resolving the post-rotation key as
+///   "current" — see the caveat on `calimero-node`'s
+///   `handlers::ephemeral::inbound` module doc. Unlike a state-delta
+///   envelope, the presence envelope binds no `governance_position`, and the
+///   receive path performs no membership or authorization check. An
+///   ex-member who still holds a pre-rotation group key can publish presence
+///   signed by their own (valid) identity key until that key is actually
+///   rejected as superseded.
+/// * **Freshness.** The signed payload carries no timestamp, epoch, or
+///   receiver nonce, so a recorded envelope can be replayed after the
+///   original sender's entry TTL-sweeps — see
+///   `calimero-node`'s `handlers::ephemeral::auth` module doc for the exact
+///   window. This is a known, not-yet-closed gap, not an oversight in this
+///   type.
+///
+/// Presence remains transient and never persisted, but clients MUST NOT treat
+/// `author` here as proof of current membership or of recency (e.g. for
+/// access control or "online right now" semantics).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EphemeralPayload {

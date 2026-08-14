@@ -18,14 +18,32 @@
 //!    `Err(SliceTooLarge)` and the awareness store is NOT modified — a
 //!    subsequent snapshot returns the previous (non-oversized) slice.
 //!
+//! Every test seeds a `ContextIdentity` row for its author via
+//! `store_local_identity` — `set_local_ephemeral` now resolves a local
+//! signing key synchronously before anything else, so a call for an author
+//! this node holds no key for returns `Err(NoLocalSigningKey)` before ever
+//! touching the awareness store.
+//!
 //! Run with: `cargo test -p calimero-node ephemeral_node_client_e2e`
 
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::PrivateKey;
 use serial_test::serial;
 
 use crate::handlers::ephemeral::EPHEMERAL_MAX_BYTES;
-use crate::test_node_harness::boot_test_node;
+use crate::test_node_harness::{boot_test_node, TestNode};
+
+/// Seed the `ContextIdentity` row that marks `sk` as a local signing identity
+/// for `context_id`, so `resolve_local_signing_key` (and therefore
+/// `set_local_ephemeral`'s synchronous signing-key guard) finds it. Mirrors
+/// `handlers::ephemeral::outbound::tests::store_local_identity`.
+fn store_local_identity(node: &TestNode, context_id: &ContextId, sk: &PrivateKey) {
+    let key = calimero_store::key::ContextIdentity::new(*context_id, sk.public_key());
+    let value = calimero_store::types::ContextIdentity {
+        private_key: Some(*sk.as_bytes()),
+    };
+    node.store.handle().put(&key, &value).expect("put identity");
+}
 
 // -------------------------------------------------------------------------
 // Test 1 + 2: first call seeds; second call increments seq and updates slice
@@ -37,7 +55,9 @@ async fn set_ephemeral_seeds_then_updates_snapshot() {
     let node = boot_test_node().await;
 
     let context_id = ContextId::from([0xF1u8; 32]);
-    let author = PublicKey::from([0xF2u8; 32]);
+    let author_sk = PrivateKey::from([0xF2u8; 32]);
+    let author = author_sk.public_key();
+    store_local_identity(&node, &context_id, &author_sk);
     let slice1 = b"cursor={x:1,y:2}".to_vec();
     let slice2 = b"cursor={x:9,y:8}".to_vec();
 
@@ -86,7 +106,9 @@ async fn oversized_slice_returns_error_and_store_unchanged() {
     let node = boot_test_node().await;
 
     let context_id = ContextId::from([0xF3u8; 32]);
-    let author = PublicKey::from([0xF4u8; 32]);
+    let author_sk = PrivateKey::from([0xF4u8; 32]);
+    let author = author_sk.public_key();
+    store_local_identity(&node, &context_id, &author_sk);
     let good_slice = b"typing=true".to_vec();
 
     // Seed a valid slice first.

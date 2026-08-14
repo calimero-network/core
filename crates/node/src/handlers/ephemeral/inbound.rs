@@ -4,10 +4,24 @@
 //! interaction is a read of the group's *current* key record (via
 //! `GroupKeyring::load_current_key_record`) to decrypt the sealed presence
 //! slice before handing it to the in-memory `AwarenessStore`. Unlike the
-//! state-delta path, presence never accepts a superseded key — the keyring
-//! retains those for historical decrypt only, and presence has no history —
-//! so a `key_id` that is not the current one is a silent drop, same as a
-//! rotated-out member's stale key.
+//! state-delta path, presence never accepts a key this node's own keyring
+//! resolves as *superseded* — the keyring retains those for historical
+//! decrypt only, and presence has no history — so a `key_id` that does not
+//! match what `load_current_key_record` returns is a silent drop.
+//!
+//! **Caveat — this makes rotation-as-eviction only as good as
+//! `load_current_key_record`'s tie-break.** `GroupKeyring::store_key` stamps
+//! every key at epoch 0 (only `store_key_with_epoch` sets a real epoch), and
+//! `load_current_key_record` tie-breaks equal epochs by larger `key_id` —
+//! i.e. by hash order, not insertion or rotation order. A node that ends up
+//! holding two epoch-0 keys (e.g. it received a rotation as a plain
+//! `store_key` call rather than `store_key_with_epoch`) can resolve the
+//! *older* of the two as "current" and reject the actually-current one. When
+//! that happens on the receiving side, this module drops every legitimate
+//! member's presence and — if the superseded key still decrypts a captured
+//! envelope — would treat the rotated-out holder of that key as current
+//! instead. This module does not special-case that condition; it is a
+//! keyring-layer concern.
 //!
 //! **Security — the wire `author` is signed.** Every presence envelope carries
 //! an ed25519 signature, by `author`'s identity key, over `(context_id,
@@ -31,7 +45,15 @@ use calimero_primitives::identity::PublicKey;
 use tracing::debug;
 
 use crate::handlers::ephemeral::store::Diff;
+use crate::handlers::ephemeral::EPHEMERAL_MAX_BYTES;
 use crate::NodeManager;
+
+/// Maximum on-wire ciphertext length accepted on the receive path:
+/// [`EPHEMERAL_MAX_BYTES`] of plaintext plus the fixed AEAD tag overhead.
+/// Checked before any clone or decrypt so an oversized envelope (even one
+/// that would still fit under gossipsub's own 1 MiB ceiling) is dropped
+/// without paying for the allocation or pinning it in the `AwarenessStore`.
+const EPHEMERAL_MAX_CIPHERTEXT_BYTES: usize = EPHEMERAL_MAX_BYTES + calimero_crypto::AEAD_TAG_LEN;
 
 // ---------------------------------------------------------------------------
 // Inner async logic (testable without actix)
@@ -98,15 +120,39 @@ pub(crate) async fn resolve_and_decrypt(
         }
     };
     if record.key_id != key_id {
+        // Distinguish "we have never seen this key_id" from "we know this
+        // key_id but our keyring no longer resolves it as current" — the
+        // latter is the only signal an operator has for the
+        // load_current_key_record tie-break caveat documented at the top of
+        // this module (two epoch-0 keys, equal-epoch tie-break by key_id
+        // hash order can make a superseded key look current).
+        let keyring = calimero_governance_store::GroupKeyring::new(store, group_id);
+        let known_but_superseded = matches!(keyring.load_key_by_id(&key_id), Ok(Some(_)));
         debug!(
             %context_id,
             key_id = %hex::encode(key_id),
             current = %hex::encode(record.key_id),
+            known_but_superseded,
             "ephemeral: key_id is not the current group key — dropping"
         );
         return None;
     }
     let key = calimero_primitives::identity::PrivateKey::from(record.group_key);
+
+    // Enforce the documented size cap on the receive path too. Outbound only
+    // enforces `EPHEMERAL_MAX_BYTES` on the sender's own plaintext; a patched
+    // or malicious peer can put anything up to gossipsub's 1 MiB ceiling on
+    // the wire. Reject before the clone/allocate/decrypt below so an
+    // oversized envelope never gets pinned in the `AwarenessStore`.
+    if ciphertext.len() > EPHEMERAL_MAX_CIPHERTEXT_BYTES {
+        debug!(
+            %context_id,
+            len = ciphertext.len(),
+            max = EPHEMERAL_MAX_CIPHERTEXT_BYTES,
+            "ephemeral: ciphertext exceeds size cap — dropping"
+        );
+        return None;
+    }
 
     // `SharedKey::decrypt` consumes `ciphertext` by value, but the signature
     // verify below needs the exact bytes that arrived on the wire — capture
@@ -447,9 +493,12 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_key_id_is_dropped_silently() {
+        use crate::handlers::ephemeral::auth::ephemeral_signature_payload;
+
         let store = fresh_store();
         let context_id = ContextId::from([0x03u8; 32]);
-        let author = PrivateKey::from([0x09u8; 32]).public_key();
+        let author_sk = PrivateKey::from([0x09u8; 32]);
+        let author = author_sk.public_key();
 
         // Seed the group so context resolution works, but use a wrong key_id.
         let (_group_id, _real_key_id, group_key_bytes) = seed_group_key(&store, context_id);
@@ -459,10 +508,16 @@ mod tests {
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
         let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
 
-        // key_id that was never stored. The key lookup fails before
-        // verification would even run, so the signature bytes below are
-        // deliberately garbage — this exercises the earlier gate.
+        // key_id that was never stored. The signature is VALID — computed
+        // over this exact (wrong) key_id — so the only thing that can stop
+        // this message is the key_id-vs-current comparison. A garbage
+        // signature here would let this test pass for the wrong reason (the
+        // signature gate, not the key gate) even if the key check were
+        // deleted.
         let wrong_key_id = [0x00u8; 32];
+        let payload = ephemeral_signature_payload(context_id, author, 1, wrong_key_id, &ciphertext)
+            .expect("payload");
+        let signature = author_sk.sign(&payload).expect("sign").to_bytes();
 
         let result = resolve_and_decrypt(
             &ctx_client,
@@ -472,7 +527,7 @@ mod tests {
             wrong_key_id,
             nonce,
             ciphertext,
-            [0u8; 64],
+            signature,
         )
         .await;
 
@@ -673,6 +728,50 @@ mod tests {
         assert!(
             removals.is_empty(),
             "entry must survive sweep because liveness was extended by the higher-seq re-apply"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Oversized ciphertext is dropped before decrypt (finding 2): a patched
+    // peer pushing well past EPHEMERAL_MAX_BYTES must not be decrypted,
+    // allocated, or pinned in the AwarenessStore, even though gossipsub's own
+    // ceiling (1 MiB) would happily carry it.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn oversized_ciphertext_is_dropped_before_decrypt() {
+        let store = fresh_store();
+        let context_id = ContextId::from([0x40u8; 32]);
+        let author = PrivateKey::from([0x41u8; 32]).public_key();
+
+        let (_group_id, key_id, _group_key_bytes) = seed_group_key(&store, context_id);
+
+        // Oversized ciphertext — well past EPHEMERAL_MAX_BYTES plus AEAD
+        // overhead. Not real ciphertext (decrypt would fail on it anyway) —
+        // the point is that the size gate must reject it before any decrypt
+        // is even attempted, so the signature/nonce below need not be valid.
+        let oversized_ciphertext =
+            vec![0xAAu8; crate::handlers::ephemeral::EPHEMERAL_MAX_BYTES * 64];
+        let nonce = [0x11u8; calimero_crypto::NONCE_LEN];
+
+        let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
+        let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
+
+        let result = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            1,
+            key_id,
+            nonce,
+            oversized_ciphertext,
+            [0u8; 64],
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "oversized ciphertext must be dropped before decrypt"
         );
     }
 }

@@ -198,9 +198,14 @@ pub(crate) async fn do_publish_ephemeral(
 /// * Spawns [`do_publish_ephemeral`] on this actor's Arbiter so the message
 ///   is gossiped to peers.
 ///
-/// Failures at the crypto / key-loading step are returned synchronously
-/// (before the spawn). The async publish failure is best-effort (logged at
-/// debug, not propagated).
+/// Rejects synchronously (before the local echo and before the spawn) when
+/// the slice is oversized or when this node has no local signing key for
+/// `author` in `context_id` ([`EphemeralOutboundError::NoLocalSigningKey`]) —
+/// without a signing key nothing could ever actually be published, so the
+/// caller must not be told the set succeeded. `NoGroup` / `NoGroupKey` (the
+/// context/group-key lookups) and any network/mesh publish failure are
+/// resolved inside the spawned [`do_publish_ephemeral`] and remain
+/// best-effort: logged at `debug`, not propagated to the caller.
 pub(crate) fn set_local_ephemeral(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -213,6 +218,20 @@ pub(crate) fn set_local_ephemeral(
     // 1. Size guard.
     if slice.len() > EPHEMERAL_MAX_BYTES {
         return Err(EphemeralOutboundError::SliceTooLarge(slice.len()).into());
+    }
+
+    // 1b. Signing-key guard. Resolved here — synchronously, before the local
+    // echo — rather than inside the spawned `do_publish_ephemeral`, where a
+    // `NoLocalSigningKey` failure would be swallowed at `debug!` and never
+    // reach the caller (see the doc comment above): the local echo would
+    // still fire, the setting client would see its own cursor working, and
+    // nothing would ever actually publish. Failing fast here keeps the
+    // caller's contract — "a synchronous error means nothing was set or
+    // published" — true for this failure mode too.
+    let store = this.clients.context.datastore();
+    if calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?.is_none()
+    {
+        return Err(EphemeralOutboundError::NoLocalSigningKey.into());
     }
 
     // 2. Bump the sequence counter (or seed it at 1 for a new author).
@@ -229,7 +248,12 @@ pub(crate) fn set_local_ephemeral(
 
     // 3. Apply to the local awareness store NOW (synchronously, before the
     //    async publish) and emit the local diff so the setting client sees
-    //    its own state immediately.
+    //    its own state immediately. This local echo carries no envelope
+    //    signature — it never went through `resolve_and_decrypt`'s verify
+    //    step, because it never left this node unsigned in the first place.
+    //    See the security note on `EphemeralPayload` for the client-facing
+    //    implication (not every event of this type has actually been through
+    //    signature verification).
     let now = now_ms();
     if let Some(diff) = this
         .awareness_store
@@ -295,11 +319,20 @@ pub(crate) fn heartbeat_tick(
         })
         .collect();
 
-    // Sweep each context for expired remote entries and emit Remove diffs.
-    // Deduplicate context ids from the local snapshot.
-    let mut contexts_seen: Vec<ContextId> =
-        local_snapshot.iter().map(|(ctx_id, ..)| *ctx_id).collect();
-    contexts_seen.dedup();
+    // Sweep every context the store actually holds entries for — NOT just the
+    // ones this node has locally published to. A receive-only node (a
+    // read-only viewer, a TEE node, a peer who has not yet set its own
+    // presence) never appears in `ephemeral_local`, but the awareness store
+    // still holds remote entries for it that must expire on the same TTL.
+    // Collected into a `HashSet` (rather than sorted-then-`dedup`, which only
+    // removes ADJACENT duplicates and silently half-works on an unsorted
+    // source) so every context is swept exactly once regardless of source
+    // order.
+    let contexts_seen: std::collections::HashSet<ContextId> = this
+        .awareness_store
+        .contexts()
+        .chain(local_snapshot.iter().map(|(ctx_id, ..)| *ctx_id))
+        .collect();
     for context_id in &contexts_seen {
         for diff in this
             .awareness_store

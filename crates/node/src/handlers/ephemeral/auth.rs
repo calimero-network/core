@@ -19,6 +19,29 @@
 //! differ precisely so a signature from one protocol can never verify in the
 //! other.
 //!
+//! # Security — this binds authorship, NOT freshness; there is no replay protection
+//!
+//! The signed payload is `(domain, context_id, author, seq, key_id,
+//! sha256(ciphertext))` — no timestamp, no epoch, no receiver-chosen nonce.
+//! The only defence against replaying a previously-valid envelope is the
+//! receive-side store's `seq <= entry.seq` rule (`store.rs`'s `apply`), and
+//! that state is deleted the moment the entry TTL-sweeps
+//! ([`crate::handlers::ephemeral::PRESENCE_TTL_MS`], 7s).
+//!
+//! Concretely: any gossipsub mesh peer subscribed to a context's presence
+//! topic — which requires no group key, only mesh membership — can record one
+//! valid envelope from `author` at some `seq`. Once `author` goes idle and
+//! that entry sweeps on receivers, the recorder can re-inject the exact same
+//! bytes on a loop (e.g. every heartbeat interval): the signature still
+//! verifies, the key can still be current, and with no local entry left,
+//! `seq` looks fresh again. `author` will keep rendering as present with
+//! their last cursor position indefinitely, until the group key rotates and
+//! the key-id check starts rejecting the replay.
+//!
+//! A wire-level fix — binding a `sent_at_ms` into the signed payload and
+//! having receivers reject stale timestamps — is a deliberate, not-yet-built
+//! follow-up. Do not read this module as replay-resistant.
+//!
 //! No I/O, no actix, no store access.
 
 use borsh::BorshSerialize;
