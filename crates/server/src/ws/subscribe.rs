@@ -104,18 +104,18 @@ pub(crate) fn may_observe_context(
     }
 }
 
-/// Whether a connection may subscribe to a group's membership events. Identical
-/// gate shape to [`may_observe_context`], but requires effective (deny-list-aware) membership.
+/// Whether a connection may subscribe to a group's membership events.
+///
+/// The same gate as [`may_observe_context`], and delegates to it so the
+/// auth-bypass rule cannot drift between the two. What differs is the caller's
+/// obligation, not the rule: the authority passed here is effective
+/// (deny-list-aware) membership.
 pub(crate) fn may_observe_group(
     auth_enabled: bool,
     node_owner: bool,
     caller_is_member: Option<bool>,
 ) -> bool {
-    if node_owner || !auth_enabled {
-        true
-    } else {
-        caller_is_member.unwrap_or(false)
-    }
+    may_observe_context(auth_enabled, node_owner, caller_is_member)
 }
 
 /// One subscribe request's group decisions, as four disjoint-by-construction

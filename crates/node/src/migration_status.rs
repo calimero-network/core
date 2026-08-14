@@ -696,6 +696,9 @@ pub(crate) fn on_heartbeat_facts_changed(
     ) {
         Ok(status) => status,
         Err(err) => {
+            // Returning before `swap_all_migrated` leaves the completion edge
+            // armed, so only this counter frame is lost - the next facts change
+            // from any cohort member announces what this one could not.
             tracing::warn!(?err, "migration rollup failed; skipping progress event");
             return;
         }
