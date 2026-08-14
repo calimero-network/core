@@ -5,7 +5,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{AccountId, ClientKey, ContextUser, PublicKey};
+use calimero_primitives::identity::{AccountId, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -382,46 +382,6 @@ pub struct ListAliasesResponse<T> {
 impl<T> ListAliasesResponse<T> {
     pub fn new(data: BTreeMap<Alias<T>, T>) -> Self {
         Self { data }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextClientKeysResponseData {
-    pub client_keys: Vec<ClientKey>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextClientKeysResponse {
-    pub data: GetContextClientKeysResponseData,
-}
-
-impl GetContextClientKeysResponse {
-    pub const fn new(client_keys: Vec<ClientKey>) -> Self {
-        Self {
-            data: GetContextClientKeysResponseData { client_keys },
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextUsersResponseData {
-    pub context_users: Vec<ContextUser>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextUsersResponse {
-    pub data: GetContextUsersResponseData,
-}
-
-impl GetContextUsersResponse {
-    pub const fn new(context_users: Vec<ContextUser>) -> Self {
-        Self {
-            data: GetContextUsersResponseData { context_users },
-        }
     }
 }
 

@@ -4,10 +4,9 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
-    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
-    GetContextStorageResponse, GetContextsResponse, ResyncContextApiRequest,
-    ResyncContextApiResponse, SyncContextResponse, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
+    GetContextsResponse, ResyncContextApiRequest, ResyncContextApiResponse, SyncContextResponse,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use eyre::Result;
 
@@ -93,17 +92,6 @@ where
         };
 
         let response = self.connection.get(&endpoint).await?;
-        Ok(response)
-    }
-
-    pub async fn get_context_client_keys(
-        &self,
-        context_id: &ContextId,
-    ) -> Result<GetContextClientKeysResponse> {
-        let response = self
-            .connection
-            .get(&format!("admin-api/contexts/{context_id}/client-keys"))
-            .await?;
         Ok(response)
     }
 
