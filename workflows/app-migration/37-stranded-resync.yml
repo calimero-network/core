@@ -104,6 +104,15 @@ steps:
     namespace_id: "{{namespace_id}}"
     invitation: "{{namespace_invitation}}"
 
+  # The identity the rollup keys node 2's member row by, so the stranded member
+  # can be asserted by name rather than by position.
+  - name: Capture node 2 key
+    type: get_namespace_identity
+    node: app-migration-strand-2
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      strand_2_key: publicKey
+
   - name: Node 2 materialises subgroup membership via inheritance
     type: join_subgroup_inheritance
     node: app-migration-strand-2
@@ -290,6 +299,7 @@ steps:
       strand_total: total
       strand_migrated: migrated
       strand_reasons: failure_reasons
+      strand_stuck: stuck_members
       strand_min_reported: min_reported_schema_version
 
   - name: Assert exactly node 2 stranded, for the blocked-ladder reason
@@ -304,9 +314,14 @@ steps:
       # is the blocked-ladder case, distinct from check_aborted and apply_failed.
       # Sorted, so it does not depend on member ordering the API never promised.
       - 'json_equal({{strand_reasons}}, ["no_migration_path"])'
-      # Node 2 is still holding v1 state, so the lowest reported ABI state
-      # version across the cohort is 1 while node 1 sits at the v3 target.
-      - "equal({{strand_min_reported}}, 1)"
+      # 0, not node 2's real v1: a context the upgrade gate still owes reports
+      # the 0 sentinel, because its application row records what was INSTALLED
+      # and can sit ahead of the state. No version is reported until the node
+      # has actually converged, so the number can never read as done.
+      - "equal({{strand_min_reported}}, 0)"
+      # Which member is stuck - the sentinel deliberately says nothing about
+      # who, so identity is asserted separately or the count is all we have.
+      - 'json_equal({{strand_stuck}}, ["{{strand_2_key}}"])'
 
   # Phase 8: RECOVER - resync node 2 from a peer. force=true because node 2
   # still holds local DAG heads (its v1 state) that the snapshot discards.
@@ -386,11 +401,14 @@ steps:
       recovered_missing: reported_missing
       recovered_min_reported: min_reported_schema_version
       recovered_reasons: failure_reasons
+      recovered_stuck: stuck_members
 
   - name: Assert node 2 came back at the v3 target with its marker cleared
     # all_migrated above is core's own answer; these are recomputed from each
     # member's raw report, so they falsify it: the resync only counts if node
-    # 2's REPORTED version moved 1 -> 3 and its strand reason went away.
+    # 2's REPORTED version left the 0 sentinel for 3 - the cohort reports a
+    # real version only once every member has converged - and its strand
+    # reason went away, leaving nobody named as stuck.
     type: json_assert
     statements:
       - "equal({{recovered_target}}, 3)"
@@ -399,6 +417,7 @@ steps:
       - "equal({{recovered_missing}}, 0)"
       - "equal({{recovered_min_reported}}, 3)"
       - "json_equal({{recovered_reasons}}, [])"
+      - "json_equal({{recovered_stuck}}, [])"
 
   # Teardown guard: no deserialization failures anywhere across the run.
   - name: Assert no deserialization failures anywhere
