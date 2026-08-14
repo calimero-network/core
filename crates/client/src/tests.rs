@@ -180,6 +180,52 @@ async fn list_group_members() {
     assert!(resp.members.is_empty());
 }
 
+/// A caller has to be able to find itself in a member list.
+///
+/// The listing carries no self-field, so the way to do it is to ask the account
+/// endpoint who this node is and match that against `members[]`. Both sides are
+/// accounts, which is the whole point: the listing used to answer with the
+/// node's signing key, and a key never matches an account no matter how a
+/// client compares them.
+#[tokio::test]
+async fn a_caller_finds_itself_by_matching_its_account() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/namespaces/{GID}/account")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {
+                "accountId": ZERO_HEX_ACCOUNT,
+                "namespaceId": GID,
+                "deviceId": null,
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/members")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"members": [
+                {"identity": ZERO_HEX_ACCOUNT, "role": "Admin"},
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let me = client.get_namespace_account(GID).await.unwrap();
+    let members = client.list_group_members(GID).await.unwrap();
+
+    assert!(
+        members
+            .members
+            .iter()
+            .any(|m| m.identity.to_string() == me.data.account_id),
+        "a node's own account must be findable among the members it is returned",
+    );
+}
+
 #[tokio::test]
 async fn add_group_members() {
     let server = MockServer::start().await;
