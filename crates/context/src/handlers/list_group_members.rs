@@ -120,8 +120,16 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                 })
                 .collect();
 
+            // Resolved unconditionally, not just on the branch that needed it for
+            // the membership gate: this is the only value a client can compare
+            // against `members[].identity` to find itself, and returning the
+            // signing key alone made that comparison silently always false.
+            let self_account =
+                crate::member_account::require(&self.datastore, &group_id, &node_identity)?;
+
             Ok(ListGroupMembersResponse {
                 members: entries,
+                self_account,
                 self_identity: node_identity,
             })
         })();

@@ -1632,8 +1632,19 @@ impl Validate for RemoveGroupMembersApiRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ListGroupMembersApiResponse {
     pub members: Vec<GroupMemberApiEntry>,
-    /// The calling node's own group-level identity (SignerId), so clients
-    /// can identify which entry in `members` represents the current user.
+    /// The calling node's own ACCOUNT — the entry in `members` that is it.
+    ///
+    /// **This is the field to match on.** Entries are accounts (64 hex), so
+    /// comparing them against `selfIdentity` below never matches: that is a
+    /// bs58 signing key, and an account is a one-way hash no key recovers.
+    /// A client asking "which of these is me" wants this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_account: Option<AccountId>,
+    /// The calling node's own group-level signing key.
+    ///
+    /// **Not comparable to `members[].identity`** — different id space. Kept
+    /// for callers that need the key they sign with; use `selfAccount` to find
+    /// yourself in the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_identity: Option<PublicKey>,
 }

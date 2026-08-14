@@ -56,6 +56,7 @@ pub async fn handler(
             ApiResponse {
                 payload: ListGroupMembersApiResponse {
                     members: entries,
+                    self_account: Some(resp.self_account),
                     self_identity: Some(resp.self_identity),
                 },
             }

@@ -161,8 +161,17 @@ impl Message for ListGroupMembersRequest {
 #[derive(Clone, Debug)]
 pub struct ListGroupMembersResponse {
     pub members: Vec<GroupMemberEntry>,
-    /// The node's own group-level identity (SignerId) so the client knows
-    /// which member in the list represents the current node.
+    /// The node's own ACCOUNT — the entry in `members` that represents it.
+    ///
+    /// This is the field to compare against [`GroupMemberEntry::identity`].
+    /// `self_identity` below cannot be: entries are accounts, an account is a
+    /// one-way hash of a genesis, and no amount of key-matching recovers it.
+    pub self_account: AccountId,
+    /// The node's own group-level signing key.
+    ///
+    /// **Not comparable to [`GroupMemberEntry::identity`]** — different id
+    /// space. Kept because a caller that needs the key it signs with has no
+    /// other source for it; use `self_account` to find yourself in the list.
     pub self_identity: PublicKey,
 }
 

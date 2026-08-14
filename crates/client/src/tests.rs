@@ -180,6 +180,44 @@ async fn list_group_members() {
     assert!(resp.members.is_empty());
 }
 
+/// **A caller can find itself in the listing.**
+///
+/// `members[].identity` is an ACCOUNT and `selfIdentity` is a signing KEY, so
+/// the documented way to answer "which of these is me" —
+/// `members.any(|m| m.identity == self_identity)` — became permanently false
+/// when members started being named by account. Downstream that reads as an
+/// admin rendering as a plain user and a joined channel rendering as unjoined:
+/// both gates fail closed, silently.
+///
+/// `selfAccount` is the answer, and it has to arrive in the same id space the
+/// entries use. This pins the wire field and the comparison together, because
+/// the two halves are only useful as a pair.
+#[tokio::test]
+async fn list_group_members_lets_the_caller_find_itself() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/members")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "members": [
+                { "identity": ZERO_HEX_ACCOUNT, "role": "Admin" },
+            ],
+            "selfAccount": ZERO_HEX_ACCOUNT,
+            "selfIdentity": "11111111111111111111111111111111",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.list_group_members(GID).await.unwrap();
+
+    let me = resp.self_account.expect("the node reports its own account");
+    assert!(
+        resp.members.iter().any(|m| m.identity == me),
+        "a node must be able to find itself among the members it is listed in"
+    );
+}
+
 #[tokio::test]
 async fn add_group_members() {
     let server = MockServer::start().await;
