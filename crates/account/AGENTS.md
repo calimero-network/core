@@ -45,7 +45,7 @@ This crate splits the identity half in two:
 | `DeviceId::mint(account, nonce)` | fn | Mint a device id once per installation |
 | `DeviceId::hlc_seed()` | fn | First 16 bytes - the HLC instance seed for this replica |
 | `KemPublicKey` | struct (`[u8; 32]`) | X25519 scope-key delivery recipient; a distinct type from `PublicKey` |
-| `AccountGenesis` | struct | `{version, root_sign_pk, nonce}`; hashing it yields the `AccountId` |
+| `AccountGenesis` | struct | `{version, root_sign_pk}`; hashing it yields the `AccountId`. No per-scope salt — one root key is one account everywhere |
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
 | `RootKeyHandoff` | struct | Rolls the root key from `from_epoch` to `from_epoch + 1`, signed by the outgoing key |
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |

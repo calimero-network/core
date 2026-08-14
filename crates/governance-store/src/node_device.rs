@@ -206,11 +206,12 @@ pub struct ImportedRoot {
     /// The root that was replaced, if there was one. `None` on a fresh store,
     /// which is the ordinary recovery case and needs no `--force`.
     pub replaced: Option<AccountRoot>,
-    /// Whether the device row was dropped because it belonged to
-    /// [`Self::replaced`]. Re-enrolling mints a fresh device under the imported
-    /// root.
+    /// Whether **the** device row was dropped because it belonged to
+    /// [`Self::replaced`]. There is one row, not one per namespace, so this is a
+    /// single fact rather than a set. Re-enrolling mints a fresh device under the
+    /// imported root.
     pub released: bool,
-    /// Whether the device row was kept because it names an account this root
+    /// Whether **the** device row was kept because it names an account this root
     /// never owned — a device paired into somebody else's account, which is
     /// unaffected by replacing this node's own root.
     pub retained: bool,

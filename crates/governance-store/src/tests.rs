@@ -4611,9 +4611,11 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     // A second namespace must be left alone.
     let other_ns_id = ContextGroupId::from([0xB2; 32]);
     let other_ns_bytes = other_ns_id.to_bytes();
-    let (other_pk, _other_account) = enrolled(&store, &other_ns_id, 0x55);
+    let (_other_pk, _other_account) = enrolled(&store, &other_ns_id, 0x55);
+    // The same key: one node signs with one, so a second namespace records
+    // participation rather than minting a second identity.
     NamespaceRepository::new(&store)
-        .store_identity(&other_ns_id, &other_pk, &[0x66; 32])
+        .store_identity(&other_ns_id, &ns_pk, &[0x22; 32])
         .unwrap();
     {
         let mut handle = store.handle();
@@ -9322,7 +9324,7 @@ mod rotation_gate_alignment {
         let sk = PrivateKey::from(sk_bytes);
         let pk = sk.public_key();
         NamespaceRepository::new(store)
-            .store_identity(ns_gid, &pk, &sk_bytes)
+            .replace_identity(ns_gid, &pk, &sk_bytes)
             .unwrap();
         pk
     }

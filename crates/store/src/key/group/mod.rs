@@ -1828,8 +1828,8 @@ pub const GROUP_REVOKED_DEVICE_PREFIX: u8 = 0x42;
 /// Per-account current root key (see [`GroupAccountKey`]).
 pub const GROUP_ACCOUNT_KEY_PREFIX: u8 = 0x43;
 
-/// This node's own device identity for a namespace (see
-/// [`NodeDeviceIdentity`]).
+/// This node's own device identity (see [`NodeDeviceIdentity`]) — one per node,
+/// not one per namespace.
 pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 
 /// This node's account root secret (see [`NodeAccountRoot`]).

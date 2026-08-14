@@ -590,6 +590,49 @@ impl<'a> NamespaceRepository<'a> {
         public_key: &PublicKey,
         private_key: &[u8; 32],
     ) -> EyreResult<()> {
+        // Refuse a second, different key rather than overwriting. There is one
+        // row now, so a caller storing a namespace-specific key — which the old
+        // per-namespace model allowed — would silently replace the key every
+        // OTHER namespace signs with, and the damage would surface later as
+        // signatures nobody can attribute. A node has one signing key; storing a
+        // different one is a bug in the caller, not a state to reconcile.
+        if let Some(existing) = self.store.handle().get(&NodeIdentity::new())? {
+            if existing.public_key != **public_key {
+                eyre::bail!(
+                    "refusing to replace this node's signing key: it already holds \
+                     {} and was asked to store {} for {namespace_id:?}. One node signs \
+                     with one key",
+                    PublicKey::from(existing.public_key),
+                    public_key,
+                );
+            }
+            return self.note_participation(namespace_id);
+        }
+
+        let mut handle = self.store.handle();
+        handle.put(
+            &NodeIdentity::new(),
+            &NodeIdentityValue {
+                public_key: **public_key,
+                private_key: *private_key,
+            },
+        )?;
+        self.note_participation(namespace_id)
+    }
+
+    /// Repoint this node at a different signing key, discarding the one it holds.
+    ///
+    /// Deliberate re-provisioning, which [`Self::store_identity`] refuses on
+    /// purpose: with one key per node, an overwrite reached by accident silently
+    /// changes what every namespace signs with. Everything authored under the old
+    /// key stays attributed to it — this does not re-sign history — so the node
+    /// is a different member afterwards wherever the old key was the member.
+    pub fn replace_identity(
+        &self,
+        namespace_id: &ContextGroupId,
+        public_key: &PublicKey,
+        private_key: &[u8; 32],
+    ) -> EyreResult<()> {
         let mut handle = self.store.handle();
         handle.put(
             &NodeIdentity::new(),
