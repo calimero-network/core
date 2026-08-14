@@ -120,6 +120,11 @@ README documents `cargo mero build`, not the path to itself.
 - If code is for future use, don't include it yet - add it when needed
 - Use `#[allow(dead_code)]` only with a comment explaining why (e.g., FFI, test fixtures)
 - For detecting and removing dead code: use the **dead-code-cleanup** skill (`.cursor/skills/dead-code-cleanup/SKILL.md`) – it verifies no references before removal and produces a structured report
+- For code that is *referenced* but unreachable – a dead island whose items cite
+  each other while the outermost edge points at a route, command or registration
+  that does not exist: use the **unreachable-subsystems** skill
+  (`.cursor/skills/unreachable-subsystems/SKILL.md`). The compiler and clippy
+  cannot see this class, because every item genuinely has a caller
 
 ### Commit Format
 
