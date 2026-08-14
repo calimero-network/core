@@ -82,14 +82,6 @@ pub enum ParseError<'a> {
          pub enum Event {{ /* one variant per event */ }}"
     )]
     EventMustBeEnum,
-    #[error(
-        "`#[app::ephemeral]` can only be applied to a struct — ephemeral presence types are \
-         value objects, not tagged unions.\n\n\
-         Define your presence DTO as a struct instead:\n\n\
-         #[app::ephemeral]\n\
-         pub struct MyPresence {{ /* fields */ }}"
-    )]
-    EphemeralMustBeStruct,
     #[error("please use a simple `pub` directive")]
     NoComplexVisibility,
     #[error("explicit ABIs are not supported")]

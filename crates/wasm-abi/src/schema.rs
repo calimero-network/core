@@ -23,11 +23,6 @@ pub struct Manifest {
     /// behind. Empty on older manifests (serde default).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub migrations: Vec<MigrationEdgeAbi>,
-    /// Ephemeral presence DTOs declared with `#[app::ephemeral]`. Their type
-    /// shapes are recorded in `types`; this vec names the entrypoints. Absent
-    /// on manifests compiled before this field existed (serde default).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ephemeral: Vec<EphemeralType>,
 }
 
 /// One declared migration edge: invoking `method` carries state from
@@ -52,7 +47,6 @@ impl Default for Manifest {
             state_root: None,
             state_version: None,
             migrations: Vec::new(),
-            ephemeral: Vec::new(),
         }
     }
 }
@@ -217,14 +211,6 @@ pub struct Event {
     #[serde(rename = "payload")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<TypeRef>,
-}
-
-/// Ephemeral presence type — a DTO whose shape is captured in the ABI for
-/// tooling (e.g. presence channels) but that is not persisted to state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EphemeralType {
-    pub name: String,
-    pub type_ref: TypeRef,
 }
 
 /// Type reference - either inline or reference to a named type
@@ -459,7 +445,6 @@ impl Manifest {
             state_root: None,
             state_version: None,
             migrations: Vec::new(),
-            ephemeral: Vec::new(),
         }
     }
 
@@ -511,7 +496,6 @@ impl Manifest {
             state_root: Some(state_root_name.clone()),
             state_version: self.state_version,
             migrations: self.migrations.clone(),
-            ephemeral: Vec::new(),
         })
     }
 
