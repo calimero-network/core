@@ -48,6 +48,18 @@ check() {
   fi
 }
 
+# A curl that never completed is NOT a failed assertion — it is an unusable
+# run. The response body is empty either way, and an empty body silently
+# satisfies several of the checks below (empty `.error`, zero entries), so a
+# masked transport failure reads as a PASS. Report it and stop.
+die_curl() {
+  label="$1"; rc="$2"
+  fail "$label" "curl exit $rc — the request never completed; downstream assertions would be meaningless"
+  echo ""
+  echo "=== $PASS passed, $FAIL failed ==="
+  exit 1
+}
+
 check_not_empty() {
   label="$1"; val="$2"
   if [ -n "$val" ] && [ "$val" != "null" ] && [ "$val" != "none" ]; then
@@ -75,8 +87,13 @@ fi
 echo ""
 echo "-- Phase 0: context reachable on both nodes --"
 
-CTX1=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null || true)
-CTX2=$(curl -sf -m 10 "$NODE2_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null || true)
+RC=0
+CTX1=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null) || RC=$?
+[ "$RC" -eq 0 ] || die_curl "node1 context API responds" "$RC"
+
+RC=0
+CTX2=$(curl -sf -m 10 "$NODE2_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null) || RC=$?
+[ "$RC" -eq 0 ] || die_curl "node2 context API responds" "$RC"
 
 check_not_empty "node1 context API responds" "$(echo "$CTX1" | jq -r '.data.id // empty' 2>/dev/null || true)"
 check_not_empty "node2 context API responds" "$(echo "$CTX2" | jq -r '.data.id // empty' 2>/dev/null || true)"
@@ -106,9 +123,13 @@ echo "-- Phase 1: advance node 1 DAG with a real kv-store write, capture NON-NUL
 #   resolved server-side to the node's owned key (no executorPublicKey field).
 EXEC_BODY=$(printf '{"jsonrpc":"2.0","id":10,"method":"execute","params":{"contextId":"%s","method":"set","argsJson":{"key":"dag-guard","value":"1"}}}' "$CONTEXT_ID")
 
+RC=0
 EXEC_RESP=$(curl -sf -m 15 -X POST "$NODE1_URL/jsonrpc" \
   -H "Content-Type: application/json" \
-  -d "$EXEC_BODY" 2>/dev/null || true)
+  -d "$EXEC_BODY" 2>/dev/null) || RC=$?
+# Without this, an empty body yields an empty `.error` and the check below
+# reports "execute(set) succeeded" for a request that never reached the node.
+[ "$RC" -eq 0 ] || die_curl "kv-store execute(set) on node 1" "$RC"
 
 echo "  execute(set) response: $EXEC_RESP"
 
@@ -120,8 +141,10 @@ else
 fi
 
 # Capture node 1's hash AFTER the write. This is the baseline the guard protects.
-HASH_BEFORE=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null \
-  | jq -r '.data.contextStateHash // empty' 2>/dev/null || true)
+RC=0
+CTX1_AFTER_WRITE=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null) || RC=$?
+[ "$RC" -eq 0 ] || die_curl "read node1 contextStateHash after kv write" "$RC"
+HASH_BEFORE=$(echo "$CTX1_AFTER_WRITE" | jq -r '.data.contextStateHash // empty' 2>/dev/null || true)
 
 echo "  node1 contextStateHash after kv write: $HASH_BEFORE"
 
@@ -140,9 +163,13 @@ echo "-- Phase 2: set_ephemeral on node 1 --"
 # state = [1, 2, 3] — an arbitrary small presence slice
 SET_BODY=$(printf '{"jsonrpc":"2.0","id":1,"method":"set_ephemeral","params":{"contextId":"%s","state":[1,2,3]}}' "$CONTEXT_ID")
 
+RC=0
 SET_RESP=$(curl -sf -m 10 -X POST "$NODE1_URL/jsonrpc" \
   -H "Content-Type: application/json" \
-  -d "$SET_BODY" 2>/dev/null || true)
+  -d "$SET_BODY" 2>/dev/null) || RC=$?
+# Same masking as Phase 1: an empty body means an empty `.error`, which the
+# check below would read as "no RPC error".
+[ "$RC" -eq 0 ] || die_curl "set_ephemeral on node 1" "$RC"
 
 echo "  set_ephemeral response: $SET_RESP"
 
@@ -164,15 +191,28 @@ GET_BODY=$(printf '{"jsonrpc":"2.0","id":2,"method":"get_ephemeral","params":{"c
 
 FOUND=0
 ATTEMPTS=0
+CURL_FAILS=0
+LAST_RC=0
 MAX_ATTEMPTS=30   # 30 × 0.5s = 15s budget
 
 while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
   sleep 0.5
   ATTEMPTS=$((ATTEMPTS + 1))
 
+  RC=0
   GET_RESP=$(curl -sf -m 5 -X POST "$NODE2_URL/jsonrpc" \
     -H "Content-Type: application/json" \
-    -d "$GET_BODY" 2>/dev/null || true)
+    -d "$GET_BODY" 2>/dev/null) || RC=$?
+
+  # A single failed poll is retriable (the node may still be coming up), but
+  # it must not masquerade as "polled successfully, no entries yet" — count it
+  # so the failure message below can say which of the two happened.
+  if [ "$RC" -ne 0 ]; then
+    CURL_FAILS=$((CURL_FAILS + 1))
+    LAST_RC=$RC
+    GET_RESP=""
+    continue
+  fi
 
   # `entries` is an OBJECT keyed by author (base58), not a list.
   ENTRIES=$(echo "$GET_RESP" | jq '.result.entries // {}' 2>/dev/null || true)
@@ -187,8 +227,12 @@ done
 
 if [ "$FOUND" = "1" ]; then
   ok "get_ephemeral on node 2 received at least 1 entry within 15s"
+elif [ "$CURL_FAILS" -eq "$ATTEMPTS" ]; then
+  # Every poll failed at the transport — this says nothing about gossip.
+  die_curl "get_ephemeral on node 2 (all $ATTEMPTS polls failed)" "$LAST_RC"
 else
-  fail "get_ephemeral on node 2 received 0 entries after 15s — gossip not delivered"
+  fail "get_ephemeral on node 2 received 0 entries after 15s — gossip not delivered" \
+    "($CURL_FAILS of $ATTEMPTS polls also failed at the transport)"
   # Still proceed so subsequent assertions capture all failures
   GET_RESP=""
   ENTRIES="{}"
@@ -237,8 +281,12 @@ fi
 echo ""
 echo "-- Phase 4: no-DAG-growth guard (node 1, falsifiable) --"
 
-HASH_AFTER=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null \
-  | jq -r '.data.contextStateHash // empty' 2>/dev/null || true)
+RC=0
+CTX1_AFTER_EPHEMERAL=$(curl -sf -m 10 "$NODE1_URL/admin-api/contexts/$CONTEXT_ID" 2>/dev/null) || RC=$?
+# An empty body here would compare unequal to the baseline and fail — but for
+# the wrong reason, and on the load-bearing guard. Say what actually happened.
+[ "$RC" -eq 0 ] || die_curl "read node1 contextStateHash after set_ephemeral" "$RC"
+HASH_AFTER=$(echo "$CTX1_AFTER_EPHEMERAL" | jq -r '.data.contextStateHash // empty' 2>/dev/null || true)
 
 echo "  node1 hash before set_ephemeral (NON-NULL baseline): $HASH_BEFORE"
 echo "  node1 hash after  set_ephemeral                    : $HASH_AFTER"

@@ -39,9 +39,17 @@ fi
 # sweeps expired remote entries (the sweep only runs when the node itself has
 # local ephemeral state).
 SET2_BODY=$(printf '{"jsonrpc":"2.0","id":3,"method":"set_ephemeral","params":{"contextId":"%s","state":[9,8,7]}}' "$CONTEXT_ID")
+RC=0
 SET2_RESP=$(curl -sf -m 10 -X POST "$NODE2_URL/jsonrpc" \
   -H "Content-Type: application/json" \
-  -d "$SET2_BODY" 2>/dev/null || true)
+  -d "$SET2_BODY" 2>/dev/null) || RC=$?
+# A transport failure here must NOT be swallowed: without node 2's own local
+# slice the heartbeat sweep never runs, so node 1's entry would still be there
+# for a reason that has nothing to do with the TTL.
+if [ "$RC" -ne 0 ]; then
+  echo "FATAL: set_ephemeral on node 2 failed (curl exit $RC) — the request never completed, so the sweep was never armed"
+  exit 1
+fi
 echo "  seeded node 2 local presence to trigger sweep: $SET2_RESP"
 
 # Wait for TTL (7 s) + 2 heartbeat ticks (2 × 2.5 s) + margin = 13 s.
@@ -51,16 +59,40 @@ echo "  waiting 13s for TTL (7s) + heartbeat sweeps (2×2.5s) ..."
 sleep 13
 
 GET_BODY=$(printf '{"jsonrpc":"2.0","id":4,"method":"get_ephemeral","params":{"contextId":"%s"}}' "$CONTEXT_ID")
+RC=0
 GET_AFTER=$(curl -sf -m 5 -X POST "$NODE2_URL/jsonrpc" \
   -H "Content-Type: application/json" \
-  -d "$GET_BODY" 2>/dev/null || true)
+  -d "$GET_BODY" 2>/dev/null) || RC=$?
+
+# LOAD-BEARING: a failed request yields an empty body, and an empty body counts
+# ZERO remaining entries — exactly what a genuine TTL eviction looks like. Fail
+# loudly on the transport error instead of reporting a PASS that verified
+# nothing.
+if [ "$RC" -ne 0 ]; then
+  echo "FATAL: get_ephemeral on node 2 failed (curl exit $RC) — the request never completed; the TTL guard cannot be evaluated"
+  exit 1
+fi
 
 echo "  get_ephemeral response after TTL: $GET_AFTER"
 
+# The other way this guard can pass without verifying anything: a JSON-RPC
+# ERROR response (HTTP 200, so curl is happy) has no `.result`, and counting
+# entries under a missing `.result` yields 0 — identical to a genuine TTL
+# eviction. Require the successful shape explicitly.
+HAS_RESULT=$(echo "$GET_AFTER" | jq -r 'has("result") and (.result | type == "object") and (.result | has("entries"))' 2>/dev/null || echo false)
+if [ "$HAS_RESULT" != "true" ]; then
+  echo "FATAL: get_ephemeral did not return result.entries — the entry count would be vacuously 0. Response: $GET_AFTER"
+  exit 1
+fi
+
 # `entries` is author-keyed, so presence is a direct key lookup rather than a
-# scan over a list with an `author` field.
+# scan over a list with an `author` field. A jq failure here means the body was
+# not the JSON we expect — also fatal, for the same reason.
 REMAINING=$(echo "$GET_AFTER" | jq --arg k "$NODE1_KEY" \
-  '[.result.entries[$k]? // empty] | length' 2>/dev/null || echo 0)
+  '[.result.entries[$k]? // empty] | length') || {
+  echo "FATAL: could not parse the get_ephemeral response as JSON: $GET_AFTER"
+  exit 1
+}
 
 echo "  node-1 entries remaining on node 2: $REMAINING"
 
