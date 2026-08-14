@@ -91,6 +91,9 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 account_id: hex::encode(root.account().as_bytes()),
                 device_id: device,
                 public_key: signing_key,
+                account_root_public_key: hex::encode(AsRef::<[u8; 32]>::as_ref(
+                    &root.genesis().root_sign_pk,
+                )),
             },
         },
     }

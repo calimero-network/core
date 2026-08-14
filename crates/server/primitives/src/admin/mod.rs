@@ -1955,26 +1955,35 @@ pub struct CreateAccountApiResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairDeviceInitApiRequest {
-    /// Hex-encoded epoch-0 root key of the account to join (32 bytes).
+    /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
     ///
     /// The whole genesis, now that it is `{version, root_sign_pk}` — so this is
     /// the only thing that has to travel between the two devices.
-    pub account_root_key: String,
+    ///
+    /// Named for the half it carries. An ed25519 private and public key are both
+    /// 32 bytes and both hex, so neither the type nor the length distinguishes
+    /// them; the old name (`accountRootKey`) left the reader nothing to go on
+    /// about a field where confusing the two would be catastrophic. The private
+    /// root never crosses this boundary at all — it leaves the node only via
+    /// `merod account export`, as a mnemonic, and the holder signs the paired
+    /// device's certificate locally.
+    #[serde(alias = "accountRootKey")]
+    pub account_root_public_key: String,
 }
 
 impl Validate for PairDeviceInitApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if self.account_root_key.len() != 64 {
+        if self.account_root_public_key.len() != 64 {
             errors.push(ValidationError::InvalidLength {
-                field: "accountRootKey",
+                field: "accountRootPublicKey",
                 expected: 64,
-                actual: self.account_root_key.len(),
+                actual: self.account_root_public_key.len(),
             });
-        } else if hex::decode(&self.account_root_key).is_err() {
+        } else if hex::decode(&self.account_root_public_key).is_err() {
             errors.push(ValidationError::InvalidHexEncoding {
-                field: "accountRootKey",
+                field: "accountRootPublicKey",
                 reason: "not valid hex".to_owned(),
             });
         }
@@ -3232,6 +3241,16 @@ pub struct NodeIdentityApiResponseData {
     /// certificates and handoffs and never an op, so a signature on the wire
     /// verifies against this one.
     pub public_key: String,
+    /// Hex-encoded epoch-0 root **public** key of this node's account.
+    ///
+    /// This is what a second device needs to pair into this account, and it is
+    /// public by construction: it is hashed into the `AccountId` and travels in
+    /// every genesis. Not optional, because the route 404s without an account
+    /// root — there is no account to report rather than an empty one.
+    ///
+    /// The private root is not reachable from any HTTP route. It leaves the
+    /// node only via `merod account export`, as a mnemonic.
+    pub account_root_public_key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -196,6 +196,7 @@ async fn a_caller_finds_itself_by_matching_its_account() {
                 "accountId": ZERO_HEX_ACCOUNT,
                 "deviceId": null,
                 "publicKey": ZERO_BS58,
+                "accountRootPublicKey": ZERO_HEX_ACCOUNT,
             }})),
         )
         .expect(1)
