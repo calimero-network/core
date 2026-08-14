@@ -417,7 +417,15 @@ fn migrated_context_version(
         && calimero_context::activation::activated_at_group_target(datastore, context_id)
             == Some(true)
     {
-        return Some(app_meta.state_version.max(target));
+        // `target` lifts this only on the node that ran `upgrade_group` - the
+        // upgrade record it reads is never replicated. The install row cannot
+        // stand in: it is keyed per `ApplicationId`, so a same-id bundle upgrade
+        // leaves it at the version this node first installed. The version
+        // recorded when the context activated its bytecode is what a member has.
+        let activated =
+            calimero_context::activation::activated_state_version(datastore, context_id)
+                .unwrap_or_default();
+        return Some(app_meta.state_version.max(target).max(activated));
     }
     Some(app_meta.state_version)
 }
@@ -1887,6 +1895,42 @@ mod tests {
             facts.schema_version, 2,
             "a context executing the target bytecode is at the target schema, \
              whatever the install-tracking application row still records"
+        );
+        assert_eq!(
+            facts.residue_auto, 0,
+            "a migrated context is not outstanding residue"
+        );
+    }
+
+    /// The same migrated context, on a member instead of the initiator. Only
+    /// `upgrade_group` writes the upgrade record and it runs on one node, so a
+    /// member resolves its target as `0` and the marker path's `max(target)`
+    /// lifts nothing - leaving the stale install row as the reported version.
+    /// A node that executes the group's bytecode is at that bytecode's schema
+    /// whether or not it was the one that started the upgrade.
+    #[test]
+    fn facts_report_the_target_for_a_member_that_never_received_the_upgrade_record() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB4u8; 32];
+        let ctx = [0xC8u8; 32];
+
+        // No `save_v2_upgrade_record` - that record is initiator-local.
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        install_bundle_over_context(&store, ctx, V1_BLOB, 1);
+        // What the ladder hop records when it activates the rung.
+        calimero_context::activation::record_activation(&store, &ctx.into(), V2_BLOB);
+        calimero_context::activation::record_activated_state_version(&store, &ctx.into(), 2);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 2,
+            "a member executing the group's bytecode must report its schema, \
+             not the install row it never moved"
         );
         assert_eq!(
             facts.residue_auto, 0,

@@ -437,7 +437,7 @@ struct EmitRung {
 
 /// Max `state_version` across the blob's services, from its embedded ABIs.
 /// `None` when no service exposes an ABI — single-hop rules own that case.
-async fn blob_max_state_version(
+pub(crate) async fn blob_max_state_version(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
 ) -> Option<u32> {
