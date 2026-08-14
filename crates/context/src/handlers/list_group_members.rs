@@ -120,10 +120,7 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
                 })
                 .collect();
 
-            Ok(ListGroupMembersResponse {
-                members: entries,
-                self_identity: node_identity,
-            })
+            Ok(ListGroupMembersResponse { members: entries })
         })();
 
         ActorResponse::reply(result)

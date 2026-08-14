@@ -31,9 +31,8 @@ pub async fn handler(
     // the parent group — NOT from the JWT subject. The JWT's `sub` is a
     // node-level key fingerprint that doesn't parse as a `PublicKey`
     // (see calimero_server::auth — emits a WARN and skips the
-    // AuthenticatedKey extension). Using `resolve_namespace_identity`
-    // matches what `list_group_members` already does to populate
-    // `selfIdentity`.
+    // AuthenticatedKey extension), so the node's namespace identity is the
+    // only thing here that resolves to a governance principal.
     // Visibility is decided per account, so this node's namespace identity is
     // resolved to one. An identity bound to no account here sees the same as no
     // identity at all: every Restricted child stays hidden.
