@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **`meroctl context identity grant` / `revoke`** and the per-context
+  capability request/response types behind them. The commands were shipped and
+  advertised in `context --help`, but had no route, client method or handler and
+  always errored. Use `meroctl group members set-caps` instead ([#3440])
+
 ## [0.11.0-rc.10] - 2026-07-05
 
 > **Draft — release manager to curate.** Another large hardening release
@@ -763,3 +770,4 @@ Integrations:
 [#1520]: https://github.com/calimero-network/core/pull/1520
 [#1521]: https://github.com/calimero-network/core/pull/1521
 [#1522]: https://github.com/calimero-network/core/pull/1522
+[#3440]: https://github.com/calimero-network/core/pull/3440
