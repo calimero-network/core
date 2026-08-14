@@ -161,9 +161,6 @@ impl Message for ListGroupMembersRequest {
 #[derive(Clone, Debug)]
 pub struct ListGroupMembersResponse {
     pub members: Vec<GroupMemberEntry>,
-    /// The node's own group-level identity (SignerId) so the client knows
-    /// which member in the list represents the current node.
-    pub self_identity: PublicKey,
 }
 
 #[derive(Clone, Debug)]
