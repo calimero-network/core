@@ -67,7 +67,7 @@ impl Handler<ListNamespacesRequest> for ContextManager {
             let namespaces = collect_namespace_summaries(
                 entries,
                 None,
-                |group_id| self.node_namespace_identity(group_id),
+                |group_id| self.node_signing_key(group_id),
                 |group_id, meta, node_identity| {
                     MetadataRepository::new(&self.datastore).build_namespace_summary(
                         group_id,

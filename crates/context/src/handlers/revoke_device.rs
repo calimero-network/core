@@ -50,7 +50,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         }: RevokeDeviceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let Some((self_pk, signer_sk_bytes)) = self.node_namespace_identity(&namespace_id) else {
+        let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&namespace_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node has no namespace identity for {namespace_id:?}; it cannot \
                  revoke a device there"

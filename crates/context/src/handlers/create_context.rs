@@ -48,7 +48,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let identity_secret = identity_secret.or_else(|| {
-            let (_, sk) = self.node_namespace_identity(&group_id)?;
+            let (_, sk) = self.node_signing_key(&group_id)?;
             Some(PrivateKey::from(sk))
         });
 

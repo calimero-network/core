@@ -14,7 +14,6 @@ pub mod members;
 pub mod metadata;
 pub mod reparent;
 pub mod settings;
-pub mod signing_key;
 pub mod subgroups;
 pub mod sync;
 pub mod upgrade;
@@ -39,7 +38,6 @@ pub const EXAMPLES: &str = r"
   $ meroctl --node node1 group reparent <group_id> <new_parent_id>
 
   # Register a signing key for a group admin
-  $ meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
 
   # List members of a group
   $ meroctl --node node1 group members list <group_id>
@@ -73,8 +71,6 @@ pub enum GroupSubCommands {
     ContextMetadata(metadata::ContextMetadataCommand),
     Reparent(reparent::ReparentCommand),
     Subgroups(subgroups::SubgroupsCommand),
-    #[command(alias = "signing-key")]
-    SigningKey(signing_key::SigningKeyCommand),
     Upgrade(upgrade::UpgradeCommand),
     Sync(sync::SyncCommand),
     #[command(alias = "join-context")]
@@ -101,7 +97,6 @@ impl GroupCommand {
             GroupSubCommands::ContextMetadata,
             GroupSubCommands::Reparent,
             GroupSubCommands::Subgroups,
-            GroupSubCommands::SigningKey,
             GroupSubCommands::Upgrade,
             GroupSubCommands::Sync,
             GroupSubCommands::JoinContext,

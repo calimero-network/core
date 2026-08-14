@@ -23,7 +23,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
         // Resolve requester: use provided value or fall back to node group identity
         let requester = match requester {
             Some(pk) => pk,
-            None => match self.node_namespace_identity(&group_id) {
+            None => match self.node_signing_key(&group_id) {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(

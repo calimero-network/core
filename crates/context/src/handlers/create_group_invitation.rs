@@ -4,9 +4,7 @@ use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_governance_store::{
-    MembershipRepository, MetaRepository, MetadataRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -25,26 +23,24 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
+        let node_identity = self.node_signing_key(&group_id);
 
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
-                    )))
-                }
-            },
+        let Some((node_pk, node_sk)) = node_identity else {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "this node has no signing identity for {group_id:?}; it does not take part there"
+            )));
         };
-
-        if let Some((node_pk, node_sk)) = node_identity {
-            if requester == node_pk {
-                let _ = SigningKeysRepository::new(&self.datastore)
-                    .store_key(&group_id, &requester, &node_sk);
+        // A node has one signing identity, so an explicit `requester` can only
+        // name its own — anything else is asking it to sign as somebody else.
+        let requester = match requester {
+            Some(pk) if pk == node_pk => pk,
+            Some(pk) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "cannot act as {pk}: this node signs as {node_pk}"
+                )))
             }
-        }
+            None => node_pk,
+        };
 
         let datastore = self.datastore.clone();
 
@@ -62,12 +58,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 "create group invitation",
             )?;
 
-            SigningKeysRepository::new(&datastore).require_key(&group_id, &requester)?;
-
-            let signing_key_bytes = SigningKeysRepository::new(&datastore)
-                .get_key(&group_id, &requester)?
-                .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
-            let private_key = PrivateKey::from(signing_key_bytes);
+            let private_key = PrivateKey::from(node_sk);
 
             let mut rng = rand::thread_rng();
             let invitation_nonce: [u8; 32] = rng.gen();

@@ -325,22 +325,18 @@ rejoin via a fresh invite. Confirm you are leaving the right group/namespace ID
 first.
 </Aside>
 
-### Signing-key rotation
+### Signing keys
 
-Group signing keys are managed via:
-
-```sh
-meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
-```
+A node holds ONE signing key, minted at `merod init` and used in every
+namespace it takes part in. There is nothing to register and nothing
+per-group to rotate: the key identifies the node, and the thing that
+actually turns over on a membership change is the group's *encryption*
+key, which the rotation pipeline re-keys without the departed account.
 
 <Aside type="caution">
-The full key-rotation lifecycle (generating the new key, registering it,
-retiring the old one, and the per-group encryption-key handling that runs on
-eviction / self-purge for TEE fleet nodes) is broader than a single command and
-deployment-specific. Treat `signing-key register` as the registration step only,
-and consult [Governance](/protocol/governance/) and
-[Identities](/protocol/identities/) for the rotation model before rotating
-production keys.
+Replacing a node's signing key means re-keying its device — see
+[Identities](/protocol/identities/) for the device re-key path, which
+keeps the device id (and so its replica slot) while the keys change.
 </Aside>
 
 <LinkCard title="Membership & governance" href="/protocol/governance/"

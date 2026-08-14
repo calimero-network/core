@@ -1,6 +1,6 @@
 use calimero_governance_store::{
     account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, ReentryRepository, SigningKeysRepository,
+    MetadataRepository, ReentryRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,8 +85,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
                 // -------------------------------------------------------
-
-                let _ = SigningKeysRepository::new(&datastore).store_key(&group_id, &joiner_identity, &sk_bytes, );
 
                 if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     // From the invitation ENVELOPE, and optional there: it is a

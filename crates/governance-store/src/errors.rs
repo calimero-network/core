@@ -334,17 +334,6 @@ pub enum CapabilitiesError {
     Unauthorized { group_id: String, operation: String },
 }
 
-/// Errors raised by `SigningKeysRepository`. Distinct from the
-/// crypto-layer errors raised by `GroupKeyring` because the
-/// "no signing key" case is a *configuration* failure (caller never
-/// registered one), not a cryptographic one.
-#[derive(Debug, Error)]
-pub enum SigningKeysError {
-    /// No signing key stored for `identity` in `group_id`.
-    #[error("signing key not found for {identity} in group {group_id}")]
-    NotFound { group_id: String, identity: String },
-}
-
 /// Errors raised by `GroupKeyring` (encryption-key management) and
 /// the AES-GCM / ECDH primitives it wraps. These are cryptographic
 /// failures, not configuration ones — most map to a specific

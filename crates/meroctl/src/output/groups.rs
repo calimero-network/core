@@ -9,10 +9,10 @@ use calimero_server_primitives::admin::{
     ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
     ListSubgroupsApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
     NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
-    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
-    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateMemberRoleApiResponse,
+    UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -434,18 +434,6 @@ impl Report for JoinGroupApiResponse {
             "Member Identity",
             &self.data.member_identity.to_string(),
         ]);
-        println!("{table}");
-    }
-}
-
-impl Report for RegisterGroupSigningKeyApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Signing Key Registered").fg(Color::Green),
-            Cell::new("Value").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec!["Public Key", &self.data.public_key.to_string()]);
         println!("{table}");
     }
 }

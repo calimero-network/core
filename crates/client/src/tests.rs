@@ -32,7 +32,6 @@ use calimero_server_primitives::admin::DeleteNamespaceApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
-use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use calimero_server_primitives::admin::ResyncContextApiRequest;
@@ -895,32 +894,6 @@ async fn sync_group() {
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
-}
-
-#[tokio::test]
-async fn register_group_signing_key() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/signing-key")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": {"publicKey": ZERO_BS58}
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client
-        .register_group_signing_key(
-            GID,
-            RegisterGroupSigningKeyApiRequest {
-                signing_key: "testkey".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.data.public_key, PublicKey::from([0u8; 32]));
 }
 
 // ---- Member Capabilities & Visibility ----

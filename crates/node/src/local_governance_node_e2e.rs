@@ -163,10 +163,10 @@ async fn set_member_auto_follow_handler_error_paths() {
         .add_member(&gid, &alice_account, GroupMemberRole::Member)
         .unwrap();
 
-    // Admin needs a signing key registered so preflight can resolve one
-    // when admin acts as requester.
-    calimero_governance_store::SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
+    // The node signs as its own identity, so preflight resolves the admin
+    // only if that identity IS the admin's.
+    calimero_governance_store::NamespaceRepository::new(&node.store)
+        .replace_identity(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
         .unwrap();
 
     // Case 1: unknown group — preflight bails before the membership
@@ -319,7 +319,7 @@ fn announce_network_event(
 }
 
 /// Provision an owner node so it can act as a TEE-attestation verifier for the
-/// namespace `gid`: store its namespace identity (so `node_namespace_identity`
+/// namespace `gid`: store its namespace identity (so `node_signing_key`
 /// resolves and a signing key is available), seed it as group admin, and apply
 /// a mock-accepting `TeeAdmissionPolicySet` op that allowlists the mock MRTD.
 /// Returns the owner's namespace public key (the admission op's signer).

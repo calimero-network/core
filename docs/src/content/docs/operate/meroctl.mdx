@@ -154,7 +154,6 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 | `context-metadata`                 | Show / update a registered context's metadata.    | subcommand                                                    |
 | `reparent <GROUP_ID> <NEW_PARENT_ID>` | Atomically move a group to a new parent.       | `GROUP_ID`, `NEW_PARENT_ID`, `--requester`                  |
 | `subgroups <GROUP_ID>`             | List direct subgroups of a group.                 | `GROUP_ID`                                                    |
-| `signing-key`                      | Manage signing keys: `register`.                  | subcommand                                                    |
 | `upgrade`                          | `trigger`, `status`, or `retry` a group upgrade.  | subcommand                                                    |
 | `sync <GROUP_ID>`                  | Sync a group from local state.                    | `GROUP_ID`, `--requester`                                   |
 | `join-context <CONTEXT_ID>`        | Join a context via group membership.              | `CONTEXT_ID`                                                  |
@@ -185,7 +184,6 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 ```sh
 meroctl --node node1 group members list <group_id>
 meroctl --node node1 group reparent <group_id> <new_parent_id>
-meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
 ```
 
 ---

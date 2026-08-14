@@ -255,10 +255,6 @@ pub(crate) fn setup(
             post(groups::retry_group_upgrade::handler),
         )
         .route(
-            "/groups/:group_id/signing-key",
-            post(groups::register_signing_key::handler),
-        )
-        .route(
             "/groups/:group_id/issue-ownership-proof",
             post(groups::issue_ownership_proof::handler),
         )

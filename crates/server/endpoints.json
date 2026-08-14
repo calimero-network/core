@@ -64,7 +64,6 @@
   "POST /admin-api/groups/:group_id/members",
   "POST /admin-api/groups/:group_id/members/remove",
   "POST /admin-api/groups/:group_id/reparent",
-  "POST /admin-api/groups/:group_id/signing-key",
   "POST /admin-api/groups/:group_id/sync",
   "POST /admin-api/groups/:group_id/upgrade",
   "POST /admin-api/groups/:group_id/upgrade/retry",
