@@ -203,6 +203,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         key_id,
                         nonce,
                         ciphertext,
+                        signature,
                     } => {
                         ephemeral::inbound::handle_ephemeral_broadcast(
                             self,
@@ -213,6 +214,7 @@ impl Handler<NetworkEvent> for NodeManager {
                             key_id,
                             nonce,
                             ciphertext.into_owned(),
+                            signature,
                         );
                     }
                     _ => {

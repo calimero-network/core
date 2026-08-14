@@ -903,6 +903,12 @@ pub enum BroadcastMessage<'a> {
         nonce: Nonce,
         /// `SharedKey`-encrypted borsh-encoded presence slice.
         ciphertext: Cow<'a, [u8]>,
+        /// ed25519 signature by `author` over the canonical payload binding
+        /// `(context_id, author, seq, key_id, sha256(ciphertext))`. Mandatory:
+        /// `author` and `seq` ride outside the AEAD, so without this they are
+        /// rewritable in flight. Verified on every receive before the awareness
+        /// store is touched.
+        signature: [u8; 64],
     },
 }
 
@@ -1650,7 +1656,7 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn ephemeral_broadcast_roundtrips() {
+    fn test_ephemeral_broadcast_roundtrip() {
         use calimero_crypto::NONCE_LEN;
         let msg = BroadcastMessage::Ephemeral {
             context_id: ContextId::from([1u8; 32]),
@@ -1659,10 +1665,18 @@ mod tests {
             key_id: [3u8; 32],
             nonce: [0u8; NONCE_LEN],
             ciphertext: std::borrow::Cow::Borrowed(&[9, 9, 9]),
+            signature: [5u8; 64],
         };
         let bytes = borsh::to_vec(&msg).unwrap();
         let back: BroadcastMessage<'_> = borsh::from_slice(&bytes).unwrap();
-        assert!(matches!(back, BroadcastMessage::Ephemeral { seq: 7, .. }));
+        let BroadcastMessage::Ephemeral { seq, signature, .. } = back else {
+            panic!("expected Ephemeral");
+        };
+        assert_eq!(seq, 7);
+        assert_eq!(
+            signature, [5u8; 64],
+            "signature must survive the round-trip"
+        );
     }
 
     #[test]

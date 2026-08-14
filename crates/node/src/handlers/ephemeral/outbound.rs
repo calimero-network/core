@@ -139,6 +139,9 @@ pub(crate) async fn do_publish_ephemeral(
         key_id: record.key_id,
         nonce,
         ciphertext: Cow::Owned(ciphertext),
+        // Placeholder superseded by Task 3, which signs the canonical payload
+        // via `auth::ephemeral_signature_payload`.
+        signature: [0u8; 64],
     };
     let bytes = borsh::to_vec(&msg)?;
 

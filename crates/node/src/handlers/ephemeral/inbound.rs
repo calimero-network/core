@@ -160,7 +160,11 @@ pub(crate) fn handle_ephemeral_broadcast(
     key_id: [u8; 32],
     nonce: Nonce,
     ciphertext: Vec<u8>,
+    signature: [u8; 64],
 ) {
+    // Verified in Task 4; threaded through here so the wire change lands on its own.
+    let _ = &signature;
+
     let context_client = this.clients.context.clone();
     let node_client = this.clients.node.clone();
 

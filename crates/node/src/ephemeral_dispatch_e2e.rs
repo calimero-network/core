@@ -41,6 +41,7 @@ fn ephemeral_network_event(
     key_id: [u8; 32],
     nonce: [u8; NONCE_LEN],
     ciphertext: Vec<u8>,
+    signature: [u8; 64],
 ) -> NetworkEvent {
     let payload = BroadcastMessage::Ephemeral {
         context_id,
@@ -49,6 +50,7 @@ fn ephemeral_network_event(
         key_id,
         nonce,
         ciphertext: ciphertext.into(),
+        signature,
     };
     let data = borsh::to_vec(&payload).expect("borsh encode Ephemeral");
 
@@ -113,6 +115,7 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
         key_id,
         nonce,
         ciphertext,
+        [7u8; 64],
     );
     node.node_addr
         .send(event)
