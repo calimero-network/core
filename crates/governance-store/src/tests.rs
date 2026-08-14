@@ -4567,6 +4567,49 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn the_device_survives_leaving_one_namespace_and_goes_with_the_last() {
+    // The device is node-level, so a purge scoped to one namespace must not take
+    // its agreement secret — every namespace that remains opens its scope keys
+    // with the same one. Leaving the last namespace is different: an installation
+    // that takes part in nothing should not sit on key material.
+    //
+    // This is hygiene, not forward secrecy, and the distinction matters because
+    // the code this replaced claimed the latter. `delete_namespace_local_state`
+    // runs on the node's OWN store, so it is a node deleting its own secret —
+    // no defence against a node that simply declines to purge. Forward secrecy
+    // against a removed member is the rotation, which excludes the departed
+    // ACCOUNT and therefore every device it holds.
+    let store = test_store();
+    let repo = NodeDeviceRepository::new(&store);
+    let namespaces = NamespaceRepository::new(&store);
+
+    let (a, b) = (
+        ContextGroupId::from([0xA1u8; 32]),
+        ContextGroupId::from([0xB1u8; 32]),
+    );
+    let _ = namespaces
+        .get_or_create_identity_bundle(&a)
+        .expect("provision a");
+    let _ = namespaces
+        .get_or_create_identity_bundle(&b)
+        .expect("provision b");
+    let device = repo.ensure_enrolled(&a).expect("mint").device();
+
+    delete_namespace_local_state(&store, &a).expect("leave the first");
+    assert_eq!(
+        repo.get().expect("read").map(|d| d.device()),
+        Some(device),
+        "leaving one namespace must not take the device the others still use"
+    );
+
+    delete_namespace_local_state(&store, &b).expect("leave the last");
+    assert!(
+        repo.get().expect("read").is_none(),
+        "leaving the last namespace must take the device with it"
+    );
+}
+
+#[test]
 fn delete_namespace_local_state_clears_identity_head_and_ops() {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::{

@@ -1,7 +1,7 @@
 use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, ReentryRepository, SigningKeysRepository, UpgradeLadderRepository,
-    UpgradesRepository,
+    MetadataRepository, NamespaceRepository, ReentryRepository, SigningKeysRepository,
+    UpgradeLadderRepository, UpgradesRepository,
 };
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::SignedGroupOp;
@@ -560,21 +560,26 @@ pub fn delete_namespace_local_state(
     handle.delete(&NamespaceIdentity::new(ns_bytes))?;
     drop(handle);
 
-    // The device is NOT deleted here, and that is a change in posture worth
-    // stating. Its agreement secret is node-level — every other namespace this
-    // node belongs to opens its scope keys with the same one — so a purge scoped
-    // to a single namespace cannot take it without evicting the node from
-    // everywhere at once.
+    // The device is node-level, so leaving ONE namespace cannot take it: every
+    // other namespace this node belongs to opens its scope keys with the same
+    // agreement secret. Leaving the LAST one can, and does.
     //
-    // What the property rests on instead, all still done above: the group keyring
-    // is deleted, so the wrapped scope keys this secret could open are gone; every
-    // stored governance op for the namespace is deleted; and removal triggers a
-    // group-key rotation, so nothing it could still unwrap stays current. What is
-    // lost is the defence-in-depth case of ciphertext retained OUTSIDE the keyring.
+    // Being precise about what this is, because the comment it replaces called it
+    // forward secrecy and that was wrong. This function runs on the node's own
+    // store — `self_purge` after eviction, or `delete_namespace`. A node deleting
+    // its own secret is not a control against that node; one that wants to keep it
+    // simply does not purge. Forward secrecy against a removed member comes from
+    // the rotation, which excludes the departed ACCOUNT and therefore every device
+    // it holds. That is untouched here.
     //
-    // Recovering the strong version means rotating the device's keys rather than
-    // deleting them — `DeviceCert::device_epoch` exists for exactly that, "the same
-    // device with fresh keys" — which needs the account root to sign a fresh
-    // certificate.
+    // What this is, is hygiene: an installation that takes part in nothing should
+    // not sit on key material. Scoped to the last departure so it cannot break the
+    // namespaces that remain.
+    if NamespaceRepository::new(store)
+        .iter_identities()?
+        .is_empty()
+    {
+        crate::NodeDeviceRepository::new(store).delete()?;
+    }
     Ok(())
 }
