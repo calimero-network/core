@@ -147,16 +147,18 @@ mod tests {
 
         let scope = ScopeId::from([0xA1; 32]);
         let group = ContextGroupId::from([3u8; 32]);
-        let member = PublicKey::from([0x55; 32]);
-        let admin = PublicKey::from([1u8; 32]);
+        // Principals, named directly. This test is about the op log persisting and
+        // replaying to the same projection, so what the payloads need is an
+        // `AccountId` — it used to reach one by hashing a key through the legacy
+        // stand-in, which coupled a persistence test to a bridge it never exercised.
+        let member = calimero_account::AccountId::from([0x55; 32]);
+        let admin = calimero_account::AccountId::from([1u8; 32]);
 
         let op_admin = op(
             scope,
             10,
             vec![],
-            OpPayload::AdminChanged {
-                new_admin: calimero_op_adapter::legacy_account_id(&admin),
-            },
+            OpPayload::AdminChanged { new_admin: admin },
         );
         let op_member = op(
             scope,
@@ -164,7 +166,7 @@ mod tests {
             vec![op_admin.id()],
             OpPayload::MemberAdded {
                 group,
-                member: calimero_op_adapter::legacy_account_id(&member),
+                member,
                 role: GroupMemberRole::Member,
             },
         );
@@ -174,12 +176,7 @@ mod tests {
             vec![op_member.id()],
             OpPayload::SetWriters {
                 object: Id::new([9u8; 32]),
-                writers: [(
-                    calimero_op_adapter::legacy_account_id(&member),
-                    OpMask::FULL,
-                )]
-                .into_iter()
-                .collect(),
+                writers: [(member, OpMask::FULL)].into_iter().collect(),
             },
         );
         let ops = [&op_admin, &op_member, &op_writers];
