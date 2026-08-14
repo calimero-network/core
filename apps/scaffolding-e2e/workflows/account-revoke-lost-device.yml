@@ -321,8 +321,6 @@ steps:
     args:
       - 'account'
       - 'revoke-proof'
-      - '--namespace'
-      - '{{namespace_id}}'
       - '--device'
       - '{{lost_device}}'
       - '--from'

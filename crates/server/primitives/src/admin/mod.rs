@@ -1921,11 +1921,19 @@ pub struct CreateAccountApiResponseData {
     pub device_id: String,
     /// Hex-encoded epoch-0 root key of the account.
     pub account_root_key: String,
-    /// Hex-encoded genesis nonce.
+    /// Always 32 zeros. **Dead field, kept only so an older client can decode
+    /// this response.**
     ///
-    /// Returned because pairing needs it: a second device computes its own id as
-    /// `H(account ‖ nonce)`, so the nonce has to travel for the account to be
-    /// join-able at all.
+    /// The genesis carries no nonce any more, so there is nothing for this to
+    /// report. It cannot simply be dropped: `calimero-client-py` is a Rust
+    /// binding that deserializes into this very struct, compiled into the
+    /// released wheel while the field was required — so a response omitting it
+    /// fails to parse there, which is what merobox reports as "account create
+    /// failed". Note the direction: an unknown field in a REQUEST is ignored
+    /// (nothing here sets `deny_unknown_fields`), but a missing field in a
+    /// RESPONSE is fatal to a typed client.
+    ///
+    /// Removed once a client-py release has stopped requiring it.
     pub account_nonce: String,
 }
 
@@ -1937,11 +1945,9 @@ pub struct CreateAccountApiResponse {
 
 /// Adopt an existing account on this node and mint a device for it.
 ///
-/// Unlike `CreateAccountApiRequest` this one *does* carry caller-supplied
-/// values, because the account being joined is not this node's to derive: the
-/// genesis comes from the device that already holds it, and both halves have to
-/// travel — the id is a hash over the nonce, so it cannot be recovered from the
-/// account id alone.
+/// Unlike `CreateAccountApiRequest` this one *does* carry a caller-supplied
+/// value, because the account being joined is not this node's to derive: the
+/// root key comes from the device that already holds it.
 ///
 /// Nothing here is a credential. A genesis is public data, and naming somebody
 /// else's account gains a caller nothing: the device is inert until its
@@ -1950,9 +1956,10 @@ pub struct CreateAccountApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct PairDeviceInitApiRequest {
     /// Hex-encoded epoch-0 root key of the account to join (32 bytes).
+    ///
+    /// The whole genesis, now that it is `{version, root_sign_pk}` — so this is
+    /// the only thing that has to travel between the two devices.
     pub account_root_key: String,
-    /// Hex-encoded genesis nonce (16 bytes).
-    pub account_nonce: String,
 }
 
 impl Validate for PairDeviceInitApiRequest {
@@ -1968,19 +1975,6 @@ impl Validate for PairDeviceInitApiRequest {
         } else if hex::decode(&self.account_root_key).is_err() {
             errors.push(ValidationError::InvalidHexEncoding {
                 field: "accountRootKey",
-                reason: "not valid hex".to_owned(),
-            });
-        }
-
-        if self.account_nonce.len() != 32 {
-            errors.push(ValidationError::InvalidLength {
-                field: "accountNonce",
-                expected: 32,
-                actual: self.account_nonce.len(),
-            });
-        } else if hex::decode(&self.account_nonce).is_err() {
-            errors.push(ValidationError::InvalidHexEncoding {
-                field: "accountNonce",
                 reason: "not valid hex".to_owned(),
             });
         }

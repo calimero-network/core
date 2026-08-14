@@ -70,7 +70,7 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     }
 
-    let (resolved_ns_id, signer_pk, sk_bytes, _sender) =
+    let (resolved_ns_id, signer_pk, sk_bytes) =
         match NamespaceRepository::new(&state.store).get_or_create_identity(&namespace_id) {
             Ok(r) => r,
             Err(err) => {

@@ -49,7 +49,7 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         // membership claim and not gated on one — it is the key this node will
         // sign its own ops with once the account holder has linked it.
         let (sign_pk, sign_sk) = match self.get_or_create_namespace_identity(&namespace_id) {
-            Ok((_, sign_pk, sign_sk, _)) => (sign_pk, PrivateKey::from(sign_sk)),
+            Ok((_, sign_pk, sign_sk)) => (sign_pk, PrivateKey::from(sign_sk)),
             Err(err) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "failed to provision a namespace identity for {namespace_id:?}: {err}"

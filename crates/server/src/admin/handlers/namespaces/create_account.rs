@@ -52,7 +52,8 @@ pub async fn handler(
                         account_root_key: hex::encode(AsRef::<[u8; 32]>::as_ref(
                             &resp.genesis.root_sign_pk,
                         )),
-                        account_nonce: hex::encode(resp.genesis.nonce),
+                        // Dead field; see `CreateAccountApiResponseData::account_nonce`.
+                        account_nonce: "0".repeat(32),
                     },
                 },
             }

@@ -380,7 +380,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         // Restricted (or unset) subgroups, and Open subgroups behind a
         // Restricted ancestor, continue to use their own per-subgroup
         // key.
-        let (sender_key, broadcast_key_id) =
+        let (encryption_key, broadcast_key_id) =
             match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
                     // Errors from `resolve_namespace` or
@@ -1404,7 +1404,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 .broadcast(
                                     &context,
                                     &executor,
-                                    &sender_key,
+                                    &encryption_key,
                                     outcome.artifact.clone(),
                                     the_delta.id,
                                     the_delta.parents.clone(),

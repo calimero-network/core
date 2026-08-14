@@ -243,7 +243,7 @@ impl<'a> NamespaceRetryService<'a> {
         let own_identity = super::NamespaceRepository::new(self.store)
             .identity(&ns_typed)
             .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
-            .map(|(pk, _sk, _sender)| pk);
+            .map(|(pk, _sk)| pk);
 
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let entries = op_log

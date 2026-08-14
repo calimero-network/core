@@ -45,7 +45,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }
 
         let namespace_anchor_group_id = parent_group_id.as_ref().unwrap_or(&group_id);
-        let (namespace_id, admin_identity, sk_bytes, _sender) =
+        let (namespace_id, admin_identity, sk_bytes) =
             match self.get_or_create_namespace_identity(namespace_anchor_group_id) {
                 Ok(result) => result,
                 Err(err) => {

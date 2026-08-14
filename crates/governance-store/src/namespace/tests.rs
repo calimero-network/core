@@ -846,7 +846,7 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
 
     // This node holds the namespace identity `own_pk`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &own_pk, own_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns_gid, &own_pk, own_sk.as_bytes())
         .unwrap();
 
     let group_key = [0x92; 32];
@@ -3608,7 +3608,7 @@ fn governance_group_reparented_via_signed_op() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -3697,7 +3697,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -3761,7 +3761,7 @@ fn governance_rejects_non_admin_signer() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -3811,7 +3811,7 @@ fn governance_group_created_is_idempotent() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -3879,7 +3879,7 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         .add_member(&ns_a_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_a_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_a_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     // A group that belongs to a DIFFERENT namespace B.
@@ -3971,7 +3971,7 @@ fn rotation_test_setup() -> (
     m.add_member(&ns_gid, &removed_account, GroupMemberRole::Member)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &local_pk, &local_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &local_pk, &local_sk_bytes)
         .unwrap();
 
     let old_key = [0x97u8; 32];
@@ -4174,7 +4174,7 @@ fn governance_group_created_writes_birth_visibility() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -4263,7 +4263,7 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -4362,7 +4362,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     // Simulate the create_group HANDLER pre-populating meta before publishing:
@@ -4434,7 +4434,7 @@ fn execute_group_created_rejects_self_parent() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     // Attempt to emit GroupCreated with group_id == parent_id (the bug).
@@ -4498,7 +4498,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
         .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let sub_id = [0xE1u8; 32];
@@ -5088,7 +5088,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         .add_member(&ns_gid, &member_account, GroupMemberRole::Member)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id.into());
@@ -5245,7 +5245,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .add_member(&ns_gid, &janitor_account, GroupMemberRole::Member)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     // Three leaf subgroups under the root, all owned by `owner_pk`.
@@ -5438,12 +5438,7 @@ fn apply_received_group_key_stores_key_for_recipient() {
     let recipient_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let recipient_sk = PrivateKey::from(recipient_sk_bytes);
     NamespaceRepository::new(&store)
-        .store_identity(
-            &ns_gid,
-            &recipient_sk.public_key(),
-            &recipient_sk_bytes,
-            &[0u8; 32],
-        )
+        .store_identity(&ns_gid, &recipient_sk.public_key(), &recipient_sk_bytes)
         .unwrap();
 
     // Establish the subgroup's parent edge so it resolves to this namespace —
@@ -5505,12 +5500,7 @@ fn apply_received_group_key_ignores_envelope_for_other_recipient() {
     let recipient_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let recipient_sk = PrivateKey::from(recipient_sk_bytes);
     NamespaceRepository::new(&store)
-        .store_identity(
-            &ns_gid,
-            &recipient_sk.public_key(),
-            &recipient_sk_bytes,
-            &[0u8; 32],
-        )
+        .store_identity(&ns_gid, &recipient_sk.public_key(), &recipient_sk_bytes)
         .unwrap();
 
     // Resolve the subgroup into this namespace so the cross-namespace pin
@@ -5611,7 +5601,7 @@ fn groups_member_but_keyless_reports_then_clears() {
     let my_id = PrivateKey::from(sk_bytes).public_key();
     let my_id_account = enrol_member(&store, &ns_gid, &my_id);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &my_id, &sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &my_id, &sk_bytes)
         .unwrap();
 
     // A subgroup we are NOT a member of — must never be reported.
@@ -5750,7 +5740,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
     crate::test_fixtures::record_credential(&responder_store, &ns_gid, &joiner_credential);
     let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&responder_store)
-        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
         .unwrap();
     MetaRepository::new(&responder_store)
         .save(&ns_gid, &sample_meta_with_admin(responder_account))
@@ -5788,7 +5778,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
 
     // ---- Joiner store: keyless, with a buffered encrypted op for the group. -
     NamespaceRepository::new(&joiner_store)
-        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes)
         .unwrap();
     let buffered = SignedNamespaceOp::sign(
         &responder_sk,
@@ -5887,7 +5877,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
     crate::test_fixtures::record_credential(&responder_store, &ns_gid, &joiner_credential);
     let _ = enrol_member(&responder_store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&responder_store)
-        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
         .unwrap();
     MetaRepository::new(&responder_store)
         .save(&ns_gid, &sample_meta_with_admin(responder_account))
@@ -5925,7 +5915,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
 
     // ---- Joiner store: keyless, with a buffered encrypted op for the group. -
     NamespaceRepository::new(&joiner_store)
-        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes)
         .unwrap();
     let buffered = SignedNamespaceOp::sign(
         &responder_sk,
@@ -5997,7 +5987,7 @@ fn responder_refuses_delivery_to_non_member() {
     let store = test_store();
     let responder_account = enrol_member(&store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
         .unwrap();
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(responder_account))
@@ -6052,7 +6042,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     let store = test_store();
     let responder_account = enrol_member(&store, &ns_gid, &responder_pk);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &responder_pk, &[0x52u8; 32], &[0u8; 32])
+        .store_identity(&ns_gid, &responder_pk, &[0x52u8; 32])
         .unwrap();
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(responder_account))
@@ -6061,7 +6051,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     // key — a cert for some other key would bind that key, not this one, and
     // every request below is made as `member_sk`.
     let kem_secret = X25519SecretKey::from([0x54u8; 32]);
-    let genesis = AccountGenesis::new(member_sk.public_key(), [0x54u8; 16]);
+    let genesis = AccountGenesis::new(member_sk.public_key());
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0x54u8; 16]);
     MembershipRepository::new(&store)
@@ -6253,7 +6243,7 @@ fn curative_sweep_redrives_stranded_context() {
     // This receiver node's namespace identity — makes the namespace a "known"
     // one for `iter_identities`/`known_namespace_identities`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .unwrap();
 
     // ---- The stranded subgroup: pick id + mint its key ---------------------
@@ -6471,7 +6461,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
         .add_member(&ns_gid, &owner_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .unwrap();
 
     // ---- The Open subgroup: born Restricted, owner is its admin ------------
@@ -6921,8 +6911,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
     // `a_credential_certified_for_another_key_is_refused`), because naming an
     // account means claiming to BE it.
     let squatter_root = PrivateKey::random(&mut rand::rngs::OsRng);
-    let squatter_genesis =
-        calimero_account::AccountGenesis::new(squatter_root.public_key(), [0x77; 16]);
+    let squatter_genesis = calimero_account::AccountGenesis::new(squatter_root.public_key());
     let squatter = crate::test_fixtures::join_account_for(
         &squatter_root,
         squatter_genesis,

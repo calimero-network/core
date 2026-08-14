@@ -118,7 +118,7 @@ fn link_device(
     device_sign_pk: &PublicKey,
 ) -> DeviceId {
     let account_root = PrivateKey::from([0x42; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0xAB; 16]);
     let kem_secret = X25519SecretKey::from([0x33; 32]);
@@ -251,7 +251,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 
     // Fold a device link on top, exactly as the receive path does.
     let account_root = PrivateKey::from([0x42; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let device_sign_pk = PrivateKey::from([0x77; 32]).public_key();
     let cert = sign_device_cert(
@@ -346,7 +346,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
     // `account create`: the member enrols its own device, and the certificate names
     // the member's own namespace identity as the device's signing key.
     let account_root = PrivateKey::from([0x42; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let cert = sign_device_cert(
         &account_root,
@@ -439,13 +439,13 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns, &admin, &[0x11; 32], &[0u8; 32])
+        .store_identity(&ns, &admin, &[0x11; 32])
         .unwrap();
 
     // A credential the joiner can actually present: certified by its own account
     // root, naming the joiner's namespace identity as the device's `sign_pk`.
     let account_root = PrivateKey::from([0x77; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xCD; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let real_account = genesis.account_id();
     let kem_secret = X25519SecretKey::from([0x34; 32]);
     let cert = sign_device_cert(

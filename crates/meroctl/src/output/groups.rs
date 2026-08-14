@@ -69,13 +69,6 @@ impl Report for CreateAccountApiResponse {
         let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
         let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
         let _ = table.add_row(vec!["Account root key", &self.data.account_root_key]);
-        // Shown because pairing a second device needs it: the other device
-        // computes its own id as H(account ‖ nonce), so without the nonce the
-        // account cannot be joined at all.
-        let _ = table.add_row(vec![
-            "Account nonce (for pairing)",
-            &self.data.account_nonce,
-        ]);
         println!("{table}");
     }
 }

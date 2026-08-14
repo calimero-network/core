@@ -54,7 +54,7 @@ pub fn collect_usage(store: &Store) -> EyreResult<Vec<NamespaceUsage>> {
         // Only include namespaces this node actually participates in. We
         // use the stored namespace identity (set on admission) rather than
         // membership alone, matching what `list_namespaces` reports.
-        let Some((node_identity, _, _)) =
+        let Some((node_identity, _)) =
             NamespaceRepository::new(store).resolve_identity(&group_id)?
         else {
             continue;
@@ -269,7 +269,6 @@ mod tests {
                 &namespace_id,
                 &node_identity_pk,
                 node_identity_sk.as_bytes(),
-                &[0x44; 32],
             )
             .expect("store identity");
         MembershipRepository::new(store)

@@ -315,7 +315,7 @@ pub(crate) fn decide_purge_action(
     // would also work; using `ns_id` just removes the apparent ambiguity
     // flagged in PR review.
     let self_pk = match NamespaceRepository::new(store).resolve_identity(&ns_id) {
-        Ok(Some((pk, _sk, _sender))) => pk,
+        Ok(Some((pk, _sk))) => pk,
         Ok(None) => {
             // Not our namespace; nothing to purge. The most common case
             // for the listener.
@@ -1586,7 +1586,7 @@ mod tests {
             .store_key(&ns_id, &self_pk, &[0xEE; 32])
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .store_identity(&ns_id, &self_pk, &[0x11; 32])
             .unwrap();
 
         // Sanity: pre-condition state landed.
@@ -1640,7 +1640,7 @@ mod tests {
             )
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .store_identity(&ns_id, &self_pk, &[0x11; 32])
             .unwrap();
 
         // Nested subgroup under the namespace root.
@@ -1850,11 +1850,10 @@ mod tests {
             "signing-key material MUST be cleared by the reconcile cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be cleared by the reconcile cascade"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be cleared by the reconcile cascade"
         );
     }
 
@@ -2022,11 +2021,10 @@ mod tests {
             "ns-root signing-key material MUST be cleared by the reconcile cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be cleared by the reconcile cascade"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be cleared by the reconcile cascade"
         );
     }
 
@@ -2162,10 +2160,9 @@ mod tests {
             .get_key(&ns_id, &self_pk)
             .unwrap()
             .is_none());
-        assert!(NamespaceRepository::new(&store)
-            .identity_record(&ns_id)
-            .unwrap()
-            .is_none());
+        assert!(!NamespaceRepository::new(&store)
+            .participates_in(&ns_id)
+            .unwrap());
     }
 
     #[test]
@@ -2362,11 +2359,24 @@ mod tests {
             "namespace-root meta MUST be purged"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be purged on a namespace-root cascade"
+        );
+        // Read the singleton directly, not through `identity_record` — that one is
+        // gated on participation and now correctly answers `None` here. The point
+        // being asserted is about the KEY, which is node-level: every other
+        // namespace this node belongs to signs with it, so a purge scoped to one
+        // namespace must not take it. Forward secrecy comes from dropping the
+        // keyring and the device's agreement secret; a signing key decrypts nothing.
+        assert!(
+            store
+                .handle()
+                .get(&calimero_store::key::NodeIdentity::new())
                 .unwrap()
-                .is_none(),
-            "namespace identity MUST be purged on a namespace-root cascade"
+                .is_some(),
+            "the node's signing key MUST survive a single namespace's purge"
         );
     }
 
@@ -2461,11 +2471,10 @@ mod tests {
             );
         }
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be purged once the full subtree cascade succeeds"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be purged once the full subtree cascade succeeds"
         );
     }
 
@@ -2645,11 +2654,10 @@ mod tests {
             "namespace-root signing key remains purged after second cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity remains purged after second cascade"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation remains purged after second cascade"
         );
     }
 
@@ -2711,11 +2719,10 @@ mod tests {
             "gate must open for a clean cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be dropped when the signing-key purge succeeded"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be dropped when the signing-key purge succeeded"
         );
     }
 
@@ -2889,7 +2896,7 @@ mod tests {
             )
             .expect("add owner admin");
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+            .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
             .expect("store our ns identity");
 
         // The stranded subgroup + its key + the context it registers.

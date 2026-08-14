@@ -85,14 +85,14 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         let device_repo = NodeDeviceRepository::new(&store);
 
         // The account root is what certifies the device, and it is also what
-        // decides *which* account this node can pair into: the genesis is
-        // derived from the root secret and the namespace id, so this node can
-        // only ever certify devices for the account it owns here.
+        // decides *which* account this node can pair into: the genesis is the
+        // content address of this node's root key, so it can only ever certify
+        // devices for the one account that root owns.
         let account_root = match device_repo.ensure_account_root() {
             Ok(root) => root,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let genesis = account_root.genesis_for(&namespace_id);
+        let genesis = account_root.genesis();
         let account = genesis.account_id();
 
         // Check the key material before anything is signed over it. The
@@ -157,7 +157,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // its own root cannot name, so it has no standing to certify a second
         // one — it would mint a certificate for an account it does not hold and
         // the link would be refused downstream.
-        match device_repo.get(&namespace_id) {
+        match device_repo.get() {
             Ok(Some(enrolled)) if enrolled.account == account => {}
             Ok(Some(enrolled)) => {
                 return ActorResponse::reply(Err(eyre::eyre!(

@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::group::ListAllGroupsRequest;
-use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::context::ContextId;
 use futures_util::StreamExt;
 use tracing::{debug, error, warn};
@@ -87,10 +86,16 @@ impl NodeManager {
 
         let _handle = ctx.spawn(
             async move {
-                let namespaces = match NodeDeviceRepository::new(&datastore).enrolled_namespaces() {
+                // Participation, not the device row: the device is node-level now,
+                // so it says nothing about which namespaces to subscribe to.
+                let namespaces = match calimero_governance_store::NamespaceRepository::new(
+                    &datastore,
+                )
+                .iter_identities()
+                {
                     Ok(namespaces) => namespaces,
                     Err(err) => {
-                        error!(%err, "Failed to list enrolled devices for startup subscription");
+                        error!(%err, "Failed to list namespaces for startup subscription");
                         return;
                     }
                 };

@@ -549,7 +549,7 @@ impl ContextManager {
         group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
         match NamespaceRepository::new(&self.datastore).resolve_identity(group_id) {
-            Ok(Some((pk, sk, _sender))) => Some((pk, sk)),
+            Ok(Some((pk, sk))) => Some((pk, sk)),
             Ok(None) => None,
             Err(e) => {
                 tracing::warn!(?group_id, error=?e, "failed to resolve namespace identity");
@@ -566,7 +566,6 @@ impl ContextManager {
     ) -> eyre::Result<(
         ContextGroupId,
         calimero_primitives::identity::PublicKey,
-        [u8; 32],
         [u8; 32],
     )> {
         NamespaceRepository::new(&self.datastore).get_or_create_identity(group_id)

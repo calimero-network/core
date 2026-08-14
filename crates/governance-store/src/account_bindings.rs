@@ -812,7 +812,7 @@ mod tests {
     }
 
     fn genesis_for(seed: u8) -> AccountGenesis {
-        AccountGenesis::new(key(seed).public_key(), [seed; 16])
+        AccountGenesis::new(key(seed).public_key())
     }
 
     fn cert_for(
@@ -1360,7 +1360,7 @@ mod tests {
         // Alice's account, rooted at an offline key that is a member NOWHERE, with
         // a device whose own signing key is a member of nothing either.
         let root = key(2);
-        let genesis = AccountGenesis::new(root.public_key(), [0xAB; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device_sign_pk = key(3).public_key();
         let cert = sign_device_cert(

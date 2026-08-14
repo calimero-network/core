@@ -201,7 +201,6 @@ steps:
       alice_account: accountId
       laptop_device: deviceId
       root_key: accountRootKey
-      nonce: accountNonce
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -258,7 +257,6 @@ steps:
       - account-revoke-node-3
       - '{{namespace_id}}'
       - '{{root_key}}'
-      - '{{nonce}}'
 
   # The sanctioned exchange, after the two refusals above. One step for both
   # halves because the ordering is forced: node-3 cannot mint its DeviceId
@@ -270,7 +268,10 @@ steps:
     holder: account-revoke-node-2
     namespace_id: '{{namespace_id}}'
     root_key: '{{root_key}}'
-    nonce: '{{nonce}}'
+    # merobox's step still declares `nonce` required, and core ignores whatever
+    # arrives — the genesis carries no nonce. A literal rather than a captured
+    # value, so nothing threads a dead field through the workflow.
+    nonce: '00000000000000000000000000000000'
     outputs:
       paired_account: accountId
       paired_device: deviceId

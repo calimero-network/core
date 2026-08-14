@@ -2011,7 +2011,7 @@ mod tests {
         sign_pk: PublicKey,
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
         let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
-        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
         let cert = calimero_account::sign_device_cert(
             &root_sk,
             genesis.account_id(),

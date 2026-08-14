@@ -61,7 +61,12 @@ pub use calimero_primitives::identity::{
 /// [`AccountId`], so bumping it makes every id under the new version distinct
 /// from every id under the old one — a deliberate hard fork of the namespace
 /// rather than a silent reinterpretation of existing ids.
-pub const ACCOUNT_GENESIS_VERSION: u8 = 1;
+///
+/// `2` since the genesis dropped its per-namespace nonce. The field's removal
+/// already changes the preimage, but a version that moved with it is what makes
+/// a v1 id and a v2 id from the same root provably different values rather than
+/// two encodings a reader might reconcile.
+pub const ACCOUNT_GENESIS_VERSION: u8 = 2;
 
 /// Max root-key handoffs in one credential chain.
 ///
@@ -77,11 +82,6 @@ const ACCOUNT_ID_DOMAIN: &[u8] = b"calimero.account.genesis.v1";
 const HANDOFF_SIGN_DOMAIN: &[u8] = b"calimero.account.handoff.v1";
 /// Domain separator for the bytes a root key signs to grant a device.
 const DEVICE_CERT_SIGN_DOMAIN: &[u8] = b"calimero.device.cert.v1";
-
-/// Domain for deriving a per-namespace account nonce from the node's account root
-/// secret. Distinct from every signing and id domain, so a derived nonce can never
-/// be confused with a signature preimage or an id.
-const ACCOUNT_NONCE_DOMAIN: &[u8] = b"calimero.account.nonce.v1";
 
 /// Domain for a member's endorsement of an account. Distinct from every other
 /// signing domain, so an endorsement signature can never be replayed as a device
@@ -114,32 +114,6 @@ const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_STATEMENT_SIGN_DOMAIN,
     PAIRING_CONFIRMATION_DOMAIN,
 ];
-
-/// Derive the genesis nonce for `namespace_id` from the node's account root
-/// secret.
-///
-/// Derived rather than stored, and that is what makes recovery possible: a stored
-/// nonce lives on the node, so losing every device loses the nonces and the root
-/// can no longer *name* the accounts it owns. With derivation, the whole recovery
-/// input is one secret plus a list of namespace ids — and the list is not secret.
-///
-/// Per-namespace rather than one nonce for the root, because that is what lets
-/// recovery and unlinkability coexist. One root spans every namespace, but each
-/// yields a **different** `AccountId`, so nobody correlates a person across
-/// namespaces. A single shared nonce would make every account id equal and link
-/// them all.
-///
-/// Takes the root **secret**, not its public key. The public key travels in every
-/// genesis, so deriving from it would let any observer compute the account ids for
-/// namespaces it has never seen — reintroducing exactly the correlation the
-/// per-namespace nonce exists to prevent.
-#[must_use]
-pub fn derive_account_nonce(root_secret: &[u8; 32], namespace_id: &[u8; 32]) -> [u8; 16] {
-    let full = domain_hash(ACCOUNT_NONCE_DOMAIN, &[root_secret, namespace_id]);
-    let mut nonce = [0u8; 16];
-    nonce.copy_from_slice(&full[..16]);
-    nonce
-}
 
 /// Serialize with borsh into a `Vec<u8>`.
 ///
@@ -197,27 +171,26 @@ impl core::fmt::Display for KemPublicKey {
 /// The immutable root of an account. Hashing it yields the [`AccountId`], which
 /// is why a verifier can recover the epoch-0 root key from the id alone.
 ///
-/// `nonce` exists so two accounts created with the same root key are still
-/// distinct identities, and so an account id cannot be predicted from a public
-/// key alone.
+/// One root key means one account, everywhere. There is no per-scope salt: an
+/// account that differed per namespace would only be worth its cost if the
+/// difference were unlinkable, and it is not — the genesis names the same
+/// `root_sign_pk` in every namespace it is published to, so a member of two of
+/// them links the accounts by comparing two numbers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct AccountGenesis {
     /// Always [`ACCOUNT_GENESIS_VERSION`] for accounts this build mints.
     pub version: u8,
     /// The account's epoch-0 root signing key.
     pub root_sign_pk: PublicKey,
-    /// Random, chosen once at account creation.
-    pub nonce: [u8; 16],
 }
 
 impl AccountGenesis {
     /// Build a genesis at the current [`ACCOUNT_GENESIS_VERSION`].
     #[must_use]
-    pub const fn new(root_sign_pk: PublicKey, nonce: [u8; 16]) -> Self {
+    pub const fn new(root_sign_pk: PublicKey) -> Self {
         Self {
             version: ACCOUNT_GENESIS_VERSION,
             root_sign_pk,
-            nonce,
         }
     }
 
@@ -1081,7 +1054,7 @@ mod tests {
 
     /// An account rooted at `root`, plus a handoff rolling it onto `next`.
     fn rotated(root: &PrivateKey, next: &PrivateKey) -> (AccountGenesis, RootKeyHandoff) {
-        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let payload = RootKeyHandoff::signing_payload(account, 0, &next.public_key());
         let handoff = RootKeyHandoff {
@@ -1096,7 +1069,7 @@ mod tests {
     /// The account, device and honest key material a pairing produces.
     fn pairing_fixture() -> (AccountId, DeviceId, PrivateKey, KemPublicKey) {
         let root = PrivateKey::from([7u8; 32]);
-        let account = AccountGenesis::new(root.public_key(), [0x11; 16]).account_id();
+        let account = AccountGenesis::new(root.public_key()).account_id();
         let device = DeviceId::mint(account, [0x22; 16]);
         (
             account,
@@ -1162,8 +1135,7 @@ mod tests {
         let (account, device, device_sk, kem_pk) = pairing_fixture();
         let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
 
-        let other =
-            AccountGenesis::new(PrivateKey::from([8u8; 32]).public_key(), [0x11; 16]).account_id();
+        let other = AccountGenesis::new(PrivateKey::from([8u8; 32]).public_key()).account_id();
         assert!(matches!(
             verify_pairing_statement(other, device, &kem_pk, &device_sk.public_key(), &statement),
             Err(AccountError::PairingStatementInvalid),
@@ -1232,7 +1204,10 @@ mod tests {
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
         // Pinned: both ends of a pairing must derive the same code, so a change
         // to the derivation is a change to the wire and has to be deliberate.
-        assert_eq!(code, "7BC0-DAAC-CCB4-84A4", "code derivation is stable");
+        // It moved once, when the genesis dropped its nonce: the code covers the
+        // account id, and the account id is a different value under a preimage
+        // that no longer has a nonce in it. The derivation itself is untouched.
+        assert_eq!(code, "F3B3-B5FB-450D-DF9E", "code derivation is stable");
     }
 
     #[test]
@@ -1290,7 +1265,7 @@ mod tests {
     #[test]
     fn a_root_signed_revocation_verifies_from_the_account_id_alone() {
         let root = PrivateKey::from([7u8; 32]);
-        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [0x22; 16]);
 
@@ -1338,7 +1313,7 @@ mod tests {
         // have to be answered from folded state, and two replicas would disagree.
         let root = PrivateKey::from([7u8; 32]);
         let stranger = PrivateKey::from([9u8; 32]);
-        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [0x22; 16]);
 
@@ -1352,7 +1327,7 @@ mod tests {
     #[test]
     fn a_revocation_cannot_be_replayed_onto_another_device_or_account() {
         let root = PrivateKey::from([7u8; 32]);
-        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [0x22; 16]);
         let other_device = DeviceId::mint(account, [0x23; 16]);
@@ -1367,7 +1342,7 @@ mod tests {
             "the device is inside the signed payload"
         );
 
-        let elsewhere = AccountGenesis::new(root.public_key(), [0x99; 16]);
+        let elsewhere = AccountGenesis::new(key(2).public_key());
         let honest = sign_device_revocation(&root, account, device, 0).expect("sign");
         assert!(
             matches!(
@@ -1424,7 +1399,7 @@ mod tests {
     #[test]
     fn a_revocation_claiming_an_unreachable_epoch_is_refused() {
         let root = PrivateKey::from([7u8; 32]);
-        let genesis = AccountGenesis::new(root.public_key(), [0x11; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [0x22; 16]);
 
@@ -1441,7 +1416,7 @@ mod tests {
     }
 
     fn genesis_for(root: &PrivateKey) -> AccountGenesis {
-        AccountGenesis::new(root.public_key(), [7u8; 16])
+        AccountGenesis::new(root.public_key())
     }
 
     fn sign_handoff(
@@ -1505,14 +1480,6 @@ mod tests {
         let mut other = g;
         other.root_sign_pk = key(2).public_key();
         assert_ne!(g.account_id(), other.account_id());
-    }
-
-    #[test]
-    fn same_root_key_with_different_nonce_is_a_different_account() {
-        let root = key(1);
-        let a = AccountGenesis::new(root.public_key(), [1u8; 16]);
-        let b = AccountGenesis::new(root.public_key(), [2u8; 16]);
-        assert_ne!(a.account_id(), b.account_id());
     }
 
     #[test]
@@ -1631,52 +1598,31 @@ mod tests {
     }
 
     #[test]
-    fn a_derived_nonce_is_stable_per_namespace_and_unlinkable_across_them() {
-        // The two properties that make one offline root workable at all.
-        let root = [0x11u8; 32];
-        let ns_a = [0xAAu8; 32];
-        let ns_b = [0xBBu8; 32];
-
-        // Stable: recovery recomputes the same account id from the root alone.
+    fn one_root_key_is_one_account_everywhere() {
+        // The account is the root key's content address and nothing else, so a
+        // node re-derives the same account in every scope it joins, and a
+        // recovered root names the account it always named.
+        let root = key(1);
         assert_eq!(
-            derive_account_nonce(&root, &ns_a),
-            derive_account_nonce(&root, &ns_a),
-            "derivation must be deterministic or a recovered node names a different account"
+            AccountGenesis::new(root.public_key()).account_id(),
+            AccountGenesis::new(root.public_key()).account_id(),
+            "derivation must be deterministic or a recovered node names a stranger"
         );
-
-        // Unlinkable: the same person in two namespaces is two account ids.
         assert_ne!(
-            derive_account_nonce(&root, &ns_a),
-            derive_account_nonce(&root, &ns_b),
-            "one nonce across namespaces would make every account id equal and link them"
-        );
-
-        // And two people in one namespace are distinct.
-        assert_ne!(
-            derive_account_nonce(&root, &ns_a),
-            derive_account_nonce(&[0x22u8; 32], &ns_a)
+            AccountGenesis::new(root.public_key()).account_id(),
+            AccountGenesis::new(key(2).public_key()).account_id(),
+            "two roots must be two accounts"
         );
     }
 
     #[test]
-    fn the_nonce_cannot_be_derived_from_the_public_root_key() {
-        // Structural, not a behavioural assertion: `derive_account_nonce` takes the
-        // SECRET. The public root travels in every genesis, so a derivation from it
-        // would let any observer compute this root's account id in namespaces it has
-        // never seen — recreating the correlation the per-namespace nonce prevents.
-        //
-        // Pinned by deriving from a secret and its own public bytes and requiring
-        // they differ, so a refactor that swaps one for the other is caught.
-        let root_sk = key(1);
-        let secret_derived = derive_account_nonce(root_sk.as_bytes(), &[0xAAu8; 32]);
-        let public_derived = derive_account_nonce(
-            AsRef::<[u8; 32]>::as_ref(&root_sk.public_key()),
-            &[0xAAu8; 32],
-        );
-        assert_ne!(
-            secret_derived, public_derived,
-            "deriving from the public key must not produce the same nonce as the secret"
-        );
+    fn the_version_separates_this_genesis_from_the_nonce_bearing_one() {
+        // The nonce's removal changes the preimage on its own, but only the
+        // version makes the two provably distinct rather than two encodings a
+        // reader might try to reconcile. Pinned so a revert of the bump is
+        // caught here rather than by ids that silently collide with v1's.
+        assert_eq!(ACCOUNT_GENESIS_VERSION, 2);
+        assert_eq!(AccountGenesis::new(key(1).public_key()).version, 2);
     }
 
     #[test]
@@ -1813,7 +1759,7 @@ mod tests {
     fn handoff_cannot_be_replayed_onto_another_account() {
         let (r0, r1) = (key(1), key(2));
         let g = genesis_for(&r0);
-        let other = AccountGenesis::new(r0.public_key(), [99u8; 16]);
+        let other = AccountGenesis::new(key(3).public_key());
         // Validly signed by r0, but minted for a different account id.
         let stolen = sign_handoff(&r0, other.account_id(), 0, &r1);
         assert_eq!(
@@ -1871,7 +1817,7 @@ mod tests {
         let (root, dev) = (key(1), key(5));
         let g = genesis_for(&root);
         let account = g.account_id();
-        let other = AccountGenesis::new(root.public_key(), [42u8; 16]).account_id();
+        let other = AccountGenesis::new(key(2).public_key()).account_id();
         let cert = sign_cert(
             &root,
             account,
@@ -1895,7 +1841,7 @@ mod tests {
         let (root, dev) = (key(1), key(5));
         let g = genesis_for(&root);
         let account = g.account_id();
-        let foreign = AccountGenesis::new(key(8).public_key(), [1u8; 16]).account_id();
+        let foreign = AccountGenesis::new(key(8).public_key()).account_id();
         let cert = sign_cert(
             &root,
             foreign,

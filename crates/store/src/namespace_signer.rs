@@ -67,10 +67,17 @@ pub fn resolve_owned_namespace_signer(
         );
     }
 
-    let Some(identity) = handle.get(&key::NamespaceIdentity::new(ns_root))? else {
-        return Ok(None); // this node holds no identity for the namespace
+    // Walking to the root still matters: a node signs for a context only where it
+    // takes part in that context's namespace, and the marker row is what says so.
+    // The key it signs WITH is node-level — one node, one signing key.
+    if handle.get(&key::NamespaceIdentity::new(ns_root))?.is_none() {
+        return Ok(None); // this node does not take part in the namespace
+    }
+
+    let Some(identity) = handle.get(&key::NodeIdentity::new())? else {
+        return Ok(None); // this node has no signing identity yet
     };
-    let identity: key::NamespaceIdentityValue = identity;
+    let identity: key::NodeIdentityValue = identity;
 
     Ok(Some((identity.public_key, identity.private_key)))
 }
@@ -111,13 +118,20 @@ mod tests {
                 .unwrap();
         }
         if let Some((public_key, private_key)) = identity_at_root {
+            // Two rows, because they say different things: the marker at the root
+            // is "this node takes part here", the singleton is what it signs with.
             handle
                 .put(
                     &key::NamespaceIdentity::new(*chain.last().unwrap()),
-                    &key::NamespaceIdentityValue {
+                    &key::NamespaceIdentityValue { reserved: 0 },
+                )
+                .unwrap();
+            handle
+                .put(
+                    &key::NodeIdentity::new(),
+                    &key::NodeIdentityValue {
                         public_key,
                         private_key,
-                        sender_key: [0u8; 32],
                     },
                 )
                 .unwrap();

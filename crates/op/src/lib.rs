@@ -502,8 +502,7 @@ mod tests {
 
     /// A real (non-self) account with one device, for authorship tests.
     fn real_authorship(root_seed: u8, dev_seed: u8) -> Authorship {
-        let account =
-            AccountGenesis::new(key(root_seed).public_key(), [root_seed; 16]).account_id();
+        let account = AccountGenesis::new(key(root_seed).public_key()).account_id();
         Authorship {
             account,
             device: DeviceId::mint(account, [dev_seed; 16]),
@@ -674,7 +673,7 @@ mod tests {
         let scope = ScopeId::from([3u8; 32]);
         let group = ContextGroupId::from([4u8; 32]);
         let caps = MemberCapabilities::empty();
-        let genesis = AccountGenesis::new(key(1).public_key(), [1u8; 16]);
+        let genesis = AccountGenesis::new(key(1).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [1u8; 16]);
         let handoff = RootKeyHandoff {
