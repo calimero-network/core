@@ -18,7 +18,6 @@
 //! — RocksDB holds an exclusive lock while `merod run` is up.
 
 use calimero_config::ConfigFile;
-use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{AccountRoot, NodeDeviceRepository};
 use calimero_store::config::StoreConfig;
 use calimero_store::Store;
@@ -47,13 +46,6 @@ enum AccountSubcommands {
 
 #[derive(Debug, Parser)]
 pub struct ExportCommand {
-    /// Also print the account id this root owns in NAMESPACE_ID (hex, repeatable).
-    ///
-    /// The non-secret half of a backup: the phrase recovers the key, this tells you
-    /// which accounts to expect back.
-    #[arg(long = "namespace", value_name = "NAMESPACE_ID")]
-    namespaces: Vec<String>,
-
     /// Write the phrase to PATH instead of stdout. Requires `--allow-plaintext-file`.
     #[arg(long, value_name = "PATH")]
     out: Option<camino::Utf8PathBuf>,
@@ -105,13 +97,6 @@ pub struct ImportCommand {
 /// one yet.
 #[derive(Debug, Parser)]
 pub struct RevokeProofCommand {
-    /// The namespace the device is being withdrawn from (hex).
-    ///
-    /// Required because an account id is per-namespace: the same root owns a
-    /// different account in each, and a proof names exactly one.
-    #[arg(long = "namespace", value_name = "NAMESPACE_ID")]
-    namespace: String,
-
     /// The device to revoke, 64 hex chars.
     #[arg(long = "device", value_name = "HEX")]
     device: String,
@@ -135,7 +120,6 @@ impl AccountCommand {
 
 impl RevokeProofCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
-        let namespace = parse_namespace(&self.namespace)?;
         let device = parse_device(&self.device)?;
 
         // Parse the phrase before opening anything, as `import` does: a typo should
@@ -166,12 +150,12 @@ impl RevokeProofCommand {
             }
         };
 
-        let account = root.account_for(&namespace);
+        let account = root.account();
         let revocation =
             calimero_account::sign_device_revocation(root.signing_key(), account, device, 0)
                 .map_err(|err| eyre::eyre!("failed to sign the revocation: {err}"))?;
         let proof = calimero_account::SignedDeviceRevocation {
-            genesis: root.genesis_for(&namespace),
+            genesis: root.genesis(),
             chain: vec![],
             revocation,
         };
@@ -180,18 +164,18 @@ impl RevokeProofCommand {
 
         println!("{encoded}");
         println!();
-        println!("Account:   {account}");
-        println!("Device:    {device}");
-        println!("Namespace: {}", self.namespace);
+        println!("Account: {account}");
+        println!("Device:  {device}");
         println!();
         println!(
-            "Publish it from any node that is a member of the namespace and has \
-             folded the device's link:"
+            "The proof names the device, not a namespace — publish it in each \
+             namespace the device should lose, from any node that is a member there \
+             and has folded the device's link:"
         );
         println!();
         println!(
-            "  meroctl account revoke {} --device-id {} --proof <the hex above>",
-            self.namespace, self.device
+            "  meroctl account revoke <NAMESPACE_ID> --device-id {} --proof <the hex above>",
+            self.device
         );
         println!();
         println!(
@@ -264,12 +248,6 @@ impl ExportCommand {
 
         let phrase = root.to_mnemonic()?;
 
-        let mut ids = Vec::with_capacity(self.namespaces.len());
-        for raw in &self.namespaces {
-            let namespace = parse_namespace(raw)?;
-            ids.push((raw.clone(), root.account_for(&namespace)));
-        }
-
         if let Some(path) = self.out {
             // `Zeroizing`, because `format!` would otherwise leave a second full
             // copy of the 24 words in heap that nothing wipes — the one thing the
@@ -297,14 +275,12 @@ impl ExportCommand {
 
         println!();
         println!("Account root public key: {}", root.public_key());
-        for (raw, id) in ids {
-            println!("  namespace {raw} -> account {id}");
-        }
+        println!("Account:                 {}", root.account());
         println!();
         println!(
-            "Keep the phrase AND the list of namespaces you use it in. The phrase \
-             recovers the key; the list is what tells you which accounts to expect \
-             back, and it is not a secret."
+            "The phrase is the whole backup. The account is the content address of \
+             this root, so recovering the phrase recovers the account — the same one \
+             in every namespace, with nothing to keep beside the words."
         );
 
         Ok(())
@@ -488,17 +464,6 @@ fn parse_device(raw: &str) -> EyreResult<calimero_account::DeviceId> {
     Ok(calimero_account::DeviceId::from(bytes))
 }
 
-/// Parse a hex namespace id, with a message that says which argument was wrong —
-/// `export` takes several and a bare "invalid hex" would not say which.
-fn parse_namespace(raw: &str) -> EyreResult<ContextGroupId> {
-    let bytes =
-        hex::decode(raw.trim()).wrap_err_with(|| format!("namespace '{raw}' is not hex"))?;
-    let bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| eyre::eyre!("namespace '{raw}' is not 32 bytes (64 hex characters)"))?;
-    Ok(ContextGroupId::from(bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use calimero_account::DeviceId;
@@ -515,22 +480,14 @@ mod tests {
         AccountRoot::from_mnemonic(PHRASE).expect("the fixture phrase must parse")
     }
 
-    fn namespace(byte: u8) -> ContextGroupId {
-        ContextGroupId::from([byte; 32])
-    }
-
     /// Mint a proof exactly as `revoke-proof` does, and hand back the wire form.
-    fn minted(ns: &ContextGroupId, device: DeviceId) -> String {
+    fn minted(device: DeviceId) -> String {
         let root = root();
-        let revocation = calimero_account::sign_device_revocation(
-            root.signing_key(),
-            root.account_for(ns),
-            device,
-            0,
-        )
-        .expect("signing must succeed");
+        let revocation =
+            calimero_account::sign_device_revocation(root.signing_key(), root.account(), device, 0)
+                .expect("signing must succeed");
         let proof = calimero_account::SignedDeviceRevocation {
-            genesis: root.genesis_for(ns),
+            genesis: root.genesis(),
             chain: vec![],
             revocation,
         };
@@ -546,50 +503,54 @@ mod tests {
     /// really asserting that the *pair* round-trips and still verifies.
     #[test]
     fn a_printed_proof_still_authorises_after_a_round_trip_through_hex() {
-        let ns = namespace(0xAA);
         let device = DeviceId::from([0x42; 32]);
 
-        let proof = decoded(&minted(&ns, device));
+        let proof = decoded(&minted(device));
 
         proof
-            .authorises(root().account_for(&ns), device)
+            .authorises(root().account(), device)
             .expect("a proof minted for this account and device must authorise it");
     }
 
-    /// The realistic operator error, and the reason `--namespace` is required
-    /// rather than optional: one root owns a DIFFERENT account in every namespace,
-    /// so a proof minted against the wrong one is well-formed, verifies against
-    /// its own genesis, and authorises nothing where it is published.
+    /// A revocation is about the device, not about where it was minted.
     ///
-    /// Worth a test because the failure is otherwise invisible until the publish
-    /// step, where it reads as a permissions problem rather than a typo.
+    /// One root owns one account everywhere, so a proof minted while pointed at
+    /// one namespace authorises against the same account reached from any other.
+    /// That is the intended reading: a stolen laptop is stolen in every scope its
+    /// owner participates in, and the holder should not have to mint a separate
+    /// proof per namespace to say so.
+    ///
+    /// It is not a way to revoke someone else's device. Only the account root can
+    /// mint the proof, and it names that root's own device — so replaying it
+    /// elsewhere does exactly what its author asked for, in another place.
+    ///
+    /// Publication is still per-DAG: a revocation only takes effect in a group
+    /// once it has been published there. This is about which proofs verify, not
+    /// about anything propagating on its own.
     #[test]
-    fn a_proof_minted_for_another_namespace_does_not_authorise() {
+    fn a_proof_authorises_against_the_account_wherever_it_was_minted() {
         let device = DeviceId::from([0x42; 32]);
-        let proof = decoded(&minted(&namespace(0xAA), device));
+        let proof = decoded(&minted(device));
 
-        let elsewhere = root().account_for(&namespace(0xBB));
-        assert_ne!(
-            elsewhere,
-            root().account_for(&namespace(0xAA)),
-            "one root must own different accounts in different namespaces, or this \
-             test proves nothing"
+        assert_eq!(
+            root().account(),
+            root().account(),
+            "one root is one account, or the rest of this test means nothing"
         );
 
-        let _ = proof
-            .authorises(elsewhere, device)
-            .expect_err("a proof for another namespace's account must be refused");
+        proof
+            .authorises(root().account(), device)
+            .expect("a proof must authorise against its own account");
     }
 
     /// A proof names one device. Reusing it against another is the case that would
     /// turn a single revocation into a way to spend any replica id.
     #[test]
     fn a_proof_does_not_authorise_a_different_device() {
-        let ns = namespace(0xAA);
-        let proof = decoded(&minted(&ns, DeviceId::from([0x42; 32])));
+        let proof = decoded(&minted(DeviceId::from([0x42; 32])));
 
         let _ = proof
-            .authorises(root().account_for(&ns), DeviceId::from([0x43; 32]))
+            .authorises(root().account(), DeviceId::from([0x43; 32]))
             .expect_err("a proof for one device must not authorise another");
     }
 

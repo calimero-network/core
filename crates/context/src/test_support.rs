@@ -26,7 +26,7 @@ fn credential_for(
     calimero_account::DeviceCert,
 ) {
     let root_sk = PrivateKey::from(*(*sign_pk));
-    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let cert = calimero_account::sign_device_cert(
         &root_sk,
         genesis.account_id(),

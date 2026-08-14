@@ -77,24 +77,20 @@ impl AccountRoot {
         &self.secret
     }
 
-    /// This root's genesis for `namespace`.
+    /// This root's genesis.
     ///
-    /// The nonce is derived from the root **secret** and the namespace id, so the
-    /// account id is recomputable from the root alone — no stored nonce to lose —
-    /// while remaining uncorrelatable across namespaces by anyone who does not hold
-    /// the secret.
+    /// Content-addressed on the root key alone, so the account is recomputable
+    /// from the root and nothing else — no stored salt to lose, and one account
+    /// wherever this root speaks.
     #[must_use]
-    pub fn genesis_for(&self, namespace: &ContextGroupId) -> AccountGenesis {
-        AccountGenesis::new(
-            self.public_key(),
-            calimero_account::derive_account_nonce(self.secret.as_bytes(), &namespace.to_bytes()),
-        )
+    pub fn genesis(&self) -> AccountGenesis {
+        AccountGenesis::new(self.public_key())
     }
 
-    /// The `AccountId` this root owns in `namespace`.
+    /// The `AccountId` this root owns.
     #[must_use]
-    pub fn account_for(&self, namespace: &ContextGroupId) -> AccountId {
-        self.genesis_for(namespace).account_id()
+    pub fn account(&self) -> AccountId {
+        self.genesis().account_id()
     }
 
     /// The root as a 24-word BIP-39 mnemonic — the backup an operator writes down.
@@ -396,7 +392,7 @@ impl<'a> NodeDeviceRepository<'a> {
         // Re-importing the SAME root is a no-op, and must be treated as one. It
         // reaches here whenever an operator re-runs a restore, or passes `--force`
         // defensively — and because every device row would then match
-        // `previous.account_for(namespace)`, the cleanup below would delete every
+        // `previous.account()`, the cleanup below would delete every
         // device this node holds while nothing about the root changed. Destroying
         // live enrolments to reinstall the key they already depend on is the
         // opposite of what the caller asked for.
@@ -438,7 +434,7 @@ impl<'a> NodeDeviceRepository<'a> {
                     let Some(row) = self.get(&namespace)? else {
                         continue;
                     };
-                    if row.account == previous.account_for(&namespace) {
+                    if row.account == previous.account() {
                         doomed.push(namespace);
                     } else {
                         retained.push(namespace);
@@ -537,10 +533,7 @@ impl<'a> NodeDeviceRepository<'a> {
             .handle()
             .get(&key)?
             .map(|value: NodeDeviceIdentityValue| {
-                let genesis = AccountGenesis::new(
-                    PublicKey::from(value.account_root_pk),
-                    value.account_nonce,
-                );
+                let genesis = AccountGenesis::new(PublicKey::from(value.account_root_pk));
                 NodeDevice {
                     account: genesis.account_id(),
                     genesis,
@@ -605,7 +598,7 @@ impl<'a> NodeDeviceRepository<'a> {
         // read cache, not the source of truth — and it has to exist anyway, because
         // a paired device's genesis belongs to another node's root and cannot be
         // derived here at all.
-        let genesis = self.ensure_account_root()?.genesis_for(namespace);
+        let genesis = self.ensure_account_root()?.genesis();
         self.enroll_locked(namespace, genesis)
     }
 
@@ -723,7 +716,6 @@ impl<'a> NodeDeviceRepository<'a> {
             &key,
             &NodeDeviceIdentityValue {
                 account_root_pk: *AsRef::<[u8; 32]>::as_ref(&genesis.root_sign_pk),
-                account_nonce: genesis.nonce,
                 device_id: *device.as_bytes(),
                 kem_secret: *kem_secret.as_bytes(),
             },
@@ -772,7 +764,7 @@ impl<'a> NodeDeviceRepository<'a> {
 
         let self_service = self
             .account_root()?
-            .is_some_and(|root| root.account_for(namespace) == binding);
+            .is_some_and(|root| root.account() == binding);
 
         Ok(Some(RevocationTarget {
             account: binding,
@@ -877,7 +869,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let alice_sk = PrivateKey::from([1u8; 32]);
-        let alice = AccountGenesis::new(alice_sk.public_key(), [0xABu8; 16]);
+        let alice = AccountGenesis::new(alice_sk.public_key());
         let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
 
         let cert = calimero_account::sign_device_cert(
@@ -919,7 +911,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let squatter = AccountGenesis::new(root(1), [0xABu8; 16]);
+        let squatter = AccountGenesis::new(root(1));
         let squatted = repo.ensure_enrolled_into(&ns, squatter).expect("adopt");
         assert_eq!(squatted.account, squatter.account_id());
 
@@ -929,7 +921,7 @@ mod tests {
             repo.account_root()
                 .expect("read")
                 .expect("present")
-                .account_for(&ns),
+                .account(),
             "the node must end up in the account its OWN root owns — a certificate \
              signed for anything else verifies against a key that never signed it"
         );
@@ -955,7 +947,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let paired = repo
-            .ensure_enrolled_into(&ns, AccountGenesis::new(root(1), [0xABu8; 16]))
+            .ensure_enrolled_into(&ns, AccountGenesis::new(root(1)))
             .expect("adopt somebody else's account");
 
         let reusable = repo
@@ -1076,7 +1068,7 @@ mod tests {
             repo.account_root()
                 .expect("read")
                 .expect("present")
-                .account_for(&ns),
+                .account(),
             reloaded.account,
             "a node holding only the root must name the same account"
         );
@@ -1104,32 +1096,25 @@ mod tests {
     }
 
     #[test]
-    fn one_root_yields_a_distinct_account_per_namespace() {
-        // The property the whole recovery model rests on: one key to back up, one
-        // account per namespace, and no way to correlate them without the secret.
+    fn one_root_yields_one_account_everywhere() {
+        // The property the recovery model rests on: one key to back up, and an
+        // account recomputable from it alone — no per-scope salt to lose, and the
+        // same answer in every namespace this root speaks in.
         let store = test_store();
         let root = NodeDeviceRepository::new(&store)
             .ensure_account_root()
             .expect("generate");
 
-        let ns_a = ContextGroupId::from([0xAAu8; 32]);
-        let ns_b = ContextGroupId::from([0xBBu8; 32]);
-
-        assert_ne!(
-            root.account_for(&ns_a),
-            root.account_for(&ns_b),
-            "the same root must not present the same account id in two namespaces"
+        assert_eq!(
+            root.account(),
+            root.genesis().account_id(),
+            "the account must be exactly the content address of the genesis"
         );
         assert_eq!(
-            root.genesis_for(&ns_a).root_sign_pk,
-            root.genesis_for(&ns_b).root_sign_pk,
-            "but both genesis records name the same root, which is what makes one \
-             backed-up key able to recover either"
-        );
-        // Recomputable from the root alone — nothing per-namespace to lose.
-        assert_eq!(
-            root.account_for(&ns_a),
-            root.genesis_for(&ns_a).account_id()
+            root.genesis().root_sign_pk,
+            root.public_key(),
+            "and the genesis must name the root that backs it up, or a recovered \
+             mnemonic names an account nobody has heard of"
         );
     }
 
@@ -1191,31 +1176,18 @@ mod tests {
         );
     }
 
-    /// **The recovery property, end to end: a backup plus a list of namespace ids
-    /// is enough.**
+    /// **The backup is the phrase and nothing else.**
     ///
-    /// Wipes the store entirely between export and import, which is the case the
-    /// account model exists for — the disk is gone, not just the row. What comes
-    /// back has to be the same `AccountId` in every namespace, and it has to come
-    /// back WITHOUT any stored nonce: the nonce is derived from the root secret and
-    /// the namespace id, which is what makes the backup one secret plus a
-    /// non-secret list rather than a pile of per-namespace key material.
+    /// The account is the content address of the root key, so a recovered root
+    /// names the account it always named — with no stored salt, and no list of
+    /// namespaces to keep beside the words.
     #[test]
-    fn an_exported_root_recovers_the_same_account_in_every_namespace() {
-        let namespaces = [
-            ContextGroupId::from([0x11u8; 32]),
-            ContextGroupId::from([0x22u8; 32]),
-            ContextGroupId::from([0x33u8; 32]),
-        ];
-
+    fn an_exported_root_recovers_the_same_account() {
         let original_store = test_store();
         let original = NodeDeviceRepository::new(&original_store)
             .ensure_account_root()
             .expect("generate");
-        let before: Vec<AccountId> = namespaces
-            .iter()
-            .map(|ns| original.account_for(ns))
-            .collect();
+        let before = original.account();
         let backup = original.to_mnemonic().expect("export");
         assert_eq!(
             backup.split_whitespace().count(),
@@ -1237,21 +1209,16 @@ mod tests {
         );
 
         let recovered = AccountRoot::from_mnemonic(&backup).expect("import");
-        let after: Vec<AccountId> = namespaces
-            .iter()
-            .map(|ns| recovered.account_for(ns))
-            .collect();
-
         assert_eq!(
-            after, before,
-            "the same root must present the same account in every namespace — this \
-             is the whole recovery story, and nothing but the words crossed over"
+            recovered.account(),
+            before,
+            "the recovered root must present the same account — this is the whole \
+             recovery story, and nothing but the words crossed over"
         );
         assert_eq!(
             recovered.public_key(),
             original_public(&original_store),
-            "and the recovered root is the same key, not merely one that agrees on \
-             these three ids"
+            "and it is the same key, not merely one that agrees on the id"
         );
     }
 
@@ -1349,7 +1316,7 @@ mod tests {
             .expect("enrolling under the freshly imported root must not be refused");
         assert_eq!(
             after.account,
-            incoming.account_for(&ns),
+            incoming.account(),
             "the new device must speak for the imported root's account"
         );
         assert_ne!(
@@ -1412,7 +1379,7 @@ mod tests {
         let _discarded = repo.ensure_account_root().expect("generate");
 
         // Adopted into an account this node's root does not own, as pairing does.
-        let elsewhere = AccountGenesis::new(root(3), [0xCDu8; 16]);
+        let elsewhere = AccountGenesis::new(root(3));
         let paired = repo
             .ensure_enrolled_into(&ns, elsewhere)
             .expect("adopt the foreign account");
@@ -1543,7 +1510,7 @@ mod tests {
 
         // node-A's account, as it would arrive over a pairing exchange.
         let alice_root = root(1);
-        let alice = AccountGenesis::new(alice_root, [0xABu8; 16]);
+        let alice = AccountGenesis::new(alice_root);
 
         let paired = repo
             .ensure_enrolled_into(&ns, alice)
@@ -1605,7 +1572,7 @@ mod tests {
             .expect("the credential must be admissible");
 
         assert!(repo
-            .ensure_enrolled_into(&ns, AccountGenesis::new(root(2), [0xCDu8; 16]))
+            .ensure_enrolled_into(&ns, AccountGenesis::new(root(2)))
             .is_err());
         let reloaded = repo.get(&ns).expect("read").expect("present");
         assert_eq!(reloaded.device(), mine.device());
@@ -1614,7 +1581,7 @@ mod tests {
 
     /// Link `device` of `genesis`'s account into `ns`, signed by `root_sk`.
     fn link(store: &Store, ns: &ContextGroupId, root_sk: &PrivateKey, nonce: [u8; 16]) -> DeviceId {
-        let genesis = AccountGenesis::new(root_sk.public_key(), nonce);
+        let genesis = AccountGenesis::new(root_sk.public_key());
         let device = DeviceId::mint(genesis.account_id(), nonce);
         let cert = calimero_account::sign_device_cert(
             root_sk,
@@ -1654,7 +1621,7 @@ mod tests {
 
         assert_eq!(
             target.account,
-            AccountGenesis::new(bob_sk.public_key(), [0x11u8; 16]).account_id(),
+            AccountGenesis::new(bob_sk.public_key()).account_id(),
         );
         assert_ne!(
             target.account, mine.account,
@@ -1738,7 +1705,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let alice_sk = PrivateKey::from([1u8; 32]);
-        let alice = AccountGenesis::new(alice_sk.public_key(), [0xABu8; 16]);
+        let alice = AccountGenesis::new(alice_sk.public_key());
         let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
         let cert = calimero_account::sign_device_cert(
             &alice_sk,
@@ -1962,7 +1929,7 @@ mod tests {
         let paired = ContextGroupId::from([0xBBu8; 32]);
         let _ = repo.ensure_enrolled(&mine).expect("mint");
         let _ = repo
-            .ensure_enrolled_into(&paired, AccountGenesis::new(root(9), [0x11u8; 16]))
+            .ensure_enrolled_into(&paired, AccountGenesis::new(root(9)))
             .expect("adopt");
 
         let mut listed = repo.enrolled_namespaces().expect("scan");
@@ -2006,7 +1973,7 @@ mod tests {
         crate::AccountBindingRepository::new(&store)
             .absorb_genesis(
                 &ContextGroupId::from([0x01u8; 32]),
-                &AccountGenesis::new(root(3), [0x22u8; 16]),
+                &AccountGenesis::new(root(3)),
             )
             .expect("absorb");
 

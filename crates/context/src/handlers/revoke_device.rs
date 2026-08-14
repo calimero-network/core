@@ -137,7 +137,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         } else if target.self_service {
             match device_repo.account_root() {
                 Ok(Some(root)) => {
-                    let genesis = root.genesis_for(&namespace_id);
+                    let genesis = root.genesis();
                     match sign_device_revocation(root.signing_key(), account, device, 0) {
                         Ok(revocation) => Some(calimero_account::SignedDeviceRevocation {
                             genesis,

@@ -26,7 +26,7 @@ use rand::rngs::OsRng;
 /// account plane exists to draw.
 pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenesis) {
     let root_sk = PrivateKey::random(&mut OsRng);
-    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     (root_sk, genesis)
 }
 
@@ -70,7 +70,7 @@ pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredentia
     // [`account_for`] answer "which account will this key speak for" anywhere,
     // including before anything has been applied.
     let root_sk = PrivateKey::from(*(*sign_pk));
-    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     // The device id is derived from the signing key, NOT fixed. A constant here
     // made every credential claim the SAME device, so the second enrolment in
     // any store was refused as an `AccountReassignment` — one device cannot
@@ -206,7 +206,7 @@ pub(super) fn namespace_genesis_for(
 /// including in blocks that never build a genesis at all.
 fn founder_credential(founder_sk: &PrivateKey) -> Box<JoinAccountCredential> {
     let root_sk = PrivateKey::from(*founder_sk.public_key());
-    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     join_account_for(&root_sk, genesis, &founder_sk.public_key(), [0x3E; 32], 0)
 }
 
@@ -468,7 +468,7 @@ pub(super) fn enrol_local_device(
     Box<JoinAccountCredential>,
 ) {
     let root_sk = PrivateKey::from(*(*sign_pk));
-    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let node = crate::NodeDeviceRepository::new(store)
         .ensure_enrolled_into(namespace, genesis)
         .expect("mint this node's device");

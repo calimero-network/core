@@ -6061,7 +6061,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
     // key — a cert for some other key would bind that key, not this one, and
     // every request below is made as `member_sk`.
     let kem_secret = X25519SecretKey::from([0x54u8; 32]);
-    let genesis = AccountGenesis::new(member_sk.public_key(), [0x54u8; 16]);
+    let genesis = AccountGenesis::new(member_sk.public_key());
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0x54u8; 16]);
     MembershipRepository::new(&store)
@@ -6921,8 +6921,7 @@ fn a_refused_credential_leaves_the_membership_intact() {
     // `a_credential_certified_for_another_key_is_refused`), because naming an
     // account means claiming to BE it.
     let squatter_root = PrivateKey::random(&mut rand::rngs::OsRng);
-    let squatter_genesis =
-        calimero_account::AccountGenesis::new(squatter_root.public_key(), [0x77; 16]);
+    let squatter_genesis = calimero_account::AccountGenesis::new(squatter_root.public_key());
     let squatter = crate::test_fixtures::join_account_for(
         &squatter_root,
         squatter_genesis,

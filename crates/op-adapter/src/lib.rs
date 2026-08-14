@@ -571,7 +571,7 @@ mod tests {
         seed: u8,
     ) -> Box<calimero_governance_types::JoinAccountCredential> {
         let root_sk = calimero_primitives::identity::PrivateKey::from([seed; 32]);
-        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
         let cert = calimero_account::sign_device_cert(
             &root_sk,
             genesis.account_id(),
@@ -593,7 +593,7 @@ mod tests {
         sign_pk: PublicKey,
     ) -> Box<calimero_governance_types::JoinAccountCredential> {
         let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
-        let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root);
         Box::new(calimero_governance_types::JoinAccountCredential {
             cert: calimero_account::DeviceCert {
                 account: genesis.account_id(),
@@ -635,7 +635,7 @@ mod tests {
         use calimero_primitives::identity::PrivateKey;
 
         let root = PrivateKey::from([1u8; 32]);
-        let genesis = AccountGenesis::new(root.public_key(), [1u8; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -727,7 +727,7 @@ mod tests {
         use calimero_primitives::identity::PrivateKey;
 
         let root = PrivateKey::from([1u8; 32]);
-        let genesis = AccountGenesis::new(root.public_key(), [1u8; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let device_sk = PrivateKey::from([5u8; 32]);
@@ -1138,7 +1138,7 @@ mod tests {
 
         // A genuinely signed credential binds the account it certifies.
         let root_sk = calimero_primitives::identity::PrivateKey::from([0x91; 32]);
-        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
         let account = genesis.account_id();
         let cert = calimero_account::sign_device_cert(
             &root_sk,

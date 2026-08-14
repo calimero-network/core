@@ -41,7 +41,7 @@ The account plane separates those jobs.
 Neither is a public key. Both are content addresses:
 
 ```
-AccountId = H( genesis(root_pk, nonce) )
+AccountId = H( genesis(root_pk) )
 DeviceId  = H( account ‖ nonce )
 ```
 
@@ -84,21 +84,28 @@ The envelope format, both ECDH variants, and the AEAD details are specified in [
 This split is deliberate in both directions.
 
 ```
-FROM THE ROOT SECRET (deterministic, recomputable)
-  nonce(ns)  = H(domain ‖ root_secret ‖ namespace_id)[..16]
-  AccountId  = H( genesis(root_pk, nonce) )
+FROM THE ROOT KEY (deterministic, recomputable)
+  AccountId  = H( genesis(root_pk) )
 
 RANDOM AT CREATION (generated once, stored, unrecoverable)
   DeviceId   = H(account ‖ random 16 bytes)
   KEM secret = X25519, random
-  namespace identity keypair = Ed25519, random
+  device signing keypair = Ed25519, random
 ```
 
-**The account must be recomputable** — that is the whole recovery story. Hold the root secret plus a list of namespace ids and you can name every account you own, with no stored state.
+**The account must be recomputable** — that is the whole recovery story. Hold the root secret and you can name your account, with no stored state and nothing to keep beside it.
 
 **The device must not be.** A `DeviceId` is a CRDT replica id. Two installations that derived the same id would share counter slots and an HLC seed and silently lose each other's writes. Determinism there would be a bug, not a feature.
 
-The nonce derives from the root **secret**, not the public root key. The public root travels in the clear inside every genesis, so deriving from it would let any observer compute your account ids for namespaces they have never seen. One root everywhere, a different `AccountId` per namespace, and no way to correlate a person across them.
+**One root key is one account, in every namespace.** The account id carries no
+per-namespace salt, and deliberately so. A salted id would only be worth its cost if
+it made a person uncorrelatable across namespaces, and it does not: the genesis names
+the same `root_sign_pk` wherever it is published, so a member of two namespaces links
+the two accounts by comparing two numbers — and every node keeps a `member → PeerId`
+map besides, under one PeerId per node. Unlinkability needs distinct network
+identities, not distinct account ids; until that exists, a per-namespace account is
+cost without the property. See the reversibility notes in the account-model issue for
+how it would be reintroduced if that changes.
 
 ## The bridge: endorsements
 
@@ -214,8 +221,7 @@ Anything that records a binding must move **both** planes. "Does this change wha
   ]}
   steps={[
     { from: 0, to: 0, label: 'generate account root (once per node)' },
-    { from: 0, to: 0, label: 'nonce = KDF(root_secret, namespace)' },
-    { from: 0, to: 0, label: 'account = H(root_pk, nonce); device = H(account, random)' },
+    { from: 0, to: 0, label: 'account = H(root_pk); device = H(account, random)' },
     { from: 0, to: 0, label: 'cert signed by ACCOUNT ROOT; endorsement signed by MEMBER KEY' },
     { from: 0, to: 1, label: 'AccountDeviceLinked (encrypted GroupOp)', color: '#a5ff11' },
     { from: 1, to: 2, label: 'verify cert + endorsement; is endorser a member at the cut?' },
@@ -245,8 +251,8 @@ Pairing is a **two-way exchange**, and the ordering is forced rather than stylis
     { label: 'Scope', color: '#a5ff11' },
   ]}
   steps={[
-    { from: 1, to: 0, label: 'root_pk + nonce (out of band)', dashed: true },
-    { from: 0, to: 0, label: 'account = H(root_pk, nonce); mint DeviceId, sign key, KEM key' },
+    { from: 1, to: 0, label: 'root_pk (out of band)', dashed: true },
+    { from: 0, to: 0, label: 'account = H(root_pk); mint DeviceId, sign key, KEM key' },
     { from: 0, to: 1, label: 'deviceId + kemPk + signPk + statement (out of band)', dashed: true },
     { from: 0, to: 1, label: 'confirmation code (read out, separate channel)', dashed: true },
     { from: 1, to: 1, label: 'verify statement AND the code against the keys that arrived, else refuse' },
@@ -498,15 +504,12 @@ encrypting it needs the scope key the node only holds once it has joined.
 
 ### What a backup is
 
-**One secret plus a non-secret list.** The secret is the account root, printed as a
-24-word BIP-39 phrase. The list is the namespace ids you use it in.
+**One secret.** The account root, printed as a 24-word BIP-39 phrase.
 
-Nothing per-namespace needs backing up: the genesis nonce is
-`KDF(root_secret, namespace_id)`, so every account id this root owns is
-*recomputable* from the phrase alone. But that derivation only runs forwards —
-nothing on the node records which namespaces a root has been used in, and an
-account id cannot be reversed into one. So the phrase restores your ability to be
-those accounts, while the list is what tells you which accounts to expect back.
+That is the whole backup. The account is `H(version ‖ root_sign_pk)` — the content
+address of the root key and nothing else — so the phrase recomputes it directly,
+and it is the *same* account in every namespace the root speaks in. There is no
+per-namespace salt to record and no list of namespaces to keep beside the phrase.
 
 Losing the phrase is terminal. The `AccountId` is `H(genesis)` over a root key that
 no longer exists, so nobody can ever certify a device into that account again — the

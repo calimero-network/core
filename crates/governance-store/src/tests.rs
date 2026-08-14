@@ -8827,7 +8827,7 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
     let mut rng = OsRng;
     for _ in 0..256 {
         let root = PrivateKey::random(&mut rng);
-        let genesis = calimero_account::AccountGenesis::new(root.public_key(), [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
         assert_ne!(
             genesis.account_id(),
             sentinel,
@@ -10269,7 +10269,7 @@ mod account_plane_apply {
 
         // The admin's own key is the member, so its derived account is what a
         // device may link to while membership is still key-keyed.
-        let account_genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account_genesis = AccountGenesis::new(key(9).public_key());
         let account = account_genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10340,7 +10340,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         MembershipRepository::new(&store)
             .add_member(
@@ -10396,7 +10396,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(20).public_key(), [20u8; 16]);
+        let genesis = AccountGenesis::new(key(20).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [21u8; 16]);
         let cert = sign_device_cert(
@@ -10444,7 +10444,7 @@ mod account_plane_apply {
             .unwrap();
 
         // Mallory names Alice's member key as his account's root...
-        let genesis = AccountGenesis::new(key(9).public_key(), [77u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [78u8; 16]);
         // ...but must sign the certificate with his own key, which is not it.
@@ -10487,7 +10487,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
 
@@ -10522,7 +10522,7 @@ mod account_plane_apply {
 
         // An account rooted at an OFFLINE key that is nobody's member key.
         let offline_root = key(9);
-        let genesis = AccountGenesis::new(offline_root.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(offline_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10582,7 +10582,7 @@ mod account_plane_apply {
         // An endorsement of a DIFFERENT account → refused, even though it is validly
         // signed by a member. Otherwise a genuine endorsement could be paired with
         // an unrelated credential.
-        let other_account = AccountGenesis::new(key(8).public_key(), [8u8; 16]).account_id();
+        let other_account = AccountGenesis::new(key(8).public_key()).account_id();
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -10647,7 +10647,7 @@ mod account_plane_apply {
         .unwrap();
 
         let owner_root = key(9);
-        let genesis = AccountGenesis::new(owner_root.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(owner_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10743,7 +10743,7 @@ mod account_plane_apply {
 
         // The victim's device, linked and in force.
         let victim_root = key(9);
-        let genesis = AccountGenesis::new(victim_root.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(victim_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10775,7 +10775,7 @@ mod account_plane_apply {
         // The attacker's OWN account, and a proof naming it beside the victim's
         // device. Every signature here is genuine; that is the point.
         let attacker_root = key(7);
-        let attacker_genesis = AccountGenesis::new(attacker_root.public_key(), [7u8; 16]);
+        let attacker_genesis = AccountGenesis::new(attacker_root.public_key());
         let attacker_account = attacker_genesis.account_id();
         let forged = calimero_account::SignedDeviceRevocation {
             genesis: attacker_genesis,
@@ -10845,7 +10845,7 @@ mod account_plane_apply {
         .unwrap();
 
         // The victim enrolls a device, admin-signed so the link itself lands.
-        let genesis = AccountGenesis::new(victim_sk.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(victim_sk.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10924,7 +10924,7 @@ mod account_plane_apply {
         let signer = key(7);
         group_with_admin(&store, &gid, &key(1));
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
 
@@ -10963,7 +10963,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let cert = sign_device_cert(
             &key(9),
@@ -11010,7 +11010,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let repo = AccountBindingRepository::new(&store);
         repo.absorb_genesis(&gid, &genesis).unwrap();

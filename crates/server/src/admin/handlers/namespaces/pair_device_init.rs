@@ -47,21 +47,7 @@ pub async fn handler(
             .into_response();
         }
     };
-    let nonce: [u8; 16] = match hex::decode(&req.account_nonce)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-    {
-        Some(bytes) => bytes,
-        None => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "accountNonce must be 32 hex chars (16 bytes)".to_owned(),
-            }
-            .into_response();
-        }
-    };
-
-    let genesis = AccountGenesis::new(PublicKey::from(root_key), nonce);
+    let genesis = AccountGenesis::new(PublicKey::from(root_key));
 
     info!(
         namespace_id = %namespace_id_str,

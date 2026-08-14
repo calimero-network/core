@@ -2430,11 +2430,9 @@ impl Debug for NodeDeviceIdentity {
 /// This node's account root secret — a **singleton**, keyed by nothing but its
 /// own prefix (see [`NODE_ACCOUNT_ROOT_PREFIX`]).
 ///
-/// Node-level rather than per-namespace, which is the whole point: it is the one
-/// key that survives losing every device, so it is what certifies a replacement.
-/// Per-namespace account ids are still distinct, because the nonce is derived per
-/// namespace from this secret rather than shared — see
-/// `calimero_account::derive_account_nonce`.
+/// Node-level, which is the whole point: it is the one key that survives losing
+/// every device, so it is what certifies a replacement. It is also what the
+/// account id is derived from, so one root means one account wherever it speaks.
 ///
 /// A one-byte key rather than a sentinel id, so the singleton-ness is in the type
 /// and there is no "which id means the real one" question for a later reader.
@@ -2524,19 +2522,10 @@ impl Debug for NodeAccountRootValue {
 pub struct NodeDeviceIdentityValue {
     /// Epoch-0 root key of the account this node's device belongs to.
     ///
-    /// Stored rather than assumed to be this node's own namespace identity: a
-    /// paired device adopts an account rooted at ANOTHER node's key, so a row that
-    /// only held the nonce could not reconstruct the genesis without being told
-    /// whose account it was — which the reader does not know.
+    /// Stored rather than assumed to be this node's own root: a paired device
+    /// adopts an account rooted at ANOTHER node's key, so the row has to name
+    /// whose account it is — the reader cannot derive it.
     pub account_root_pk: [u8; 32],
-    /// Nonce of the `AccountGenesis` this node's device belongs to.
-    ///
-    /// The nonce rather than the `AccountId`, because the id is a one-way hash
-    /// and the *genesis* is what a device link has to put on the wire. Pairing a
-    /// second device means publishing another link naming the same account, so
-    /// the genesis must be reconstructible — and it is, from this nonce plus the
-    /// account root key above.
-    pub account_nonce: [u8; 16],
     /// The `DeviceId` this node speaks as in the namespace.
     pub device_id: [u8; 32],
     /// X25519 secret matching the certificate's `kem_pk`.

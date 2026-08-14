@@ -894,7 +894,7 @@ mod recipient_tests {
         member_sk: &PrivateKey,
         device_seed: u8,
     ) -> (DeviceId, AccountId) {
-        let genesis = AccountGenesis::new(member_sk.public_key(), [0xA0; 16]);
+        let genesis = AccountGenesis::new(member_sk.public_key());
         let account = genesis.account_id();
         let cert = sign_device_cert(
             member_sk,
@@ -1030,7 +1030,7 @@ mod recipient_tests {
         account_root_sk: &PrivateKey,
         device_seed: u8,
     ) -> (DeviceId, AccountId) {
-        let genesis = AccountGenesis::new(account_root_sk.public_key(), [device_seed; 16]);
+        let genesis = AccountGenesis::new(account_root_sk.public_key());
         let account = genesis.account_id();
         let cert = sign_device_cert(
             account_root_sk,
@@ -1156,7 +1156,7 @@ mod recipient_tests {
         );
 
         // Rotate the account root onto a key that is NOT a member of the group.
-        let genesis = AccountGenesis::new(member_sk.public_key(), [0xA0; 16]);
+        let genesis = AccountGenesis::new(member_sk.public_key());
         let offline_root = PrivateKey::from([0x77u8; 32]);
         let handoff = calimero_account::sign_root_key_handoff(
             &member_sk,
@@ -1484,11 +1484,9 @@ mod delete_tests {
     }
 
     fn device_fixture(seed: u8) -> (DeviceId, X25519SecretKey) {
-        let account = calimero_account::AccountGenesis::new(
-            PrivateKey::from([seed; 32]).public_key(),
-            [seed; 16],
-        )
-        .account_id();
+        let account =
+            calimero_account::AccountGenesis::new(PrivateKey::from([seed; 32]).public_key())
+                .account_id();
         (
             DeviceId::mint(account, [seed; 16]),
             X25519SecretKey::from([seed; 32]),

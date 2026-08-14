@@ -92,7 +92,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             Ok(root) => root,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let genesis = account_root.genesis_for(&namespace_id);
+        let genesis = account_root.genesis();
         let account = genesis.account_id();
 
         // Check the key material before anything is signed over it. The

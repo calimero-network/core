@@ -51,7 +51,6 @@ This crate splits the identity half in two:
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |
 | `AccountMemberEndorsement` | struct | A granted member key's signed statement that an account is theirs |
 | `sign_account_endorsement` / `verify_account_endorsement` | fn | Mint / check an endorsement; verification says nothing about whether the endorser IS a member |
-| `derive_account_nonce(root_secret, namespace_id)` | fn | Per-namespace genesis nonce from the node's account root |
 | `VerifiedDeviceCert` | struct | A cert whose anchor, chain and signature all checked - **not** a statement that the binding is in force |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
 | `verify_device_cert(claimed, genesis, chain, cert)` | fn | Full credential check against a claimed account |
