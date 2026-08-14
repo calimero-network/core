@@ -1,7 +1,7 @@
-name: 28 - get_migration_status rollup (PR-6c)
+name: 28 - get_migration_status rollup
 description: >
   Migration-status visibility across a 2-node namespace, validated against the
-  admin rollup itself (PR-6c tasks 6c.7/6c.8/6c.9/6c.10 + 6c.11).
+  admin rollup itself.
 
   Completion visibility is ephemeral signed TTL gossip, NOT replicated
   governance state: each node periodically publishes a signed
@@ -27,12 +27,12 @@ description: >
       reports it `unknown`, keeping `all_migrated = false` - the no-false-green
       contract. `fleetCompletedAt` is durable and must NOT follow it back down.
 
-  The rollup's own arithmetic is additionally unit-covered in task 6c.9
-  (unknown_member_blocks_all_migrated / cohort_pinned_ignores_post_expand_joiner
-  / all_migrated_true_only_when_every_pinned_member_v2_residue0).
+  The rollup's own arithmetic is additionally unit-covered by
+  unknown_member_blocks_all_migrated / cohort_pinned_ignores_post_expand_joiner
+  / all_migrated_true_only_when_every_pinned_member_v2_residue0.
 
-  Because migration_v2 defaults ON (PR-6b task 6b.8), the heartbeat emit +
-  ingest run natively - no merobox feature flag is needed.
+  Because migration_v2 defaults ON, the heartbeat emit + ingest run natively -
+  no merobox feature flag is needed.
 
 no_docker: false
 nuke_on_start: true

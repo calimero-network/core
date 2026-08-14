@@ -76,8 +76,8 @@ steps:
 
   - name: Create descendant Open subgroup on node 1
     # Open visibility lets node 2 materialise its inherited membership
-    # via `join_subgroup_inheritance` (issue #2357 endpoint) instead
-    # of needing an admin-signed group invitation per descendant.
+    # via `join_subgroup_inheritance` instead of needing an
+    # admin-signed group invitation per descendant.
     type: create_group_in_namespace
     node: app-migration-cascade-1
     namespace_id: "{{namespace_id}}"
@@ -127,7 +127,7 @@ steps:
     invitation: "{{namespace_invitation}}"
 
   - name: Node 2 materialises subgroup membership via inheritance
-    # Open subgroup + inherited member: this endpoint (issue #2357)
+    # Open subgroup + inherited member: this endpoint
     # publishes MemberJoinedOpen, fetches the subgroup key via the
     # direct-stream protocol, and returns once KeyDelivery lands so
     # the subsequent join_context can decrypt traffic immediately.

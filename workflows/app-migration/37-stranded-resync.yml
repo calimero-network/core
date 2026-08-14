@@ -2,7 +2,7 @@ name: 37 - Stranded context recovers via resync (intermediate blob unobtainable,
 description: >
   A behind member is STRANDED when an upgrade-ladder rung's bytecode is
   unobtainable, and recovers via an operator-initiated state resync - the
-  headline "nobody stranded" path (migrations-v2 PR-4b).
+  headline "nobody stranded" path.
 
   node-1 advances a context v1 -> v2 -> v3 (activating each rung in its own
   binary), so it holds v3 state and all three blobs. node-2 joins at v1, syncs

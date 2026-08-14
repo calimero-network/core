@@ -11,10 +11,10 @@ description: >
   on node 1 AND mirrors the post-migration schema_info on node 2 to
   prove cross-node convergence via context-sync gossip.
 
-  Acts as the regression guard for #2433: that PR changed Root<T>
-  merge semantics, breaking write_migration_state's save_raw call
-  with MergeFailure(NoMergeFunctionRegistered). Pre-fix this
-  workflow fails at the upgrade_group step; post-fix it passes.
+  Acts as the regression guard for Root<T> merge semantics: a change
+  there once broke write_migration_state's save_raw call with
+  MergeFailure(NoMergeFunctionRegistered), which this workflow catches
+  at the upgrade_group step.
 
 no_docker: false
 nuke_on_start: true
@@ -62,7 +62,7 @@ steps:
 
   - name: Create Open subgroup on node 1
     # Open visibility lets node 2 materialise its inherited membership
-    # via `join_subgroup_inheritance` (issue #2357 endpoint).
+    # via `join_subgroup_inheritance`.
     type: create_group_in_namespace
     node: app-migration-baseline-1
     namespace_id: "{{namespace_id}}"

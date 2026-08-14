@@ -1,4 +1,4 @@
-name: 32 - One-tap migrate_my_entries (PR-6e, node-log validated)
+name: 32 - One-tap migrate_my_entries (node-log validated)
 description: >
   The explicit, one-signature "migrate my authored data" flow, on top of the
   6c owner-driven convert. After a namespace cascades v1 → v2, each owner's
