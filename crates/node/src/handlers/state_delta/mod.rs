@@ -36,10 +36,6 @@ use buffering::{drain_absorbed_records, recover_absorbed_records};
 use crypto::{
     decrypt_delta_actions, lookup_group_key_with_wait, DecryptedDelta, STATE_DELTA_KEY_LOOKUP_WAIT,
 };
-// Re-export the single-shot key lookup for the ephemeral-presence inbound path.
-// It is `pub(crate)` so only node-internal callers can reach it; the module
-// itself stays private (no `pub mod crypto`).
-pub(crate) use crypto::lookup_group_key_with_wait as lookup_group_key_ephemeral;
 use events::{
     emit_state_mutation_event_parsed, execute_cascaded_events, execute_event_handlers_parsed,
     parse_events_payload, CascadeOutcome,

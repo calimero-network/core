@@ -1,9 +1,13 @@
 //! Inbound ephemeral-presence dispatch: gossip → decrypt → awareness store → client event.
 //!
 //! **No state-delta, no RocksDB writes.** This module's only storage
-//! interaction is a read of the group-key entry (via `lookup_group_key_with_wait`
-//! with `Duration::ZERO`, a single-shot non-blocking lookup) to decrypt the
-//! sealed presence slice before handing it to the in-memory `AwarenessStore`.
+//! interaction is a read of the group's *current* key record (via
+//! `GroupKeyring::load_current_key_record`) to decrypt the sealed presence
+//! slice before handing it to the in-memory `AwarenessStore`. Unlike the
+//! state-delta path, presence never accepts a superseded key — the keyring
+//! retains those for historical decrypt only, and presence has no history —
+//! so a `key_id` that is not the current one is a silent drop, same as a
+//! rotated-out member's stale key.
 //!
 //! **Security — the wire `author` is signed.** Every presence envelope carries
 //! an ed25519 signature, by `author`'s identity key, over `(context_id,
@@ -27,7 +31,6 @@ use calimero_primitives::identity::PublicKey;
 use tracing::debug;
 
 use crate::handlers::ephemeral::store::Diff;
-use crate::handlers::state_delta::lookup_group_key_ephemeral;
 use crate::NodeManager;
 
 // ---------------------------------------------------------------------------
@@ -37,10 +40,12 @@ use crate::NodeManager;
 /// Resolve the group key for `context_id`, decrypt `ciphertext`, and verify
 /// the envelope signature.
 ///
-/// Returns `None` when the `key_id` is unknown (unknown group or key not in
-/// keyring), when the AEAD authentication fails, or when the envelope
-/// signature does not verify under `author`. All three cases are silent
-/// drops — ephemeral presence is best-effort.
+/// Returns `None` when `context_id` has no group, when `key_id` is not the
+/// group's *current* key (unknown key ids and superseded keys are treated
+/// identically — presence has no history, so only the current key is ever
+/// accepted), when the AEAD authentication fails, or when the envelope
+/// signature does not verify under `author`. All cases are silent drops —
+/// ephemeral presence is best-effort.
 ///
 /// Never writes to the DAG, RocksDB, or any persistent store.
 pub(crate) async fn resolve_and_decrypt(
@@ -71,31 +76,37 @@ pub(crate) async fn resolve_and_decrypt(
             }
         };
 
-    // Single-shot key lookup (Duration::ZERO = no polling wait).
-    // The namespace-fallback for Open subgroups is handled inside
-    // `lookup_group_key_ephemeral` transparently.
-    let key = match lookup_group_key_ephemeral(
-        context_client,
-        &group_id,
-        &key_id,
-        std::time::Duration::ZERO,
-    )
-    .await
+    // Presence is transient and has no history, so only the CURRENT group key is
+    // acceptable. The keyring deliberately retains superseded keys for
+    // state-delta decryption; accepting them here would let a rotated-out member
+    // keep publishing presence straight through a rotation, defeating rotation
+    // as the eviction mechanism.
+    //
+    // Deliberately does not touch `lookup_group_key_with_wait` — the state-delta
+    // path still needs historical keys.
+    let record = match calimero_governance_store::GroupKeyring::new(store, group_id)
+        .load_current_key_record()
     {
-        Ok(Some(k)) => k,
+        Ok(Some(r)) => r,
         Ok(None) => {
-            debug!(
-                %context_id,
-                key_id = %hex::encode(key_id),
-                "ephemeral: unknown key_id — dropping (presence is best-effort)"
-            );
+            debug!(%context_id, "ephemeral: no current group key — dropping");
             return None;
         }
         Err(err) => {
-            debug!(%context_id, %err, "ephemeral: key lookup error — dropping");
+            debug!(%context_id, %err, "ephemeral: current key lookup error — dropping");
             return None;
         }
     };
+    if record.key_id != key_id {
+        debug!(
+            %context_id,
+            key_id = %hex::encode(key_id),
+            current = %hex::encode(record.key_id),
+            "ephemeral: key_id is not the current group key — dropping"
+        );
+        return None;
+    }
+    let key = calimero_primitives::identity::PrivateKey::from(record.group_key);
 
     // `SharedKey::decrypt` consumes `ciphertext` by value, but the signature
     // verify below needs the exact bytes that arrived on the wire — capture
@@ -482,6 +493,62 @@ mod tests {
             other => panic!("expected empty channel, got {other:?}"),
         }
         drop(node_client_check);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: a superseded key must not be accepted, even though it still
+    // decrypts — this is what makes key rotation an eviction mechanism.
+    // -----------------------------------------------------------------------
+
+    // Presence has no history, so a superseded key must not be accepted even
+    // though it is still in the keyring for state-delta decryption. This is
+    // what makes key rotation an eviction mechanism.
+    #[tokio::test]
+    async fn superseded_key_is_dropped_even_though_it_decrypts() {
+        use crate::handlers::ephemeral::auth::ephemeral_signature_payload;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x91u8; 32]);
+        let group_id = ContextGroupId::from([0x92u8; 32]);
+        register_context_in_group(&store, &group_id, &context_id).expect("register");
+
+        // Old key at epoch 0, then a rotation to a newer key at epoch 5.
+        let old_key = [0x93u8; 32];
+        let old_key_id = GroupKeyring::new(&store, group_id)
+            .store_key(&old_key)
+            .expect("store old key");
+        let new_key = [0x94u8; 32];
+        let _new_key_id = GroupKeyring::new(&store, group_id)
+            .store_key_with_epoch(&new_key, 5)
+            .expect("store new key");
+
+        // A correctly signed message — but sealed under the SUPERSEDED key.
+        let (ciphertext, nonce) = encrypt_slice(&old_key, b"stale");
+        let sk = PrivateKey::from([0x95u8; 32]);
+        let author = sk.public_key();
+        let payload = ephemeral_signature_payload(context_id, author, 1, old_key_id, &ciphertext)
+            .expect("payload");
+        let signature = sk.sign(&payload).expect("sign").to_bytes();
+
+        let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
+        let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
+
+        let out = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            1,
+            old_key_id,
+            nonce,
+            ciphertext,
+            signature,
+        )
+        .await;
+
+        assert!(
+            out.is_none(),
+            "a superseded key must be refused on the presence path"
+        );
     }
 
     // -----------------------------------------------------------------------
