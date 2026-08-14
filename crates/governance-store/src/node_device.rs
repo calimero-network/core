@@ -1456,20 +1456,22 @@ mod tests {
     }
 
     #[test]
-    fn the_two_account_resolvers_disagree_while_the_context_group_row_is_missing() {
-        // The trap that made `account_for_group` necessary, pinned so it stays
-        // visible. `account_for_context` finds the namespace through the
-        // context→group row, and falls back to scoping the account to the CONTEXT
-        // when that row is absent. During creation the row lands after `init`, so
-        // the two resolvers answer differently for the very same context — `init`
-        // seeds a writer set under the context-scoped account, every later call
-        // presents the namespace-scoped one, and the creator is locked out of the
-        // object it just created.
+    fn the_creation_time_resolver_trap_is_gone() {
+        // This used to be the trap that made `account_for_group` necessary.
+        // `account_for_context` finds the namespace through the context→group row
+        // and, when that row is absent, falls back to scoping the account to the
+        // CONTEXT. During creation the row lands after `init`, so the two resolvers
+        // answered differently for the same context: `init` seeded a writer set
+        // under the context-scoped account, every later call presented the
+        // namespace-scoped one, and the creator was locked out of the object it had
+        // just created.
         //
-        // Asserting they DIFFER (rather than that either is "right") is the point:
-        // a future change that makes `account_for_context` safe to call during
-        // creation should delete this test deliberately, and one that quietly
-        // swaps a call site back will fail it.
+        // An account is no longer scoped to anything, so "which scope did you
+        // resolve against" has stopped being a question with two answers. The
+        // fallback cannot name a stranger, and the ordering hazard cannot recur.
+        // The previous test asserted the two DISAGREED and said in its own comment
+        // that a change making the fallback safe should replace it deliberately —
+        // this is that replacement.
         let store = test_store();
         let namespace = ContextGroupId::from([0x77u8; 32]);
         let context = ContextId::from([0x99u8; 32]);
@@ -1478,23 +1480,21 @@ mod tests {
         let during_creation = account_for_context(&store, &context).expect("resolve by context");
         let from_the_group = account_for_group(&store, &namespace).expect("resolve by group");
 
-        assert_ne!(
+        assert_eq!(
             during_creation, from_the_group,
-            "with the row missing, the context-scoped fallback must not be mistaken \
-             for the namespace-scoped account — if these ever match, this test is \
-             no longer guarding anything and the call-site distinction looks \
-             cosmetic"
+            "the fallback must name the same account as the group resolver, or a \
+             creator can still be locked out of what it just created"
         );
 
-        // And once the row exists, the two agree — so the split is a creation-time
-        // ordering fix, not two permanently different notions of "my account".
+        // And it keeps agreeing once the row lands, so nothing about the account
+        // moved when the mapping appeared.
         crate::context_tree::ContextTreeService::new(&store, namespace)
             .register_context(&context)
             .expect("write the context→group row");
         assert_eq!(
             account_for_context(&store, &context).expect("resolve by context"),
             from_the_group,
-            "after the row lands, either resolver answers the same"
+            "and the answer does not change when the row appears"
         );
     }
 

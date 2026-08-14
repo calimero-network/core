@@ -48,7 +48,6 @@ impl PairInitCommand {
                 &self.namespace_id,
                 PairDeviceInitApiRequest {
                     account_root_key: self.root_key,
-                    account_nonce: None,
                 },
             )
             .await?;

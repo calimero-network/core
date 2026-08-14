@@ -6,8 +6,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    GroupChildIndex, GroupParentRef, NamespaceIdentity, NamespaceIdentityValue,
-    GROUP_CHILD_INDEX_PREFIX, NAMESPACE_IDENTITY_PREFIX,
+    GroupChildIndex, GroupParentRef, NamespaceIdentity, NamespaceIdentityValue, NodeIdentity,
+    NodeIdentityValue, GROUP_CHILD_INDEX_PREFIX, NAMESPACE_IDENTITY_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -540,7 +540,9 @@ impl<'a> NamespaceRepository<'a> {
         eyre::bail!(NamespaceError::DepthExceeded)
     }
 
-    /// Read this node's identity for a namespace from the store.
+    /// The key this node signs with **in `namespace_id`**.
+    ///
+    /// `None` when the node does not take part there.
     pub fn identity(
         &self,
         namespace_id: &ContextGroupId,
@@ -550,13 +552,24 @@ impl<'a> NamespaceRepository<'a> {
             .map(|record| (record.public_key, record.private_key, record.sender_key)))
     }
 
+    /// As [`Self::identity`], as a record.
+    ///
+    /// **The namespace gate is the point.** The keypair itself is node-level — one
+    /// node signs with one key — so reading it alone would answer "yes, here it is"
+    /// for every namespace on earth. Callers throughout the tree read this `None`
+    /// as "not my namespace": it decides whether to emit a readiness beacon, whether
+    /// to self-report a migration, whether a self-purge already ran. Answering from
+    /// the keypair would have every one of them fire for namespaces this node has
+    /// never joined, so participation is checked first and the key second.
     pub fn identity_record(
         &self,
         namespace_id: &ContextGroupId,
     ) -> EyreResult<Option<NamespaceIdentityRecord>> {
+        if !self.participates_in(namespace_id)? {
+            return Ok(None);
+        }
         let handle = self.store.handle();
-        let key = NamespaceIdentity::new(namespace_id.to_bytes());
-        match handle.get(&key)? {
+        match handle.get(&NodeIdentity::new())? {
             Some(val) => Ok(Some(NamespaceIdentityRecord {
                 public_key: PublicKey::from(val.public_key),
                 private_key: val.private_key,
@@ -566,6 +579,13 @@ impl<'a> NamespaceRepository<'a> {
         }
     }
 
+    /// Persist the node's signing identity, and note that it takes part in
+    /// `namespace_id`.
+    ///
+    /// Two writes because they answer two questions. The keypair is node-level
+    /// and idempotent after the first namespace. The marker is per namespace and
+    /// is what `iter_identities` walks — a node has to know which namespaces to
+    /// sync, and nothing else records that.
     pub fn store_identity(
         &self,
         namespace_id: &ContextGroupId,
@@ -574,14 +594,39 @@ impl<'a> NamespaceRepository<'a> {
         sender_key: &[u8; 32],
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
-        let key = NamespaceIdentity::new(namespace_id.to_bytes());
         handle.put(
-            &key,
-            &NamespaceIdentityValue {
+            &NodeIdentity::new(),
+            &NodeIdentityValue {
                 public_key: **public_key,
                 private_key: *private_key,
                 sender_key: *sender_key,
             },
+        )?;
+        self.note_participation(namespace_id)
+    }
+
+    /// Whether this node takes part in `namespace_id`.
+    ///
+    /// Distinct from holding a signing key: the key is node-level and outlives
+    /// eviction from any one namespace, so "do I have a key" stopped being the
+    /// same question as "am I in this namespace".
+    pub fn participates_in(&self, namespace_id: &ContextGroupId) -> EyreResult<bool> {
+        Ok(self
+            .store
+            .handle()
+            .get(&NamespaceIdentity::new(namespace_id.to_bytes()))?
+            .is_some())
+    }
+
+    /// Record that this node takes part in `namespace_id`.
+    ///
+    /// Idempotent, and carries no key material — the row's presence is its whole
+    /// meaning.
+    pub fn note_participation(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        handle.put(
+            &NamespaceIdentity::new(namespace_id.to_bytes()),
+            &NamespaceIdentityValue { reserved: 0 },
         )?;
         Ok(())
     }
@@ -649,6 +694,14 @@ impl<'a> NamespaceRepository<'a> {
         group_id: &ContextGroupId,
     ) -> EyreResult<ResolvedNamespaceIdentity> {
         let ns_id = self.resolve(group_id)?;
+
+        // Unconditionally, and BEFORE the early return. The signing key is
+        // node-level, so from the second namespace onward the branch below exits
+        // with one already in hand — and skipping this would leave every namespace
+        // after the first unmarked, so `iter_identities` would report only the one
+        // the node happened to join first and it would sync nothing else.
+        self.note_participation(&ns_id)?;
+
         if let Some(identity) = self.identity_record(&ns_id)? {
             return Ok(ResolvedNamespaceIdentity {
                 namespace_id: ns_id,
@@ -781,5 +834,57 @@ mod tests {
         assert_eq!(loaded_pk, pk);
         assert_eq!(loaded_sk, sk);
         assert_eq!(loaded_sender, sender);
+    }
+
+    /// One node signs with one key, in every namespace it takes part in.
+    #[test]
+    fn the_signing_identity_is_shared_across_namespaces() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let (ns_a, ns_b) = (
+            ContextGroupId::from([0xAAu8; 32]),
+            ContextGroupId::from([0xBBu8; 32]),
+        );
+
+        let a = repo.get_or_create_identity_bundle(&ns_a).expect("first");
+        let b = repo.get_or_create_identity_bundle(&ns_b).expect("second");
+
+        assert_eq!(
+            a.identity.public_key, b.identity.public_key,
+            "a second namespace must not mint a second signing key — the key is \
+             recorded as the device's sign_pk, and a device has one"
+        );
+        assert_eq!(a.identity.private_key, b.identity.private_key);
+    }
+
+    /// Every namespace is enumerable, not just the first.
+    ///
+    /// The signing key is node-level, so from the second namespace onward
+    /// `get_or_create_identity_bundle` finds one already stored and returns early.
+    /// If the participation marker were written on the create path only, that early
+    /// return would leave every later namespace unrecorded — and `iter_identities`
+    /// drives which namespaces `join_context` syncs and which ones the startup
+    /// buffered-op sweep re-drives, so the node would silently stop servicing all
+    /// but the first namespace it ever joined.
+    #[test]
+    fn joining_a_second_namespace_is_still_recorded() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let (ns_a, ns_b) = (
+            ContextGroupId::from([0xAAu8; 32]),
+            ContextGroupId::from([0xBBu8; 32]),
+        );
+
+        let _ = repo.get_or_create_identity_bundle(&ns_a).expect("first");
+        let _ = repo.get_or_create_identity_bundle(&ns_b).expect("second");
+
+        let mut seen = repo.iter_identities().expect("enumerate");
+        seen.sort();
+        let mut want = vec![ns_a, ns_b];
+        want.sort();
+        assert_eq!(
+            seen, want,
+            "both namespaces must be enumerable, not only the one that minted the key"
+        );
     }
 }

@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x47` is taken
-// except `0x2B` (retired, below); **the next free byte is `0x48`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x48` is taken
+// except `0x2B` (retired, below); **the next free byte is `0x49`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -1441,12 +1441,19 @@ impl Debug for GroupChildIndex {
 }
 
 // ---------------------------------------------------------------------------
-// Namespace identity: per-root-group keypair for this node
+// Namespace participation: which namespaces this node takes part in
 // ---------------------------------------------------------------------------
 
-/// Store key for the node's identity within a namespace (root group).
+/// Store key marking that this node participates in a namespace (root group).
 /// Key layout: `NAMESPACE_IDENTITY_PREFIX (1 byte) + namespace_id (32 bytes)`.
 /// The namespace_id is the root group's ContextGroupId.
+///
+/// This row used to hold a per-namespace keypair, and enumerating it answered two
+/// questions at once: what do I sign with here, and which namespaces am I in. The
+/// signing key is now node-level ([`NodeIdentity`]), but the second question is
+/// still real — `join_context` syncs exactly the namespaces this node takes part
+/// in, and the startup buffered-op sweep walks the same set — so the row stays as
+/// the index it always also was, carrying no key material.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespaceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
@@ -1560,26 +1567,13 @@ impl Debug for NamespaceIdentity {
 /// freed heap for whatever reads that page next — a core dump, a swap file, or the
 /// next allocation. `Copy` is therefore also off the table: it would duplicate the
 /// secret implicitly on every read, and the wipe only ever reaches the original.
-#[derive(Clone, ZeroizeOnDrop)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespaceIdentityValue {
-    pub public_key: [u8; 32],
-    pub private_key: [u8; 32],
-    pub sender_key: [u8; 32],
-}
-
-/// Redacted by hand, never derived. `private_key` is this node's namespace
-/// member identity — the key it signs every governance op and state delta with.
-/// A derived `Debug` puts it one `tracing` field or one error context away from a
-/// log file.
-impl Debug for NamespaceIdentityValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NamespaceIdentityValue")
-            .field("public_key", &self.public_key)
-            .field("private_key", &"[redacted]")
-            .field("sender_key", &"[redacted]")
-            .finish()
-    }
+    /// Reserved. The row is a set membership marker — its presence is the whole
+    /// meaning — but borsh needs a field, and a `u8` leaves room to record
+    /// *when* or *how* the node joined without a second key family later.
+    pub reserved: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -1840,6 +1834,83 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
+
+/// This node's signing identity (see [`NodeIdentity`]).
+pub const NODE_IDENTITY_PREFIX: u8 = 0x48;
+
+/// This node's signing identity — a **singleton**, keyed by nothing but its own
+/// prefix (see [`NODE_IDENTITY_PREFIX`]).
+///
+/// Node-level rather than per-namespace. The key a node signs with is recorded as
+/// its device's `sign_pk`, and a device is one installation, not one installation
+/// per scope — so a key that varied by namespace would be a certificate claiming a
+/// key that only sometimes signs. It also bought nothing: a per-namespace key is
+/// published in every namespace's device binding, so it correlates a person across
+/// namespaces exactly as a shared one does.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeIdentity(Key<(GroupPrefix,)>);
+
+impl NodeIdentity {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_IDENTITY_PREFIX])))
+    }
+}
+
+impl Default for NodeIdentity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeIdentity {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeIdentity {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NodeIdentity").finish()
+    }
+}
+
+/// The keypair behind [`NodeIdentity`].
+#[derive(Clone, ZeroizeOnDrop)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeIdentityValue {
+    pub public_key: [u8; 32],
+    pub private_key: [u8; 32],
+    pub sender_key: [u8; 32],
+}
+
+/// Redacted by hand, never derived. `private_key` is what this node signs every
+/// governance op and state delta with; a derived `Debug` puts it one `tracing`
+/// field or one error context away from a log file.
+impl Debug for NodeIdentityValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeIdentityValue")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[redacted]")
+            .field("sender_key", &"[redacted]")
+            .finish()
+    }
+}
 
 /// A member key that has endorsed an account into a group (see
 /// [`GroupAccountEndorser`]).

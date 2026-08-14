@@ -1950,15 +1950,6 @@ pub struct PairDeviceInitApiRequest {
     /// The whole genesis, now that it is `{version, root_sign_pk}` — so this is
     /// the only thing that has to travel between the two devices.
     pub account_root_key: String,
-    /// Accepted and ignored.
-    ///
-    /// The genesis carries no nonce, so there is nothing for this to mean. It
-    /// stays only because merobox's `account_pair_init` step still sends one and
-    /// core CI installs the latest merobox release rather than a pin; a request
-    /// that omits it and one that supplies anything at all behave identically.
-    /// Removed once merobox has stopped sending it.
-    #[serde(default)]
-    pub account_nonce: Option<String>,
 }
 
 impl Validate for PairDeviceInitApiRequest {
