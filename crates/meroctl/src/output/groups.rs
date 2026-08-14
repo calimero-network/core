@@ -157,17 +157,21 @@ impl Report for RevokeDeviceApiResponse {
         ]);
         let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
         let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
-        // Without the rotation the device stops writing but keeps the key it
-        // already holds — a silent reader. Say so rather than report a bare
-        // success.
-        let _ = table.add_row(vec![
-            "Scope key rotated",
-            if self.data.key_rotated {
-                "yes - the device can no longer read either"
-            } else {
-                "no - it can still READ until an admin rotates"
-            },
-        ]);
+        // One row per namespace, because a device belongs to an account rather
+        // than to a scope and the revocation follows it everywhere. Without the
+        // rotation the device stops writing there but keeps the key it already
+        // holds — a silent reader — so say so per namespace rather than report a
+        // bare success.
+        for outcome in &self.data.revoked_in {
+            let _ = table.add_row(vec![
+                format!("Revoked in {}", outcome.namespace_id),
+                if outcome.key_rotated {
+                    "key rotated - it can no longer read either".to_owned()
+                } else {
+                    "key NOT rotated - it can still READ until an admin rotates".to_owned()
+                },
+            ]);
+        }
         println!("{table}");
     }
 }
