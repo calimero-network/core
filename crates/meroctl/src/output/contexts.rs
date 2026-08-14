@@ -1,8 +1,8 @@
 use calimero_server_primitives::admin::{
     CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
-    GetContextsResponse, GetPeersCountResponse, GrantPermissionResponse, RevokePermissionResponse,
-    SyncContextResponse, UpdateContextApplicationResponse,
+    GetContextsResponse, GetPeersCountResponse, SyncContextResponse,
+    UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
 use comfy_table::{Cell, Color, Table};
@@ -125,24 +125,6 @@ impl Report for GetContextsResponse {
 
             println!("{table}");
         }
-    }
-}
-
-impl Report for GrantPermissionResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Permissions Granted").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully granted permissions"]);
-        println!("{table}");
-    }
-}
-
-impl Report for RevokePermissionResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Permissions Revoked").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully revoked permissions"]);
-        println!("{table}");
     }
 }
 

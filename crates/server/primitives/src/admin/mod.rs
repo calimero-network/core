@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::types::{Capability, SignedGroupOpenInvitation};
+use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
@@ -660,92 +660,6 @@ impl NodeChallengeMessage {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrantPermissionRequest {
-    pub context_id: ContextId,
-    pub granter_id: PublicKey,
-    pub grantee_id: PublicKey,
-    pub capability: Capability,
-}
-
-impl GrantPermissionRequest {
-    pub const fn new(
-        context_id: ContextId,
-        granter_id: PublicKey,
-        grantee_id: PublicKey,
-        capability: Capability,
-    ) -> Self {
-        Self {
-            context_id,
-            granter_id,
-            grantee_id,
-            capability,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrantPermissionResponse {
-    pub data: Empty,
-}
-
-impl Default for GrantPermissionResponse {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GrantPermissionResponse {
-    pub const fn new() -> Self {
-        Self { data: Empty {} }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokePermissionRequest {
-    pub context_id: ContextId,
-    pub revoker_id: PublicKey,
-    pub revokee_id: PublicKey,
-    pub capability: Capability,
-}
-
-impl RevokePermissionRequest {
-    pub const fn new(
-        context_id: ContextId,
-        revoker_id: PublicKey,
-        revokee_id: PublicKey,
-        capability: Capability,
-    ) -> Self {
-        Self {
-            context_id,
-            revoker_id,
-            revokee_id,
-            capability,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokePermissionResponse {
-    pub data: Empty,
-}
-
-impl Default for RevokePermissionResponse {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RevokePermissionResponse {
-    pub const fn new() -> Self {
-        Self { data: Empty {} }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncContextResponse {
@@ -1284,21 +1198,6 @@ impl Validate for CreateContextRequest {
 impl Validate for UpdateContextApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (ApplicationId, PublicKey) with their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for GrantPermissionRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // Note: This is defined in grant_capabilities.rs handler, not here
-        // But we still validate the admin.rs version if used
-        Vec::new()
-    }
-}
-
-impl Validate for RevokePermissionRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed which have their own validation
         Vec::new()
     }
 }
