@@ -104,8 +104,14 @@ impl AwarenessStore {
 
     /// Refresh liveness for `author` in `ctx` without changing the slice.
     ///
-    /// Used as a heartbeat when the local slice has not changed. A missing
-    /// entry is silently ignored (the peer may already have been swept).
+    /// Called by the node's heartbeat tick for each of its OWN locally-set
+    /// entries, immediately before the sweep. Remote entries are re-stamped by
+    /// `apply` when their author's heartbeat arrives, but a node never
+    /// receives its own gossip back, so this is the only thing that keeps a
+    /// local author from being evicted by its own TTL sweep.
+    ///
+    /// A missing entry is silently ignored (the author may already have been
+    /// swept).
     pub fn touch(&mut self, ctx: ContextId, author: PublicKey, now_ms: u64) {
         if let Some(per_ctx) = self.inner.get_mut(&ctx) {
             if let Some(entry) = per_ctx.get_mut(&author) {

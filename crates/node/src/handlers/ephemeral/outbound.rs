@@ -297,10 +297,62 @@ pub(crate) fn set_local_ephemeral(
 /// 1. Bumps the sequence counter (so remote nodes update their
 ///    `last_seen_ms` on receipt — same-seq re-applies are no-ops in the
 ///    remote [`AwarenessStore`]).
-/// 2. Re-encrypts under the **current** group key with a **fresh nonce**.
-/// 3. Publishes on the context gossip topic.
-/// 4. Sweeps expired remote entries for the context, emitting
+/// 2. Refreshes the node's own entry in the [`AwarenessStore`] so its own
+///    TTL sweep cannot evict a slice it is still heartbeating — gossipsub
+///    never echoes a node's own publish back to it, so nothing else would.
+/// 3. Re-encrypts under the **current** group key with a **fresh nonce**.
+/// 4. Publishes on the context gossip topic.
+/// 5. Sweeps expired remote entries for the context, emitting
 ///    [`Diff::Remove`] events for each evicted author.
+/// Refresh the local author entries, then expire everything stale.
+///
+/// Pure over the [`AwarenessStore`] — no actor, no network — so the ordering
+/// guarantee below is unit-testable on its own. Returns the `(context, diff)`
+/// pairs the caller must emit.
+///
+/// **Order is load-bearing: touch first, sweep second.**
+///
+/// `local` names the `(context, author)` pairs this node publishes itself.
+/// Gossipsub does not deliver a node's own published message back to itself,
+/// so nothing ever re-stamps `last_seen_ms` for a locally-set slice after the
+/// original `set_local_ephemeral`. Without the touch, the sweep would evict
+/// the node's OWN presence one TTL later even though it is still heartbeating
+/// every `PRESENCE_HEARTBEAT_MS` and every remote peer holds a fresh copy —
+/// local readers (`get_ephemeral`, the event stream) would see the local
+/// author sawtooth in and out, with a spurious `Diff::Remove` each cycle.
+///
+/// The sweep covers every context the store holds entries for — NOT just the
+/// ones this node has locally published to. A receive-only node (a read-only
+/// viewer, a TEE node, a peer who has not yet set its own presence) never
+/// appears in `local`, but the store still holds remote entries for it that
+/// must expire on the same TTL. Collected into a `HashSet` (rather than
+/// sorted-then-`dedup`, which only removes ADJACENT duplicates and silently
+/// half-works on an unsorted source) so every context is swept exactly once
+/// regardless of source order.
+pub(crate) fn refresh_and_sweep(
+    awareness_store: &mut crate::handlers::ephemeral::store::AwarenessStore,
+    local: &[(ContextId, PublicKey)],
+    ttl_ms: u64,
+    now_ms: u64,
+) -> Vec<(ContextId, crate::handlers::ephemeral::store::Diff)> {
+    for (context_id, author) in local {
+        awareness_store.touch(*context_id, *author, now_ms);
+    }
+
+    let contexts_seen: std::collections::HashSet<ContextId> = awareness_store
+        .contexts()
+        .chain(local.iter().map(|(ctx_id, _)| *ctx_id))
+        .collect();
+
+    let mut diffs = Vec::new();
+    for context_id in contexts_seen {
+        for diff in awareness_store.sweep(context_id, ttl_ms, now_ms) {
+            diffs.push((context_id, diff));
+        }
+    }
+    diffs
+}
+
 pub(crate) fn heartbeat_tick(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -319,27 +371,18 @@ pub(crate) fn heartbeat_tick(
         })
         .collect();
 
-    // Sweep every context the store actually holds entries for — NOT just the
-    // ones this node has locally published to. A receive-only node (a
-    // read-only viewer, a TEE node, a peer who has not yet set its own
-    // presence) never appears in `ephemeral_local`, but the awareness store
-    // still holds remote entries for it that must expire on the same TTL.
-    // Collected into a `HashSet` (rather than sorted-then-`dedup`, which only
-    // removes ADJACENT duplicates and silently half-works on an unsorted
-    // source) so every context is swept exactly once regardless of source
-    // order.
-    let contexts_seen: std::collections::HashSet<ContextId> = this
-        .awareness_store
-        .contexts()
-        .chain(local_snapshot.iter().map(|(ctx_id, ..)| *ctx_id))
+    let local_pairs: Vec<(ContextId, PublicKey)> = local_snapshot
+        .iter()
+        .map(|(ctx_id, author, ..)| (*ctx_id, *author))
         .collect();
-    for context_id in &contexts_seen {
-        for diff in this
-            .awareness_store
-            .sweep(*context_id, PRESENCE_TTL_MS, now_ms)
-        {
-            emit_ephemeral_diff(&this.clients.node, *context_id, diff);
-        }
+
+    for (context_id, diff) in refresh_and_sweep(
+        &mut this.awareness_store,
+        &local_pairs,
+        PRESENCE_TTL_MS,
+        now_ms,
+    ) {
+        emit_ephemeral_diff(&this.clients.node, context_id, diff);
     }
 
     // Re-publish each local slice (bumped seq, fresh nonce, current key).
@@ -394,6 +437,7 @@ mod tests {
     use tokio::sync::{broadcast, mpsc};
 
     use super::*;
+    use crate::handlers::ephemeral::PRESENCE_HEARTBEAT_MS;
 
     // -----------------------------------------------------------------------
     // Shared test scaffolding
@@ -787,5 +831,103 @@ mod tests {
         };
         verify_ephemeral_signature(context_id, got_author, seq, key_id, &ciphertext, &signature)
             .expect("published signature must verify");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: a local author's own entry survives past PRESENCE_TTL_MS as
+    //          long as the heartbeat keeps ticking.
+    //
+    //          A node never receives its own gossip back, so the heartbeat is
+    //          the ONLY thing that can re-stamp its own `last_seen_ms`. Before
+    //          the touch was wired in, the node's own sweep evicted its own
+    //          presence one TTL after `set_local_ephemeral`.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn local_author_survives_ttl_across_heartbeats() {
+        use crate::handlers::ephemeral::store::{AwarenessStore, Diff};
+
+        let context_id = ContextId::from([0x21u8; 32]);
+        let local_author = PublicKey::from([0x22u8; 32]);
+        let remote_author = PublicKey::from([0x23u8; 32]);
+
+        let mut store = AwarenessStore::new();
+        let t0 = 1_000_000u64;
+        let _ = store.apply(context_id, local_author, 1, b"cursor".to_vec(), t0);
+        let _ = store.apply(context_id, remote_author, 1, b"remote".to_vec(), t0);
+
+        let local = [(context_id, local_author)];
+
+        // Tick the heartbeat every PRESENCE_HEARTBEAT_MS well past the TTL.
+        let ticks = PRESENCE_TTL_MS / PRESENCE_HEARTBEAT_MS + 4;
+        let mut removed_local = 0;
+        let mut removed_remote = 0;
+        for i in 1..=ticks {
+            let now = t0 + i * PRESENCE_HEARTBEAT_MS;
+            for (ctx, diff) in refresh_and_sweep(&mut store, &local, PRESENCE_TTL_MS, now) {
+                assert_eq!(ctx, context_id);
+                match diff {
+                    Diff::Remove { author } if author == local_author => removed_local += 1,
+                    Diff::Remove { author } if author == remote_author => removed_remote += 1,
+                    other => panic!("unexpected diff {other:?}"),
+                }
+            }
+        }
+
+        let elapsed = ticks * PRESENCE_HEARTBEAT_MS;
+        assert!(
+            elapsed > PRESENCE_TTL_MS,
+            "the test must run past the TTL to be meaningful (elapsed {elapsed}ms, ttl {PRESENCE_TTL_MS}ms)"
+        );
+        assert_eq!(
+            removed_local, 0,
+            "the local author must never be swept while it is heartbeating"
+        );
+        assert_eq!(
+            removed_remote, 1,
+            "a remote author that stopped heartbeating must still be swept exactly once"
+        );
+
+        let live: Vec<_> = store
+            .snapshot(context_id, t0 + elapsed)
+            .into_iter()
+            .map(|(author, slice, _age)| (author, slice))
+            .collect();
+        assert_eq!(
+            live,
+            vec![(local_author, b"cursor".to_vec())],
+            "only the local author's entry remains live"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: without the local touch, the sweep would evict the local author
+    //          — the falsifier for Test 7 (proves the touch is what saves it,
+    //          not the TTL arithmetic).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn without_local_touch_the_local_author_is_evicted() {
+        use crate::handlers::ephemeral::store::{AwarenessStore, Diff};
+
+        let context_id = ContextId::from([0x24u8; 32]);
+        let local_author = PublicKey::from([0x25u8; 32]);
+
+        let mut store = AwarenessStore::new();
+        let t0 = 1_000_000u64;
+        let _ = store.apply(context_id, local_author, 1, b"cursor".to_vec(), t0);
+
+        // Empty `local` == the pre-fix behaviour (sweep only, no touch).
+        let diffs = refresh_and_sweep(&mut store, &[], PRESENCE_TTL_MS, t0 + PRESENCE_TTL_MS);
+        assert_eq!(
+            diffs,
+            vec![(
+                context_id,
+                Diff::Remove {
+                    author: local_author
+                }
+            )],
+            "with no touch the entry is evicted at the TTL boundary"
+        );
     }
 }
