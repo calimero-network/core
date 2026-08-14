@@ -32,6 +32,23 @@ pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) 
     }
 }
 
+/// Whether this context's STATE has reached the bytecode its group records as
+/// current (`marker == group.app_key`), or `None` when there is no group
+/// bytecode signal to compare against - no group, no meta, or a zero `app_key`.
+///
+/// An install never moves the marker, which is what makes this a migration
+/// signal where `ApplicationMeta.state_version` is only an install one.
+pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Option<bool> {
+    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
+        .ok()
+        .flatten()?;
+    let meta = calimero_governance_store::MetaRepository::new(store)
+        .load(&group_id)
+        .ok()
+        .flatten()?;
+    (meta.app_key != [0u8; 32]).then(|| activated_blob(store, context_id) == Some(meta.app_key))
+}
+
 /// The next upgrade rung a context bound to `bound` must replay from the
 /// group's ladder, or `None` when it is already at the group's current
 /// bytecode. The LAST occurrence of `bound` positions the context (an
@@ -244,6 +261,64 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(meta.application.application_id(), new);
+    }
+
+    /// The rollup reads this to decide residue, so every arm matters: a `None`
+    /// leaves it on the application row, a `Some(false)` counts the context as
+    /// outstanding. An absent bytecode signal must never manufacture either.
+    #[test]
+    fn activated_at_group_target_reads_the_marker_against_the_group_blob() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::key::GroupMetaValue;
+
+        let store = store();
+        let ctx = ContextId::from([0x61; 32]);
+        let gid = ContextGroupId::from([0x62; 32]);
+
+        // No group at all: nothing to compare against.
+        assert_eq!(activated_at_group_target(&store, &ctx), None);
+
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextGroupRef::new((*ctx).into()),
+                &gid.to_bytes(),
+            )
+            .unwrap();
+        // Group, but no meta yet.
+        assert_eq!(activated_at_group_target(&store, &ctx), None);
+
+        let account = crate::test_support::account_for(
+            &calimero_primitives::identity::PublicKey::from([0x07; 32]),
+        );
+        let mut meta = GroupMetaValue {
+            app_key: [0u8; 32],
+            target_application_id: ApplicationId::from([0xAA; 32]),
+            created_at: 0,
+            admin_identity: account,
+            owner_identity: account,
+            migration: None,
+            auto_join: false,
+        };
+        let save = |meta: &GroupMetaValue| {
+            calimero_governance_store::MetaRepository::new(&store)
+                .save(&gid, meta)
+                .unwrap();
+        };
+        // A zero app_key carries no bytecode signal to compare against.
+        save(&meta);
+        assert_eq!(activated_at_group_target(&store, &ctx), None);
+
+        meta.app_key = [0x02; 32];
+        save(&meta);
+        // Group has a target blob, context has no marker: not there yet.
+        assert_eq!(activated_at_group_target(&store, &ctx), Some(false));
+
+        record_activation(&store, &ctx, [0x01; 32]);
+        assert_eq!(activated_at_group_target(&store, &ctx), Some(false));
+
+        record_activation(&store, &ctx, [0x02; 32]);
+        assert_eq!(activated_at_group_target(&store, &ctx), Some(true));
     }
 
     #[test]

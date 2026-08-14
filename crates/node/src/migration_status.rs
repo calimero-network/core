@@ -385,15 +385,23 @@ pub fn record_facts_update(
     emit
 }
 
-/// Resolve a single context's LOADED reader version: the ABI state version of
-/// the `ApplicationMeta` its `ContextMeta.application` points at. This is the
-/// schema the node can actually read right now, NOT the replicated migration
-/// target and NOT the bundle semver — a 10.1.3 to 10.2.0 release may or may
-/// not move the state version, and only the state version gates readability.
+/// Resolve a single context's MIGRATED state version: the ABI state version its
+/// state is actually at, NOT the replicated migration target and NOT the bundle
+/// semver - a 10.1.3 to 10.2.0 release may or may not move the state version.
 /// `None` when the context or application row is missing.
-fn loaded_context_version(
+///
+/// `ApplicationMeta.state_version` records what was last INSTALLED, and
+/// same-package bundles dedup onto one `ApplicationId`, so an install rewrites
+/// the row for a context whose state is untouched - never evidence of a migrate.
+///
+/// So the row alone cannot decide. A context the sync gate still owes an upgrade
+/// reports `0`, never a number that could satisfy a target; lifting to the
+/// target needs the marker to positively equal the group's bytecode, since an
+/// open gate is also what "no group meta to compare against" looks like.
+fn migrated_context_version(
     datastore: &Store,
     context_id: &calimero_primitives::context::ContextId,
+    target: u32,
 ) -> Option<u32> {
     let handle = datastore.handle();
     let ctx_meta = handle
@@ -401,6 +409,16 @@ fn loaded_context_version(
         .ok()
         .flatten()?;
     let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
+
+    if crate::sync::pending_upgrade_target_in(datastore, context_id).is_some() {
+        return Some(0);
+    }
+    if target != u32::MAX
+        && calimero_context::activation::activated_at_group_target(datastore, context_id)
+            == Some(true)
+    {
+        return Some(app_meta.state_version.max(target));
+    }
     Some(app_meta.state_version)
 }
 
@@ -458,24 +476,26 @@ fn resolve_group_target_version(
 
 /// Compute this node's locally-advertised migration facts for `namespace_id`.
 ///
-/// `schema_version` is the node's actually-LOADED reader version — the lowest
-/// loaded `ApplicationMeta` state version across the namespace's contexts (the
-/// most-behind context governs whether this node has fully swapped its binary).
-/// This is deliberately NOT the migration TARGET (`UpgradesRepository.to_state_version`):
-/// the governance target can advance ahead of the locally-loaded binary, so
-/// reporting the target would let `all_migrated` flip green before the node could
-/// read the new schema (the cursor-bot bug this fixes). With no resolvable context
-/// we fall back to the target — the honest "no loaded state to contradict the
-/// record" path (covered by the no-record baseline `0`).
+/// `schema_version` is the node's MIGRATED state version - the lowest
+/// [`migrated_context_version`] across the namespace's contexts (the most-behind
+/// context governs whether this node has fully converged). This is deliberately
+/// NOT the migration TARGET (`UpgradesRepository.to_state_version`): the
+/// governance target can advance ahead of the local state, so reporting the
+/// target would let `all_migrated` flip green before the node had migrated (the
+/// cursor-bot bug this fixes). It is equally NOT the installed bundle's version:
+/// a node that merely installed the target must not advertise the target schema
+/// over state it has never touched. With no resolvable context we fall back to
+/// the target - the honest "no loaded state to contradict the record" path
+/// (covered by the no-record baseline `0`).
 ///
 /// `synced_up_to_hlc` is left at `0` here; the emitter overlays the live
 /// `NamespaceGovHead.sequence` ([`MigrationEmitter::refresh_hlc`]) at publish
 /// time so the periodic and on-change beats always carry the freshest position.
 ///
-/// `residue_auto` is the count of the namespace's contexts whose loaded version
-/// still trails the target — each pending whole-root (Convergent/Replayable)
-/// rebuild. A context is atomically v1-or-v2 (the PR-6a/6b whole-root path), so
-/// "loaded < target" is exactly its outstanding auto-residue.
+/// `residue_auto` is the count of the namespace's contexts still below their
+/// group's target - each pending whole-root (Convergent/Replayable) rebuild. A
+/// context is atomically v1-or-v2 on the whole-root path, so being below target
+/// is exactly its outstanding auto-residue.
 #[must_use]
 pub fn compute_namespace_migration_facts(
     datastore: &Store,
@@ -517,7 +537,7 @@ pub fn compute_namespace_migration_facts(
                 authored_remaining = authored_remaining.saturating_add(u64::from(entry.count));
             }
 
-            let loaded = loaded_context_version(datastore, &context_id);
+            let loaded = migrated_context_version(datastore, &context_id, target);
 
             // A persisted failure marker is honored while the context has NOT
             // reached its group's target. A context that has since converged is
@@ -553,7 +573,7 @@ pub fn compute_namespace_migration_facts(
                 continue;
             };
             min_loaded = Some(min_loaded.map_or(loaded, |m| m.min(loaded)));
-            if loaded < target {
+            if below_target {
                 residue_auto += 1;
             }
         }
@@ -1720,6 +1740,199 @@ mod tests {
         assert_eq!(
             facts.residue_auto, 0,
             "a context at the target version contributes no residue_auto"
+        );
+    }
+
+    /// Meta for a BUNDLE group: `target_application_id` is the version-stable id
+    /// the context is already bound to, so the upgrade shows up only as a moved
+    /// `app_key` - the same-id shape the defect lives in.
+    fn seed_bundle_group_meta(
+        store: &Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+        ctx: [u8; 32],
+        app_key: [u8; 32],
+    ) {
+        let account = calimero_account::AccountId::from([0xACu8; 32]);
+        calimero_governance_store::MetaRepository::new(store)
+            .save(
+                group_id,
+                &calimero_store::key::GroupMetaValue {
+                    app_key,
+                    target_application_id: calimero_primitives::application::ApplicationId::from(
+                        ctx,
+                    ),
+                    created_at: 0,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: Some(b"migrate_v1_to_v2".to_vec()),
+                    auto_join: false,
+                },
+            )
+            .expect("save group meta");
+    }
+
+    /// Save a namespace-root upgrade record targeting ABI state version 2.
+    fn save_v2_upgrade_record(store: &Store, ns: [u8; 32]) {
+        calimero_governance_store::UpgradesRepository::new(store)
+            .save(
+                &calimero_context_config::types::ContextGroupId::from(ns),
+                &calimero_store::key::GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: calimero_store::key::GroupUpgradeStatus::Completed {
+                        completed_at: None,
+                        fleet_completed_at: None,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                    to_state_version: 2,
+                },
+            )
+            .unwrap();
+    }
+
+    /// Point the application row `ctx` is bound to at `blob` / `state_version`,
+    /// as a local bundle install does: same package, so the same shared row.
+    fn install_bundle_over_context(
+        store: &Store,
+        ctx: [u8; 32],
+        blob: [u8; 32],
+        state_version: u32,
+    ) {
+        use calimero_primitives::application::ApplicationId;
+        use calimero_store::key::{ApplicationMeta as ApplicationMetaKey, BlobMeta};
+        use calimero_store::types::ApplicationMeta;
+
+        let bytecode = BlobMeta::new(calimero_primitives::blobs::BlobId::from(blob));
+        store
+            .handle()
+            .put(
+                &ApplicationMetaKey::new(ApplicationId::from(ctx)),
+                &ApplicationMeta::new(
+                    bytecode,
+                    1,
+                    "test://loaded".to_owned().into_boxed_str(),
+                    Box::new([]),
+                    bytecode,
+                    calimero_store::types::PackageInfo {
+                        package: "loaded-test-pkg".to_owned().into_boxed_str(),
+                        version: "n/a".to_owned().into_boxed_str(),
+                        signer_id: "loaded-test-signer".to_owned().into_boxed_str(),
+                        state_version,
+                    },
+                ),
+            )
+            .expect("put ApplicationMeta");
+    }
+
+    const V1_BLOB: [u8; 32] = [0xA1u8; 32];
+    const V2_BLOB: [u8; 32] = [0xA2u8; 32];
+
+    /// Installing the target bundle rewrites the `ApplicationMeta` row the
+    /// context already points at - same-package bundles dedup onto one
+    /// `ApplicationId` - so the row-derived version advances at install time,
+    /// with no cascade op and no state migration.
+    #[test]
+    fn facts_hold_below_target_when_the_bundle_is_installed_but_the_state_is_not() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB1u8; 32];
+        let ctx = [0xC5u8; 32];
+
+        save_v2_upgrade_record(&store, ns);
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        calimero_context::activation::record_activation(&store, &ctx.into(), V1_BLOB);
+        // The v2 bundle is installed locally; the context's state is untouched.
+        install_bundle_over_context(&store, ctx, V2_BLOB, 2);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert!(
+            facts.schema_version < 2,
+            "an installed-but-unmigrated context must not advertise the target \
+             schema; it reads v2 but its state is still v1, got {}",
+            facts.schema_version
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "an installed-but-unmigrated context is outstanding residue"
+        );
+    }
+
+    /// The converse: a cascade or lazy migrate loads the target bytecode by blob
+    /// key and never runs the install, so the row still records the last bundle
+    /// installed while the context already executes the target.
+    #[test]
+    fn facts_report_the_target_for_a_context_that_activated_without_installing() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB2u8; 32];
+        let ctx = [0xC6u8; 32];
+
+        save_v2_upgrade_record(&store, ns);
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        // The row never moved past the v1 bundle this node installed...
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        install_bundle_over_context(&store, ctx, V1_BLOB, 1);
+        // ...but the migration committed and bound execution to v2.
+        calimero_context::activation::record_activation(&store, &ctx.into(), V2_BLOB);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 2,
+            "a context executing the target bytecode is at the target schema, \
+             whatever the install-tracking application row still records"
+        );
+        assert_eq!(
+            facts.residue_auto, 0,
+            "a migrated context is not outstanding residue"
+        );
+    }
+
+    /// `join_context` stamps no activation marker, so a joined context has no
+    /// per-context fact of its own - once the target bundle is installed, the
+    /// shared row is the only version signal left and it reads at target. Only
+    /// the upgrade gate still refusing this context's state sync knows better.
+    #[test]
+    fn facts_hold_below_target_for_a_marker_less_context_the_gate_still_owes() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB3u8; 32];
+        let ctx = [0xC7u8; 32];
+
+        save_v2_upgrade_record(&store, ns);
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        // Joined at v1 (no marker), then installed the v2 bundle over the row.
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        install_bundle_over_context(&store, ctx, V2_BLOB, 2);
+        assert_eq!(
+            calimero_context::activation::activated_blob(&store, &ctx.into()),
+            None,
+            "the join path stamps no marker - that is the whole premise"
+        );
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert!(
+            facts.schema_version < 2,
+            "a node holding the target bytecode over un-migrated state must not \
+             advertise the target schema, got {}",
+            facts.schema_version
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "the gate still owes this context its migration, so it is residue"
         );
     }
 

@@ -122,6 +122,9 @@ pub use hash_comparison_protocol::{
 };
 pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
 pub use manager::SyncManager;
+// The migration facts builder judges a context against the same gate that
+// declines its state sync, so the two can never disagree about convergence.
+pub(crate) use manager::pending_upgrade_target_in;
 // `mod reconciler` is `pub(crate)` to `sync/`; these re-exports give
 // `crate::state` a stable path to the reconcile-attempt helpers from
 // its `SyncStateAccess` impl on `NodeState`. The helpers can't be
