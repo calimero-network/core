@@ -26,7 +26,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  CALIMERO_CONTRACTS_VERSION: "latest"
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
   # Admin credentials for embedded-auth scenarios, matching the
   # dev/dev-password `login` steps in the workflow YAMLs. merobox ≥0.6.43
