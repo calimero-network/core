@@ -24,9 +24,6 @@ pub enum GetSubcommand {
     #[command(about = "Get context information")]
     Info,
 
-    #[command(about = "Get client keys")]
-    ClientKeys,
-
     #[command(about = "Get storage information")]
     Storage,
 }
@@ -44,10 +41,6 @@ impl GetCommand {
         match self.command {
             GetSubcommand::Info => {
                 let response = client.get_context(&context_id).await?;
-                environment.output.write(&response);
-            }
-            GetSubcommand::ClientKeys => {
-                let response = client.get_context_client_keys(&context_id).await?;
                 environment.output.write(&response);
             }
             GetSubcommand::Storage => {

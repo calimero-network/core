@@ -13,7 +13,6 @@ use thiserror::Error;
 #[cfg(feature = "rand")]
 use zeroize::Zeroize;
 
-use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
 use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, VerifyingKey};
@@ -180,72 +179,6 @@ impl FromStr for PublicKey {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self(s.parse().map_err(InvalidPublicKey)?))
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct Did {
-    pub id: String,
-    pub root_keys: Vec<RootKey>,
-    pub client_keys: Vec<ClientKey>,
-}
-
-impl Did {
-    #[must_use]
-    pub const fn new(id: String, root_keys: Vec<RootKey>, client_keys: Vec<ClientKey>) -> Self {
-        Self {
-            id,
-            root_keys,
-            client_keys,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct RootKey {
-    pub signing_key: String,
-    pub wallet_address: String,
-    pub created_at: u64,
-}
-
-impl RootKey {
-    #[must_use]
-    pub const fn new(signing_key: String, wallet_address: String, created_at: u64) -> Self {
-        Self {
-            signing_key,
-            wallet_address,
-            created_at,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct ClientKey {
-    pub signing_key: String,
-    pub created_at: u64,
-    pub context_id: Option<ContextId>,
-}
-
-impl ClientKey {
-    #[must_use]
-    pub const fn new(signing_key: String, created_at: u64, context_id: Option<ContextId>) -> Self {
-        Self {
-            signing_key,
-            created_at,
-            context_id,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct ContextUser {
-    pub user_id: String,
-    pub joined_at: u64,
 }
 
 // ---------------------------------------------------------------------------
