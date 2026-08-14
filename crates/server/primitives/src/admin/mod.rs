@@ -1986,6 +1986,16 @@ impl Validate for PairDeviceInitApiRequest {
 /// What the pairing device minted, for the account holder to certify.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Every field here is hex, including the two public keys, and that is
+/// deliberate rather than an oversight against the usual `PublicKey` rendering.
+///
+/// This payload is a set of round-trip tokens: a caller copies them verbatim
+/// from `pair-init` to `pair-complete`, which parses them back as hex. Nothing
+/// compares them against a key from anywhere else — the signing key here is the
+/// NEW device's, not one that appears in a member listing — so the convention
+/// that matters is the one inside the payload, and it is uniform. Rendering one
+/// field bs58 to match `PublicKey` elsewhere would make this payload mixed to
+/// make the wider surface consistent, which is the worse trade.
 pub struct PairDeviceInitApiResponseData {
     /// Hex-encoded `AccountId` this device will speak for once linked.
     pub account_id: String,

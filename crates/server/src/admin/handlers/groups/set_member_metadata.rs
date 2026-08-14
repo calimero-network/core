@@ -17,7 +17,7 @@ use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
-    Path((group_id_str, identity_str)): Path<(String, String)>,
+    Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<SetMemberMetadataApiRequest>,
@@ -27,12 +27,12 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let member = match parse_account(&identity_str) {
+    let member = match parse_account(&account_str) {
         Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, identity=%identity_str, "Setting member metadata");
+    info!(group_id=%group_id_str, identity=%account_str, "Setting member metadata");
 
     let requester = match resolve_requester(auth_key, req.requester) {
         Ok(r) => r,
@@ -53,28 +53,28 @@ pub async fn handler(
 
     match result {
         Ok(()) => {
-            info!(group_id=%group_id_str, identity=%identity_str, "Member metadata set");
+            info!(group_id=%group_id_str, identity=%account_str, "Member metadata set");
             ApiResponse {
                 payload: SetMetadataApiResponse {},
             }
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to set member metadata");
+            error!(group_id=%group_id_str, identity=%account_str, error=?err, "Failed to set member metadata");
             err.into_response()
         }
     }
 }
 
 pub async fn get_handler(
-    Path((group_id_str, identity_str)): Path<(String, String)>,
+    Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
-    let member = match parse_account(&identity_str) {
+    let member = match parse_account(&account_str) {
         Ok(account) => account,
         Err(err) => return err.into_response(),
     };

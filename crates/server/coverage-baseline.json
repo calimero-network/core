@@ -1,5 +1,5 @@
 [
-  "GET /admin-api/groups/:group_id/members/:identity/metadata",
+  "GET /admin-api/groups/:group_id/members/:account/metadata",
   "GET /admin-api/namespaces/:namespace_id/account",
   "GET /admin-api/ready",
   "POST /admin-api/groups/:group_id/members",
@@ -8,8 +8,8 @@
   "POST /admin-api/namespaces/:namespace_id/account/pair-complete",
   "POST /admin-api/namespaces/:namespace_id/account/pair-init",
   "POST /admin-api/namespaces/:namespace_id/account/revoke",
-  "PUT /admin-api/groups/:group_id/members/:identity/auto-follow",
-  "PUT /admin-api/groups/:group_id/members/:identity/capabilities",
-  "PUT /admin-api/groups/:group_id/members/:identity/metadata",
-  "PUT /admin-api/groups/:group_id/members/:identity/role"
+  "PUT /admin-api/groups/:group_id/members/:account/auto-follow",
+  "PUT /admin-api/groups/:group_id/members/:account/capabilities",
+  "PUT /admin-api/groups/:group_id/members/:account/metadata",
+  "PUT /admin-api/groups/:group_id/members/:account/role"
 ]
