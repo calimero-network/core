@@ -1,60 +1,14 @@
-use core::convert::Infallible;
-use core::fmt;
-use core::fmt::{Debug, Display, Formatter};
-use core::marker::PhantomData;
-use std::borrow::Cow;
+use core::fmt::Debug;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use bs58::decode::Result as Bs58Result;
-use ed25519_dalek::{Signature, SignatureError, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, SignatureError, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
-use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
+use crate::repr::{self, LengthMismatch, ReprBytes};
 
 pub type ExpirationTimestamp = u64;
-pub type Revision = u64;
-
-#[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
-#[non_exhaustive]
-pub struct Application<'a> {
-    pub id: Repr<ApplicationId>,
-    pub blob: Repr<BlobId>,
-    pub size: u64,
-    #[serde(borrow)]
-    pub source: ApplicationSource<'a>,
-    pub metadata: ApplicationMetadata<'a>,
-}
-
-impl<'a> Application<'a> {
-    #[must_use]
-    pub const fn new(
-        id: Repr<ApplicationId>,
-        blob: Repr<BlobId>,
-        size: u64,
-        source: ApplicationSource<'a>,
-        metadata: ApplicationMetadata<'a>,
-    ) -> Self {
-        Application {
-            id,
-            blob,
-            size,
-            source,
-            metadata,
-        }
-    }
-}
 
 #[derive(
     Eq,
@@ -191,23 +145,6 @@ impl From<[u8; 32]> for ContextId {
     fn from(value: [u8; 32]) -> Self {
         Self(Identity(value))
     }
-}
-
-#[derive(
-    Eq,
-    Ord,
-    Debug,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    BorshSerialize,
-    BorshDeserialize,
-    Serialize,
-    Deserialize,
-)]
-pub struct ContextStorageEntry {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
 }
 
 #[derive(
@@ -520,27 +457,6 @@ impl From<[u8; 32]> for AppKey {
 }
 
 #[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
-pub struct BlobId(Identity);
-
-impl ReprBytes for BlobId {
-    type EncodeBytes<'a> = [u8; 32];
-    type DecodeBytes = [u8; 32];
-
-    type Error = LengthMismatch;
-
-    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.as_bytes()
-    }
-
-    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
-    where
-        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
-    {
-        ReprBytes::from_bytes(f).map(Self)
-    }
-}
-
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct ApplicationId(Identity);
 
 impl ReprBytes for ApplicationId {
@@ -558,52 +474,6 @@ impl ReprBytes for ApplicationId {
         F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
-    }
-}
-
-#[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Clone,
-    Debug,
-    Default,
-    Deserialize,
-    Eq,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
-#[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
-pub struct ApplicationSource<'a>(#[serde(borrow)] pub Cow<'a, str>);
-
-impl ApplicationSource<'_> {
-    #[must_use]
-    pub fn to_owned(self) -> ApplicationSource<'static> {
-        ApplicationSource(Cow::Owned(self.0.into_owned()))
-    }
-}
-
-#[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Clone,
-    Debug,
-    Default,
-    Deserialize,
-    Eq,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
-#[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
-pub struct ApplicationMetadata<'a>(#[serde(borrow)] pub Repr<Cow<'a, [u8]>>);
-
-impl ApplicationMetadata<'_> {
-    #[must_use]
-    pub fn to_owned(self) -> ApplicationMetadata<'static> {
-        ApplicationMetadata(Repr::new(Cow::Owned(self.0.into_inner().into_owned())))
     }
 }
 
@@ -673,97 +543,6 @@ impl Capability {
     }
 }
 
-#[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Signed<T> {
-    payload: Repr<Box<[u8]>>,
-    signature: Repr<Signature>,
-
-    #[serde(skip)]
-    _priv: PhantomData<T>,
-}
-
-#[derive(ThisError)]
-#[non_exhaustive]
-pub enum ConfigError<E> {
-    #[error("invalid signature")]
-    InvalidSignature,
-    #[error("json error: {0}")]
-    ParseError(#[from] serde_json::Error),
-    #[error("derivation error: {0}")]
-    DerivationError(E),
-    #[error(transparent)]
-    VerificationKeyParseError(#[from] repr::ReprError<VerificationKeyParseError>),
-}
-
-impl<E: Display> Debug for ConfigError<E> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        Display::fmt(self, f)
-    }
-}
-
-impl<T: Serialize> Signed<T> {
-    pub fn new<R, F>(payload: &T, sign: F) -> Result<Self, ConfigError<R::Error>>
-    where
-        R: IntoResult<Signature>,
-        F: FnOnce(&[u8]) -> R,
-    {
-        let payload = serde_json::to_vec(&payload)?.into_boxed_slice();
-
-        let signature = sign(&payload)
-            .into_result()
-            .map_err(ConfigError::DerivationError)?;
-
-        Ok(Self {
-            payload: Repr::new(payload),
-            signature: Repr::new(signature),
-            _priv: PhantomData,
-        })
-    }
-}
-
-pub trait IntoResult<T> {
-    type Error;
-
-    fn into_result(self) -> Result<T, Self::Error>;
-}
-
-impl<T> IntoResult<T> for T {
-    type Error = Infallible;
-
-    fn into_result(self) -> Result<T, Self::Error> {
-        Ok(self)
-    }
-}
-
-impl<T, E> IntoResult<T> for Result<T, E> {
-    type Error = E;
-
-    fn into_result(self) -> Result<T, Self::Error> {
-        self
-    }
-}
-
-impl<'a, T: Deserialize<'a>> Signed<T> {
-    pub fn parse<R, F>(&'a self, f: F) -> Result<T, ConfigError<R::Error>>
-    where
-        R: IntoResult<SignerId>,
-        F: FnOnce(&T) -> R,
-    {
-        let parsed = serde_json::from_slice(&self.payload)?;
-
-        let bytes = f(&parsed)
-            .into_result()
-            .map_err(ConfigError::DerivationError)?;
-
-        let key = bytes
-            .rt::<VerifyingKey>()
-            .map_err(ConfigError::VerificationKeyParseError)?;
-
-        key.verify(&self.payload, &self.signature)
-            .map_or(Err(ConfigError::InvalidSignature), |()| Ok(parsed))
-    }
-}
-
 /// The structure represents an open invitation payload that allows any party to claim it.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct InvitationFromMember {
@@ -805,26 +584,6 @@ pub struct SignedOpenInvitation {
     /// Group ID that owns this context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<[u8; 32]>,
-}
-
-// The full payload Bob reveals in the second transaction
-#[derive(Debug, Deserialize, Clone, Serialize)]
-pub struct RevealPayloadData {
-    /// Signed open invitation
-    pub signed_open_invitation: SignedOpenInvitation,
-    /// The identity of the member that is going to be invited (invitee).
-    /// The owner of the identity should insert this field himself and then
-    /// sign the whole structure, and wrapping it into `SignedRevealPayload`.
-    pub new_member_identity: ContextIdentity,
-}
-
-// This is the final object submitted to the `reveal` method.
-#[derive(Debug, Deserialize, Clone, Serialize)]
-pub struct SignedRevealPayload {
-    /// The data that is needed to join the context.
-    pub data: RevealPayloadData,
-    /// The invitee's signature over the `data` (`RevealPayloadData`).
-    pub invitee_signature: String,
 }
 
 /// An open invitation payload for joining a context group.
