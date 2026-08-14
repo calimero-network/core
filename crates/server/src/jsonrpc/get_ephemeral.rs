@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use calimero_server_primitives::jsonrpc::{
-    EphemeralEntry, GetEphemeralError, GetEphemeralRequest, GetEphemeralResponse,
+    EphemeralEntryValue, GetEphemeralError, GetEphemeralRequest, GetEphemeralResponse,
 };
 
 use super::{Request, RpcError, ServiceState};
@@ -31,10 +31,16 @@ impl Request for GetEphemeralRequest {
                 RpcError::MethodCallError(GetEphemeralError::InternalError(err.to_string()))
             })?;
 
+        // Author-keyed: the store is already a per-author map and the event
+        // stream delivers per-author deltas, so the snapshot keeps the same
+        // shape rather than making every caller rebuild it. `author` is unique
+        // within a context, so no entry can be lost to a key collision.
         Ok(GetEphemeralResponse::new(
             entries
                 .into_iter()
-                .map(|(author, state)| EphemeralEntry::new(author, state))
+                .map(|(author, state, age_ms)| {
+                    (author.to_string(), EphemeralEntryValue::new(state, age_ms))
+                })
                 .collect(),
         ))
     }
@@ -47,7 +53,7 @@ mod tests {
     use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
     use calimero_server_primitives::jsonrpc::{
-        EphemeralEntry, GetEphemeralRequest, GetEphemeralResponse, Request, RequestId,
+        EphemeralEntryValue, GetEphemeralRequest, GetEphemeralResponse, Request, RequestId,
         RequestPayload, Version,
     };
     use serde_json::{json, Value};
@@ -72,35 +78,57 @@ mod tests {
     fn get_ephemeral_response_round_trips() {
         let author = PublicKey::from([0xAA; 32]);
         let state_bytes = vec![9u8, 8, 7];
-        let resp =
-            GetEphemeralResponse::new(vec![EphemeralEntry::new(author, state_bytes.clone())]);
+        let mut entries = std::collections::BTreeMap::new();
+        let _ignored = entries.insert(
+            author.to_string(),
+            EphemeralEntryValue::new(state_bytes.clone(), 1_250),
+        );
+        let resp = GetEphemeralResponse::new(entries);
         let json_str = serde_json::to_string(&resp).expect("serialize");
         let decoded: GetEphemeralResponse = serde_json::from_str(&json_str).expect("deserialize");
         assert_eq!(decoded.entries.len(), 1);
-        assert_eq!(decoded.entries[0].author, author);
-        assert_eq!(decoded.entries[0].state, state_bytes);
+        let value = decoded
+            .entries
+            .get(&author.to_string())
+            .expect("entry keyed by the author's string form");
+        assert_eq!(value.state, state_bytes);
+        assert_eq!(value.age_ms, 1_250);
     }
 
     #[test]
-    fn get_ephemeral_response_entries_field_is_camel_case_and_present() {
-        let resp = GetEphemeralResponse::new(vec![]);
+    fn get_ephemeral_response_entries_is_an_object_keyed_by_author() {
+        // The snapshot is author-keyed, matching the per-author deltas on the
+        // event stream. A regression to a list would break every client that
+        // indexes by author.
+        let author = PublicKey::from([0xAA; 32]);
+        let mut entries = std::collections::BTreeMap::new();
+        let _ignored = entries.insert(author.to_string(), EphemeralEntryValue::new(vec![1], 42));
+        let json_val: Value =
+            serde_json::to_value(&GetEphemeralResponse::new(entries)).expect("serialize");
+        let obj = json_val
+            .get("entries")
+            .and_then(Value::as_object)
+            .expect("entries must be a JSON object, not an array");
+        let value = obj
+            .get(&author.to_string())
+            .expect("keyed by the author's base58 string");
+        assert_eq!(value.get("state"), Some(&json!([1])));
+        assert_eq!(
+            value.get("ageMs"),
+            Some(&json!(42)),
+            "age must be camelCase on the wire"
+        );
+        assert!(
+            value.get("author").is_none(),
+            "author is the map key, not a field"
+        );
+    }
+
+    #[test]
+    fn get_ephemeral_response_empty_is_an_empty_object() {
+        let resp = GetEphemeralResponse::new(std::collections::BTreeMap::new());
         let json_val: Value = serde_json::to_value(&resp).expect("serialize");
-        assert_eq!(json_val, json!({ "entries": [] }));
-    }
-
-    #[test]
-    fn ephemeral_entry_author_and_state_field_names() {
-        let author = PublicKey::from([0x11; 32]);
-        let entry = EphemeralEntry::new(author, vec![5, 6]);
-        let json_val: Value = serde_json::to_value(&entry).expect("serialize");
-        assert!(
-            json_val.get("author").is_some(),
-            "author field must be present"
-        );
-        assert!(
-            json_val.get("state").is_some(),
-            "state field must be present"
-        );
+        assert_eq!(json_val, json!({ "entries": {} }));
     }
 
     #[test]

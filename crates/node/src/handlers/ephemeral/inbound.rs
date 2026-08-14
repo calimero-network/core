@@ -481,7 +481,7 @@ mod tests {
         assert!(!payload.removed, "upsert must not be marked removed");
 
         // Assert the store snapshot reflects the entry.
-        let snapshot = store_under_test.snapshot(context_id);
+        let snapshot = store_under_test.snapshot(context_id, now_ms);
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].0, author);
         assert_eq!(snapshot[0].1.as_slice(), slice.as_ref());
@@ -716,10 +716,17 @@ mod tests {
             "same-bytes re-apply with higher seq must return None (no WebSocket push)"
         );
 
-        // Entry is still present with the refreshed liveness timestamp.
-        let snapshot = store.snapshot(context_id);
+        // Entry is still present with the refreshed liveness timestamp. Reading
+        // the snapshot at the second apply's timestamp must report age 0 — that
+        // is what proves the no-diff re-apply still refreshed `last_seen_ms`
+        // (before ageing was reported, this test could only assert presence).
+        let snapshot = store.snapshot(context_id, 2_000);
         assert_eq!(snapshot.len(), 1, "entry must still be present");
         assert_eq!(snapshot[0].1.as_slice(), slice.as_ref());
+        assert_eq!(
+            snapshot[0].2, 0,
+            "same-bytes re-apply must refresh last_seen_ms even though it emits no diff"
+        );
 
         // Sweep at a time that would have expired the seq=1 liveness (1_000 ms)
         // but NOT the seq=2 liveness (2_000 ms): ttl_ms=1_500, now_ms=3_000

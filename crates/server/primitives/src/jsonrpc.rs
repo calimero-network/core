@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use calimero_context_client::messages::ExecuteError;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
@@ -332,33 +334,61 @@ impl GetEphemeralRequest {
     }
 }
 
-/// A single author's live ephemeral-presence entry.
+/// One author's live ephemeral-presence entry, as carried in the
+/// [`GetEphemeralResponse`] map (the author is the map key, not a field).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct EphemeralEntry {
-    pub author: PublicKey,
+pub struct EphemeralEntryValue {
+    /// Opaque presence slice. The node never deserializes this — the encoding
+    /// is chosen client-side and travels client-to-client.
     pub state: Vec<u8>,
+    /// Milliseconds since this author was last heard from, measured on the
+    /// responding node.
+    ///
+    /// **Relative by design.** The underlying `last_seen_ms` is stamped from
+    /// the responding node's wall clock; shipping it absolute would force a
+    /// caller on another machine to subtract against its own clock, and any
+    /// skew between the two would corrupt the result. A relative age needs no
+    /// clock agreement.
+    ///
+    /// Bounded above by the node's presence TTL (7s) for any entry still in
+    /// the snapshot, and typically below the heartbeat interval (2.5s) for a
+    /// live author. Events delivered over the event stream carry no age — they
+    /// are emitted at the moment of change, so a subscriber can stamp receipt
+    /// time itself; this field exists because a *snapshot* read cannot tell a
+    /// fresh entry from a nearly-expired one.
+    pub age_ms: u64,
 }
 
-impl EphemeralEntry {
+impl EphemeralEntryValue {
     #[must_use]
-    pub const fn new(author: PublicKey, state: Vec<u8>) -> Self {
-        Self { author, state }
+    pub const fn new(state: Vec<u8>, age_ms: u64) -> Self {
+        Self { state, age_ms }
     }
 }
 
-/// Response carrying the live ephemeral-presence snapshot for a context.
+/// Response carrying the live ephemeral-presence snapshot for a context,
+/// keyed by author.
+///
+/// Author-keyed rather than a list: the node's awareness store is already a
+/// per-author map (author is unique within a context by construction), the
+/// events delivered over the event stream are per-author deltas, and every
+/// known consumer rebuilds a map immediately. Returning a list would flatten
+/// a map only to make each caller reconstruct it, and would leave the snapshot
+/// shape mismatched with the delta shape.
+///
+/// Keys are the author's public key in its string (base58) representation.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct GetEphemeralResponse {
-    pub entries: Vec<EphemeralEntry>,
+    pub entries: BTreeMap<String, EphemeralEntryValue>,
 }
 
 impl GetEphemeralResponse {
     #[must_use]
-    pub const fn new(entries: Vec<EphemeralEntry>) -> Self {
+    pub const fn new(entries: BTreeMap<String, EphemeralEntryValue>) -> Self {
         Self { entries }
     }
 }

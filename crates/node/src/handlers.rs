@@ -154,7 +154,15 @@ impl Handler<NodeMessage> for NodeManager {
                 context_id,
                 outcome,
             } => {
-                let entries = self.awareness_store.snapshot(context_id);
+                // Wall clock, same reading the inbound apply and the TTL sweep
+                // use. `unwrap_or(0)` degrades to "everything looks maximally
+                // aged" rather than panicking on a pre-epoch clock, which is the
+                // conservative direction for a freshness signal.
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let entries = self.awareness_store.snapshot(context_id, now_ms);
                 let _ = outcome.send(entries);
             }
         }

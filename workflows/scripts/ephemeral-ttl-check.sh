@@ -57,8 +57,10 @@ GET_AFTER=$(curl -sf -m 5 -X POST "$NODE2_URL/jsonrpc" \
 
 echo "  get_ephemeral response after TTL: $GET_AFTER"
 
+# `entries` is author-keyed, so presence is a direct key lookup rather than a
+# scan over a list with an `author` field.
 REMAINING=$(echo "$GET_AFTER" | jq --arg k "$NODE1_KEY" \
-  '[.result.entries[]? | select(.author == $k)] | length' 2>/dev/null || echo 0)
+  '[.result.entries[$k]? // empty] | length' 2>/dev/null || echo 0)
 
 echo "  node-1 entries remaining on node 2: $REMAINING"
 

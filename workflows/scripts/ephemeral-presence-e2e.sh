@@ -174,7 +174,8 @@ while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
     -H "Content-Type: application/json" \
     -d "$GET_BODY" 2>/dev/null || true)
 
-  ENTRIES=$(echo "$GET_RESP" | jq '.result.entries // []' 2>/dev/null || true)
+  # `entries` is an OBJECT keyed by author (base58), not a list.
+  ENTRIES=$(echo "$GET_RESP" | jq '.result.entries // {}' 2>/dev/null || true)
   COUNT=$(echo "$ENTRIES" | jq 'length' 2>/dev/null || echo 0)
 
   if [ "$COUNT" -gt 0 ]; then
@@ -190,20 +191,37 @@ else
   fail "get_ephemeral on node 2 received 0 entries after 15s — gossip not delivered"
   # Still proceed so subsequent assertions capture all failures
   GET_RESP=""
-  ENTRIES="[]"
+  ENTRIES="{}"
 fi
 
-# Verify the state bytes of the first entry are [1,2,3]
+# Verify the state bytes of the first entry are [1,2,3].
+# Entries are author-keyed, so index by value rather than position.
 # Use -c (compact) so the comparison is a single-line string.
-ENTRY_STATE=$(echo "$ENTRIES" | jq -c '.[0].state // empty' 2>/dev/null || true)
+ENTRY_STATE=$(echo "$ENTRIES" | jq -c 'to_entries[0].value.state // empty' 2>/dev/null || true)
 echo "  entry state (first): $ENTRY_STATE"
 check "node 2 entry state equals [1,2,3]" "[1,2,3]" "$ENTRY_STATE"
 
 # If node1_key was provided, verify the author field
 if [ -n "$NODE1_KEY" ]; then
-  ENTRY_AUTHOR=$(echo "$ENTRIES" | jq -r '.[0].author // empty' 2>/dev/null || true)
+  # The author is now the map KEY, not a field on the value.
+  ENTRY_AUTHOR=$(echo "$ENTRIES" | jq -r 'to_entries[0].key // empty' 2>/dev/null || true)
   echo "  entry author (first): $ENTRY_AUTHOR"
   check "node 2 entry author matches node 1 key" "$NODE1_KEY" "$ENTRY_AUTHOR"
+
+  # The entry must also be keyed directly by node 1's public key — this is what
+  # a client does (index by author) rather than scanning a list.
+  KEYED_STATE=$(echo "$ENTRIES" | jq -c --arg k "$NODE1_KEY" '.[$k].state // empty' 2>/dev/null || true)
+  check "node 2 entry is directly indexable by author key" "[1,2,3]" "$KEYED_STATE"
+
+  # Age must be present and within the TTL window (7000 ms). A live author that
+  # just published should be far fresher than that.
+  ENTRY_AGE=$(echo "$ENTRIES" | jq -r --arg k "$NODE1_KEY" '.[$k].ageMs // empty' 2>/dev/null || true)
+  echo "  entry ageMs: $ENTRY_AGE"
+  if [ -n "$ENTRY_AGE" ] && [ "$ENTRY_AGE" -ge 0 ] && [ "$ENTRY_AGE" -lt 7000 ]; then
+    ok "node 2 entry carries an ageMs inside the TTL window (got: $ENTRY_AGE)"
+  else
+    fail "node 2 entry ageMs missing or outside the TTL window" "got: '$ENTRY_AGE'"
+  fi
 else
   echo "  (node1_key not provided — skipping author assertion)"
 fi

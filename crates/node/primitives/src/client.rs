@@ -886,7 +886,7 @@ impl NodeClient {
     pub async fn ephemeral_snapshot(
         &self,
         context_id: ContextId,
-    ) -> eyre::Result<Vec<(PublicKey, Vec<u8>)>> {
+    ) -> eyre::Result<Vec<(PublicKey, Vec<u8>, u64)>> {
         let (tx, rx) = oneshot::channel();
         self.node_manager
             .send(NodeMessage::GetEphemeralSnapshot {

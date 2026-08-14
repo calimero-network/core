@@ -133,17 +133,36 @@ impl AwarenessStore {
         removals
     }
 
-    /// Snapshot of live slices for `ctx`, sorted by author bytes (stable order).
+    /// Snapshot of live slices for `ctx`, sorted by author bytes (stable order),
+    /// each carrying how long it has been since that author was last heard from.
+    ///
+    /// Returns `(author, slice, age_ms)` where `age_ms = now_ms - last_seen_ms`.
+    ///
+    /// Age is reported **relative**, never as an absolute timestamp:
+    /// `last_seen_ms` is stamped from *this* node's wall clock, so shipping it
+    /// absolute would force a reader on another machine to subtract against its
+    /// own clock and any skew between the two would corrupt the result.
+    /// Computing the difference here keeps it skew-free.
+    ///
+    /// `age_ms` is bounded above by `PRESENCE_TTL_MS` for any entry the sweep
+    /// has not yet removed, and in practice sits under `PRESENCE_HEARTBEAT_MS`
+    /// for a live author.
     ///
     /// Returns an empty `Vec` when the context has no entries.
-    pub fn snapshot(&self, ctx: ContextId) -> Vec<(PublicKey, Vec<u8>)> {
+    pub fn snapshot(&self, ctx: ContextId, now_ms: u64) -> Vec<(PublicKey, Vec<u8>, u64)> {
         let Some(per_ctx) = self.inner.get(&ctx) else {
             return vec![];
         };
         // BTreeMap already iterates in sorted (author-bytes) order.
         per_ctx
             .iter()
-            .map(|(author, entry)| (*author, entry.slice.clone()))
+            .map(|(author, entry)| {
+                (
+                    *author,
+                    entry.slice.clone(),
+                    now_ms.saturating_sub(entry.last_seen_ms),
+                )
+            })
             .collect()
     }
 
@@ -198,7 +217,8 @@ mod tests {
                 slice: vec![1]
             })
         );
-        assert_eq!(s.snapshot(ctx()), vec![(pk(1), vec![1])]);
+        // now_ms 1000 == the apply timestamp, so age is 0.
+        assert_eq!(s.snapshot(ctx(), 1000), vec![(pk(1), vec![1], 0)]);
     }
 
     #[test]
@@ -207,7 +227,9 @@ mod tests {
         s.apply(ctx(), pk(1), 5, vec![5], 1000);
         assert!(s.apply(ctx(), pk(1), 4, vec![4], 1001).is_none()); // stale
         assert!(s.apply(ctx(), pk(1), 5, vec![9], 1002).is_none()); // equal seq
-        assert_eq!(s.snapshot(ctx()), vec![(pk(1), vec![5])]);
+                                                                    // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
+                                                                    // 1000, so at now_ms 1500 the entry reads 500ms old.
+        assert_eq!(s.snapshot(ctx(), 1500), vec![(pk(1), vec![5], 500)]);
     }
 
     #[test]
@@ -219,7 +241,7 @@ mod tests {
             s.sweep(ctx(), 7000, 9000),
             vec![Diff::Remove { author: pk(1) }]
         ); // expired
-        assert!(s.snapshot(ctx()).is_empty());
+        assert!(s.snapshot(ctx(), 9000).is_empty());
     }
 
     #[test]
