@@ -1925,6 +1925,20 @@ pub struct CreateAccountApiResponseData {
     pub device_id: String,
     /// Hex-encoded epoch-0 root key of the account.
     pub account_root_key: String,
+    /// Always 32 zeros. **Dead field, kept only so an older client can decode
+    /// this response.**
+    ///
+    /// The genesis carries no nonce any more, so there is nothing for this to
+    /// report. It cannot simply be dropped: `calimero-client-py` is a Rust
+    /// binding that deserializes into this very struct, compiled into the
+    /// released wheel while the field was required — so a response omitting it
+    /// fails to parse there, which is what merobox reports as "account create
+    /// failed". Note the direction: an unknown field in a REQUEST is ignored
+    /// (nothing here sets `deny_unknown_fields`), but a missing field in a
+    /// RESPONSE is fatal to a typed client.
+    ///
+    /// Removed once a client-py release has stopped requiring it.
+    pub account_nonce: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
