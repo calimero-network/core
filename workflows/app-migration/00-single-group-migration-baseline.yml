@@ -1,4 +1,4 @@
-name: 00 — Single-group migration baseline (v1 → v2, 2-node)
+name: 00 - Single-group migration baseline (v1 → v2, 2-node)
 description: >
   2-node end-to-end baseline migration. Node 1 (admin) installs
   migration-suite-v1, creates a namespace + one Open subgroup + one
@@ -162,7 +162,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:

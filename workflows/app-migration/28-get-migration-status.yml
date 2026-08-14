@@ -9,10 +9,10 @@ description: >
   and local residue counts; peers verify the Ed25519 signature AND cohort
   membership, then upsert it into a 60s-TTL cache. The admin route
   `GET /groups/:namespace_id/migration-status` rolls the freshest heartbeat
-  per pinned-cohort member into `all_migrated` — which flips true ONLY when
+  per pinned-cohort member into `all_migrated` - which flips true ONLY when
   EVERY member reports `schema_version >= target && residue == 0`. A member
   with no fresh heartbeat is `unknown` and keeps `all_migrated = false` (no
-  false green). Observability only — never a gate.
+  false green). Observability only - never a gate.
 
   This scenario drives a migration across the 2-node namespace and reads the
   rollup the heartbeats feed, at both of its edges:
@@ -24,7 +24,7 @@ description: >
       consequence rather than through log lines.
     - When node 2 goes offline its heartbeats stop arriving at node 1; with no
       fresh heartbeat its cohort row ages out of the TTL window and the rollup
-      reports it `unknown`, keeping `all_migrated = false` — the no-false-green
+      reports it `unknown`, keeping `all_migrated = false` - the no-false-green
       contract. `fleetCompletedAt` is durable and must NOT follow it back down.
 
   The rollup's own arithmetic is additionally unit-covered in task 6c.9
@@ -32,7 +32,7 @@ description: >
   / all_migrated_true_only_when_every_pinned_member_v2_residue0).
 
   Because migration_v2 defaults ON (PR-6b task 6b.8), the heartbeat emit +
-  ingest run natively — no merobox feature flag is needed.
+  ingest run natively - no merobox feature flag is needed.
 
 no_docker: false
 nuke_on_start: true
@@ -152,7 +152,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
