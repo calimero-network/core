@@ -198,7 +198,7 @@ def load_baseline() -> set[str]:
 
 def main() -> int:
     patterns = sys.argv[1:] or [
-        "apps/*/workflows/*.yml",
+        "apps/*/workflows/**/*.yml",
         "workflows/**/*.yml",
     ]
     paths = sorted({p for pat in patterns for p in glob.glob(pat, recursive=True)})
