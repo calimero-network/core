@@ -45,6 +45,12 @@
 //! the recorder would simply restamp it, since the AEAD is sealed with empty
 //! associated data and the field rides in the clear.
 //!
+//! [`PRESENCE_MAX_SKEW_MS`] is set equal to
+//! [`PRESENCE_TTL_MS`](crate::handlers::ephemeral::PRESENCE_TTL_MS) so the
+//! window closes at exactly the moment a TTL sweep would make a recorded
+//! envelope useful, leaving no interval in which a departed peer can be
+//! resurrected. See that constant for the full trade.
+//!
 //! No I/O, no actix, no store access.
 
 use borsh::BorshSerialize;
@@ -302,6 +308,17 @@ mod tests {
         assert!(
             !is_fresh(now, now + PRESENCE_MAX_SKEW_MS + 1),
             "a far-future stamp is refused too — the window is symmetric"
+        );
+    }
+
+    /// The replay window a captured envelope buys an attacker can never exceed
+    /// the lifetime of the entry it would resurrect. See the constant's doc.
+    #[test]
+    fn freshness_window_does_not_outlive_the_entry_ttl() {
+        assert!(
+            PRESENCE_MAX_SKEW_MS <= crate::handlers::ephemeral::PRESENCE_TTL_MS,
+            "a captured envelope must stop being fresh no later than the entry \
+             it could resurrect expires"
         );
     }
 

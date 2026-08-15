@@ -13,21 +13,35 @@ pub const PRESENCE_TTL_MS: u64 = 7_000;
 /// How far a received envelope's signed `sent_at_ms` may sit from the
 /// receiver's own clock, in either direction, before it is dropped as a replay.
 ///
-/// **This is a deliberate trade, and 30s is the chosen point on it.**
-/// `sent_at_ms` is stamped from the *sender's* wall clock, so the window has to
-/// absorb the clock skew between two independent machines. Too tight and two
-/// nodes a few seconds apart reject each other's presence outright — the
-/// feature simply stops working, with a silent `debug!` as the only trace. Too
-/// loose and a recorded envelope stays replayable for that whole span. 30s
-/// tolerates the skew real machines exhibit (NTP-synced hosts sit well inside
-/// it; even an un-synced host is usually within seconds) while bounding replay
-/// to a fixed window instead of the unbounded one a receiver with no freshness
-/// binding offers.
+/// **Deliberately equal to [`PRESENCE_TTL_MS`], and the equality is the point.**
 ///
-/// Note the window is not the whole story: a replay inside it still has to beat
-/// the LWW `seq` rule in [`store::AwarenessStore::apply`], so it can only
-/// resurrect an author whose entry has already TTL-swept.
-pub const PRESENCE_MAX_SKEW_MS: u64 = 30_000;
+/// `sent_at_ms` is stamped from the *sender's* wall clock, so this window is
+/// spending clock-skew tolerance to buy a bounded replay window, and the two
+/// pull in opposite directions. Too tight and two nodes a few seconds apart
+/// reject each other's presence outright — the feature stops working with a
+/// silent `debug!` as the only trace. Too loose and a recorded envelope stays
+/// replayable for that whole span.
+///
+/// Tying it to the TTL is what makes the replay bound meaningful rather than
+/// merely finite. A replay must beat the LWW `seq` rule in
+/// [`store::AwarenessStore::apply`] (a re-injected envelope carries the seq it
+/// was recorded at, and equal-or-lower seq is a no-op), so it can only take
+/// effect on a receiver whose entry for that author has already TTL-swept —
+/// i.e. no earlier than `PRESENCE_TTL_MS` after the author's last genuine
+/// publish. With the window set to exactly that, the envelope stops being fresh
+/// at the same instant the sweep would make it useful: the resurrection window
+/// is closed, not merely capped. At the previous 30s the two were 23s apart,
+/// which is precisely the interval in which a departed peer could be rendered
+/// present again.
+///
+/// The cost is skew tolerance: 7s each way instead of 30s. That is still two
+/// orders of magnitude above what an NTP-synced host exhibits (single-digit
+/// milliseconds), and a host drifting more than 7s has clock problems that
+/// break far more than presence. Any future widening of this constant must
+/// either stay `<= PRESENCE_TTL_MS` or come with a receiver-side seen-envelope
+/// cache, since the bound above is the only thing standing between a recorded
+/// envelope and a resurrected peer.
+pub const PRESENCE_MAX_SKEW_MS: u64 = PRESENCE_TTL_MS;
 
 /// Maximum byte length of a single ephemeral awareness slice.
 ///
