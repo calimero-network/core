@@ -1,14 +1,10 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
 
-pub use calimero_context_config::client_config::ClientConfig;
 use serde::{Deserialize, Serialize};
 
-/// Node context section: client config only (local group governance; no chain).
+/// Node context section (local group governance; no chain).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContextConfig {
-    #[serde(rename = "config")]
-    pub client: ClientConfig,
-
     /// Master switch for the PR-6 hybrid zero-downtime migration framework,
     /// threaded into [`crate::ContextManagerConfig::migration_v2`] at node
     /// startup. Now that PR-6a (no-freeze) and PR-6b (absorb-don't-drop) have
@@ -31,10 +27,11 @@ mod tests {
     use super::ContextConfig;
 
     /// The on-disk `[context]` section that ships in every existing
-    /// `config.toml` (only the client signer). It must still deserialize, and
-    /// the absent `migration_v2` must default to `true` now that PR-6a
-    /// (no-freeze) and PR-6b (absorb-don't-drop) have landed — the
-    /// non-freezing migration is the node's native behavior.
+    /// `config.toml`. It still carries the `config.signer.self` block that
+    /// nodes wrote before the external-chain signer shape was removed, so this
+    /// doubles as the backward-compatibility check: the key is now unknown and
+    /// must be ignored rather than rejected. The absent `migration_v2` must
+    /// still default to `true`.
     const LEGACY_CONTEXT_SECTION: &str = r#"{
         "config": { "signer": { "self": {} } }
     }"#;

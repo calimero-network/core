@@ -168,27 +168,11 @@ suffixed keys.
 
 ## `[context]`
 
-Context client configuration (the local signer used for group governance).
+Context configuration.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `migration_v2` | bool | `true` | Master switch for the hybrid zero-downtime migration framework. Pin `false` to restore the legacy namespace-cascade write-freeze. |
-
-### `[context.config]`
-
-The client signer config. The minimal form selects the local self-signer:
-
-```toml
-[context.config.signer.self]
-```
-
-<Aside type="caution">
-`[context.config]` can also carry per-protocol external-chain signer blocks
-(e.g. `[context.config.near.testnet]`, `[context.config.signer.relayer]`). That
-surface is large, deployment-specific, and largely legacy for chainless local
-group governance — it is not enumerated here. Use the minimal self-signer form
-unless you have a specific external-chain requirement.
-</Aside>
 
 ## `[runtime]`
 
@@ -381,8 +365,6 @@ path = "blobs"
 
 [context]
 migration_v2 = true
-
-[context.config.signer.self]
 
 [runtime.limits]
 max_logs = 2048
