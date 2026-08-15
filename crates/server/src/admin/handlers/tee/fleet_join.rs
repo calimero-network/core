@@ -136,6 +136,13 @@ pub async fn handler(
             }
         };
 
+    // Captured before `account` moves into the broadcast below. Reported because
+    // the caller cannot derive it: membership is recorded against the ACCOUNT a
+    // key speaks for, so a caller holding only `public_key` has nothing it can
+    // match a member listing against, and no endpoint maps one to the other from
+    // outside the node that owns it.
+    let account_id = account.cert.account;
+
     let broadcast = BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,
         public_key: our_public_key,
@@ -461,6 +468,7 @@ pub async fn handler(
             "group_id": req.group_id,
             "namespace_id": hex::encode(ns_id.to_bytes()),
             "public_key": our_public_key.to_string(),
+            "account": hex::encode(account_id.as_bytes()),
             "admitted": admitted,
             "auto_follow_enabled": auto_follow_enabled,
             "contexts_joined": contexts_joined,

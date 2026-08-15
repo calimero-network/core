@@ -933,6 +933,17 @@ pub struct FleetJoinResponse {
     pub group_id: String,
     pub namespace_id: String,
     pub public_key: String,
+    /// Hex-encoded `AccountId` this replica speaks for.
+    ///
+    /// `public_key` is its signing key, which is NOT what a member listing
+    /// reports — membership is recorded against the account. Without this a
+    /// caller cannot check that the replica was admitted, because it has no way
+    /// to turn the key it was given into the id the listing uses.
+    ///
+    /// `serde(default)` so a response from a node predating the field still
+    /// decodes here rather than failing outright.
+    #[serde(default)]
+    pub account: String,
     pub admitted: bool,
     /// `true` if the node successfully published `MemberSetAutoFollow` for
     /// itself after admission. `false` means admission succeeded but the
