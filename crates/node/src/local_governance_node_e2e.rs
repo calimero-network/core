@@ -234,11 +234,10 @@ async fn set_member_auto_follow_handler_error_paths() {
 // just on the call failing: a handler can return the right error and still have
 // written the row on the way there.
 //
-// The delete path itself is not driven here: `delete_context` calls
-// `node_client.unsubscribe` before it reaches the signing path, and this
-// harness has no network recipient wired up. The distinction it regressed on —
-// `resolve_identity` reads, `get_or_create_identity` writes — is pinned
-// directly in `calimero-governance-store`'s namespace tests instead.
+// The delete path IS driven now. It could not be, until the stub network actor
+// answered `Unsubscribe` — `delete_context` calls it as its first act, so the
+// handler died on a dropped mailbox before reaching any logic. That is why the
+// bug below shipped: no test could reach the code that had it.
 
 /// The signer resolution refuses a group this node takes no part in, and
 /// leaves no trace of having been asked.
@@ -289,6 +288,77 @@ async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
             .participates_in(&gid)
             .unwrap(),
         "the refused call still marked this node as participating"
+    );
+}
+
+/// The regression that shipped in the identity collapse, now reachable.
+///
+/// `delete_context` resolved its signing key through `get_or_create_identity`,
+/// which notes participation — so deleting a context whose group this node had
+/// never joined recorded it as a participant. A stale `ContextGroupRef` is
+/// exactly the state that reaches here.
+///
+/// The row is not inert: `iter_identities` enumerates it and the sync layer
+/// walks that set, so the residue is a node syncing against a namespace it was
+/// never in. Asserted on `participates_in` and not merely on the error, because
+/// the handler returned the right error while writing the row anyway.
+#[actix::test]
+async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() {
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x5Bu8; 32]);
+    let context_id = calimero_primitives::context::ContextId::from([0x5Cu8; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let admin_account = calimero_context::test_support::enrol(&node.store, &gid, &admin_pk);
+
+    calimero_governance_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_account))
+        .unwrap();
+    calimero_governance_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The context row has to exist or the handler short-circuits on
+    // `has_context` and never reaches the signing path under test.
+    {
+        let meta = calimero_store::types::ContextMeta::new(
+            calimero_store::key::ApplicationMeta::new(ApplicationId::from([0x11u8; 32])),
+            /* root_hash = */ [0x01; 32],
+            /* dag_heads = */ Vec::new(),
+            /* service_name = */ None,
+        );
+        let mut handle = node.store.handle();
+        handle
+            .put(&calimero_store::key::ContextMeta::new(context_id), &meta)
+            .expect("put ContextMeta");
+    }
+    calimero_governance_store::register_context_in_group(&node.store, &gid, &context_id).unwrap();
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "precondition: this node takes no part in the group"
+    );
+
+    // Admin, so authorization passes and the identity read is what refuses.
+    let err = node
+        .context_client
+        .delete_context(&context_id, Some(admin_pk))
+        .await
+        .expect_err("no identity for the group means no detach op can be signed");
+    assert!(
+        err.to_string().contains("no signing identity"),
+        "unexpected error: {err}"
+    );
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "a delete marked this node as participating in the group it was deleting from"
     );
 }
 
