@@ -166,6 +166,13 @@ impl AwarenessStore {
 
     /// Drop entries for `ctx` whose `last_seen_ms` is older than `ttl_ms`
     /// relative to `now_ms`. Returns one `Diff::Remove` per dropped entry.
+    ///
+    /// A context left with no entries is removed from the outer map rather than
+    /// retained as an empty `BTreeMap`. The sweep is driven by
+    /// [`Self::contexts`], so an empty shell would keep re-entering the sweep
+    /// forever with nothing to do, and the outer map would grow monotonically
+    /// with every context this node ever saw presence in — permanent residue in
+    /// a subsystem whose entire premise is that it holds nothing durable.
     pub fn sweep(&mut self, ctx: ContextId, ttl_ms: u64, now_ms: u64) -> Vec<Diff> {
         let Some(per_ctx) = self.inner.get_mut(&ctx) else {
             return vec![];
@@ -180,6 +187,11 @@ impl AwarenessStore {
                 true
             }
         });
+
+        if per_ctx.is_empty() {
+            let _ignored = self.inner.remove(&ctx);
+        }
+
         removals
     }
 
@@ -280,6 +292,43 @@ mod tests {
                                                                     // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
                                                                     // 1000, so at now_ms 1500 the entry reads 500ms old.
         assert_eq!(s.snapshot(ctx(), 1500), vec![(pk(1), vec![5], 500)]);
+    }
+
+    /// Sweeping a context empty reclaims its slot in the outer map. Left
+    /// behind, the empty shells would accumulate one per context this node
+    /// ever saw presence in and be re-swept forever — durable residue in a
+    /// store whose whole point is holding nothing durable.
+    #[test]
+    fn sweeping_a_context_empty_reclaims_it() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        assert_eq!(s.contexts().count(), 1, "the context is tracked");
+
+        let removed = s.sweep(ctx(), 100, 2000);
+
+        assert_eq!(removed.len(), 1, "the only author expired");
+        assert_eq!(
+            s.contexts().count(),
+            0,
+            "an emptied context must not linger as an empty map"
+        );
+        // Re-applying must still work — removal is reclamation, not tombstoning.
+        assert!(s.apply(ctx(), pk(1), 2, vec![2], 2001).is_some());
+        assert_eq!(s.contexts().count(), 1);
+    }
+
+    /// ...but a context that still holds a live author is kept.
+    #[test]
+    fn a_partially_swept_context_is_kept() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.apply(ctx(), pk(2), 1, vec![2], 1950);
+
+        let removed = s.sweep(ctx(), 100, 2000);
+
+        assert_eq!(removed.len(), 1, "only the stale author expired");
+        assert_eq!(s.contexts().count(), 1, "the live author keeps the context");
+        assert_eq!(s.snapshot(ctx(), 2000), vec![(pk(2), vec![2], 50)]);
     }
 
     #[test]

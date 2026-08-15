@@ -324,15 +324,6 @@ impl Validate for SyncStatusRequest {
     }
 }
 
-impl Validate for SetEphemeralRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // Size is enforced by the node layer (`EPHEMERAL_MAX_BYTES`); the
-        // server handler propagates `SetEphemeralError::SliceTooLarge` if the
-        // node rejects. Nothing to bound at the parse layer.
-        Vec::new()
-    }
-}
-
 impl Validate for ExecutionRequest {
     fn validate(&self) -> Vec<ValidationError> {
         use crate::validation::helpers::{
