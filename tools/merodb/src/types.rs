@@ -112,7 +112,7 @@ impl Column {
             Self::Config => "ContextConfig { application_revision: u64, members_revision: u64 }",
             Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]> }",
             Self::State => "Raw bytes (application-specific state)",
-            Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob }",
+            Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob, delta_signature }",
             Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]>, refs: u32 }",
             Self::Application => "ApplicationMeta { bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str>, signer_id: Box<str>, services: Vec<ServiceMeta>, state_version: u32 }",
             Self::Alias => "Hash (32 bytes) - can point to ContextId, PublicKey, or ApplicationId",

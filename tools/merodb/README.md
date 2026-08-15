@@ -255,7 +255,7 @@ The tool automatically detects and decodes known Calimero types using Borsh dese
 - **ContextIdentity**: `{ private_key: Option<[u8; 32]> }`
 - **BlobMeta**: `{ size: u64, hash: [u8; 32], links: Box<[BlobId]>, refs: u32 }`
 - **ApplicationMeta**: `{ bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str>, signer_id: Box<str>, services: Vec<ServiceMeta>, state_version: u32 }`
-- **ContextDagDelta**: `{ delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob }` with detailed HLC breakdown
+- **ContextDagDelta**: `{ delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob, delta_signature }` with detailed HLC breakdown
 
 ### Unknown Data
 
