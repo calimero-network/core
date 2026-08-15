@@ -10,6 +10,13 @@ Development and debugging tools for Calimero infrastructure.
 | `merodb`       | `merodb`    | RocksDB debugging, inspection, and migration |
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
+| `ephemeral-presence-demo` | — (Node script) | Runnable two-node live-cursor demo of ephemeral presence |
+
+Everything here is a Rust crate except `ephemeral-presence-demo/`, which is a
+dependency-free Node script plus a merobox workflow — it demonstrates a
+**client-side** capability (presence is published over JSON-RPC and received on
+the event stream; no WASM and no crate is involved), so there is nothing to
+compile. See its README.md.
 
 ## cargo-mero - App Toolchain
 
