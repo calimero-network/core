@@ -5,8 +5,6 @@ use eyre::Result;
 use calimero_server_primitives::admin::AbortMigrationApiResponse;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
-use calimero_server_primitives::admin::ClaimGroupInvitationApiRequest;
-use calimero_server_primitives::admin::ClaimGroupInvitationApiResponse;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DeleteGroupApiResponse;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
@@ -174,17 +172,6 @@ where
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/subgroups"))
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn claim_group_invitation(
-        &self,
-        request: ClaimGroupInvitationApiRequest,
-    ) -> Result<ClaimGroupInvitationApiResponse> {
-        let response = self
-            .connection
-            .post("admin-api/groups/claim-invitation", request)
             .await?;
         Ok(response)
     }

@@ -2244,32 +2244,6 @@ pub struct JoinGroupApiResponseData {
     pub governance_op: String,
 }
 
-// ---- Claim Group Invitation ----
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimGroupInvitationApiRequest {
-    pub governance_op: String,
-}
-
-impl Validate for ClaimGroupInvitationApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimGroupInvitationApiResponse {
-    pub data: ClaimGroupInvitationApiResponseData,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimGroupInvitationApiResponseData {
-    pub success: bool,
-}
-
 // ---- List All Groups ----
 
 #[derive(Clone, Debug, Deserialize)]
