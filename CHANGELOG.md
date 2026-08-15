@@ -8,6 +8,12 @@
   capability request/response types behind them. The commands were shipped and
   advertised in `context --help`, but had no route, client method or handler and
   always errored. Use `meroctl group members set-caps` instead ([#3440])
+- **`Client::claim_group_invitation`** and the
+  `ClaimGroupInvitationApi{Request,Response,ResponseData}` types. **Breaking**
+  for `calimero-client` and `calimero-server-primitives`: the method was `pub`
+  on a published crate and posted to `admin-api/groups/claim-invitation`, a
+  route with no handler anywhere, so any caller got a 404. Direct
+  request-response join replaced the relay it belonged to ([#3450])
 
 ## [0.11.0-rc.10] - 2026-07-05
 
@@ -771,3 +777,4 @@ Integrations:
 [#1521]: https://github.com/calimero-network/core/pull/1521
 [#1522]: https://github.com/calimero-network/core/pull/1522
 [#3440]: https://github.com/calimero-network/core/pull/3440
+[#3450]: https://github.com/calimero-network/core/pull/3450
