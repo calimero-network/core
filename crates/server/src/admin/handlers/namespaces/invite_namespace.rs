@@ -1,6 +1,4 @@
-use calimero_governance_store::{
-    MembershipRepository, MetadataRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -55,20 +53,30 @@ pub async fn handler(
     let expiration_secs = req.expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
     if req.recursive.unwrap_or(false) {
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match NamespaceRepository::new(&state.store).resolve_identity(&namespace_id) {
-                Ok(Some((pk, _))) => pk,
+        // The node signs as itself, with the one key it holds. An explicit
+        // `requester` can only name that key — anything else asks this node
+        // to sign as somebody else.
+        let (node_pk, signing_key) =
+            match NamespaceRepository::new(&state.store).resolve_identity(&namespace_id) {
+                Ok(Some(pair)) => pair,
                 Ok(None) => {
                     return ApiError {
                         status_code: StatusCode::BAD_REQUEST,
-                        message: "requester not provided and no namespace identity available"
-                            .into(),
+                        message: "this node has no signing identity for this namespace".into(),
                     }
                     .into_response();
                 }
                 Err(err) => return parse_api_error(err).into_response(),
-            },
+            };
+        let requester = match requester {
+            Some(pk) if pk != node_pk => {
+                return ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: format!("cannot act as {pk}: this node signs as {node_pk}"),
+                }
+                .into_response();
+            }
+            _ => node_pk,
         };
 
         let requester_account = match calimero_governance_store::member_account_in_namespace(
@@ -99,19 +107,6 @@ pub async fn handler(
         ) {
             return parse_api_error(err).into_response();
         }
-
-        let signing_key =
-            match SigningKeysRepository::new(&state.store).get_key(&namespace_id, &requester) {
-                Ok(Some(sk)) => sk,
-                Ok(None) => {
-                    return ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "signing key not found for requester".into(),
-                    }
-                    .into_response();
-                }
-                Err(err) => return parse_api_error(err).into_response(),
-            };
 
         let inviter_sk = PrivateKey::from(signing_key);
         let invitations = match NamespaceRepository::new(&state.store).create_recursive_invitations(

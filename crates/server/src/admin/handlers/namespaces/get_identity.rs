@@ -12,6 +12,17 @@ use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
 
+/// Superseded by `GET /admin-api/identity`.
+///
+/// Every field it returns is node-level — one root key is one account
+/// everywhere, and a node signs with one key — so the namespace in the path
+/// cannot change the answer. What it still does is gate on participation:
+/// `None` here means "not my namespace", which the unparameterised endpoint
+/// deliberately does not answer.
+///
+/// Kept because 44 merobox scenarios drive it through the
+/// `get_namespace_identity` step, and that step calls this path. It retires
+/// once merobox has one for the node-level route.
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,

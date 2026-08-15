@@ -34,7 +34,7 @@ pub async fn handler(
 
     // Lengths are already validated; the decode still has to be handled because
     // validation and parsing are separate layers here.
-    let root_key: [u8; 32] = match hex::decode(&req.account_root_key)
+    let root_key: [u8; 32] = match hex::decode(&req.account_root_public_key)
         .ok()
         .and_then(|b| b.try_into().ok())
     {
@@ -42,7 +42,7 @@ pub async fn handler(
         None => {
             return ApiError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: "accountRootKey must be 64 hex chars (32 bytes)".to_owned(),
+                message: "accountRootPublicKey must be 64 hex chars (32 bytes)".to_owned(),
             }
             .into_response();
         }

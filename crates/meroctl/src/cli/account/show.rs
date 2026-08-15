@@ -14,16 +14,13 @@ use crate::cli::Environment;
 /// node has a root. What may be missing is the device, and a missing one is the
 /// signal that this node has not enrolled here yet.
 #[derive(Clone, Debug, Parser)]
-#[command(about = "Show this node's account for a namespace")]
-pub struct ShowCommand {
-    #[clap(name = "NAMESPACE_ID", help = "The hex-encoded namespace ID")]
-    pub namespace_id: String,
-}
+#[command(about = "Show this node's account, device and signing key")]
+pub struct ShowCommand {}
 
 impl ShowCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
-        let response = client.get_namespace_account(&self.namespace_id).await?;
+        let response = client.get_node_identity().await?;
         environment.output.write(&response);
         Ok(())
     }

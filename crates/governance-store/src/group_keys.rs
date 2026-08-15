@@ -249,10 +249,12 @@ impl<'a> GroupKeyring<'a> {
     }
 
     /// Delete every stored group encryption key (`GroupKeyEntry`) for this
-    /// group. Used by the purge/leave cascade for forward-secrecy hygiene —
-    /// mirrors `SigningKeysRepository::delete_all_for_group` (the group id is
-    /// taken from `self` rather than a parameter, since the keyring is already
-    /// scoped to one group). Idempotent.
+    /// group. Used by the purge/leave cascade for hygiene: an evicted node
+    /// has no further use for them. (Forward secrecy on the group's future
+    /// writes comes from rotation re-keying without the removed account —
+    /// a node deleting its own copy defends against nothing.) The group id
+    /// is taken from `self` rather than a parameter, since the keyring is
+    /// already scoped to one group. Idempotent.
     ///
     /// Correctness relies on `GroupKeyEntry` keys being ordered by
     /// `(group_id, key_id)`, so all of this group's keys are contiguous and the

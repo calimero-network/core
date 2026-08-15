@@ -5,7 +5,7 @@ use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_context_config::types::{AppKey, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
@@ -17,7 +17,6 @@ use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
-    SigningKeysRepository,
 };
 
 impl Handler<CreateGroupRequest> for ContextManager {
@@ -98,8 +97,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
             }
         };
 
-        let signing_key = Some(sk_bytes);
-
         // Subgroups inherit target_application_id from the parent (namespace root owns the app).
         let effective_application_id = if let Some(ref parent_id) = parent_group_id {
             let parent_meta = match MetaRepository::new(&self.datastore).load(parent_id) {
@@ -164,16 +161,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-
-        // Auto-store signing key for future use (group is about to be created with
-        // admin_identity as the first admin, so store it keyed to that identity)
-        if let Some(ref sk) = signing_key {
-            let _ = SigningKeysRepository::new(&self.datastore).store_key(
-                &group_id,
-                &admin_identity,
-                sk,
-            );
-        }
 
         // Reserve the group id SYNCHRONOUSLY, before spawning the async body.
         // The existence guard at the top of `handle` and this save both run in
@@ -323,7 +310,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             &datastore,
                             &group_id,
                             &admin_account,
-                            &admin_identity,
                             group_key_id,
                             name_written,
                         );
@@ -490,10 +476,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // already written (the `GroupMetaValue`, the founder Admin
                             // member row, the default caps, the group encryption key, and
                             // the optional name metadata — all written above in this async
-                            // block; PLUS the auto-stored signing key, which is written
-                            // PRE-ASYNC in `handle()` via `SigningKeysRepository::store_key`
-                            // before this future is spawned). Leaving them behind on a
-                            // genesis-apply
+                            // block). Leaving them behind on a genesis-apply
                             // failure would strand an orphaned root: the top-of-handler
                             // "group already exists" guard would then make every retry
                             // with the same group id fail PERMANENTLY (unrecoverable
@@ -550,17 +533,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // `genesis_apply_failure_leaves_namespace_head_unadvanced`
                             // test in governance-store for the pinned assertion.)
                             //
-                            // The signing key deleted by the helper is the one
-                            // stored PRE-ASYNC in `handle()` via
-                            // `SigningKeysRepository::store_key(&group_id,
-                            // &admin_identity, sk)`; both store and delete key the
-                            // row by `GroupSigningKey::new(group_id, public_key)`,
-                            // so it targets the exact same row.
                             rollback_local_group_rows(
                                 &datastore,
                                 &group_id,
                                 &admin_account,
-                                &admin_identity,
                                 Some(key_id),
                                 name_written,
                             );
@@ -619,7 +595,6 @@ fn rollback_local_group_rows(
     datastore: &Store,
     group_id: &ContextGroupId,
     admin_account: &calimero_account::AccountId,
-    admin_identity: &PublicKey,
     group_key_id: Option<[u8; 32]>,
     has_name: bool,
 ) {
@@ -640,9 +615,6 @@ fn rollback_local_group_rows(
         if let Err(re) = GroupKeyring::new(datastore, *group_id).delete_key_by_id(&key_id) {
             warn!(?re, ?group_id, "rollback: failed to delete group key");
         }
-    }
-    if let Err(re) = SigningKeysRepository::new(datastore).delete_key(group_id, admin_identity) {
-        warn!(?re, ?group_id, "rollback: failed to delete signing key");
     }
     if has_name {
         if let Err(re) = MetadataRepository::new(datastore).delete_group(group_id) {
@@ -706,7 +678,7 @@ mod tests {
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
         now_millis, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-        MetadataRepository, SigningKeysRepository,
+        MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -752,9 +724,6 @@ mod tests {
         CapabilitiesRepository::new(store)
             .set_default_capabilities(group, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits())
             .expect("set default caps");
-        SigningKeysRepository::new(store)
-            .store_key(group, admin, &[0x55; 32])
-            .expect("store signing key");
         let key_id = GroupKeyring::new(store, *group)
             .store_key(&[0x66; 32])
             .expect("store group key");
@@ -791,10 +760,6 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(GroupKeyring::new(&store, group).holds_any_key().unwrap());
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&group, &admin)
-            .unwrap()
-            .is_some());
         assert!(MetadataRepository::new(&store)
             .group_metadata(&group)
             .unwrap()
@@ -804,7 +769,6 @@ mod tests {
             &store,
             &group,
             &crate::test_support::account_for(&admin),
-            &admin,
             Some(key_id),
             true,
         );
@@ -832,13 +796,6 @@ mod tests {
             "group key"
         );
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&group, &admin)
-                .unwrap()
-                .is_none(),
-            "signing key"
-        );
-        assert!(
             MetadataRepository::new(&store)
                 .group_metadata(&group)
                 .unwrap()
@@ -860,7 +817,6 @@ mod tests {
             &store,
             &victim,
             &crate::test_support::account_for(&admin),
-            &admin,
             Some(key_id),
             true,
         );
@@ -882,10 +838,6 @@ mod tests {
         assert!(GroupKeyring::new(&store, bystander)
             .holds_any_key()
             .unwrap());
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&bystander, &admin)
-            .unwrap()
-            .is_some());
         assert!(MetadataRepository::new(&store)
             .group_metadata(&bystander)
             .unwrap()
@@ -919,7 +871,6 @@ mod tests {
             &store,
             &group,
             &crate::test_support::account_for(&admin),
-            &admin,
             None,
             false,
         );

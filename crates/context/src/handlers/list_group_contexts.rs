@@ -18,7 +18,7 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
+            let Some((node_identity, _)) = self.node_signing_key(&group_id) else {
                 bail!("node has no group identity configured");
             };
             if !crate::scope_projection::ScopeProjections::member_now_checked(

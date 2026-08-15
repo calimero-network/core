@@ -20,11 +20,11 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
             let mut summaries = Vec::with_capacity(entries.len());
             for (group_id_bytes, meta) in entries {
                 let group_id = ContextGroupId::from(group_id_bytes);
-                let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
+                let Some((node_identity, _)) = self.node_signing_key(&group_id) else {
                     continue;
                 };
                 // Skip (don't abort the whole listing) on a per-group membership
-                // error — mirrors the `node_namespace_identity` miss above. A
+                // error — mirrors the `node_signing_key` miss above. A
                 // transient store fault on one group must not discard every group
                 // already accumulated.
                 let is_member = match crate::scope_projection::ScopeProjections::member_now_checked(

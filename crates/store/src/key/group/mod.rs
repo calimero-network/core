@@ -445,69 +445,6 @@ impl Debug for GroupUpgradeLadder {
     }
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupSigningKey(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupSigningKey {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], public_key: PrimitivePublicKey) -> Self {
-        Self(Key(GenericArray::from([GROUP_SIGNING_KEY_PREFIX])
-            .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*public_key))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn public_key(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
-    }
-}
-
-impl AsKeyParts for GroupSigningKey {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupSigningKey {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupSigningKey {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupSigningKey")
-            .field("group_id", &self.group_id())
-            .field("public_key", &self.public_key())
-            .finish()
-    }
-}
-
-/// Stored against [`GroupSigningKey`]. Holds the private key for a group member.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupSigningKeyValue {
-    pub private_key: [u8; 32],
-}
-
 // ---------------------------------------------------------------------------
 // Group permission key types
 // ---------------------------------------------------------------------------
@@ -2930,7 +2867,7 @@ pub struct GroupKeyValue {
 /// Presence means: this node was confirmed TEE-self-evicted from the
 /// namespace and its local-state cascade purge has not yet fully completed.
 /// Written before the cascade runs (so a crash mid-cascade is covered) and
-/// cleared only once the signing-key purge fully succeeds. The startup
+/// cleared only once the row purge fully succeeds. The startup
 /// reconcile sweep enumerates these markers and completes ONLY the
 /// namespaces still flagged AND still-evicted — see the `self_purge` module
 /// in `calimero-context` (#2721).
@@ -3189,17 +3126,6 @@ mod tests {
         assert_eq!(key.group_id(), gid);
         assert_eq!(key.as_key().as_bytes()[0], GROUP_UPGRADE_LADDER_PREFIX);
         assert_eq!(key.as_key().as_bytes().len(), 33);
-    }
-
-    #[test]
-    fn group_signing_key_roundtrip() {
-        let gid = [0x55; 32];
-        let pk = PrimitivePublicKey::from([0x66; 32]);
-        let key = GroupSigningKey::new(gid, pk);
-        assert_eq!(key.group_id(), gid);
-        assert_eq!(key.public_key(), pk);
-        assert_eq!(key.as_key().as_bytes()[0], GROUP_SIGNING_KEY_PREFIX);
-        assert_eq!(key.as_key().as_bytes().len(), 65);
     }
 
     #[test]

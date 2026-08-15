@@ -12,9 +12,7 @@ use tracing::{info, warn};
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
-use calimero_governance_store::{
-    GroupKeyring, MembershipRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{GroupKeyring, MembershipRepository, NamespaceRepository};
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
 /// `member`, signed with the verifier's namespace identity (`signer_sk`).
@@ -98,18 +96,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        let requester = match node_identity {
-            Some((pk, _)) => pk,
-            None => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "node has no configured group identity for TEE admission"
-                )))
-            }
+        let (_requester, node_sk) = match self.resolve_signer(&group_id, None) {
+            Ok(pair) => pair,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
-
-        let node_sk = node_identity.map(|(_, sk)| sk);
 
         let policy = match calimero_governance_store::read_tee_admission_policy(
             &self.datastore,
@@ -207,30 +197,16 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(e) => return ActorResponse::reply(Err(e)),
         }
 
-        if let Some(ref sk) = node_sk {
-            if let Err(err) =
-                SigningKeysRepository::new(&self.datastore).store_key(&group_id, &requester, sk)
-            {
-                tracing::warn!(?group_id, %requester, error = %err, "Failed to persist group signing key");
-            }
-        }
-
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let effective_signing_key = node_sk.or_else(|| {
-            SigningKeysRepository::new(&self.datastore)
-                .get_key(&group_id, &requester)
-                .ok()
-                .flatten()
-        });
+        // The fallback this used to have read the same key back out of a per-group
+        // store that the line above had just written it into. One key, held here.
+        let effective_signing_key = node_sk;
 
         ActorResponse::r#async(
             async move {
-                let sk =
-                    PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                        eyre::eyre!("no signing key available for TEE admission")
-                    })?);
+                let sk = PrivateKey::from(effective_signing_key);
                 // Two forms, one decision: does this admission have to carry a
                 // credential?
                 //

@@ -64,7 +64,6 @@ mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
 mod reentry;
-mod signing_keys;
 mod tee;
 pub mod unified_op_decode;
 mod upgrade_ladder;
@@ -135,7 +134,6 @@ pub use self::node_device::{
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
-pub use self::signing_keys::SigningKeysRepository;
 
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, tee_admission_record,
@@ -200,7 +198,7 @@ pub fn placeholder_admin_identity() -> AccountId {
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceCreatedRejection, NamespaceError, SigningKeysError,
+    NamespaceCreatedRejection, NamespaceError,
 };
 
 // ---------------------------------------------------------------------------
@@ -468,20 +466,6 @@ impl<'a> GroupHandle<'a> {
     }
     pub fn sign_apply_op(&self, signer_sk: &PrivateKey, op: GroupOp) -> EyreResult<SignedOpOutput> {
         sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op)
-    }
-
-    // --- Signing keys ---
-    pub fn store_signing_key(&self, pk: &PublicKey, sk: &[u8; 32]) -> EyreResult<()> {
-        SigningKeysRepository::new(self.store).store_key(&self.group_id, pk, sk)
-    }
-    pub fn get_signing_key(&self, pk: &PublicKey) -> EyreResult<Option<[u8; 32]>> {
-        SigningKeysRepository::new(self.store).get_key(&self.group_id, pk)
-    }
-    pub fn delete_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
-        SigningKeysRepository::new(self.store).delete_key(&self.group_id, pk)
-    }
-    pub fn require_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
-        SigningKeysRepository::new(self.store).require_key(&self.group_id, pk)
     }
 
     // --- Group keys ---

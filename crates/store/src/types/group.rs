@@ -97,11 +97,6 @@ impl PredefinedEntry for key::GroupUpgradeLadder {
     type DataType<'a> = key::UpgradeLadderValue;
 }
 
-impl PredefinedEntry for key::GroupSigningKey {
-    type Codec = Borsh;
-    type DataType<'a> = key::GroupSigningKeyValue;
-}
-
 impl PredefinedEntry for key::GroupMemberCapability {
     type Codec = Borsh;
     type DataType<'a> = key::GroupMemberCapabilityValue;

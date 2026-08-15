@@ -7492,3 +7492,64 @@ fn a_receiver_that_applied_genesis_can_authorize_the_founder() {
          publishes is refused or parked here while it accepts them itself"
     );
 }
+
+/// `resolve_identity` reads; `get_or_create_identity` writes. Nothing in the
+/// names says so, and the difference is load-bearing: `get_or_create_identity`
+/// notes participation, and `iter_identities` — which the sync layer walks —
+/// enumerates exactly what that writes.
+///
+/// So a caller that only wants to know "what do I sign with" and reaches for
+/// the `get_or_create` variant silently enlists this node in a namespace. That
+/// shipped once, on the `delete_context` path, where a delete for a group the
+/// node had never joined recorded it as a participant.
+#[test]
+fn resolving_an_identity_does_not_enlist_the_node_but_get_or_create_does() {
+    let store = test_store();
+    let ns = ContextGroupId::from([0x71u8; 32]);
+
+    assert!(
+        !NamespaceRepository::new(&store)
+            .participates_in(&ns)
+            .unwrap(),
+        "precondition: no participation row yet"
+    );
+
+    // The read path. Returns nothing, and — the point — leaves nothing.
+    assert!(
+        NamespaceRepository::new(&store)
+            .resolve_identity(&ns)
+            .unwrap()
+            .is_none(),
+        "a namespace this node never joined has no identity to resolve"
+    );
+    assert!(
+        !NamespaceRepository::new(&store)
+            .participates_in(&ns)
+            .unwrap(),
+        "resolve_identity must not enlist the node in the namespace it was asked about"
+    );
+
+    // The write path, for contrast: this is what joining is supposed to use.
+    let _ = NamespaceRepository::new(&store)
+        .get_or_create_identity(&ns)
+        .unwrap();
+    assert!(
+        NamespaceRepository::new(&store)
+            .participates_in(&ns)
+            .unwrap(),
+        "get_or_create_identity is the enlisting one; if this fails the join paths are broken"
+    );
+
+    // And now the read path finds it — same key, no second identity minted.
+    let resolved = NamespaceRepository::new(&store)
+        .resolve_identity(&ns)
+        .unwrap()
+        .expect("identity present after get_or_create");
+    let again = NamespaceRepository::new(&store)
+        .get_or_create_identity(&ns)
+        .unwrap();
+    assert_eq!(
+        resolved.0, again.1,
+        "one node, one signing key — a second call must not mint another"
+    );
+}

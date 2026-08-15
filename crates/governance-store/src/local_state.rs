@@ -1,7 +1,7 @@
 use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, NamespaceRepository, ReentryRepository, SigningKeysRepository,
-    UpgradeLadderRepository, UpgradesRepository,
+    MetadataRepository, NamespaceRepository, ReentryRepository, UpgradeLadderRepository,
+    UpgradesRepository,
 };
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::SignedGroupOp;
@@ -481,7 +481,6 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     MetadataRepository::new(store).delete_group(group_id)?;
     UpgradesRepository::new(store).delete(group_id)?;
     UpgradeLadderRepository::new(store).delete(group_id)?;
-    SigningKeysRepository::new(store).delete_all_for_group(group_id)?;
     // Forward secrecy: also drop the AES group *encryption* keys. Like the
     // signing-key delete above, a failure here propagates via `?`, so the
     // cascade classifies it as a per-group purge failure and keeps the

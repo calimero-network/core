@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::MAX_NAMESPACE_DEPTH;
-use calimero_governance_store::{MembershipRepository, NamespaceRepository, SigningKeysRepository};
+use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 
 /// Domain-separation tag prepended to the serialized payload before signing.
 /// Verifiers MUST reconstruct the signed bytes as `OWNERSHIP_PROOF_DOMAIN ||
@@ -163,11 +163,21 @@ pub(crate) fn build_ownership_proof(
         bail!("context {context_id:?} is not within the namespace rooted at {group_id:?}");
     }
 
-    let Some(signing_key_bytes) =
-        SigningKeysRepository::new(store).resolve(&group_id, &node_identity)?
+    // The node's own key, read from where it lives rather than from a per-group
+    // copy of it. The identity lookup is gated on participation, so `None` here
+    // means this node takes no part in the namespace — which is the real reason
+    // it could not sign, and what the old "no signing key registered" message
+    // obscured.
+    let Some((resolved_pk, signing_key_bytes)) =
+        NamespaceRepository::new(store).identity(&group_id)?
     else {
-        bail!("no signing key registered for self-identity in this group");
+        bail!("this node takes no part in the namespace rooted at {group_id:?}, so it cannot sign an ownership proof");
     };
+    if resolved_pk != node_identity {
+        bail!(
+            "this node signs as {resolved_pk}, not {node_identity}; a node has one signing identity"
+        );
+    }
 
     let max_exp = now_ms.saturating_add(MAX_PROOF_LIFETIME_MS);
     let expires_at_ms = requested_expires_at_ms.min(max_exp);
@@ -176,11 +186,10 @@ pub(crate) fn build_ownership_proof(
     }
 
     // Derive the signer identity from the resolved signing key itself rather
-    // than trusting `node_identity`. In all reachable states these are equal
-    // (signing keys are stored keyed by their own public key — see
-    // `register_signing_key.rs`), but mdma cross-checks that
-    // `payload.issuer_identity == response.signer_public_key` byte-for-byte,
-    // so both MUST come from the same source of truth: the private key.
+    // than trusting `node_identity` — the check above already proved they
+    // agree, but mdma cross-checks that `payload.issuer_identity ==
+    // response.signer_public_key` byte-for-byte, so both MUST come from the
+    // same source of truth: the private key.
     let private_key = PrivateKey::from(signing_key_bytes);
     let signer_public_key = private_key.public_key();
 
@@ -250,11 +259,21 @@ pub(crate) fn build_namespace_ownership_proof(
         bail!("group_id must reference a namespace root group");
     }
 
-    let Some(signing_key_bytes) =
-        SigningKeysRepository::new(store).resolve(&group_id, &node_identity)?
+    // The node's own key, read from where it lives rather than from a per-group
+    // copy of it. The identity lookup is gated on participation, so `None` here
+    // means this node takes no part in the namespace — which is the real reason
+    // it could not sign, and what the old "no signing key registered" message
+    // obscured.
+    let Some((resolved_pk, signing_key_bytes)) =
+        NamespaceRepository::new(store).identity(&group_id)?
     else {
-        bail!("no signing key registered for self-identity in this group");
+        bail!("this node takes no part in the namespace rooted at {group_id:?}, so it cannot sign an ownership proof");
     };
+    if resolved_pk != node_identity {
+        bail!(
+            "this node signs as {resolved_pk}, not {node_identity}; a node has one signing identity"
+        );
+    }
 
     let max_exp = now_ms.saturating_add(MAX_PROOF_LIFETIME_MS);
     let expires_at_ms = requested_expires_at_ms.min(max_exp);
@@ -306,7 +325,7 @@ impl Handler<IssueOwnershipProofRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_namespace_identity(&req.group_id) else {
+            let Some((node_identity, _)) = self.node_signing_key(&req.group_id) else {
                 bail!("node has no group identity configured");
             };
 
@@ -345,7 +364,7 @@ impl Handler<IssueNamespaceOwnershipProofRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some((node_identity, _)) = self.node_namespace_identity(&req.group_id) else {
+            let Some((node_identity, _)) = self.node_signing_key(&req.group_id) else {
                 bail!("node has no group identity configured");
             };
 
@@ -387,9 +406,7 @@ mod tests {
 
     use super::{build_namespace_ownership_proof, build_ownership_proof, OWNERSHIP_PROOF_DOMAIN};
     use calimero_governance_store;
-    use calimero_governance_store::{
-        MembershipRepository, NamespaceRepository, SigningKeysRepository,
-    };
+    use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 
     const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -397,7 +414,8 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
-    fn setup_admin_with_signing_key() -> (Store, ContextGroupId, ContextId, PublicKey, PrivateKey) {
+    fn setup_admin_with_node_identity() -> (Store, ContextGroupId, ContextId, PublicKey, PrivateKey)
+    {
         let store = test_store();
         let group_id = ContextGroupId::from([0xAA; 32]);
         let context_id = ContextId::from([0xBB; 32]);
@@ -412,9 +430,9 @@ mod tests {
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
-        SigningKeysRepository::new(&store)
-            .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
-            .expect("store signing key");
+        NamespaceRepository::new(&store)
+            .replace_identity(&group_id, &signing_pub, signing_priv.as_bytes())
+            .expect("seed node identity");
         calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
 
@@ -424,7 +442,7 @@ mod tests {
     #[test]
     fn happy_path_signature_verifies_and_payload_clamped() {
         let (store, group_id, context_id, signing_pub, _signing_priv) =
-            setup_admin_with_signing_key();
+            setup_admin_with_node_identity();
 
         // Request a 1-hour expiry; should be clamped to 5 minutes.
         let requested_expires_at_ms = NOW_MS + (60 * 60 * 1000);
@@ -494,13 +512,14 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_no_signing_key_registered() {
+    fn errors_when_node_takes_no_part_in_the_namespace() {
         let store = test_store();
         let group_id = ContextGroupId::from([0xAA; 32]);
         let context_id = ContextId::from([0xBB; 32]);
         let identity = PublicKey::from([0x44; 32]);
 
-        // Admin row exists and context is registered, but no signing key.
+        // Admin row exists and the context is registered, but this node holds
+        // no identity for the namespace — it takes no part there.
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
@@ -522,14 +541,14 @@ mod tests {
             NOW_MS + 1_000,
             NOW_MS,
         )
-        .expect_err("expected missing-signing-key error");
-        assert!(err.to_string().contains("signing key"));
+        .expect_err("expected takes-no-part error");
+        assert!(err.to_string().contains("takes no part in the namespace"));
     }
 
     #[test]
     fn errors_when_expires_at_is_in_the_past() {
         let (store, group_id, context_id, signing_pub, _signing_priv) =
-            setup_admin_with_signing_key();
+            setup_admin_with_node_identity();
 
         let err = build_ownership_proof(
             &store,
@@ -549,7 +568,7 @@ mod tests {
     #[test]
     fn equal_to_now_is_rejected() {
         let (store, group_id, context_id, signing_pub, _signing_priv) =
-            setup_admin_with_signing_key();
+            setup_admin_with_node_identity();
 
         let err = build_ownership_proof(
             &store,
@@ -578,8 +597,7 @@ mod tests {
         let signing_priv = PrivateKey::from([0x33; 32]);
         let signing_pub = signing_priv.public_key();
 
-        // Admin + signing key registered at the root (resolve_group_signing_key
-        // walks up from the requested group, so a root key is reachable).
+        // Admin + node identity at the root.
         MembershipRepository::new(&store)
             .add_member(
                 &root,
@@ -587,9 +605,9 @@ mod tests {
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
-        SigningKeysRepository::new(&store)
-            .store_key(&root, &signing_pub, signing_priv.as_bytes())
-            .expect("store signing key");
+        NamespaceRepository::new(&store)
+            .replace_identity(&root, &signing_pub, signing_priv.as_bytes())
+            .expect("seed node identity");
 
         // Context lives in `child`, which is nested under `root`.
         NamespaceRepository::new(&store)
@@ -622,7 +640,7 @@ mod tests {
 
     #[test]
     fn context_in_unrelated_group_bails() {
-        let (store, group_id, _ctx, signing_pub, _signing_priv) = setup_admin_with_signing_key();
+        let (store, group_id, _ctx, signing_pub, _signing_priv) = setup_admin_with_node_identity();
 
         // A context registered in a group that is neither `group_id` nor a
         // descendant of it must not be claimable under `group_id`.
@@ -646,48 +664,43 @@ mod tests {
         assert!(err.to_string().contains("not within the namespace"));
     }
 
+    /// A node holds ONE signing identity, so `node_identity` naming anything
+    /// other than the key this node actually signs with is a caller error —
+    /// and one worth refusing loudly. mdma cross-checks
+    /// `payload.issuer_identity == signer_public_key` byte-for-byte, so
+    /// silently signing under the resolved key while the caller believed it
+    /// was signing under another would produce a proof that fails validation
+    /// downstream, with nothing local to point at.
     #[test]
-    fn signer_public_key_is_derived_from_signing_key_not_node_identity() {
-        // In all states reachable via `register_signing_key.rs` the stored key
-        // is keyed by its own derived public key, so `node_identity` and the
-        // signer key coincide. This test deliberately constructs a divergent
-        // store state (signing key stored under a `node_identity` that does
-        // NOT equal `PrivateKey::from(bytes).public_key()`) to prove the
-        // handler derives `signer_public_key` from the key material itself —
-        // mdma cross-checks `payload.issuer_identity == signer_public_key`.
+    fn refuses_to_sign_when_node_identity_is_not_this_nodes_key() {
         let store = test_store();
         let group_id = ContextGroupId::from([0xAA; 32]);
         let context_id = ContextId::from([0xBB; 32]);
 
-        // The real signing key the proof is produced with.
+        // The key this node actually signs with.
         let real_priv = PrivateKey::from([0x33; 32]);
         let real_pub = real_priv.public_key();
 
-        // A distinct admin identity used as `node_identity`; the signing key is
-        // stored *keyed by this identity* but with `real_priv`'s bytes, so the
-        // lookup succeeds yet the derived pubkey differs from node_identity.
-        let node_identity = PublicKey::from([0x77; 32]);
-        assert_ne!(
-            node_identity, real_pub,
-            "scenario requires node_identity != derived signing pubkey"
-        );
+        // A different identity the caller asks to sign as.
+        let other_identity = PublicKey::from([0x77; 32]);
+        assert_ne!(other_identity, real_pub);
 
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::enrol(&store, &group_id, &node_identity),
+                &crate::test_support::enrol(&store, &group_id, &other_identity),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
-        SigningKeysRepository::new(&store)
-            .store_key(&group_id, &node_identity, real_priv.as_bytes())
-            .expect("store signing key keyed by node_identity");
+        NamespaceRepository::new(&store)
+            .replace_identity(&group_id, &real_pub, real_priv.as_bytes())
+            .expect("seed node identity");
         calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
 
-        let out = build_ownership_proof(
+        let err = build_ownership_proof(
             &store,
-            node_identity,
+            other_identity,
             group_id,
             context_id,
             "mdma.cloud",
@@ -696,32 +709,17 @@ mod tests {
             NOW_MS + 1_000,
             NOW_MS,
         )
-        .expect("happy path with divergent stored key");
-
-        // signer_public_key derives from the signing key, NOT node_identity.
-        assert_eq!(out.signer_public_key, real_pub);
-        assert_ne!(out.signer_public_key, node_identity);
-
-        // Signature verifies against the derived key.
-        let mut sign_input =
-            Vec::with_capacity(OWNERSHIP_PROOF_DOMAIN.len() + out.signed_payload.len());
-        sign_input.extend_from_slice(OWNERSHIP_PROOF_DOMAIN);
-        sign_input.extend_from_slice(&out.signed_payload);
-        out.signer_public_key
-            .verify_raw_signature(&sign_input, &out.signature)
-            .expect("signature must verify against derived signer key");
-
-        // payload.issuer_identity must equal response.signer_public_key.
-        let json: Value =
-            serde_json::from_slice(&out.signed_payload).expect("payload must be valid JSON");
-        assert_eq!(json["issuer_identity"], out.signer_public_key.to_string());
-        assert_eq!(json["issuer_identity"], real_pub.to_string());
+        .expect_err("signing as another identity must be refused");
+        assert!(
+            err.to_string().contains("one signing identity"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn namespace_proof_no_context_succeeds() {
-        // Admin + signing key registered at the namespace-root group, but NO
-        // context is registered anywhere. A context-scoped proof would bail on
+        // Admin + node identity at the namespace-root group, but NO context is
+        // registered anywhere. A context-scoped proof would bail on
         // the containment walk; the namespace primitive must succeed.
         let store = test_store();
         let group_id = ContextGroupId::from([0xAA; 32]);
@@ -736,9 +734,9 @@ mod tests {
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
-        SigningKeysRepository::new(&store)
-            .store_key(&group_id, &signing_pub, signing_priv.as_bytes())
-            .expect("store signing key");
+        NamespaceRepository::new(&store)
+            .replace_identity(&group_id, &signing_pub, signing_priv.as_bytes())
+            .expect("seed node identity");
 
         let out = build_namespace_ownership_proof(
             &store,
@@ -824,9 +822,9 @@ mod tests {
                 GroupMemberRole::Admin,
             )
             .expect("add admin at child");
-        SigningKeysRepository::new(&store)
-            .store_key(&child, &signing_pub, signing_priv.as_bytes())
-            .expect("store signing key at child");
+        NamespaceRepository::new(&store)
+            .replace_identity(&root, &signing_pub, signing_priv.as_bytes())
+            .expect("seed node identity");
 
         // `child` is nested under the namespace root `root`, so
         // `NamespaceRepository::new(child).parent()` is `Some(root)`.
@@ -853,7 +851,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_and_oversized_and_control_and_short_nonce_fields() {
-        let (store, group_id, context_id, signing_pub, _sk) = setup_admin_with_signing_key();
+        let (store, group_id, context_id, signing_pub, _sk) = setup_admin_with_node_identity();
         let valid_nonce = "deadbeefcafebabe1122334455667788";
         let over = "x".repeat(super::MAX_PROOF_FIELD_LEN + 1);
 

@@ -28,7 +28,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         // until they do the same.
         let requester = match requester {
             Some(pk) => pk,
-            None => match self.node_namespace_identity(&namespace_id) {
+            None => match self.node_signing_key(&namespace_id) {
                 Some((pk, _)) => pk,
                 None => {
                     return ActorResponse::reply(Err(eyre::eyre!(

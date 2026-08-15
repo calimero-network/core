@@ -644,6 +644,24 @@ impl<'a> NamespaceRepository<'a> {
         self.note_participation(namespace_id)
     }
 
+    /// The key this node signs with, regardless of scope.
+    ///
+    /// [`Self::identity`] gates the same key on participation, because its
+    /// callers are asking "who am I *here*" and `None` has to mean "not my
+    /// namespace". This one answers the node-level question directly, for a
+    /// caller that has no namespace in hand — reporting what the node is, rather
+    /// than what it is within something.
+    pub fn node_identity(&self) -> EyreResult<Option<NamespaceIdentityRecord>> {
+        let handle = self.store.handle();
+        match handle.get(&NodeIdentity::new())? {
+            Some(val) => Ok(Some(NamespaceIdentityRecord {
+                public_key: PublicKey::from(val.public_key),
+                private_key: val.private_key,
+            })),
+            None => Ok(None),
+        }
+    }
+
     /// Whether this node takes part in `namespace_id`.
     ///
     /// Distinct from holding a signing key: the key is node-level and outlives

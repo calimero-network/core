@@ -29,7 +29,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // arm in execute_group_deleted re-enumerates locally and rejects
         // payload mismatches (deterministic-application check across peers).
         // See spec docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
-        let node_identity = self.node_namespace_identity(&group_id);
+        let node_identity = self.node_signing_key(&group_id);
 
         let requester = match requester {
             Some(pk) => pk,

@@ -29,7 +29,7 @@ use crate::admin::handlers::context::{
     get_contexts_with_executors_for_application, join_context, leave_context, resync_context, sync,
     update_context_application,
 };
-use crate::admin::handlers::identity::generate_context_identity;
+use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
@@ -158,6 +158,7 @@ pub(crate) fn setup(
             "/identity/context",
             post(generate_context_identity::handler),
         )
+        .route("/identity", get(get_node_identity::handler))
         .nest(
             "/contexts/sync",
             Router::new()
@@ -254,10 +255,6 @@ pub(crate) fn setup(
             post(groups::retry_group_upgrade::handler),
         )
         .route(
-            "/groups/:group_id/signing-key",
-            post(groups::register_signing_key::handler),
-        )
-        .route(
             "/groups/:group_id/issue-ownership-proof",
             post(groups::issue_ownership_proof::handler),
         )
@@ -311,7 +308,7 @@ pub(crate) fn setup(
         .route("/groups/join", post(groups::join_group::handler))
         .route(
             "/namespaces/:namespace_id/account",
-            post(namespaces::create_account::handler).get(namespaces::get_account::handler),
+            post(namespaces::create_account::handler),
         )
         .route(
             "/namespaces/:namespace_id/account/pair-init",

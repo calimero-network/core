@@ -18,7 +18,7 @@
 
 use calimero_governance_store::{
     MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
-    SigningKeysRepository, UpgradeLadderRepository, UpgradesRepository,
+    UpgradeLadderRepository, UpgradesRepository,
 };
 use std::time::Duration;
 
@@ -296,12 +296,11 @@ fn provision_namespace(
     );
 
     // `dispatch_cascade` requires a signing key resolvable for the
-    // requester on the signed group. We stash it under NS only; the
-    // descendant `save_group_upgrade` writes don't need a per-group
-    // signing key.
-    SigningKeysRepository::new(store)
-        .store_key(&ns, &admin_pk, admin_sk.as_bytes())
-        .expect("store signing key");
+    // requester on the signed group: the node signs as its own identity,
+    // so seed that identity as the admin's key.
+    NamespaceRepository::new(store)
+        .replace_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("seed node identity");
 
     CascadeFixture {
         admin_pk,
@@ -756,9 +755,9 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
     // referenced — that's what makes it discoverable as a rung.
     let sibling = ContextGroupId::from([0x72; 32]);
     provision_group(&node.store, &sibling, admin_pk, blobs.v2, app_id);
-    SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_pk, admin_sk.as_bytes())
-        .expect("store signing key");
+    NamespaceRepository::new(&node.store)
+        .replace_identity(&gid, &admin_pk, admin_sk.as_bytes())
+        .expect("seed node identity");
 
     let response = node
         .context_client
@@ -816,9 +815,9 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
     let gid = ContextGroupId::from([0x73; 32]);
     provision_group(&node.store, &gid, admin_pk, blobs.v1, app_id);
     register_context_for(&node.store, &gid, ContextId::from([0xC6; 32]), app_id);
-    SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_pk, admin_sk.as_bytes())
-        .expect("store signing key");
+    NamespaceRepository::new(&node.store)
+        .replace_identity(&gid, &admin_pk, admin_sk.as_bytes())
+        .expect("seed node identity");
 
     let err = node
         .context_client
