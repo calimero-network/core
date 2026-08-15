@@ -1,22 +1,28 @@
-name: "Ephemeral Presence e2e — 2-node delivery + no-DAG-growth guard"
+name: "Ephemeral Presence e2e — delivery, replay-on-subscribe + no-DAG-growth guard"
 description: >
-  Two native nodes share one context. Node 1 calls the JSON-RPC
-  set_ephemeral method with a small state slice; the workflow asserts that
-  (a) node 2 observes the slice via gossip delivery, and (b) the context
-  state hash on node 2 is identical before and after the ephemeral call —
-  proving that ephemeral presence never touches the DAG (the load-bearing
-  "no new DAG ops" invariant). A TTL expiry check verifies the entry is
-  evicted from the awareness store after PRESENCE_TTL_MS (7 s).
+  Two native nodes share one context. Node 1 publishes a presence slice with
+  the JSON-RPC set_ephemeral method; the workflow asserts that
 
-  set_ephemeral / get_ephemeral are node JSON-RPC methods (not WASM app
-  methods), so they are driven via a shell script step that POSTs raw
-  JSON-RPC to /jsonrpc. Nodes run in Proxy auth mode (default), so no
-  Bearer token is required.
+    (a) a live subscriber on node 2 receives it over gossip,
+    (b) a subscriber that connects AFTERWARDS is seeded with the entry it
+        missed — replay-on-subscribe, carrying `ageMs` — over both WS and SSE,
+    (c) that seed reaches only the connection that asked for it,
+    (d) node 1's context state hash is identical before and after the presence
+        write, measured against a NON-NULL baseline, proving presence never
+        touches the DAG (the load-bearing invariant), and
+    (e) the entry is evicted from node 2 after PRESENCE_TTL_MS (7 s).
 
-  This is the e2e guard for Tasks 1-9 of the core ephemeral-presence plan.
-  The no-DAG-growth assertion (Phase 4 in the script) is the load-bearing
-  guard: it must stay green for any future refactor that touches the
-  inbound or outbound ephemeral handlers.
+  Presence has NO read endpoint: a client learns it only by subscribing to the
+  event stream. The assertions therefore run as Node scripts driving real
+  WebSocket/SSE subscribers (merobox executes script steps through `sh`, so
+  each .js has a one-line .sh wrapper that execs `node`). set_ephemeral is
+  still a JSON-RPC call — SSE is server-to-client only, so publishing needs a
+  request path. Nodes run in Proxy auth mode (default), so no Bearer token is
+  required.
+
+  The no-DAG-growth assertion (Phase 4 of the assertion script) is the
+  load-bearing guard: it must stay green for any future refactor that touches
+  the inbound or outbound ephemeral handlers.
 
 no_docker: true
 nuke_on_start: true
@@ -161,7 +167,7 @@ steps:
   # a 30-second wait is sufficient for the gossip mesh to form and for node 2
   # to register in node 1's awareness store.
   #
-  # NOTE (sync regression in feat/ephemeral-presence): wait_for_sync was
+  # NOTE (sync regression on this branch): wait_for_sync was
   # originally used here but is currently broken on this branch — snapshot sync
   # always returns applied_records=0, so node 2's contextStateHash never
   # converges away from 11111...1 (base58 of 32 zero bytes). This is a
@@ -175,16 +181,20 @@ steps:
     type: wait
     seconds: 30
 
-  # ── Phase 4: Ephemeral presence assertions (delivery + no-DAG-growth) ────
+  # ── Phase 4: Ephemeral presence assertions ──────────────────────────────
   #
-  # The script step calls set_ephemeral / get_ephemeral over raw HTTP POST to
-  # /jsonrpc and asserts:
+  # The script step opens real subscribers against node 2 and asserts:
   #   1. set_ephemeral on node 1 succeeds (no RPC error).
-  #   2. get_ephemeral on node 2 returns node 1's entry within 15 s (gossip).
-  #   3. node 2's contextStateHash is IDENTICAL before and after the ephemeral
+  #   2. a subscriber live BEFORE the publish receives the delta (gossip), and
+  #      that delta carries no `ageMs` — it is fresh by construction.
+  #   3. a subscriber connecting AFTER the publish is seeded with the entry,
+  #      carrying `ageMs` inside the TTL window — over WS and over SSE.
+  #   4. that seed does NOT reach the already-connected subscriber (delivery is
+  #      per-connection, not broadcast).
+  #   5. node 1's contextStateHash is IDENTICAL before and after the ephemeral
   #      call — the no-DAG-growth guard (LOAD-BEARING invariant).
 
-  - name: "Run ephemeral presence assertions (delivery + no-DAG-growth)"
+  - name: "Run ephemeral presence assertions (delivery + replay + no-DAG-growth)"
     type: script
     script: workflows/scripts/ephemeral-presence-e2e.sh
     target: local
@@ -229,6 +239,10 @@ steps:
     nodes:
       - ephemeral-node-1
 
+  # Eviction is observed the only way presence can be: a FRESH subscriber is
+  # seeded with exactly what the awareness store still holds, so the seed is
+  # the snapshot. The check also requires node 2's OWN entry to be in that seed,
+  # so an empty/ broken subscription cannot pass as a successful eviction.
   - name: "Run TTL eviction check (node 1 entry must expire on node 2)"
     type: script
     script: workflows/scripts/ephemeral-ttl-check.sh
