@@ -2246,32 +2246,6 @@ pub struct JoinGroupApiResponseData {
 
 // ---- List All Groups ----
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct ListAllGroupsQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListAllGroupsApiResponse {
-    pub data: Vec<GroupSummaryApiData>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GroupSummaryApiData {
-    pub group_id: String,
-    pub app_key: String,
-    pub target_application_id: ApplicationId,
-    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
-    #[serde(default)]
-    pub upgrade_policy: String,
-    pub created_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
 // ---- Update Member Role ----
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

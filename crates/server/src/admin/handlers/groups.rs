@@ -15,7 +15,6 @@ pub mod issue_ownership_proof;
 pub mod join_group;
 pub mod join_subgroup_inheritance;
 pub mod leave_group;
-pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod list_subgroups;
