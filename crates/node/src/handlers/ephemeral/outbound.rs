@@ -135,9 +135,14 @@ pub(crate) async fn do_publish_ephemeral(
         .encrypt(slice)
         .ok_or_else(|| eyre::eyre!("AEAD encrypt failed for ephemeral slice"))?;
 
-    // Sign the envelope. `author` and `seq` ride outside the AEAD, so the
-    // signature is what makes them tamper-evident; the receive path refuses
-    // anything that does not verify.
+    // Stamp the publish time. Read here — as late as possible, immediately
+    // before signing — so the receiver's freshness window is spent on flight
+    // time rather than on however long this node took to get here.
+    let sent_at_ms = now_ms();
+
+    // Sign the envelope. `author`, `seq` and `sent_at_ms` ride outside the
+    // AEAD, so the signature is what makes them tamper-evident; the receive
+    // path refuses anything that does not verify.
     let signing_key =
         calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?
             .ok_or(EphemeralOutboundError::NoLocalSigningKey)?;
@@ -146,6 +151,7 @@ pub(crate) async fn do_publish_ephemeral(
         author,
         seq,
         record.key_id,
+        sent_at_ms,
         &ciphertext,
     )?;
     let signature = PrivateKey::from(signing_key)
@@ -159,6 +165,7 @@ pub(crate) async fn do_publish_ephemeral(
         author,
         seq,
         key_id: record.key_id,
+        sent_at_ms,
         nonce,
         ciphertext: Cow::Owned(ciphertext),
         signature,
@@ -823,6 +830,7 @@ mod tests {
             author: got_author,
             seq,
             key_id,
+            sent_at_ms,
             ciphertext,
             signature,
             ..
@@ -830,8 +838,25 @@ mod tests {
         else {
             panic!("expected Ephemeral");
         };
-        verify_ephemeral_signature(context_id, got_author, seq, key_id, &ciphertext, &signature)
-            .expect("published signature must verify");
+        verify_ephemeral_signature(
+            context_id,
+            got_author,
+            seq,
+            key_id,
+            sent_at_ms,
+            &ciphertext,
+            &signature,
+        )
+        .expect("published signature must verify");
+
+        // The stamp must be a real publish-time reading, not a placeholder: a
+        // receiver judges freshness against it, so a zero (or wildly off) value
+        // would make every publish from this node undeliverable.
+        let now = now_ms();
+        assert!(
+            now.abs_diff(sent_at_ms) < 60_000,
+            "sent_at_ms must be stamped from the publish-time wall clock, got {sent_at_ms} (now {now})"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -23,14 +23,15 @@
 //! makes concurrent rotations converge across nodes; both of those keys are
 //! current by construction, so either is safe here.
 //!
-//! **Security — the wire `author` is signed.** Every presence envelope carries
-//! an ed25519 signature, by `author`'s identity key, over `(context_id,
-//! author, seq, key_id, sha256(ciphertext))` — see
-//! [`crate::handlers::ephemeral::auth`]. `resolve_and_decrypt` verifies this
-//! signature after AEAD decryption and before the plaintext is handed to the
-//! `AwarenessStore`; a mismatch (including a group-key holder stamping another
-//! member's `author`) is a silent drop, same as an unknown `key_id` or a failed
-//! AEAD decrypt. See [`EphemeralPayload`] for the client-facing note.
+//! **Security — the wire `author` and the publish time are signed.** Every
+//! presence envelope carries an ed25519 signature, by `author`'s identity key,
+//! over `(context_id, author, seq, key_id, sent_at_ms, sha256(ciphertext))` —
+//! see [`crate::handlers::ephemeral::auth`]. `resolve_and_decrypt` verifies
+//! this signature after AEAD decryption and before the plaintext is handed to
+//! the `AwarenessStore`; a mismatch (including a group-key holder stamping
+//! another member's `author`) is a silent drop, same as an unknown `key_id`, a
+//! `sent_at_ms` outside the freshness window, or a failed AEAD decrypt. See
+//! [`EphemeralPayload`] for the client-facing note.
 //!
 //! [`EphemeralPayload`]: calimero_primitives::events::EphemeralPayload
 
@@ -60,14 +61,18 @@ const EPHEMERAL_MAX_CIPHERTEXT_BYTES: usize = EPHEMERAL_MAX_BYTES + calimero_cry
 // ---------------------------------------------------------------------------
 
 /// Resolve the group key for `context_id`, decrypt `ciphertext`, and verify
-/// the envelope signature.
+/// the envelope's freshness and signature.
 ///
 /// Returns `None` when `context_id` has no group, when `key_id` is not the
 /// group's *current* key (unknown key ids and superseded keys are treated
 /// identically — presence has no history, so only the current key is ever
-/// accepted), when the AEAD authentication fails, or when the envelope
-/// signature does not verify under `author`. All cases are silent drops —
-/// ephemeral presence is best-effort.
+/// accepted), when `sent_at_ms` sits outside the freshness window, when the
+/// AEAD authentication fails, or when the envelope signature does not verify
+/// under `author`. All cases are silent drops — ephemeral presence is
+/// best-effort.
+///
+/// `now_ms` is passed in rather than read here so the gate is deterministic
+/// under test, matching the `AwarenessStore`'s convention.
 ///
 /// Never writes to the DAG, RocksDB, or any persistent store.
 pub(crate) async fn resolve_and_decrypt(
@@ -76,6 +81,8 @@ pub(crate) async fn resolve_and_decrypt(
     author: PublicKey,
     seq: u64,
     key_id: [u8; 32],
+    sent_at_ms: u64,
+    now_ms: u64,
     nonce: Nonce,
     ciphertext: Vec<u8>,
     signature: [u8; 64],
@@ -137,6 +144,27 @@ pub(crate) async fn resolve_and_decrypt(
         );
         return None;
     }
+
+    // Freshness. Sits here deliberately: after the current-key check (a single
+    // keyring read that most junk fails on) and before the decrypt and the
+    // ed25519 verify, which are the expensive gates — a replay should cost the
+    // receiver an integer subtraction, not a signature verification.
+    //
+    // `sent_at_ms` is covered by the envelope signature, so a mesh peer
+    // replaying recorded bytes cannot restamp it to look fresh; verifying that
+    // binding is the signature check further down.
+    if !crate::handlers::ephemeral::auth::is_fresh(now_ms, sent_at_ms) {
+        debug!(
+            %context_id,
+            %author,
+            sent_at_ms,
+            now_ms,
+            max_skew_ms = crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS,
+            "ephemeral: sent_at_ms outside the freshness window — dropping (replay or clock skew)"
+        );
+        return None;
+    }
+
     let key = calimero_primitives::identity::PrivateKey::from(record.group_key);
 
     // Enforce the documented size cap on the receive path too. Outbound only
@@ -185,6 +213,7 @@ pub(crate) async fn resolve_and_decrypt(
         author,
         seq,
         key_id,
+        sent_at_ms,
         &ciphertext_for_verify,
         &signature,
     ) {
@@ -261,6 +290,7 @@ pub(crate) fn handle_ephemeral_broadcast(
     author: PublicKey,
     seq: u64,
     key_id: [u8; 32],
+    sent_at_ms: u64,
     nonce: Nonce,
     ciphertext: Vec<u8>,
     signature: [u8; 64],
@@ -268,15 +298,30 @@ pub(crate) fn handle_ephemeral_broadcast(
     let context_client = this.clients.context.clone();
     let node_client = this.clients.node.clone();
 
+    // now_ms: milliseconds since UNIX epoch (wall clock). Read once, here, and
+    // used for BOTH the freshness gate and the awareness-store stamp, so an
+    // envelope accepted as fresh is recorded against the same reading it was
+    // judged by. The AwarenessStore and the freshness gate are both
+    // time-parameterised so tests can inject arbitrary timestamps; callers
+    // supply the wall-clock reading. `unwrap_or(0)` degrades to "always
+    // expired" rather than panicking on a pre-epoch clock.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
     let _ignored = ctx.spawn(
         async move {
-            // Resolve key + decrypt + verify signature: the only async work.
+            // Resolve key + freshness + decrypt + verify signature: the only
+            // async work.
             resolve_and_decrypt(
                 &context_client,
                 context_id,
                 author,
                 seq,
                 key_id,
+                sent_at_ms,
+                now_ms,
                 nonce,
                 ciphertext,
                 signature,
@@ -289,16 +334,6 @@ pub(crate) fn handle_ephemeral_broadcast(
                 // Already logged inside resolve_and_decrypt.
                 return;
             };
-
-            // now_ms: milliseconds since UNIX epoch (wall clock). The
-            // AwarenessStore is time-parameterised so tests can inject
-            // arbitrary timestamps; callers supply the wall-clock reading.
-            // `unwrap_or(0)` degrades to "always expired" rather than
-            // panicking on a pre-epoch clock.
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
 
             if let Some(diff) = actor
                 .awareness_store
@@ -340,6 +375,13 @@ mod tests {
     // -----------------------------------------------------------------------
     // Shared test scaffolding (mirrors test_support.rs patterns)
     // -----------------------------------------------------------------------
+
+    /// Fixed wall clock for the receive-path tests. `SENT_AT == NOW` means
+    /// every envelope built with these is inside the freshness window, so a
+    /// test that is about some *other* gate cannot pass (or fail) because of
+    /// this one.
+    const NOW: u64 = 1_700_000_000_000;
+    const SENT_AT: u64 = NOW;
 
     fn fresh_store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -431,6 +473,7 @@ mod tests {
             author,
             seq,
             key_id,
+            SENT_AT,
             &ciphertext,
         )
         .expect("payload");
@@ -448,6 +491,8 @@ mod tests {
             author,
             seq,
             key_id,
+            SENT_AT,
+            NOW,
             nonce,
             ciphertext,
             signature,
@@ -524,8 +569,9 @@ mod tests {
         // signature gate, not the key gate) even if the key check were
         // deleted.
         let wrong_key_id = [0x00u8; 32];
-        let payload = ephemeral_signature_payload(context_id, author, 1, wrong_key_id, &ciphertext)
-            .expect("payload");
+        let payload =
+            ephemeral_signature_payload(context_id, author, 1, wrong_key_id, SENT_AT, &ciphertext)
+                .expect("payload");
         let signature = author_sk.sign(&payload).expect("sign").to_bytes();
 
         let result = resolve_and_decrypt(
@@ -534,6 +580,8 @@ mod tests {
             author,
             1,
             wrong_key_id,
+            SENT_AT,
+            NOW,
             nonce,
             ciphertext,
             signature,
@@ -590,8 +638,9 @@ mod tests {
         let (ciphertext, nonce) = encrypt_slice(&old_key, b"stale");
         let sk = PrivateKey::from([0x95u8; 32]);
         let author = sk.public_key();
-        let payload = ephemeral_signature_payload(context_id, author, 1, old_key_id, &ciphertext)
-            .expect("payload");
+        let payload =
+            ephemeral_signature_payload(context_id, author, 1, old_key_id, SENT_AT, &ciphertext)
+                .expect("payload");
         let signature = sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -603,6 +652,8 @@ mod tests {
             author,
             1,
             old_key_id,
+            SENT_AT,
+            NOW,
             nonce,
             ciphertext,
             signature,
@@ -635,8 +686,9 @@ mod tests {
         // key — but stamps the victim's public key as `author`.
         let attacker = PrivateKey::from([0x84u8; 32]);
         let victim = PrivateKey::from([0x85u8; 32]).public_key();
-        let payload = ephemeral_signature_payload(context_id, victim, 1, key_id, &ciphertext)
-            .expect("payload");
+        let payload =
+            ephemeral_signature_payload(context_id, victim, 1, key_id, SENT_AT, &ciphertext)
+                .expect("payload");
         let signature = attacker.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -648,6 +700,8 @@ mod tests {
             victim,
             1,
             key_id,
+            SENT_AT,
+            NOW,
             nonce,
             ciphertext,
             signature,
@@ -670,8 +724,9 @@ mod tests {
         let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"genuine");
         let sk = PrivateKey::from([0x89u8; 32]);
         let author = sk.public_key();
-        let payload = ephemeral_signature_payload(context_id, author, 1, key_id, &ciphertext)
-            .expect("payload");
+        let payload =
+            ephemeral_signature_payload(context_id, author, 1, key_id, SENT_AT, &ciphertext)
+                .expect("payload");
         let signature = sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -683,6 +738,8 @@ mod tests {
             author,
             1,
             key_id,
+            SENT_AT,
+            NOW,
             nonce,
             ciphertext,
             signature,
@@ -690,6 +747,148 @@ mod tests {
         .await;
 
         assert_eq!(out.as_deref(), Some(b"genuine".as_ref()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Replay protection: a recorded envelope re-injected after the freshness
+    // window must be refused, even though everything else about it is still
+    // valid (current key, intact AEAD, genuine signature). This is the whole
+    // point of `sent_at_ms` — without it, a mesh peer holding no group key
+    // could keep a departed author rendered present indefinitely.
+    // -----------------------------------------------------------------------
+
+    /// Build a fully valid envelope stamped at `sent_at_ms`, then hand it to
+    /// `resolve_and_decrypt` at wall clock `now_ms`.
+    async fn replayed_at(sent_at_ms: u64, now_ms: u64) -> Option<Vec<u8>> {
+        use crate::handlers::ephemeral::auth::ephemeral_signature_payload;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x8Au8; 32]);
+        let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
+        let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"recorded");
+        let sk = PrivateKey::from([0x8Bu8; 32]);
+        let author = sk.public_key();
+        let payload =
+            ephemeral_signature_payload(context_id, author, 1, key_id, sent_at_ms, &ciphertext)
+                .expect("payload");
+        let signature = sk.sign(&payload).expect("sign").to_bytes();
+
+        let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
+        let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
+
+        resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            1,
+            key_id,
+            sent_at_ms,
+            now_ms,
+            nonce,
+            ciphertext,
+            signature,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn stale_envelope_replayed_after_the_window_is_dropped() {
+        use crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS;
+
+        // Recorded when the author was live, re-injected long after they left
+        // — well past the TTL sweep, so the receiver holds no entry and the
+        // LWW `seq` rule would happily accept it.
+        let sent_at = NOW;
+        let replay_at = NOW + PRESENCE_MAX_SKEW_MS + 1;
+        assert!(
+            replayed_at(sent_at, replay_at).await.is_none(),
+            "an envelope replayed outside the freshness window must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_envelope_inside_the_window_passes() {
+        use crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS;
+
+        // Positive control for the test above: same envelope, delivered inside
+        // the window (including at the exact edge), still gets through — so
+        // the drop above is the freshness gate and not some other rejection.
+        assert_eq!(
+            replayed_at(NOW, NOW + 1_000).await.as_deref(),
+            Some(b"recorded".as_ref()),
+            "a fresh envelope must pass"
+        );
+        assert_eq!(
+            replayed_at(NOW, NOW + PRESENCE_MAX_SKEW_MS)
+                .await
+                .as_deref(),
+            Some(b"recorded".as_ref()),
+            "an envelope exactly at the window edge must still pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn far_future_sent_at_ms_is_dropped() {
+        use crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS;
+
+        // A stamp far in the future is as suspicious as a stale one: left
+        // accepted, it would keep a recorded envelope replayable for as long
+        // as the attacker post-dated it.
+        assert!(
+            replayed_at(NOW + PRESENCE_MAX_SKEW_MS + 1, NOW)
+                .await
+                .is_none(),
+            "a far-future sent_at_ms must be dropped"
+        );
+    }
+
+    /// The freshness stamp is bound INTO the signature, not merely carried
+    /// beside it: an attacker who rewrites the wire field to look fresh fails
+    /// the signature check instead. Without this, `sent_at_ms` would be
+    /// decoration — it rides outside the AEAD, in the clear.
+    #[tokio::test]
+    async fn restamped_sent_at_ms_fails_signature_verification() {
+        use crate::handlers::ephemeral::auth::ephemeral_signature_payload;
+
+        let store = fresh_store();
+        let context_id = ContextId::from([0x8Cu8; 32]);
+        let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
+        let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"recorded");
+        let sk = PrivateKey::from([0x8Du8; 32]);
+        let author = sk.public_key();
+
+        // Signed with the ORIGINAL (now stale) stamp...
+        let stale_stamp = NOW;
+        let payload =
+            ephemeral_signature_payload(context_id, author, 1, key_id, stale_stamp, &ciphertext)
+                .expect("payload");
+        let signature = sk.sign(&payload).expect("sign").to_bytes();
+
+        let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
+        let ctx_client = ContextClient::new(store, node_client_for_ctx, LazyRecipient::new());
+
+        // ...but replayed with the wire field restamped to "now", which is
+        // exactly what a replayer would try in order to clear the freshness
+        // gate.
+        let replay_at = NOW + 10 * crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS;
+        let out = resolve_and_decrypt(
+            &ctx_client,
+            context_id,
+            author,
+            1,
+            key_id,
+            replay_at,
+            replay_at,
+            nonce,
+            ciphertext,
+            signature,
+        )
+        .await;
+
+        assert!(
+            out.is_none(),
+            "restamping sent_at_ms must fail signature verification, not slip through"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -779,6 +978,8 @@ mod tests {
             author,
             1,
             key_id,
+            SENT_AT,
+            NOW,
             nonce,
             oversized_ciphertext,
             [0u8; 64],

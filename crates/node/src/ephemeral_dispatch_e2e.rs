@@ -29,6 +29,15 @@ use serial_test::serial;
 
 use crate::test_node_harness::boot_test_node;
 
+/// Milliseconds since the UNIX epoch — the same reading the outbound path
+/// stamps and the inbound freshness gate compares against.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Borsh-encode a `BroadcastMessage::Ephemeral` and wrap it in a
 /// `NetworkEvent::Message` on `topic`, exactly as the gossipsub layer would
 /// hand it to the node actor.
@@ -39,6 +48,7 @@ fn ephemeral_network_event(
     author: PublicKey,
     seq: u64,
     key_id: [u8; 32],
+    sent_at_ms: u64,
     nonce: [u8; NONCE_LEN],
     ciphertext: Vec<u8>,
     signature: [u8; 64],
@@ -48,6 +58,7 @@ fn ephemeral_network_event(
         author,
         seq,
         key_id,
+        sent_at_ms,
         nonce,
         ciphertext: ciphertext.into(),
         signature,
@@ -81,6 +92,10 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     let author_sk = PrivateKey::from([0xE2u8; 32]);
     let author = author_sk.public_key();
     let seq = 1u64;
+    // The receive path checks `sent_at_ms` against its own wall clock, so a
+    // routing test has to stamp a real "now" — a fixed literal would age out
+    // of the freshness window and turn this into a silent no-event failure.
+    let sent_at_ms = now_ms();
 
     // Seed the group key into the SAME store the actor's context_client reads,
     // and register the context into the group so `get_group_for_context`
@@ -109,6 +124,7 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
         author,
         seq,
         key_id,
+        sent_at_ms,
         &ciphertext,
     )
     .expect("signature payload");
@@ -128,6 +144,7 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
         author,
         seq,
         key_id,
+        sent_at_ms,
         nonce,
         ciphertext,
         signature,
@@ -204,11 +221,13 @@ async fn forged_author_produces_no_presence_event() {
     let attacker = PrivateKey::from([0xF4u8; 32]);
     let victim = PrivateKey::from([0xF5u8; 32]).public_key();
     let seq = 1u64;
+    let sent_at_ms = now_ms();
     let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
         context_id,
         victim,
         seq,
         key_id,
+        sent_at_ms,
         &ciphertext,
     )
     .expect("payload");
@@ -224,6 +243,7 @@ async fn forged_author_produces_no_presence_event() {
         victim,
         seq,
         key_id,
+        sent_at_ms,
         nonce,
         ciphertext,
         signature,
