@@ -9,19 +9,19 @@
 //! decrypt only, and presence has no history — so a `key_id` that does not
 //! match what `load_current_key_record` returns is a silent drop.
 //!
-//! **Caveat — this makes rotation-as-eviction only as good as
-//! `load_current_key_record`'s tie-break.** `GroupKeyring::store_key` stamps
-//! every key at epoch 0 (only `store_key_with_epoch` sets a real epoch), and
-//! `load_current_key_record` tie-breaks equal epochs by larger `key_id` —
-//! i.e. by hash order, not insertion or rotation order. A node that ends up
-//! holding two epoch-0 keys (e.g. it received a rotation as a plain
-//! `store_key` call rather than `store_key_with_epoch`) can resolve the
-//! *older* of the two as "current" and reject the actually-current one. When
-//! that happens on the receiving side, this module drops every legitimate
-//! member's presence and — if the superseded key still decrypts a captured
-//! envelope — would treat the rotated-out holder of that key as current
-//! instead. This module does not special-case that condition; it is a
-//! keyring-layer concern.
+//! **Rotation-as-eviction rests on `load_current_key_record`'s ordering.**
+//! `GroupKeyring::store_key` stamps every key at epoch 0 (only
+//! `store_key_with_epoch` sets a real DAG epoch), so a node can hold two
+//! epoch-0 keys — e.g. it learned a post-rotation key by direct pull rather
+//! than by applying the rotation op. Equal epoch-0 keys are ordered by the
+//! keyring's per-group `insertion_seq` (the order this node learned them),
+//! **not** by `key_id` hash order, precisely so the older key can never be
+//! resolved as "current" here: were it, this module would drop every
+//! legitimate member's presence and — since the superseded key still decrypts
+//! a captured envelope — treat the rotated-out holder of that key as current
+//! instead. Equal *non-zero* epochs still tie-break by `key_id`, which is what
+//! makes concurrent rotations converge across nodes; both of those keys are
+//! current by construction, so either is safe here.
 //!
 //! **Security — the wire `author` is signed.** Every presence envelope carries
 //! an ed25519 signature, by `author`'s identity key, over `(context_id,
@@ -121,11 +121,11 @@ pub(crate) async fn resolve_and_decrypt(
     };
     if record.key_id != key_id {
         // Distinguish "we have never seen this key_id" from "we know this
-        // key_id but our keyring no longer resolves it as current" — the
-        // latter is the only signal an operator has for the
-        // load_current_key_record tie-break caveat documented at the top of
-        // this module (two epoch-0 keys, equal-epoch tie-break by key_id
-        // hash order can make a superseded key look current).
+        // key_id but our keyring no longer resolves it as current". The
+        // second case is the expected, benign one right after a rotation (a
+        // peer still publishing under the old key); it is also the signal an
+        // operator would see if `load_current_key_record` ever ordered two
+        // keys wrongly — see the ordering note at the top of this module.
         let keyring = calimero_governance_store::GroupKeyring::new(store, group_id);
         let known_but_superseded = matches!(keyring.load_key_by_id(&key_id), Ok(Some(_)));
         debug!(

@@ -2860,12 +2860,23 @@ impl Debug for GroupPendingKeyRotation {
 /// wall-clock `created_at` — is what selects the "current" (latest) key for
 /// encryption, so all nodes agree even under clock skew or two rotations within
 /// the same second. `created_at` is retained for diagnostics only.
+///
+/// `insertion_seq` is a per-group, strictly increasing counter stamped when the
+/// entry is first written, i.e. the order in which *this node* learned the key.
+/// It exists solely to order keys that carry **no** DAG ordering — genesis and
+/// direct-pull keys, which are all stamped `epoch = 0`. Without it a node
+/// holding two epoch-`0` keys would tie-break by `key_id` (a sha256 hash) and
+/// could resolve the *older* key as current. It is deliberately NOT consulted
+/// for equal non-zero epochs: those are concurrent rotations, whose convergence
+/// across nodes depends on the hash tie-break rather than on local arrival
+/// order. See `GroupKeyring::load_current_key_record`.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupKeyValue {
     pub group_key: [u8; 32],
     pub created_at: u64,
     pub epoch: u64,
+    pub insertion_seq: u64,
 }
 
 /// Durable pending-self-purge marker, keyed by `namespace_id` (the root
