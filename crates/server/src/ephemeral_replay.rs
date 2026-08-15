@@ -33,6 +33,17 @@
 //! subscription going live and the replay lands ahead of a replayed entry that
 //! is at least as new, because the awareness store is written *before* the
 //! diff is emitted (`calimero-node`'s `handlers::ephemeral::inbound`).
+//!
+//! # One timeout for the whole subscribe, not one per context
+//!
+//! A subscribe naming N contexts asks the node actor for N snapshots. Awaited
+//! one after another, each context's [`SNAPSHOT_TIMEOUT`] stacks: a degraded
+//! actor turns an M-context subscribe into an `M * SNAPSHOT_TIMEOUT` stall
+//! before the client gets *any* acknowledgment — and the ack is what tells it
+//! the live stream is up. [`presence_replay_many`] drives all N concurrently,
+//! so the worst case is one timeout regardless of how many contexts the client
+//! subscribed to. Callers with more than one context must use it rather than
+//! looping over [`presence_replay`].
 
 use std::time::Duration;
 
@@ -106,4 +117,25 @@ pub(crate) async fn presence_replay(
             })
         })
         .collect()
+}
+
+/// Replay events for several contexts at once, paired with the context each
+/// batch belongs to (callers need it for logging and, on SSE, for the
+/// per-context drop message).
+///
+/// Every snapshot read is driven **concurrently**, so [`SNAPSHOT_TIMEOUT`]
+/// bounds the whole call rather than each context in turn — see the module
+/// doc. Order of the returned batches matches `context_ids`; within a batch,
+/// order is the snapshot's own (author-sorted).
+///
+/// Each context still degrades independently: a context whose snapshot fails
+/// or times out contributes an empty batch and does not affect the others.
+pub(crate) async fn presence_replay_many(
+    node_client: &NodeClient,
+    context_ids: &[ContextId],
+) -> Vec<(ContextId, Vec<NodeEvent>)> {
+    futures_util::future::join_all(context_ids.iter().map(|context_id| async move {
+        (*context_id, presence_replay(node_client, *context_id).await)
+    }))
+    .await
 }

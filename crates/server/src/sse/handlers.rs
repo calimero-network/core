@@ -149,9 +149,13 @@ async fn replay_presence(
     session: &SessionState,
     contexts: &[calimero_primitives::context::ContextId],
 ) {
-    for context_id in contexts {
-        for event in crate::ephemeral_replay::presence_replay(&state.node_client, *context_id).await
-        {
+    // Concurrent, not sequential: each context's snapshot read carries its own
+    // timeout, and awaiting them in turn would stack those timeouts ahead of
+    // the subscribe acknowledgment on a multi-context subscribe.
+    for (context_id, events) in
+        crate::ephemeral_replay::presence_replay_many(&state.node_client, contexts).await
+    {
+        for event in events {
             let body = match serde_json::to_value(&event) {
                 Ok(value) => ResponseBody::Result(value),
                 Err(err) => {

@@ -92,8 +92,13 @@ async fn handle(
     //
     // Delivery is per-connection: `try_push_event` writes to this connection's
     // own command channel, so no other subscriber sees another client's seed.
-    for id in &subscribed {
-        for event in crate::ephemeral_replay::presence_replay(&state.node_client, *id).await {
+    // Every context's snapshot read is issued concurrently, so a subscribe
+    // naming N contexts is bounded by ONE snapshot timeout rather than N of
+    // them stacking ahead of the client's acknowledgment.
+    for (_context_id, events) in
+        crate::ephemeral_replay::presence_replay_many(&state.node_client, &subscribed).await
+    {
+        for event in events {
             connection_state.try_push_event(&event);
         }
     }
