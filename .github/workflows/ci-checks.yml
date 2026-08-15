@@ -102,6 +102,17 @@ jobs:
       # This builds rather than clippies: the gui code predates any lint gate
       # and still carries ~60 `-D warnings` findings. Tighten this to `cargo
       # clippy … -- -D warnings` once those are cleared.
+      # A scenario file that no matrix runs looks maintained and gates nothing.
+      # That has happened repeatedly and silently: replacing a glob with an
+      # enumeration orphaned fourteen scenarios at once while naming none of
+      # them in the diff, a later parallelisation dropped one of an app's two
+      # scenarios, and scenarios written afterwards had no way to signal that a
+      # matrix entry was also required. This reconciles the two lists so the
+      # next occurrence fails the build instead of going unnoticed.
+      - name: Check every merobox scenario runs somewhere
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-scenario-coverage.py
+
       - name: Cargo build (merodb gui)
         if: ${{ !cancelled() }}
         run: cargo build -p merodb --features gui
