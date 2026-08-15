@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use actix::{AsyncContext, WrapFuture};
+use actix::{ActorFutureExt, AsyncContext, WrapFuture};
 use calimero_primitives::context::ContextId;
 use tracing::{debug, error, info, warn};
 
@@ -48,81 +48,107 @@ pub(super) fn handle_hash_heartbeat(
         let their_heads_set: HashSet<_> = their_dag_heads.iter().collect();
 
         if our_heads_set == their_heads_set && our_context.root_hash != their_root_hash {
-            // #2319 — before reporting a real divergence, reconcile the
-            // cached `ContextMeta.root_hash` with the live index. The
-            // cache is populated from the WASM-returned root_hash at the
-            // end of each method execution; a concurrent sync apply
-            // (HashComparison `EntityPush`, level-sync leaf push, etc.)
-            // can advance the actual index right after WASM returns but
-            // before the cache is written, leaving the cache pointing
-            // at a pre-recalc full_hash while the index has already
-            // moved on. The two nodes still converge in storage, but
-            // the heartbeat sees the stale caches and fires
+            // Before reporting a real divergence, reconcile the cached
+            // `ContextMeta.root_hash` with the live index. The cache is
+            // populated from the WASM-returned root_hash at the end of each
+            // method execution; a concurrent sync apply (HashComparison
+            // `EntityPush`, level-sync leaf push, etc.) can advance the actual
+            // index right after WASM returns but before the cache is written,
+            // leaving the cache pointing at a pre-recalc full_hash while the
+            // index has already moved on. The two nodes still converge in
+            // storage, but the heartbeat sees the stale caches and fires
             // DIVERGENCE.
             //
-            // Re-read the live full_hash from the index. If it matches
-            // either the peer's hash or our prior cache, refresh the
-            // cache and skip the false-positive divergence event; only
-            // a *post-refresh* hash mismatch is a real divergence.
+            // The recompute and the republish run inside ONE hold of the
+            // per-context execution lock. Read-then-write without it is a
+            // lost-update: a WASM execute committing between the two writes its
+            // fresh root and then has it overwritten by the older value read
+            // here, rolling `ContextMeta.root_hash` BACKWARDS onto a state the
+            // node no longer has. That field backs every peer-facing
+            // convergence signal — this heartbeat compare, sync protocol
+            // selection, and the `contextStateHash` the admin API serves — so a
+            // rollback makes the node re-advertise a pre-write root and can
+            // make a peer's write-then-wait observe false convergence. The
+            // executor holds this same lock across execution and its root-hash
+            // persist, so taking it here makes the pair atomic against that
+            // path.
             //
-            // Residual TOCTOU: a concurrent apply landing between
-            // `compute_root_hash` and `force_root_hash` can leave the
-            // cache transiently stale again. This doesn't eliminate
-            // the false-positive class — it narrows the window from
-            // "until the next WASM execution" to "until the next
-            // heartbeat tick" (also when the next ContextMeta write
-            // happens). The next heartbeat self-heals via this same
-            // branch, so we accept the residual window rather than
-            // double-reading.
-            let our_hash = match context_client.compute_root_hash(&context_id) {
-                Ok(live) => {
-                    let live_hash = calimero_primitives::hash::Hash::from(live);
-                    if live_hash != our_context.root_hash {
+            // Taking an async lock means the divergence evaluation moves into
+            // the spawned continuation, which is where `&mut NodeManager`
+            // (metric + streak state) is available again.
+            //
+            // Consequence of deferring: two heartbeats for the same
+            // (context, peer) could in principle have overlapping
+            // continuations, miscounting the persistence streak. It needs lock
+            // acquisition to outlast the ~30s heartbeat period, and the streak
+            // only gates whether a divergence is logged at `warn` or `error` —
+            // an advisory signal, not a correctness one. Serialising it would
+            // cost per-(context, peer) in-flight state to buy nothing the log
+            // reader would notice, so the cheaper trade is taken deliberately.
+            let cc = context_client.clone();
+            let cached_root = our_context.root_hash;
+            let their_heads_for_dump = their_dag_heads.clone();
+            let refresh = async move {
+                let _guard = cc.acquire_lock(&context_id).await;
+                match cc.compute_root_hash(&context_id) {
+                    Ok(live) => {
+                        let live_hash = calimero_primitives::hash::Hash::from(live);
+                        if live_hash != cached_root {
+                            debug!(
+                                %context_id,
+                                ?source,
+                                cached_hash = ?cached_root,
+                                live_hash = ?live_hash,
+                                "Heartbeat divergence: cache stale vs live index, refreshing"
+                            );
+                            if let Err(err) = cc.force_root_hash(&context_id, live_hash) {
+                                // `warn`, not `debug`: a single failure here is
+                                // usually a benign concurrent context delete,
+                                // but a *persistent* failure leaves the cache
+                                // stale and produces a stream of false-positive
+                                // DIVERGENCE events on every heartbeat. Surface
+                                // it where ops can see it without log filtering.
+                                warn!(
+                                    %context_id,
+                                    ?source,
+                                    %err,
+                                    "Heartbeat divergence: failed to refresh cached root hash"
+                                );
+                            }
+                        }
+                        Some(live_hash)
+                    }
+                    Err(err) => {
                         debug!(
                             %context_id,
                             ?source,
-                            cached_hash = ?our_context.root_hash,
-                            live_hash = ?live_hash,
-                            "Heartbeat divergence: cache stale vs live index, refreshing"
+                            %err,
+                            "Heartbeat divergence: failed to read live root hash; using cache"
                         );
-                        if let Err(err) = context_client.force_root_hash(&context_id, live_hash) {
-                            // `warn`, not `debug`: a single failure here
-                            // is usually a benign concurrent context
-                            // delete, but a *persistent* failure leaves
-                            // the cache stale and produces a stream of
-                            // false-positive DIVERGENCE events on every
-                            // heartbeat. Surface it where ops can see it
-                            // without log filtering.
-                            warn!(
-                                %context_id,
-                                ?source,
-                                %err,
-                                "Heartbeat divergence: failed to refresh cached root hash"
-                            );
-                        }
-                        if live_hash == their_root_hash {
-                            // Converged once the cache caught up — drop any
-                            // streak so a later transient starts fresh at WARN.
-                            let _ = manager.divergence_streak.remove(&(context_id, source));
-                            return;
-                        }
+                        None
                     }
-                    // Use live_hash as the authoritative "our hash" — the
-                    // cached value may be stale (and the refresh above
-                    // may itself have failed); the live index is the
-                    // truth we want in the divergence log for triage.
-                    live_hash
                 }
-                Err(err) => {
-                    debug!(
-                        %context_id,
-                        ?source,
-                        %err,
-                        "Heartbeat divergence: failed to read live root hash; using cache"
-                    );
-                    our_context.root_hash
+                // `_guard` drops here, releasing the context lock before the
+                // continuation runs any of the reporting below.
+            }
+            .into_actor(manager)
+            .map(move |live, manager: &mut NodeManager, ctx: &mut actix::Context<NodeManager>| {
+                let context_client = manager.clients.context.clone();
+                let their_dag_heads = their_heads_for_dump;
+                // Use the live hash as the authoritative "our hash" — the cached
+                // value may be stale (and the refresh may itself have failed);
+                // the live index is the truth we want in the divergence log for
+                // triage.
+                let our_hash = live.unwrap_or(cached_root);
+
+                // Converged once the cache caught up — drop any streak so a
+                // later transient starts fresh at WARN. Reachable only when the
+                // cache WAS stale, since this branch is entered on
+                // `cached_root != their_root_hash`.
+                if live.is_some() && our_hash == their_root_hash {
+                    let _ = manager.divergence_streak.remove(&(context_id, source));
+                    return;
                 }
-            };
 
             // #2319: surface divergence as a metric (`sync_root_hash_divergence_detected_total`)
             // so vmagent can alert on the rate without grepping logs —
@@ -281,6 +307,8 @@ pub(super) fn handle_hash_heartbeat(
                     .into_actor(manager),
                 );
             }
+            });
+            let _ignored = ctx.spawn(refresh);
             return;
         }
 
