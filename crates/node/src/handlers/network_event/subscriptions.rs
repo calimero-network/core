@@ -165,17 +165,27 @@ pub(super) fn handle_subscribed(
                 let ops = sync_manager
                     .sync_namespace_from_peer(bytes, Some(peer_id))
                     .await;
-                if ops > 0 {
-                    debug!(
-                        %peer_id,
-                        namespace_id = %hex::encode(bytes),
-                        ops,
-                        "pulled governance ops from a newly-subscribed namespace peer"
-                    );
-                }
+                // Logged unconditionally, including `ops = 0`. Gating this on
+                // `ops > 0` would make "the recovery ran and pulled nothing"
+                // indistinguishable in the logs from "the recovery never ran" —
+                // and a keyless joiner can converge on the key pull below
+                // having needed no governance ops at all, so the quiet case is
+                // a real outcome, not a non-event. Anyone reading a failure
+                // needs to know this path executed.
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex::encode(bytes),
+                    ops,
+                    "stranded-member recovery: pulled governance from a newly-subscribed namespace peer"
+                );
                 sync_manager
                     .recover_missing_group_keys(bytes, Some(peer_id))
                     .await;
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex::encode(bytes),
+                    "stranded-member recovery: key pull complete"
+                );
             }
             .into_actor(manager),
         );
