@@ -3,7 +3,6 @@ use calimero_config::{
     NodeMode, ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
-use calimero_context_config::client_config::{ClientConfig, ClientSigner, LocalConfig};
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -26,7 +25,6 @@ use mero_auth::config::{
 };
 use mero_auth::provisioning;
 use multiaddr::{Multiaddr, Protocol};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{info, warn};
@@ -454,14 +452,6 @@ impl InitCommand {
             }
         }
 
-        let client_config = ClientConfig {
-            signer: ClientSigner {
-                local: LocalConfig {
-                    protocols: BTreeMap::new(),
-                },
-            },
-        };
-
         let embedded_auth = if matches!(auth_mode, AuthMode::Embedded) {
             let mut auth_cfg: EmbeddedAuthConfig = mero_auth::embedded::default_config();
 
@@ -527,10 +517,7 @@ impl InitCommand {
             ),
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
-            ContextConfig {
-                client: client_config,
-                migration_v2: true,
-            },
+            ContextConfig { migration_v2: true },
         );
 
         // `save` writes config.toml atomically and owner-only (0600); the file

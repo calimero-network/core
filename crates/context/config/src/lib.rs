@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub mod client_config;
 pub mod repr;
 pub mod types;
 
