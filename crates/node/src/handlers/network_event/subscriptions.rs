@@ -104,6 +104,82 @@ pub(super) fn handle_subscribed(
                 );
             }
         }
+
+        // Pull governance state and any key this node is owed, naming the peer
+        // that just subscribed as the responder.
+        //
+        // Both recoveries are normally driven by a peer's `ReadinessBeacon`:
+        // the beacon advertises a DAG head, and an unknown head triggers
+        // `sync_namespace_from_peer`. That trigger is unreachable for the node
+        // that needs it most. `verify_readiness_beacon` requires the signer to
+        // be a KNOWN member, and knowing members requires the very governance
+        // state a member that joined without ever reaching a mesh peer never
+        // received — so it drops every beacon and nothing it hears can move it
+        // forward. The key pull has the same problem from the other side: its
+        // only other trigger is *receiving* a gossiped Group op, which needs a
+        // populated mesh, which a stranded joiner does not have.
+        //
+        // A peer subscribing to `ns/<id>` breaks that circle without touching
+        // either guard. It is our own gossipsub reporting a reachable peer, not
+        // a peer-supplied claim, so nothing is being trusted that wasn't before
+        // — this only adds a second, un-forgeable trigger for the same pulls,
+        // issued at the first moment they can succeed. Relaxing the beacon guard
+        // instead would widen what a stranger can assert about membership.
+        // The `group/` branch above already drives active recovery on
+        // subscription rather than only announcing; this brings `ns/` in line.
+        //
+        // Gated on the stranded condition itself — this node is a member of a
+        // group in the namespace but holds no key for it — rather than firing on
+        // every subscription. Two reasons. It bounds the work: a busy namespace
+        // raises one of these events per peer, and the beacon path it parallels
+        // is debounced where this is not, so an ungated pull would let peer churn
+        // drive repeated whole-namespace backfills. And it is self-limiting: the
+        // predicate goes false the moment the recovery lands, so a healthy node
+        // never pulls from here at all and a recovering one stops on its own.
+        // A member that holds its key but is merely behind is left to the beacon
+        // path, which it can verify precisely because it is not stranded.
+        //
+        // Detached via `ctx.spawn` (not `tokio::spawn`) because the sync-manager
+        // futures hold non-`Send` types and must stay on this arbiter.
+        let store = manager.clients.context.datastore_handle().into_inner();
+        match calimero_governance_store::namespace_groups_member_but_keyless(&store, bytes.into()) {
+            Ok(groups) if groups.is_empty() => return,
+            Ok(_) => {}
+            Err(err) => {
+                // Unknown state, not "nothing to do". Fall through and let the
+                // pulls decide for themselves — they are no-ops when nothing is
+                // owed, so a store fault costs a redundant round-trip rather
+                // than leaving a genuinely stranded node with no trigger.
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex,
+                    %err,
+                    "could not evaluate keyless-member state; attempting recovery anyway"
+                );
+            }
+        }
+
+        let sync_manager = manager.managers.sync.clone();
+        let _ignored = ctx.spawn(
+            async move {
+                let ops = sync_manager
+                    .sync_namespace_from_peer(bytes, Some(peer_id))
+                    .await;
+                if ops > 0 {
+                    debug!(
+                        %peer_id,
+                        namespace_id = %hex::encode(bytes),
+                        ops,
+                        "pulled governance ops from a newly-subscribed namespace peer"
+                    );
+                }
+                sync_manager
+                    .recover_missing_group_keys(bytes, Some(peer_id))
+                    .await;
+            }
+            .into_actor(manager),
+        );
+
         return;
     }
 
