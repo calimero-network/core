@@ -84,6 +84,20 @@ pub struct EntitledRecipient {
 /// making the epoch monotonicity atomic without a store-level compare-and-swap.
 static GROUP_KEY_EPOCH_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Total order over stored group keys: `(epoch, epoch-0 insertion order,
+/// key_id)`, compared most-significant-first. The largest rank is "current".
+type KeyRank = (u64, u64, [u8; 32]);
+
+/// Rank one stored key. The middle component is zeroed for any key carrying a
+/// real DAG epoch, so equal non-zero epochs fall straight through to the
+/// `key_id` hash tie-break and concurrent rotations still converge across
+/// nodes; only epoch-`0` keys — which have no DAG ordering at all — are ordered
+/// by local arrival. See [`GroupKeyring::load_current_key_record`].
+fn key_rank(val: &GroupKeyValue, key_id: [u8; 32]) -> KeyRank {
+    let insertion_seq = if val.epoch == 0 { val.insertion_seq } else { 0 };
+    (val.epoch, insertion_seq, key_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoredGroupKey {
     pub key_id: [u8; 32],
@@ -284,24 +298,14 @@ impl<'a> GroupKeyring<'a> {
             |k| k.group_id() == gid,
         )?;
         let handle = self.store.handle();
-        let mut best: Option<((u64, u64, [u8; 32]), StoredGroupKey)> = None;
+        let mut best: Option<(KeyRank, StoredGroupKey)> = None;
 
         for key in keys {
             let Some(val): Option<GroupKeyValue> = handle.get(&key)? else {
                 continue;
             };
             let key_id = key.key_id();
-            // Ordering tuple, most significant first. The middle component is
-            // zeroed for any key carrying a real DAG epoch, so equal non-zero
-            // epochs fall straight through to the `key_id` hash tie-break and
-            // concurrent rotations still converge across nodes; only epoch-`0`
-            // keys — which have no DAG ordering at all — are ordered by the
-            // local arrival sequence. See the doc comment above.
-            let rank = (
-                val.epoch,
-                if val.epoch == 0 { val.insertion_seq } else { 0 },
-                key_id,
-            );
+            let rank = key_rank(&val, key_id);
             if best.as_ref().is_none_or(|(best_rank, _)| rank > *best_rank) {
                 best = Some((
                     rank,
