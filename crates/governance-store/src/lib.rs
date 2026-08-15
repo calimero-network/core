@@ -10,7 +10,7 @@
 //! crate directly — the `calimero_context::group_store` /
 //! `::governance_broadcast` aliases that eased the extraction are gone.
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -90,7 +90,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::pending_rotation::PendingRotationRepository;
+pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
 pub use self::governance_signer::GovernanceSigner;
@@ -1579,6 +1579,22 @@ pub async fn sign_apply_and_publish_rotation(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish_rotation(ack_router, signer_sk, departed)
+        .await
+}
+
+/// Discharge the rotation a device revocation left owed.
+///
+/// `Ok(None)` is a deliberate skip — see [`sign_apply_and_publish`].
+pub async fn sign_apply_and_publish_device_rotation(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    device: &DeviceId,
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_device_rotation(ack_router, signer_sk, device)
         .await
 }
 
