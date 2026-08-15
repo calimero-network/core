@@ -151,7 +151,7 @@ rg -n "enum UpgradeAction" src/migration_plan.rs
 
 ## Sub-crates
 
-- **`crates/context/config`** (`calimero-context-config`) - Wire/API request types (`Request`, `ContextRequestKind`, `GroupRequestKind`, `SystemRequest`), `VisibilityMode`, the `MemberCapabilities` bitset, the `[context.config]` node-config shape (`ClientConfig`/`ClientSigner`/`LocalConfig`), and the `Repr`/`ReprBytes` transmute machinery used to move typed ids across borsh/serde/bs58 boundaries.
+- **`crates/context/config`** (`calimero-context-config`) - The typed id newtypes (`ContextId`, `ContextGroupId`, `ContextIdentity`, `SignerId`, `AppKey`, `ApplicationId`), the invitation wire types (`InvitationFromMember`, `SignedOpenInvitation`, `GroupInvitationFromAdmin`, `SignedGroupOpenInvitation`), `GovernanceParentEdge`, `VisibilityMode`, the `MemberCapabilities` bitset, `MAX_NAMESPACE_DEPTH`, the `[context.config]` node-config shape (`ClientConfig`/`ClientSigner`/`LocalConfig`), and the `Repr`/`ReprBytes` transmute machinery used to move typed ids across borsh/serde/bs58 boundaries.
 - **`crates/context/primitives`** (`calimero-context-client`) - The `ContextClient`/`ContextRegistry` facade, `ContextGuard`/`ContextAtomic` (the per-context lock guard type shared with `calimero-context`), every `*Request`/`*Response` message type and the `ContextMessage` actix envelope, group-related types (`group.rs`), and the local-governance wire types (`SignedGroupOp`, `SignedNamespaceOp`, `AckRouter`).
 
 Part of [crates/](../AGENTS.md).
