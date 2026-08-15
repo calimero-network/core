@@ -196,6 +196,32 @@ impl PeerAddrCache {
         out
     }
 
+    /// Still-fresh cached addresses for one peer, most-recent-first.
+    ///
+    /// The reconnect fallback for a peer the discovery book no longer holds
+    /// addresses for. `DiscoveryState::remove_peer` runs on the FIRST
+    /// disconnect and drops the book's addresses, so a peer that disconnects
+    /// more than once — connections closing in waves as keepalives expire at
+    /// different times — has an empty book by the second event, and the
+    /// re-dial that fires there has nothing to dial. This cache is not cleared
+    /// on disconnect (it is TTL'd, and its whole purpose is surviving one), so
+    /// it still knows where the peer was.
+    ///
+    /// Empty when the peer was never connected directly, or its entry aged
+    /// out; the caller then falls through to rendezvous recovery as before.
+    pub(crate) fn addrs_for(
+        &self,
+        peer_id: &PeerId,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> Vec<Multiaddr> {
+        self.peers
+            .get(peer_id)
+            .filter(|p| now_secs.saturating_sub(p.last_seen_secs) <= ttl_secs)
+            .map(|p| p.addrs.clone())
+            .unwrap_or_default()
+    }
+
     /// All currently-cached, still-fresh peers, sorted by `peer_id`. A
     /// test-only inspection helper for the cache contents; production dials the
     /// recency-capped [`startup_dial_set`](Self::startup_dial_set) instead.
@@ -360,6 +386,46 @@ mod tests {
             entry.addrs[0],
             addr("/ip4/1.2.3.4/tcp/0"),
             "re-recorded addr moved to front"
+        );
+    }
+
+    /// The disconnect-path fallback: the cache must still hand back a peer's
+    /// addresses after the discovery book has dropped them, which is the whole
+    /// reason the second `ConnectionClosed` for a peer could not re-dial.
+    #[test]
+    fn addrs_for_returns_fresh_addresses_most_recent_first() {
+        let mut c = PeerAddrCache::default();
+        c.record(peer(1), addr("/ip4/1.2.3.4/tcp/1"), 100);
+        c.record(peer(1), addr("/ip4/5.6.7.8/tcp/2"), 110);
+
+        let got = c.addrs_for(&peer(1), 120, 1000);
+        assert_eq!(
+            got,
+            vec![addr("/ip4/5.6.7.8/tcp/2"), addr("/ip4/1.2.3.4/tcp/1")],
+            "most-recent address is dialed first"
+        );
+    }
+
+    #[test]
+    fn addrs_for_is_empty_for_unknown_or_stale_peers() {
+        let mut c = PeerAddrCache::default();
+        c.record(peer(1), addr("/ip4/1.2.3.4/tcp/1"), 100);
+
+        assert!(
+            c.addrs_for(&peer(2), 120, 1000).is_empty(),
+            "peer we never connected to directly yields nothing, so the caller \
+             falls through to rendezvous recovery"
+        );
+        // now=2000, ttl=1000 → last seen 1900s ago → stale.
+        assert!(
+            c.addrs_for(&peer(1), 2000, 1000).is_empty(),
+            "an aged-out entry is not dialed"
+        );
+        // Boundary: exactly at the TTL is still fresh.
+        assert_eq!(
+            c.addrs_for(&peer(1), 1100, 1000).len(),
+            1,
+            "entry exactly at the TTL edge is kept"
         );
     }
 

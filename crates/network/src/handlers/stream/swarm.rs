@@ -204,7 +204,37 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // flake. Empty for a purely relayed/NAT'd peer (their
                         // relayed address is never stored in the book), so those
                         // correctly fall through to the rendezvous path alone.
-                        let direct_addrs = self.discovery.state.peer_direct_addrs(&peer_id);
+                        let mut direct_addrs = self.discovery.state.peer_direct_addrs(&peer_id);
+
+                        // Fall back to the peer cache when the book has
+                        // nothing. `remove_peer` below drops the book's
+                        // addresses, and a peer's connections close in waves as
+                        // their keepalives expire at different times — so the
+                        // SECOND `ConnectionClosed` for the same peer captures
+                        // an empty list, and both the immediate re-dial and all
+                        // four re-fires below carry nothing to dial.
+                        //
+                        // That second event is the one that matters. A
+                        // partition drops the first connections while the
+                        // network is still down (the dial fires and fails), and
+                        // the stragglers close *after* the heal — precisely when
+                        // a dial would have succeeded. The cache is not cleared
+                        // on disconnect and is TTL'd rather than lifecycle'd, so
+                        // it still knows where the peer was.
+                        //
+                        // Still empty for a peer we never reached directly, so
+                        // relayed/NAT'd peers fall through to the rendezvous
+                        // path exactly as before.
+                        if direct_addrs.is_empty() {
+                            direct_addrs = self.peer_cache_addrs_for(&peer_id);
+                            if !direct_addrs.is_empty() {
+                                debug!(
+                                    %peer_id,
+                                    addrs = direct_addrs.len(),
+                                    "discovery book empty on disconnect; re-dialing from the peer cache"
+                                );
+                            }
+                        }
 
                         self.discovery.state.remove_peer(&peer_id);
 
