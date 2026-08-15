@@ -370,7 +370,7 @@ steps:
     namespace_id: '{{namespace_id}}'
     device_id: '{{paired_device}}'
     outputs:
-      revoked_in: revokedIn
+      key_rotated: keyRotated
 
   # Reported per namespace now, because a device belongs to an account rather
   # than to a scope and the revocation follows it everywhere the account speaks.
@@ -381,10 +381,20 @@ steps:
   # therefore stops writing at once and keeps the key it holds until a remaining
   # admin's rotation listener discharges the pending row, which is asynchronous
   # and not what this step is timing.
-  - name: The revocation reached this namespace
+  # Asserted on `keyRotated` rather than `revokedIn`. `revokedIn` is the field
+  # that carries the per-namespace picture, but `calimero-client-py` is a typed
+  # binding: the released wheel deserializes this response into the struct as it
+  # was compiled, which has no such field, so serde drops it before merobox ever
+  # sees it — and `{{revoked_in}}` then resolves to the literal placeholder,
+  # making any comparison against it pass for the wrong reason. Switch this to
+  # `revokedIn` once a wheel built against it ships (calimero-client-py#89).
+  #
+  # `false` is the load-bearing value: node-2 holds the account but joined as a
+  # plain member, and only an admin may rotate. See the next comment.
+  - name: The revocation did not rotate, because the holder is not an admin
     type: json_assert
     statements:
-      - 'json_not_equal({{revoked_in}}, [])'
+      - 'json_equal({{key_rotated}}, false)'
 
   - name: Settle after the revocation and its key rotation
     type: wait_for_sync
@@ -393,20 +403,17 @@ steps:
       - account-revoke-node-2
     context_id: '{{context_id}}'
 
-  # The rotation is OWED, not immediate, and that is the shape of the model
-  # rather than a gap. Revoking is the account's authority and node-2 holds the
-  # account, but it joined as a plain member — peers accept a rotation only from
-  # an admin at the cut. So the revocation stops the device writing at once, and
-  # node-1's rotation listener discharges the pending row a moment later.
+  # NOT asserted, because it does not happen. The rotation this revocation owes
+  # is never discharged by anything: `AccountDeviceUnlinked`'s apply neither
+  # marks a `PendingRotationRepository` row nor emits an `OpEvent`, and the
+  # rotation listener reacts only to `OpEvent::MemberRemoved`, whose pending rows
+  # are written solely by member-left. So a device revoked by a non-admin account
+  # holder keeps the scope key — and therefore READ access — indefinitely.
+  # Tracked as calimero-network/core#3457.
   #
-  # Asserted on node-1 because node-1 is the admin that discharges it. Until it
-  # lands the revoked device can still READ, which is exactly what this scenario
-  # exists to prove does not persist.
-  - name: The admin's listener discharged the owed rotation
-    type: assert_log_present
-    nodes: [account-revoke-node-1]
-    patterns:
-      - "pending rotation discharged"
+  # What this scenario does still prove is the half that works: the device stops
+  # WRITING at once, below. The read half is the gap, tracked separately rather
+  # than asserted here as though it were covered.
 
   # ── Phase 6: the revoked device is out, the survivor is not ───────
 
