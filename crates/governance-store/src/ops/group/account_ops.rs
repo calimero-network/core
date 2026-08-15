@@ -246,6 +246,23 @@ pub(crate) fn apply_device_unlinked(
 
     AccountBindingRepository::new(ctx.store()).apply_revocation(&group_id, *device)?;
 
+    // Record the rotation this revocation owes, on EVERY node that folds it, so
+    // the worklist is replicated rather than gossiped and any admin may discharge
+    // it. Marked unconditionally: when an admin published the revocation, its own
+    // rotation sidecar rides the same op and clears this row immediately after, so
+    // the alternative — trying to detect here whether a rotation came along — buys
+    // nothing and gets the un-rotated case wrong if it guesses.
+    //
+    // Without this the debt is simply lost. The revoked device stops WRITING at
+    // once, but it keeps the key it already holds, so it can keep READING until
+    // someone rotates for an unrelated reason.
+    crate::PendingDeviceRotationRepository::new(ctx.store()).mark(&group_id, device)?;
+    ctx.queue_event(crate::op_events::OpEvent::DeviceRevoked {
+        group_id: group_id.to_bytes(),
+        account: *account,
+        device: *device,
+    });
+
     tracing::info!(
         group_id = ?group_id,
         account = %account,

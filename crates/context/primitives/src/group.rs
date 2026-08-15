@@ -1014,8 +1014,25 @@ impl Message for PairDeviceCompleteRequest {
 #[derive(Debug)]
 pub struct RotateGroupKeyRequest {
     pub group_id: ContextGroupId,
-    /// The member whose departure this rotation cuts off.
-    pub departed: AccountId,
+    /// What the rotation is paying off, which decides who it excludes.
+    pub debt: RotationDebt,
+}
+
+/// Why a rotation is owed — and therefore who the new key is withheld from.
+///
+/// The two cases are not interchangeable, which is the whole reason this is an
+/// enum rather than an `Option<AccountId>`: getting it wrong either leaves the
+/// party you meant to cut off holding the key, or cuts off a member who never
+/// left.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RotationDebt {
+    /// A member departed. Every envelope excludes their account by name.
+    MemberDeparted(AccountId),
+    /// A device was revoked. Excludes NOBODY by name: the recipient list is built
+    /// from live bindings and the revocation applied first, so the device is
+    /// already absent — while its account is still a member and must keep the
+    /// other devices it holds.
+    DeviceRevoked(DeviceId),
 }
 
 impl Message for RotateGroupKeyRequest {

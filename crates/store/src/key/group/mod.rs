@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x48` is taken
-// except `0x2B` (retired, below); **the next free byte is `0x49`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x49` is taken
+// except `0x2B` (retired, below); **the next free byte is `0x4A`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -2835,6 +2835,84 @@ impl Debug for GroupPendingKeyRotation {
         f.debug_struct("GroupPendingKeyRotation")
             .field("group_id", &self.group_id())
             .field("departed", &self.departed())
+            .finish()
+    }
+}
+
+pub const GROUP_PENDING_DEVICE_ROTATION_PREFIX: u8 = 0x49;
+
+/// A rotation this group owes because a DEVICE was revoked without one.
+///
+/// The sibling of [`GroupPendingKeyRotation`], and deliberately a separate row
+/// rather than a reuse of it, because the two discharge differently. A departure
+/// rotates *excluding the departed account*; a device revocation rotates
+/// **excluding nobody by name** — the revoked device is already gone from the
+/// recipient list, since that list is built from live bindings, and the account
+/// it belonged to keeps every other device it holds. Keying both by
+/// `(group_id, 32 bytes)` and telling them apart by prefix is what stops a
+/// discharge for one being mistaken for the other and cutting off a member who
+/// never left.
+///
+/// The value is `()` — presence of the key IS the marker.
+///
+/// Key layout: `prefix(1) + group_id(32) + device(32)` = 65 bytes, matching
+/// [`GroupPendingKeyRotation`], so a `(group_id, *)` prefix scan enumerates what
+/// one group owes and a full-prefix scan drains the node's whole backlog at
+/// startup.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupPendingDeviceRotation(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupPendingDeviceRotation {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device: DeviceId) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*device.as_bytes()))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device(&self) -> DeviceId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        DeviceId::from(id)
+    }
+}
+
+impl AsKeyParts for GroupPendingDeviceRotation {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupPendingDeviceRotation {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupPendingDeviceRotation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupPendingDeviceRotation")
+            .field("group_id", &self.group_id())
+            .field("device", &self.device())
             .finish()
     }
 }
