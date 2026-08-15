@@ -185,17 +185,20 @@ pub(crate) async fn do_publish_ephemeral(
     // time rather than on however long this node took to get here.
     let sent_at_ms = now_ms();
 
-    // Sign the envelope. `author`, `seq` and `sent_at_ms` ride outside the
-    // AEAD, so the signature is what makes them tamper-evident; the receive
-    // path refuses anything that does not verify.
-    let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
+    // Sign the envelope. `author`, `seq`, `sent_at_ms` and `nonce` all ride
+    // outside the AEAD, so the signature is what makes them tamper-evident; the
+    // receive path refuses anything that does not verify.
+    let envelope = crate::handlers::ephemeral::auth::SignedEnvelope {
         context_id,
         author,
         seq,
-        material.key_id,
+        key_id: material.key_id,
         sent_at_ms,
-        &ciphertext,
-    )?;
+        nonce,
+        ciphertext: &ciphertext,
+    };
+    let signature_payload =
+        crate::handlers::ephemeral::auth::ephemeral_signature_payload(envelope)?;
     let signature = PrivateKey::from(material.signing_key)
         .sign(&signature_payload)
         .map_err(|err| eyre::eyre!("failed to sign ephemeral envelope: {err}"))?
@@ -495,6 +498,7 @@ mod tests {
     use libp2p::gossipsub::TopicHash;
 
     use super::*;
+    use crate::handlers::ephemeral::auth::SignedEnvelope;
     use crate::handlers::ephemeral::PRESENCE_HEARTBEAT_MS;
 
     // -----------------------------------------------------------------------
@@ -894,6 +898,7 @@ mod tests {
             seq,
             key_id,
             sent_at_ms,
+            nonce,
             ciphertext,
             signature,
             ..
@@ -901,16 +906,26 @@ mod tests {
         else {
             panic!("expected Ephemeral");
         };
-        verify_ephemeral_signature(
+        let envelope = SignedEnvelope {
             context_id,
-            got_author,
+            author: got_author,
             seq,
             key_id,
             sent_at_ms,
-            &ciphertext,
-            &signature,
-        )
-        .expect("published signature must verify");
+            nonce,
+            ciphertext: &ciphertext,
+        };
+        verify_ephemeral_signature(envelope, &signature).expect("published signature must verify");
+
+        // The nonce is bound into the signed payload, so a relay flipping it to
+        // make the receiver's AEAD fail breaks the signature instead of causing
+        // an undetectable silent drop.
+        let mut tampered = envelope;
+        tampered.nonce = [0xFFu8; calimero_crypto::NONCE_LEN];
+        assert!(
+            verify_ephemeral_signature(tampered, &signature).is_err(),
+            "the published signature must cover the AEAD nonce"
+        );
 
         // The stamp must be a real publish-time reading, not a placeholder: a
         // receiver judges freshness against it, so a zero (or wildly off) value

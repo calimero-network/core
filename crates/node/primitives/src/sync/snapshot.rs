@@ -912,10 +912,11 @@ pub enum BroadcastMessage<'a> {
         /// `SharedKey`-encrypted borsh-encoded presence slice.
         ciphertext: Cow<'a, [u8]>,
         /// ed25519 signature by `author` over the canonical payload binding
-        /// `(context_id, author, seq, key_id, sent_at_ms, sha256(ciphertext))`.
-        /// Mandatory: `author`, `seq` and `sent_at_ms` ride outside the AEAD,
-        /// so without this they are rewritable in flight. Verified on every
-        /// receive before the awareness store is touched.
+        /// `(context_id, author, seq, key_id, sent_at_ms, nonce,
+        /// sha256(ciphertext))`. Mandatory: `author`, `seq`, `sent_at_ms` and
+        /// `nonce` all ride outside the AEAD, so without this they are
+        /// rewritable in flight. Verified on every receive before the
+        /// awareness store is touched.
         signature: [u8; 64],
     },
 }

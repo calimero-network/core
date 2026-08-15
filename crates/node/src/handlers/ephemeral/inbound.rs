@@ -25,7 +25,8 @@
 //!
 //! **Security — the wire `author` and the publish time are signed.** Every
 //! presence envelope carries an ed25519 signature, by `author`'s identity key,
-//! over `(context_id, author, seq, key_id, sent_at_ms, sha256(ciphertext))` —
+//! over `(context_id, author, seq, key_id, sent_at_ms, nonce,
+//! sha256(ciphertext))` —
 //! see [`crate::handlers::ephemeral::auth`]. `resolve_and_decrypt` verifies
 //! this signature after AEAD decryption and before the plaintext is handed to
 //! the `AwarenessStore`; a mismatch (including a group-key holder stamping
@@ -209,12 +210,15 @@ pub(crate) async fn resolve_and_decrypt(
     // before the awareness store so a forged author never becomes visible
     // state.
     if let Err(err) = crate::handlers::ephemeral::auth::verify_ephemeral_signature(
-        context_id,
-        author,
-        seq,
-        key_id,
-        sent_at_ms,
-        &ciphertext_for_verify,
+        crate::handlers::ephemeral::auth::SignedEnvelope {
+            context_id,
+            author,
+            seq,
+            key_id,
+            sent_at_ms,
+            nonce,
+            ciphertext: &ciphertext_for_verify,
+        },
         &signature,
     ) {
         debug!(
@@ -370,6 +374,7 @@ mod tests {
     use tokio::sync::{broadcast, mpsc};
 
     use super::*;
+    use crate::handlers::ephemeral::auth::SignedEnvelope;
     use crate::handlers::ephemeral::store::AwarenessStore;
 
     // -----------------------------------------------------------------------
@@ -468,15 +473,17 @@ mod tests {
         let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
         let slice = b"cursor={x:42,y:10}";
         let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, slice);
-        let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
-            context_id,
-            author,
-            seq,
-            key_id,
-            SENT_AT,
-            &ciphertext,
-        )
-        .expect("payload");
+        let payload =
+            crate::handlers::ephemeral::auth::ephemeral_signature_payload(SignedEnvelope {
+                context_id: context_id,
+                author: author,
+                seq: seq,
+                key_id: key_id,
+                sent_at_ms: SENT_AT,
+                nonce: nonce,
+                ciphertext: &ciphertext,
+            })
+            .expect("payload");
         let signature = author_sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -569,9 +576,16 @@ mod tests {
         // signature gate, not the key gate) even if the key check were
         // deleted.
         let wrong_key_id = [0x00u8; 32];
-        let payload =
-            ephemeral_signature_payload(context_id, author, 1, wrong_key_id, SENT_AT, &ciphertext)
-                .expect("payload");
+        let payload = ephemeral_signature_payload(SignedEnvelope {
+            context_id: context_id,
+            author: author,
+            seq: 1,
+            key_id: wrong_key_id,
+            sent_at_ms: SENT_AT,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        })
+        .expect("payload");
         let signature = author_sk.sign(&payload).expect("sign").to_bytes();
 
         let result = resolve_and_decrypt(
@@ -638,9 +652,16 @@ mod tests {
         let (ciphertext, nonce) = encrypt_slice(&old_key, b"stale");
         let sk = PrivateKey::from([0x95u8; 32]);
         let author = sk.public_key();
-        let payload =
-            ephemeral_signature_payload(context_id, author, 1, old_key_id, SENT_AT, &ciphertext)
-                .expect("payload");
+        let payload = ephemeral_signature_payload(SignedEnvelope {
+            context_id: context_id,
+            author: author,
+            seq: 1,
+            key_id: old_key_id,
+            sent_at_ms: SENT_AT,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        })
+        .expect("payload");
         let signature = sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -686,9 +707,16 @@ mod tests {
         // key — but stamps the victim's public key as `author`.
         let attacker = PrivateKey::from([0x84u8; 32]);
         let victim = PrivateKey::from([0x85u8; 32]).public_key();
-        let payload =
-            ephemeral_signature_payload(context_id, victim, 1, key_id, SENT_AT, &ciphertext)
-                .expect("payload");
+        let payload = ephemeral_signature_payload(SignedEnvelope {
+            context_id: context_id,
+            author: victim,
+            seq: 1,
+            key_id: key_id,
+            sent_at_ms: SENT_AT,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        })
+        .expect("payload");
         let signature = attacker.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -724,9 +752,16 @@ mod tests {
         let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"genuine");
         let sk = PrivateKey::from([0x89u8; 32]);
         let author = sk.public_key();
-        let payload =
-            ephemeral_signature_payload(context_id, author, 1, key_id, SENT_AT, &ciphertext)
-                .expect("payload");
+        let payload = ephemeral_signature_payload(SignedEnvelope {
+            context_id: context_id,
+            author: author,
+            seq: 1,
+            key_id: key_id,
+            sent_at_ms: SENT_AT,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        })
+        .expect("payload");
         let signature = sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -768,9 +803,16 @@ mod tests {
         let (ciphertext, nonce) = encrypt_slice(&group_key_bytes, b"recorded");
         let sk = PrivateKey::from([0x8Bu8; 32]);
         let author = sk.public_key();
-        let payload =
-            ephemeral_signature_payload(context_id, author, 1, key_id, sent_at_ms, &ciphertext)
-                .expect("payload");
+        let payload = ephemeral_signature_payload(SignedEnvelope {
+            context_id: context_id,
+            author: author,
+            seq: 1,
+            key_id: key_id,
+            sent_at_ms: sent_at_ms,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        })
+        .expect("payload");
         let signature = sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;
@@ -859,9 +901,16 @@ mod tests {
 
         // Signed with the ORIGINAL (now stale) stamp...
         let stale_stamp = NOW;
-        let payload =
-            ephemeral_signature_payload(context_id, author, 1, key_id, stale_stamp, &ciphertext)
-                .expect("payload");
+        let payload = ephemeral_signature_payload(SignedEnvelope {
+            context_id: context_id,
+            author: author,
+            seq: 1,
+            key_id: key_id,
+            sent_at_ms: stale_stamp,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        })
+        .expect("payload");
         let signature = sk.sign(&payload).expect("sign").to_bytes();
 
         let (node_client_for_ctx, _rx_ctx, _tmp_ctx) = node_client_with_rx(fresh_store()).await;

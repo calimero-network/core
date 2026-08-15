@@ -120,12 +120,15 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     // wire, the same way the outbound path does — a literal signature would
     // fail verification now that the receive path checks it.
     let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
-        context_id,
-        author,
-        seq,
-        key_id,
-        sent_at_ms,
-        &ciphertext,
+        crate::handlers::ephemeral::auth::SignedEnvelope {
+            context_id: context_id,
+            author: author,
+            seq: seq,
+            key_id: key_id,
+            sent_at_ms: sent_at_ms,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        },
     )
     .expect("signature payload");
     let signature = author_sk.sign(&signature_payload).expect("sign").to_bytes();
@@ -223,12 +226,15 @@ async fn forged_author_produces_no_presence_event() {
     let seq = 1u64;
     let sent_at_ms = now_ms();
     let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
-        context_id,
-        victim,
-        seq,
-        key_id,
-        sent_at_ms,
-        &ciphertext,
+        crate::handlers::ephemeral::auth::SignedEnvelope {
+            context_id: context_id,
+            author: victim,
+            seq: seq,
+            key_id: key_id,
+            sent_at_ms: sent_at_ms,
+            nonce: nonce,
+            ciphertext: &ciphertext,
+        },
     )
     .expect("payload");
     let signature = attacker.sign(&payload).expect("sign").to_bytes();
