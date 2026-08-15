@@ -81,7 +81,7 @@ async fn set_ephemeral_seeds_then_updates_snapshot() {
     let slice1 = b"cursor={x:1,y:2}".to_vec();
     let slice2 = b"cursor={x:9,y:8}".to_vec();
 
-    // --- First call (seq will become 1 inside the actor) ---
+    // --- First call (the actor seeds the seq from the wall clock, then bumps) ---
     node.node_client
         .set_local_ephemeral(context_id, author, slice1.clone())
         .await
@@ -97,7 +97,7 @@ async fn set_ephemeral_seeds_then_updates_snapshot() {
     assert_eq!(snap1[0].0, author, "author must match");
     assert_eq!(snap1[0].1, slice1, "slice must match the first set");
 
-    // --- Second call (seq will become 2) ---
+    // --- Second call (seq bumps by one from the seeded value) ---
     node.node_client
         .set_local_ephemeral(context_id, author, slice2.clone())
         .await

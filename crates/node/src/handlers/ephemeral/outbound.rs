@@ -71,8 +71,37 @@ pub enum EphemeralOutboundError {
 /// owned in one place.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalEphemeral {
+    /// Per-author LWW counter. Seeded by [`initial_seq`], never from zero —
+    /// see there for why.
     pub(crate) seq: u64,
     pub(crate) slice: Vec<u8>,
+}
+
+/// Seed value for a new author's `seq` counter: the current wall clock in
+/// milliseconds.
+///
+/// **Not zero, and not a process counter.** `seq` is the receiver's LWW rule
+/// ([`store::AwarenessStore::apply`](crate::handlers::ephemeral::store::AwarenessStore::apply)
+/// drops anything at or below the seq it already holds), and this map lives
+/// only in memory. Seeded at 0, a node that restarts republishes at seq 1..n
+/// while its peers still hold the seq it reached before the restart, so every
+/// update it sends is discarded as stale until those entries TTL-sweep —
+/// bounded at [`PRESENCE_TTL_MS`] and self-healing, but a real gap in which a
+/// node that is demonstrably back looks absent to everyone.
+///
+/// Seeding from the wall clock makes the counter monotonic *across* process
+/// lifetimes without persisting anything: the value after a restart exceeds
+/// any value the previous run could have published, because that run's own
+/// seeds came from an earlier clock reading. Presence stays entirely in
+/// memory; nothing here is written to the DAG or any store.
+///
+/// It does not need to be collision-free across authors — `seq` is compared
+/// only within a single `(context, author)` entry, never between authors — and
+/// it does not need to be dense. A clock that jumps backwards more than the
+/// TTL reintroduces the original staleness for one TTL, which is the same
+/// bound as before and strictly better than the guaranteed hit at 0.
+fn initial_seq() -> u64 {
+    now_ms()
 }
 
 // ---------------------------------------------------------------------------
@@ -291,12 +320,14 @@ pub(crate) fn set_local_ephemeral(
     // a second time inside the spawn.
     let material = resolve_publish_material(this.clients.context.datastore(), context_id, author)?;
 
-    // 2. Bump the sequence counter (or seed it at 1 for a new author).
+    // 2. Bump the sequence counter (or seed a new author's — from the wall
+    //    clock, not 0, so a restarted node's updates are not rejected as stale
+    //    by peers still holding its pre-restart seq; see `initial_seq`).
     let local = this
         .ephemeral_local
         .entry((context_id, author))
         .or_insert_with(|| LocalEphemeral {
-            seq: 0,
+            seq: initial_seq(),
             slice: vec![],
         });
     local.seq = local.seq.saturating_add(1);
@@ -684,6 +715,30 @@ mod tests {
 
         assert_eq!(seq1, 1, "first msg seq");
         assert_eq!(seq2, 2, "second msg seq");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2b: a new author's seq is seeded from the wall clock, not 0.
+    //
+    //          `ephemeral_local` is in-memory only, so a restart wipes it. If
+    //          the counter restarted at 0, every update a restarted node sent
+    //          would lose the receivers' LWW comparison against the seq it had
+    //          reached before the restart, and the node would look absent until
+    //          those entries TTL-swept.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_new_authors_seq_is_seeded_above_any_previous_process() {
+        let before = now_ms();
+        let seeded = initial_seq();
+        let after = now_ms();
+
+        assert!(seeded > 0, "a fresh author must not start at 0");
+        assert!(
+            (before..=after).contains(&seeded),
+            "the seed must be a wall-clock reading ({seeded} not in {before}..={after}), \
+             which is what makes it exceed anything a previous process published"
+        );
     }
 
     // -----------------------------------------------------------------------
