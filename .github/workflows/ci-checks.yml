@@ -90,6 +90,22 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
 
+      # merodb's `gui` feature is default-OFF, and `--all-targets` skips a
+      # feature-gated target rather than failing on it, so the workspace build
+      # above never compiles `src/gui/` or the ~20 `#[cfg(feature = "gui")]`
+      # sites in main.rs/dag.rs/export.rs. Without this step that code is free
+      # to stop compiling unnoticed, which is exactly what happened: a
+      # `CollectionType::Tuple` variant was added to the ABI schema and the
+      # gui-gated match in export.rs was never updated, so `merodb --gui` — a
+      # documented debugging tool — did not build at all.
+      #
+      # This builds rather than clippies: the gui code predates any lint gate
+      # and still carries ~60 `-D warnings` findings. Tighten this to `cargo
+      # clippy … -- -D warnings` once those are cleared.
+      - name: Cargo build (merodb gui)
+        if: ${{ !cancelled() }}
+        run: cargo build -p merodb --features gui
+
       - name: Cargo check (calimero-context-config)
         if: ${{ !cancelled() }}
         run: cargo check -p calimero-context-config

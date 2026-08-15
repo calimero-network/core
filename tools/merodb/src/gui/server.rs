@@ -13,8 +13,6 @@ use serde::Serialize;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
 use crate::{abi, dag, export, types::Column};
-use calimero_wasm_abi::schema::Manifest;
-use hex;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
