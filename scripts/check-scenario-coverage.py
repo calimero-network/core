@@ -98,6 +98,43 @@ CD_RE = re.compile(r'^\s*cd\s+"?(%s)"?' % _TOKEN, re.M)
 ASSIGN_RE = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_]*)="([^"$]+)"\s*$', re.M)
 
 
+def strip_shell_comments(run: str) -> str:
+    """Blank out `#` comments in a shell block, preserving line structure.
+
+    YAML keeps a `run: |` body as one opaque string, so a commented-out
+    invocation reaches the scanner looking exactly like a live one:
+
+        # merobox bootstrap run "workflows/foo.yml"
+
+    Counting that as a registration is the precise failure this gate exists to
+    catch — someone comments an invocation out and the check still calls the
+    scenario covered. A `#` inside quotes is not a comment, so quote state is
+    tracked rather than cutting at the first `#`. Offsets matter (the caller
+    slices the text before a match to find its `cd`), so comments are replaced
+    with spaces in place instead of removed.
+    """
+    out = []
+    for line in run.splitlines(keepends=True):
+        quote = None
+        cut = None
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#":
+                cut = i
+                break
+        if cut is None:
+            out.append(line)
+        else:
+            trailing = len(line) - len(line.rstrip("\r\n"))
+            body = line[:cut] + " " * (len(line) - cut - trailing)
+            out.append(body + line[len(line) - trailing:])
+    return "".join(out)
+
+
 def run_templates(job: dict) -> list[tuple[str, str]]:
     """(cwd, path) template pairs the job hands to `merobox bootstrap run`.
 
@@ -110,6 +147,7 @@ def run_templates(job: dict) -> list[tuple[str, str]]:
         run = step.get("run") if isinstance(step, dict) else None
         if not run:
             continue
+        run = strip_shell_comments(run)
         for m in RUN_RE.finditer(run):
             template = m.group(1) or m.group(2)
             before = run[: m.start()]
