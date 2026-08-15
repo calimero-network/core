@@ -108,7 +108,7 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 ///
 /// The presence envelope is encrypted under the context **group key** and
 /// **signed** by `author`'s identity key over `(context_id, author, seq,
-/// key_id, sha256(ciphertext))` (`calimero-node`'s
+/// key_id, sent_at_ms, nonce, sha256(ciphertext))` (`calimero-node`'s
 /// `handlers::ephemeral::auth`). For **remotely-received** presence, the
 /// receive path verifies this signature before the slice reaches the
 /// awareness store or this event is emitted, so a group-key holder cannot
@@ -119,8 +119,8 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 /// consumer of this type should not assume every instance it ever observes
 /// passed through signature verification.
 ///
-/// This authenticates *identity*, at the moment of signing, only — it proves
-/// neither current group membership nor freshness:
+/// This authenticates *identity*, at the moment of signing. It does **not**
+/// prove current group membership, and the freshness it does prove is coarse:
 ///
 /// * **Membership.** A member removed from the group is *intended* to be cut
 ///   off by group-key rotation, not by this check, but that is conditional on
@@ -132,16 +132,19 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 ///   ex-member who still holds a pre-rotation group key can publish presence
 ///   signed by their own (valid) identity key until that key is actually
 ///   rejected as superseded.
-/// * **Freshness.** The signed payload carries no timestamp, epoch, or
-///   receiver nonce, so a recorded envelope can be replayed after the
-///   original sender's entry TTL-sweeps — see
-///   `calimero-node`'s `handlers::ephemeral::auth` module doc for the exact
-///   window. This is a known, not-yet-closed gap, not an oversight in this
-///   type.
+/// * **Freshness.** The signed payload binds the sender's `sent_at_ms` wall
+///   clock, and the receive path drops anything outside a symmetric window
+///   around its own clock, so a recorded envelope is replayable only inside
+///   that window rather than forever. The window is sized to close before a
+///   TTL sweep can make a replay effective (see `PRESENCE_MAX_SKEW_MS` in
+///   `calimero-node`'s `handlers::ephemeral`), but it is a *clock* check, not
+///   a per-envelope seen-cache: it bounds replay, it does not make each
+///   envelope single-use. `sent_at_ms` is not exposed on this type — use
+///   [`age_ms`](Self::age_ms), which is measured on the emitting node.
 ///
 /// Presence remains transient and never persisted, but clients MUST NOT treat
-/// `author` here as proof of current membership or of recency (e.g. for
-/// access control or "online right now" semantics).
+/// `author` here as proof of current membership, nor `state` as proof that the
+/// peer is online *right now* (e.g. for access control).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EphemeralPayload {

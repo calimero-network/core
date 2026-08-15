@@ -177,11 +177,13 @@ pub struct NodeManager {
     ///
     /// A plain (unsynchronised) map is correct: only the single-threaded actor
     /// Arbiter mutates it; no lock needed. A `BTreeMap` (rather than a
-    /// `HashMap`) is used so entries iterate in key order — `heartbeat_tick`
-    /// collects `contexts_seen` from the ordered keys and `dedup()`s adjacent
-    /// duplicates, which only collapses same-context keys because a `BTreeMap`
-    /// groups them contiguously. A `HashMap` would scatter them, leaving
-    /// duplicate context ids that trigger redundant (though idempotent) sweeps.
+    /// `HashMap`) is used so the heartbeat's publish order is deterministic:
+    /// every tick walks `(context_id, author)` in key order, which keeps a
+    /// tick's gossip sequence reproducible under test and stable in logs.
+    /// De-duplicating the contexts to sweep does **not** depend on this
+    /// ordering — `refresh_and_sweep` collects them into a `HashSet`, because
+    /// its other source (the awareness store's own contexts) is unordered and
+    /// a sorted-then-`dedup` would only collapse *adjacent* duplicates.
     ///
     /// [`set_local_ephemeral`]: crate::handlers::ephemeral::outbound::set_local_ephemeral
     pub(crate) ephemeral_local:
