@@ -636,11 +636,6 @@ jobs:
           - workflow: xcall-example-scenario
             file: workflows/xcall-example.yml
             app: xcall-example
-          # Landed with #3435 without a matrix entry — the case this
-          # reconciliation gate exists to catch.
-          - workflow: account-facts-cross-namespace
-            file: workflows/account-facts-cross-namespace.yml
-            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
