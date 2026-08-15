@@ -370,31 +370,6 @@ jobs:
 
           echo "failed=$failed" >> $GITHUB_OUTPUT
 
-      # `merod` runs as root inside its container and creates its data dir
-      # 0700, so the unprivileged runner user cannot read back what the nodes
-      # wrote. `upload-artifact` treats that as fatal — it aborts zip creation
-      # on the first EACCES and fails the job — so this workflow reported
-      # failure on runs where all ten scenarios passed:
-      #
-      #   Error: EACCES: permission denied, open
-      #     '.../scaffolding-e2e/data/e2e-node-1/e2e-node-1/auth/000048.log'
-      #   Error: An error has occurred during zip creation for the artifact
-      #
-      # A permanently-red workflow is worse than no workflow: it trains readers
-      # to skip it, so the run where a scenario genuinely breaks looks the same
-      # as every other day.
-      #
-      # Relax the mode only (not ownership), and only for these throwaway
-      # per-run node directories. `a+rX` grants directory traversal without
-      # marking regular files executable. Kept as its own step rather than
-      # folded into the run above so a `cancelled()` run still skips it with
-      # the upload it feeds. `|| true` because a scenario that never started a
-      # node leaves no directory, which `if-no-files-found: warn` already
-      # covers.
-      - name: Make node data readable for artifact upload
-        if: ${{ !cancelled() }}
-        run: sudo chmod -R a+rX apps/scaffolding-e2e/data || true
-
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -405,7 +380,6 @@ jobs:
             apps/scaffolding-e2e/res/abi.json
             apps/scaffolding-e2e/dist/*.mpk
             apps/scaffolding-e2e/res/state-schema.json
-            apps/scaffolding-e2e/data/
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
           retention-days: 7
