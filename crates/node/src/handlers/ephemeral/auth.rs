@@ -311,17 +311,6 @@ mod tests {
         );
     }
 
-    /// The replay window a captured envelope buys an attacker can never exceed
-    /// the lifetime of the entry it would resurrect. See the constant's doc.
-    #[test]
-    fn freshness_window_does_not_outlive_the_entry_ttl() {
-        assert!(
-            PRESENCE_MAX_SKEW_MS <= crate::handlers::ephemeral::PRESENCE_TTL_MS,
-            "a captured envelope must stop being fresh no later than the entry \
-             it could resurrect expires"
-        );
-    }
-
     #[test]
     fn domain_separator_is_exactly_the_protocol_literal() {
         // Guards against an accidental edit: the literal is wire protocol.

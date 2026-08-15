@@ -368,23 +368,6 @@ pub(crate) fn set_local_ephemeral(
     Ok(())
 }
 
-/// Heartbeat tick: re-publish all locally-set ephemeral slices and sweep
-/// stale remote entries.
-///
-/// Called on the [`PRESENCE_HEARTBEAT_MS`] interval (wired in
-/// `manager/startup.rs`). For every `(context_id, author)` pair in the
-/// node's local map:
-///
-/// 1. Bumps the sequence counter (so remote nodes update their
-///    `last_seen_ms` on receipt — same-seq re-applies are no-ops in the
-///    remote [`AwarenessStore`]).
-/// 2. Refreshes the node's own entry in the [`AwarenessStore`] so its own
-///    TTL sweep cannot evict a slice it is still heartbeating — gossipsub
-///    never echoes a node's own publish back to it, so nothing else would.
-/// 3. Re-encrypts under the **current** group key with a **fresh nonce**.
-/// 4. Publishes on the context gossip topic.
-/// 5. Sweeps expired remote entries for the context, emitting
-///    [`Diff::Remove`] events for each evicted author.
 /// Refresh the local author entries, then expire everything stale.
 ///
 /// Pure over the [`AwarenessStore`] — no actor, no network — so the ordering
@@ -435,6 +418,23 @@ pub(crate) fn refresh_and_sweep(
     diffs
 }
 
+/// Heartbeat tick: re-publish all locally-set ephemeral slices and sweep
+/// stale remote entries.
+///
+/// Called on the [`PRESENCE_HEARTBEAT_MS`] interval (wired in
+/// `manager/startup.rs`). For every `(context_id, author)` pair in the
+/// node's local map:
+///
+/// 1. Bumps the sequence counter (so remote nodes update their
+///    `last_seen_ms` on receipt — same-seq re-applies are no-ops in the
+///    remote [`AwarenessStore`]).
+/// 2. Refreshes the node's own entry in the [`AwarenessStore`] so its own
+///    TTL sweep cannot evict a slice it is still heartbeating — gossipsub
+///    never echoes a node's own publish back to it, so nothing else would.
+/// 3. Re-encrypts under the **current** group key with a **fresh nonce**.
+/// 4. Publishes on the context gossip topic.
+/// 5. Sweeps expired remote entries for the context, emitting
+///    [`Diff::Remove`] events for each evicted author.
 pub(crate) fn heartbeat_tick(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,

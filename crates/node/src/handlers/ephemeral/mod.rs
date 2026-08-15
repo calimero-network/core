@@ -43,6 +43,15 @@ pub const PRESENCE_TTL_MS: u64 = 7_000;
 /// envelope and a resurrected peer.
 pub const PRESENCE_MAX_SKEW_MS: u64 = PRESENCE_TTL_MS;
 
+/// The replay bound above is only real while the freshness window closes no
+/// later than the sweep that would make a replay effective. Checked at compile
+/// time rather than in a test: it constrains two constants, so a future edit
+/// should fail to build, not fail a test run.
+const _: () = assert!(
+    PRESENCE_MAX_SKEW_MS <= PRESENCE_TTL_MS,
+    "a captured presence envelope must stop being fresh no later than the entry it could resurrect expires"
+);
+
 /// Maximum byte length of a single ephemeral awareness slice.
 ///
 /// Re-exported from `calimero-primitives` — the single source of truth shared

@@ -121,12 +121,12 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     // fail verification now that the receive path checks it.
     let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
         crate::handlers::ephemeral::auth::SignedEnvelope {
-            context_id: context_id,
-            author: author,
-            seq: seq,
-            key_id: key_id,
-            sent_at_ms: sent_at_ms,
-            nonce: nonce,
+            context_id,
+            author,
+            seq,
+            key_id,
+            sent_at_ms,
+            nonce,
             ciphertext: &ciphertext,
         },
     )
@@ -227,12 +227,12 @@ async fn forged_author_produces_no_presence_event() {
     let sent_at_ms = now_ms();
     let payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
         crate::handlers::ephemeral::auth::SignedEnvelope {
-            context_id: context_id,
+            context_id,
             author: victim,
-            seq: seq,
-            key_id: key_id,
-            sent_at_ms: sent_at_ms,
-            nonce: nonce,
+            seq,
+            key_id,
+            sent_at_ms,
+            nonce,
             ciphertext: &ciphertext,
         },
     )
