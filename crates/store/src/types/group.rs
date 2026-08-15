@@ -77,6 +77,11 @@ impl PredefinedEntry for key::GroupPendingKeyRotation {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupPendingDeviceRotation {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupContextIndex {
     type Codec = Borsh;
     type DataType<'a> = ();

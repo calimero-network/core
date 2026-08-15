@@ -2,7 +2,7 @@ use crate::{
     CapabilitiesRepository, GroupKeyring, KeyRecipient, MetaRepository, NamespaceRepository,
     PermissionChecker,
 };
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PrivateKey;
@@ -183,6 +183,36 @@ impl<'a> GroupGovernancePublisher<'a> {
                 departed: *departed,
             },
             RotationPlan::ExcludingMember(departed),
+        )
+        .await
+    }
+
+    /// Discharge the rotation a device revocation left owed.
+    ///
+    /// The deferred twin of `sign_apply_and_publish_device_revocation`: that one
+    /// rides the rotation on the revocation itself, which only an admin may do.
+    /// When the account holder was not an admin the revocation went out alone and
+    /// this pays the debt afterwards, from a node that is.
+    ///
+    /// `AllEntitled`, not `ExcludingMember`. The revocation has already applied,
+    /// and `current_key_recipients` reads live bindings, so the revoked device is
+    /// gone from the list — while the account it belonged to is still a member and
+    /// keeps every other device it holds. Naming that account here would cut off a
+    /// member who never left.
+    pub async fn sign_apply_and_publish_device_rotation(
+        &self,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        device: &DeviceId,
+    ) -> EyreResult<Option<DeliveryReport>> {
+        // Same fail-closed gate as a removal: never mint a key peers would reject.
+        self.ensure_rotation_is_publishable()?;
+
+        self.sign_apply_and_publish_inner(
+            ack_router,
+            signer_sk,
+            GroupOp::GroupKeyRotatedForDevice { device: *device },
+            RotationPlan::AllEntitled,
         )
         .await
     }
