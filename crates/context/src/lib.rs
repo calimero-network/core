@@ -609,6 +609,51 @@ impl ContextManager {
 
     /// Common preflight for governance mutation handlers.
     ///
+    /// Resolve the one key this node signs `group_id`'s ops with, refusing a
+    /// group that does not exist and a `requester` that is not this node.
+    ///
+    /// Order matters. Both the existence check and the identity read fail for a
+    /// group that was never there, so whichever runs first decides the error the
+    /// caller sees — and "group not found" names the actual problem, where "this
+    /// node has no signing identity there" reads like a provisioning fault.
+    ///
+    /// The identity read is deliberately the non-creating one. `node_signing_key`
+    /// resolves through `resolve_identity`, a pure read; the `get_or_create`
+    /// variant would note participation as a side effect, so a governance call
+    /// naming a group this node takes no part in would leave a row behind saying
+    /// it does.
+    ///
+    /// `requester` predates one-key-per-node: it let a caller pick which of
+    /// several member identities to act as, and there is only one now. An
+    /// explicit value that is not this node's key is asking it to sign as
+    /// somebody else, which it cannot do and should not pretend to.
+    pub fn resolve_signer(
+        &self,
+        group_id: &ContextGroupId,
+        requester: Option<calimero_primitives::identity::PublicKey>,
+    ) -> eyre::Result<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        if MetaRepository::new(&self.datastore)
+            .load(group_id)?
+            .is_none()
+        {
+            eyre::bail!("group '{group_id:?}' not found");
+        }
+
+        let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
+            eyre::eyre!(
+                "this node has no signing identity for {group_id:?}; it does not take part there"
+            )
+        })?;
+
+        match requester {
+            Some(pk) if pk != node_pk => eyre::bail!(
+                "cannot act as {pk}: this node signs as {node_pk}. A node has one \
+                 signing identity, so `requester` can only name its own"
+            ),
+            _ => Ok((node_pk, node_sk)),
+        }
+    }
+
     /// Resolves the requester identity, loads group metadata, checks admin
     /// authorization, resolves or stores the signing key, and returns
     /// everything needed for `sign_apply_and_publish`.
@@ -621,41 +666,7 @@ impl ContextManager {
         requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
     ) -> eyre::Result<GovernancePreflight> {
-        // Before the identity read. Both checks fail for a group that does not
-        // exist, so the order decides which error the caller sees, and "not
-        // found" names the actual problem — "this node has no signing identity
-        // there" reads like a provisioning fault on a group that was never
-        // there at all.
-        if MetaRepository::new(&self.datastore)
-            .load(group_id)?
-            .is_none()
-        {
-            eyre::bail!("group '{group_id:?}' not found");
-        }
-
-        // The node signs with one key, and it is right here. What this used to do
-        // was take the pair, throw the private half away, and look the same key up
-        // in a per-group store that was populated by best-effort copies of it —
-        // so a copy that silently failed surfaced much later as "requires a
-        // signing key for the requester".
-        let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
-            eyre::eyre!(
-                "this node has no signing identity for {group_id:?}; it does not take part there"
-            )
-        })?;
-
-        // `requester` predates one-key-per-node: it let a caller pick which of
-        // several member identities to act as, and there is only one now. An
-        // explicit value that is not this node's key is asking it to sign as
-        // somebody else, which it cannot do and should not pretend to.
-        let requester = match requester {
-            Some(pk) if pk == node_pk => pk,
-            Some(pk) => eyre::bail!(
-                "cannot act as {pk}: this node signs as {node_pk}. A node has one \
-                 signing identity, so `requester` can only name its own"
-            ),
-            None => node_pk,
-        };
+        let (requester, node_sk) = self.resolve_signer(group_id, requester)?;
 
         if require_admin {
             // The caller presents a signing key; admin authority is held by the

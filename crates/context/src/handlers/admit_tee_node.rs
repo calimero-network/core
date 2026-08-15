@@ -1,4 +1,3 @@
-use calimero_governance_store::MetaRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -97,22 +96,9 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Before the identity read, so an unknown group id is reported as one.
-        // Both checks fail for a group that does not exist, and "not found" is
-        // the answer that names the actual problem — "no signing identity here"
-        // reads like a provisioning fault on a group that was never there.
-        match MetaRepository::new(&self.datastore).load(&group_id) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' not found")))
-            }
+        let (_requester, node_sk) = match self.resolve_signer(&group_id, None) {
+            Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
-        }
-
-        let Some((_requester, node_sk)) = self.node_signing_key(&group_id) else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "node has no configured group identity for TEE admission"
-            )));
         };
 
         let policy = match calimero_governance_store::read_tee_admission_policy(

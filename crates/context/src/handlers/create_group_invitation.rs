@@ -23,35 +23,9 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Before the identity read, so an unknown group id is reported as one.
-        // Both checks fail for a group that does not exist, and "not found" is
-        // the answer that names the actual problem — "no signing identity here"
-        // reads like a provisioning fault on a group that was never there.
-        match MetaRepository::new(&self.datastore).load(&group_id) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' not found")))
-            }
+        let (requester, node_sk) = match self.resolve_signer(&group_id, requester) {
+            Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
-        }
-
-        let node_identity = self.node_signing_key(&group_id);
-
-        let Some((node_pk, node_sk)) = node_identity else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "this node has no signing identity for {group_id:?}; it does not take part there"
-            )));
-        };
-        // A node has one signing identity, so an explicit `requester` can only
-        // name its own — anything else is asking it to sign as somebody else.
-        let requester = match requester {
-            Some(pk) if pk == node_pk => pk,
-            Some(pk) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "cannot act as {pk}: this node signs as {node_pk}"
-                )))
-            }
-            None => node_pk,
         };
 
         let datastore = self.datastore.clone();

@@ -219,6 +219,120 @@ async fn set_member_auto_follow_handler_error_paths() {
 }
 
 // ---------------------------------------------------------------------------
+// A governance call must never make the node a participant as a side effect.
+//
+// These exist because the reverse shipped and CI stayed green. `delete_context`
+// resolved its signing key through `get_or_create_identity`, which notes
+// participation — so deleting a context whose group this node had never joined
+// wrote a `NamespaceIdentity` row saying it had. Nothing caught it: every gate
+// passed, including the feature-gated suite, and it was found by reading the
+// diff.
+//
+// That row is not inert. `iter_identities` enumerates it, and the sync layer
+// walks that set — so the residue is a node syncing against a namespace it was
+// never in. The assertion is therefore on `participates_in` specifically, not
+// just on the call failing: a handler can return the right error and still have
+// written the row on the way there.
+//
+// The delete path itself is not driven here: `delete_context` calls
+// `node_client.unsubscribe` before it reaches the signing path, and this
+// harness has no network recipient wired up. The distinction it regressed on —
+// `resolve_identity` reads, `get_or_create_identity` writes — is pinned
+// directly in `calimero-governance-store`'s namespace tests instead.
+
+/// The signer resolution refuses a group this node takes no part in, and
+/// leaves no trace of having been asked.
+#[actix::test]
+async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x5Au8; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_account =
+        calimero_context::test_support::enrol(&node.store, &gid, &admin_sk.public_key());
+
+    // The group exists and has members — only this node's identity is absent,
+    // so the existence check passes and the identity read is what must refuse.
+    calimero_governance_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_account))
+        .unwrap();
+    calimero_governance_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "precondition: the node must not already participate"
+    );
+
+    let err = node
+        .context_client
+        .set_member_auto_follow(SetMemberAutoFollowRequest {
+            group_id: gid,
+            target: admin_account,
+            auto_follow_contexts: true,
+            auto_follow_subgroups: false,
+            requester: None,
+        })
+        .await
+        .expect_err("a node with no identity there cannot sign");
+    assert!(
+        err.to_string().contains("does not take part"),
+        "unexpected error: {err}"
+    );
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "the refused call still marked this node as participating"
+    );
+}
+
+/// A node has one signing identity, so naming another is refused rather than
+/// quietly reinterpreted as "sign with whatever you have".
+#[actix::test]
+async fn a_requester_naming_another_identity_is_refused() {
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x5Du8; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let someone_else = PrivateKey::random(&mut rng).public_key();
+
+    let admin_account =
+        calimero_context::test_support::enrol(&node.store, &gid, &admin_sk.public_key());
+    calimero_governance_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_account))
+        .unwrap();
+    calimero_governance_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    calimero_governance_store::NamespaceRepository::new(&node.store)
+        .replace_identity(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
+        .unwrap();
+
+    let err = node
+        .context_client
+        .set_member_auto_follow(SetMemberAutoFollowRequest {
+            group_id: gid,
+            target: admin_account,
+            auto_follow_contexts: true,
+            auto_follow_subgroups: false,
+            requester: Some(someone_else),
+        })
+        .await
+        .expect_err("this node cannot sign as somebody else");
+    assert!(
+        err.to_string().contains("cannot act as"),
+        "unexpected error: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TEE attestation announce → admission, end-to-end regression for #2441.
 //
 // PR #2096 published fleet `TeeAttestationAnnounce` messages on the namespace
