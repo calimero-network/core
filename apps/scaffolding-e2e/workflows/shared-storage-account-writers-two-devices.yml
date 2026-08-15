@@ -162,13 +162,12 @@ steps:
   # GroupOp, so the node must already hold the scope key.
 
   - name: Node-2 enrolls a device for a fresh account
-    type: account_create
+    type: node_identity
     node: shared-account-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       enrolled_account: accountId
       laptop_device: deviceId
-      root_key: accountRootKey
+      root_key: accountRootPublicKey
 
   - name: Settle after the link op
     type: wait_for_sync

@@ -1,11 +1,11 @@
 use calimero_server_primitives::admin::{
-    CreateAccountApiRequest, CreateAccountApiResponse, CreateGroupInvitationApiRequest,
-    CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
-    DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
-    NamespaceIdentityApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiRequest,
-    PairDeviceCompleteApiResponse, PairDeviceInitApiRequest, PairDeviceInitApiResponse,
-    RevokeDeviceApiRequest, RevokeDeviceApiResponse,
+    CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
+    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
+    JoinGroupApiRequest, JoinGroupApiResponse, ListNamespaceGroupsApiResponse,
+    ListNamespacesApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
+    NodeIdentityApiResponse, PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse,
+    PairDeviceInitApiRequest, PairDeviceInitApiResponse, RevokeDeviceApiRequest,
+    RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -84,21 +84,6 @@ where
         Ok(response)
     }
 
-    /// Enroll this node's device into a namespace under a fresh account.
-    ///
-    /// Must follow key delivery: the device link travels as an encrypted group
-    /// op, so a node holding no scope key cannot publish one. The node refuses
-    /// with that reason rather than failing obscurely.
-    pub async fn create_account(&self, namespace_id: &str) -> Result<CreateAccountApiResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/namespaces/{namespace_id}/account"),
-                CreateAccountApiRequest {},
-            )
-            .await?;
-        Ok(response)
-    }
     /// Who this node is: the account it writes as, the device it is, and the key
     /// it signs with.
     ///
@@ -118,7 +103,7 @@ where
     /// Mint a device on this node for an account that already exists elsewhere
     /// — the first half of pairing.
     ///
-    /// Needs no scope key, unlike [`Self::create_account`]: nothing is
+    /// Needs no scope key: nothing is
     /// published here. It returns the device id and agreement key that the
     /// account holder certifies in the second half.
     pub async fn pair_device_init(

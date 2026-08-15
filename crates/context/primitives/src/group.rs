@@ -739,45 +739,6 @@ impl Message for AdmitTeeNodeRequest {
 /// Must run AFTER the node holds the namespace's scope key: the link travels as an
 /// encrypted `GroupOp`, so a node with no key cannot publish one. That is not an
 /// implementation detail to be tidied away later — it is why `KeyEnvelope` can
-/// still address a member as well as a device.
-#[derive(Debug)]
-pub struct CreateAccountRequest {
-    /// The namespace to enroll in. The account is rooted at this node's namespace
-    /// identity, which is what ties it to a granted member.
-    pub namespace_id: ContextGroupId,
-}
-
-/// What the node enrolled as.
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct CreateAccountResponse {
-    /// The account this node now speaks for in the namespace.
-    pub account: AccountId,
-    /// This node's replica id within it.
-    pub device: DeviceId,
-    /// The account's genesis, which a pairing device needs in order to mint its
-    /// own `DeviceId` — it is `H(account ‖ nonce)`, so the nonce has to travel.
-    pub genesis: AccountGenesis,
-}
-
-impl CreateAccountResponse {
-    /// Build a response. Exists because the struct is `#[non_exhaustive]` — which
-    /// is right for the readers, but the producer lives in `calimero-context` and
-    /// cannot use a struct expression across the crate boundary.
-    #[must_use]
-    pub const fn new(account: AccountId, device: DeviceId, genesis: AccountGenesis) -> Self {
-        Self {
-            account,
-            device,
-            genesis,
-        }
-    }
-}
-
-impl Message for CreateAccountRequest {
-    type Result = eyre::Result<CreateAccountResponse>;
-}
-
 /// Adopt an **existing** account on this node and mint a device for it — the
 /// first half of pairing.
 ///
@@ -786,7 +747,7 @@ impl Message for CreateAccountRequest {
 /// knows the account (`H(account ‖ nonce)`), while the account holder cannot
 /// certify that device until it knows the id and KEM key.
 ///
-/// Deliberately does **not** require a scope key, unlike `CreateAccountRequest`.
+/// Deliberately does **not** require a scope key: nothing is published here.
 /// A pairing device holds none — obtaining one is what the second half is for —
 /// and it publishes nothing here, so there is no encrypted op to gate on.
 #[derive(Debug)]
@@ -833,7 +794,7 @@ pub struct PairDeviceInitResponse {
 
 impl PairDeviceInitResponse {
     /// Build a response. Exists for the same reason as
-    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the constructor — the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
     pub const fn new(
@@ -917,7 +878,7 @@ pub struct PairDeviceCompleteResponse {
 
 impl PairDeviceCompleteResponse {
     /// Build a response. Exists for the same reason as
-    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the constructor — the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
     pub const fn new(
