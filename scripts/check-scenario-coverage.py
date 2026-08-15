@@ -7,12 +7,19 @@ scenarios at once and named none of them in the diff, a later parallelisation
 dropped one of an app's two scenarios, and scenarios added afterwards were
 written by authors with no way to know a matrix entry was also required.
 
-Resolution works from each workflow's own `merobox bootstrap run` template
-rather than a hardcoded directory layout, so a new e2e workflow with a
-different arrangement is followed automatically:
+A scenario counts as registered only when it is the argument of an actual
+`merobox bootstrap run`. Resolution works from each workflow's own invocation
+rather than a hardcoded directory layout, so a new e2e workflow arranged
+differently is followed automatically:
 
-    merobox bootstrap run "workflows/app-migration/${WORKFLOW}.yml"   # stem matrix
+    merobox bootstrap run "workflows/app-migration/${WORKFLOW}.yml"   # stem matrix + job env
     cd apps/${{ matrix.app }} && merobox bootstrap run "${{ matrix.file }}"
+    FUZZY_CONFIG="workflows/.../fuzzy-test.yml"; merobox bootstrap run "$FUZZY_CONFIG"
+
+Nothing else counts. Scanning for any string that merely *names* a scenario
+would re-admit the drift this exists to catch: a path in an `echo`, a step
+name, or a `#` comment inside a `run:` block (which YAML keeps as part of the
+string, unlike a real YAML comment) would mark an unrun scenario as covered.
 
 Accepted exclusions live in scripts/scenario-coverage-baseline.json as
 {path: reason}; a reason is required so an exclusion has to be argued for
@@ -26,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import itertools
 import json
 import os
 import re
@@ -33,14 +41,7 @@ import sys
 
 import yaml
 
-SCENARIO_GLOBS = ("apps/*/workflows/**/*.yml", "workflows/**/*.yml")
-
-# `e2e-convergence-baseline.txt` names scenarios but is a lint artifact, not a
-# runner: the convergence linter parses those files and never boots a node.
-# Treating it as an anchor hid apps/sync-test — a crate cargo refused to build,
-# whose two scenarios could not have run even if they were registered.
-NOT_AN_ANCHOR = ("e2e-convergence-baseline.txt",)
-
+SCENARIO_GLOBS = ("apps/*/workflows/**/*.y*ml", "workflows/**/*.y*ml")
 
 def scenarios_on_disk() -> list[str]:
     found: set[str] = set()
@@ -49,32 +50,38 @@ def scenarios_on_disk() -> list[str]:
     return sorted(found)
 
 
-def walk_strings(node):
-    """Every string value in a parsed YAML document."""
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for v in node.values():
-            yield from walk_strings(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from walk_strings(v)
-
-
 def matrix_combinations(job: dict) -> list[dict]:
-    """Every matrix combination for a job, as dicts of key -> value.
+    """Every matrix combination for a job, following GitHub's own semantics.
 
-    Handles both `include:` entries (dicts) and plain key lists, which is the
-    difference between the app matrix and the stem matrix.
+    Plain axes cross-product with each other, `include` entries are added on
+    top, and `exclude` entries drop any combination they are a subset of.
+    Getting this wrong in either direction breaks the gate: a missed
+    combination hides a registration, an invented one reports a false dangling
+    entry.
     """
     matrix = (job.get("strategy") or {}).get("matrix")
     if not isinstance(matrix, dict):
         return []
-    combos = [dict(e) for e in matrix.get("include", []) if isinstance(e, dict)]
-    for key, values in matrix.items():
-        if key == "include" or not isinstance(values, list):
-            continue
-        combos.extend({key: v} for v in values if isinstance(v, (str, int)))
+
+    axes = {
+        k: v
+        for k, v in matrix.items()
+        if k not in ("include", "exclude") and isinstance(v, list)
+    }
+    combos: list[dict] = []
+    if axes:
+        keys = list(axes)
+        for values in itertools.product(*(axes[k] for k in keys)):
+            combos.append(dict(zip(keys, values)))
+
+    for entry in matrix.get("exclude", []) or []:
+        if isinstance(entry, dict):
+            combos = [
+                c for c in combos
+                if not all(c.get(k) == v for k, v in entry.items())
+            ]
+
+    combos.extend(dict(e) for e in matrix.get("include", []) or [] if isinstance(e, dict))
     return combos
 
 
@@ -83,6 +90,12 @@ def matrix_combinations(job: dict) -> list[dict]:
 _TOKEN = r'(?:\$\{\{[^}]*\}\}|[^\s"\\])+'
 RUN_RE = re.compile(r'merobox\s+bootstrap\s+run\s+\\?\s*(?:"(%s)"|(%s))' % (_TOKEN, _TOKEN))
 CD_RE = re.compile(r'^\s*cd\s+"?(%s)"?' % _TOKEN, re.M)
+# A literal shell assignment in the same run block, e.g.
+#   FUZZY_CONFIG="workflows/fuzzy-tests/kv-store/fuzzy-test.yml"
+# Resolving these is what lets the gate insist every registration comes from an
+# actual `merobox bootstrap run` argument rather than from any string that
+# happens to name a scenario.
+ASSIGN_RE = re.compile(r'^\s*([A-Za-z_][A-Za-z0-9_]*)="([^"$]+)"\s*$', re.M)
 
 
 def run_templates(job: dict) -> list[tuple[str, str]]:
@@ -99,7 +112,11 @@ def run_templates(job: dict) -> list[tuple[str, str]]:
             continue
         for m in RUN_RE.finditer(run):
             template = m.group(1) or m.group(2)
-            cds = [c.group(1) for c in CD_RE.finditer(run[: m.start()])]
+            before = run[: m.start()]
+            cds = [c.group(1) for c in CD_RE.finditer(before)]
+            shell = {a.group(1): a.group(2) for a in ASSIGN_RE.finditer(before)}
+            for name, value in shell.items():
+                template = template.replace("${%s}" % name, value).replace("$%s" % name, value)
             pairs.append((cds[-1] if cds else "", template))
     return pairs
 
@@ -129,8 +146,12 @@ def registered_scenarios() -> tuple[set[str], list[tuple[str, str]]]:
     for wf in sorted(glob.glob(".github/workflows/*.y*ml")):
         try:
             doc = yaml.safe_load(open(wf, encoding="utf-8"))
-        except yaml.YAMLError:
-            continue
+        except yaml.YAMLError as err:
+            # Skipping an unparseable workflow would drop its registrations and
+            # report its scenarios as orphans — a confusing failure that hides
+            # the real one. Say what actually broke.
+            raise SystemExit(f"{wf}: could not parse as YAML, so its registrations "
+                             f"cannot be read:\n{err}")
         if not isinstance(doc, dict):
             continue
         for job in (doc.get("jobs") or {}).values():
@@ -161,24 +182,6 @@ def registered_scenarios() -> tuple[set[str], list[tuple[str, str]]]:
                         registered.add(os.path.normpath(hit))
                     else:
                         dangling.append((os.path.basename(wf), path))
-
-    # Literal scenario paths named outside a matrix (single-scenario steps).
-    #
-    # Scanned from the PARSED document, never the raw text: a path inside a `#`
-    # comment is prose, not an anchor. `member-removed-partition-window-reconcile`
-    # is named only by a comment explaining why it is excluded, and matching that
-    # would have marked the one deliberately-unregistered scenario as covered.
-    for f in glob.glob(".github/**/*.y*ml", recursive=True):
-        if not os.path.isfile(f) or any(n in f for n in NOT_AN_ANCHOR):
-            continue
-        try:
-            doc = yaml.safe_load(open(f, encoding="utf-8"))
-        except yaml.YAMLError:
-            continue
-        for value in walk_strings(doc):
-            for p in re.findall(r"(?:apps|workflows)/[\w./-]+\.ya?ml", value):
-                if os.path.isfile(p):
-                    registered.add(p)
 
     return registered, dangling
 
