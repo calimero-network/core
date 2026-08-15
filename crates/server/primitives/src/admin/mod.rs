@@ -2082,6 +2082,22 @@ pub struct RevokeDeviceApiResponseData {
     pub account_id: String,
     /// Hex-encoded `DeviceId` that was withdrawn.
     pub device_id: String,
+    /// Whether the scope key rotated in the namespace **named in the request**.
+    ///
+    /// `revoked_in` is the full picture; this reports the one namespace the
+    /// caller asked about, which is what it meant before a revocation reached
+    /// more than one.
+    ///
+    /// Kept rather than folded into `revoked_in` because `calimero-client-py` is
+    /// a Rust binding that deserializes into this struct, compiled into the
+    /// released wheel while this field was required — dropping it makes every
+    /// response fail to parse there, which merobox reports only as the useless
+    /// "account revoke failed". The same mistake, with the same symptom, is
+    /// recorded on `CreateAccountApiResponseData::account_nonce`.
+    ///
+    /// Removable once a wheel built against `revoked_in` is released and the
+    /// merobox `account_revoke` step reads it instead of `keyRotated`.
+    pub key_rotated: bool,
     /// Every namespace the revocation was published into.
     ///
     /// A device belongs to an account, not to a scope, so revoking it withdraws

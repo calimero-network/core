@@ -136,11 +136,28 @@ steps:
     namespace_id: '{{ns_b}}'
     invitation: '{{invite_b}}'
 
-  - name: Settle both joins
+  # Two barriers, because a namespace is a DAG and `wait_for_sync` settles one.
+  - name: Settle the join to namespace A
+    type: wait_for_sync
+    comment: >-
+      lint-convergence: ok — node-3 is deliberately outside both barriers. It is
+      a member of nothing at this point; its only mutation so far is a local
+      application install, which no other node reads. Its whole right to act
+      arrives later, from being a device of Alice's account, and that is the
+      point of the scenario. Barriering it on a namespace it never joined would
+      wait for convergence that is not coming.
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  - name: Settle the join to namespace B
     type: wait_for_sync
     nodes:
       - account-xns-node-1
       - account-xns-node-2
+    group_id: '{{ns_b}}'
     timeout: 120
 
   # ── One account, taking part in both ───────────────────────────────
@@ -172,11 +189,20 @@ steps:
       - 'json_equal({{account_a}}, {{account_b}})'
       - 'json_equal({{device_a}}, {{device_b}})'
 
-  - name: Settle the two link ops
+  - name: Settle the link op in namespace A
     type: wait_for_sync
     nodes:
       - account-xns-node-1
       - account-xns-node-2
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  - name: Settle the link op in namespace B
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_b}}'
     timeout: 120
 
   # ── Pair the phone, naming namespace A only ────────────────────────
@@ -202,11 +228,23 @@ steps:
       - 'json_not_equal({{paired_device}}, {{device_a}})'
       - 'json_equal({{key_delivered}}, true)'
 
-  - name: Settle the link and the key delivery
+  - name: Settle the pairing in namespace A
     type: wait_for_sync
     nodes:
       - account-xns-node-1
       - account-xns-node-2
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  # The load-bearing one. The pairing named A, so B settling is what proves the
+  # link was published there too — which is the precondition for `revokedIn`
+  # naming both below.
+  - name: Settle the pairing in namespace B
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_b}}'
     timeout: 120
 
   # ── Revoke, naming namespace A only ────────────────────────────────

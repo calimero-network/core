@@ -260,6 +260,20 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 //
                 // What does vary per namespace is the scope key, so each one gets
                 // its own delivery wrapped under the same device KEM key.
+                //
+                // KNOWN ASYMMETRY, not yet closed. This runs on the HOLDER and
+                // publishes into every namespace; the paired device subscribes in
+                // `pair_device_init`, which knows only the namespace the pairing
+                // named. So the device receives the key for that one and is not
+                // listening on the topics the rest travel on.
+                //
+                // Publishing to all of them is still right: the ops are on the
+                // namespace DAGs, so the device picks them up whenever it does
+                // subscribe, and the binding is what makes the later revocation
+                // reach everywhere. What it does not yet get is prompt delivery.
+                // Closing it needs the device to learn its account's namespace
+                // set — it cannot subscribe to a namespace it has not been told
+                // about, and at pair-init time it has been told about one.
                 let namespaces = NamespaceRepository::new(&store).iter_identities()?;
                 let mut linked_in = Vec::new();
                 let mut key_delivered_everywhere = true;

@@ -111,6 +111,13 @@ pub async fn handler(
                     data: RevokeDeviceApiResponseData {
                         account_id: hex::encode(resp.account.as_bytes()),
                         device_id: hex::encode(resp.device.as_bytes()),
+                        // The namespace the caller named, which is what this
+                        // field meant before one revocation reached several.
+                        key_rotated: resp
+                            .revoked_in
+                            .iter()
+                            .find(|o| o.namespace_id == namespace_id)
+                            .is_some_and(|o| o.key_rotated),
                         revoked_in: resp
                             .revoked_in
                             .iter()
