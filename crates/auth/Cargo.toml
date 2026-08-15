@@ -23,10 +23,8 @@ clap = { workspace = true, features = ["derive", "env"] }
 config = { version = "0.13", default-features = false, features = ["json", "toml"] }
 ctor = "0.1"
 dashmap = "5.5.3"
-ed25519-dalek = { workspace = true, features = ["rand_core"] }
 eyre.workspace = true
 hex.workspace = true
-ic-agent = { workspace = true, optional = true }
 jsonwebtoken.workspace = true
 lazy_static.workspace = true
 parking_lot.workspace = true
@@ -38,7 +36,6 @@ rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-p
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-starknet.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
