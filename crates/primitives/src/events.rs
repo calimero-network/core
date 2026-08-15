@@ -154,6 +154,29 @@ pub struct EphemeralPayload {
     /// `true` on TTL/disconnect expiry; `state` is omitted in that case.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removed: bool,
+    /// Milliseconds since this author was last heard from, measured on the
+    /// emitting node — present **only on replay**, absent on a live delta.
+    ///
+    /// A subscriber is seeded with the context's current presence at subscribe
+    /// time (see `calimero-server`'s WS/SSE subscribe handlers); a replayed
+    /// entry may be anything from brand new to nearly TTL-expired, and the
+    /// subscriber cannot tell those apart from the bytes alone. A live delta
+    /// carries no age because it is emitted at the moment of change, so the
+    /// receiver's own clock is the better reading — hence
+    /// `skip_serializing_if`: the field is *absent*, not `null`, on the live
+    /// path, and its presence is itself the "this is replayed state" signal.
+    ///
+    /// **Relative by design.** The underlying `last_seen_ms` is stamped from
+    /// the emitting node's wall clock; shipping it absolute would force a
+    /// reader on another machine to subtract against its own clock, and any
+    /// skew between the two would corrupt the result. A relative age needs no
+    /// clock agreement.
+    ///
+    /// Bounded above by the node's presence TTL (7s) for any entry still live
+    /// enough to be replayed, and typically below the heartbeat interval
+    /// (2.5s) for an active author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
 }
 
 /// Payload of a [`ContextEventPayload::AppVersionChanged`] event. Versions are
@@ -387,12 +410,63 @@ mod tests {
                 author: PublicKey::from([0x05; 32]),
                 state: Some(vec![1, 2, 3]),
                 removed: false,
+                age_ms: None,
             }),
         };
         let v = serde_json::to_value(&event).expect("serialize");
         assert_eq!(v["type"], "Ephemeral");
         assert_eq!(v["data"]["state"], serde_json::json!([1, 2, 3]));
         assert!(v.get("contextId").is_some());
+    }
+
+    // A live delta carries NO age: `age_ms` is absent from the wire, not null.
+    // Clients discriminate replayed state from live state on presence of the
+    // field, so a regression to `"ageMs": null` would break that test.
+    #[test]
+    fn ephemeral_live_delta_omits_age() {
+        let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
+            author: PublicKey::from([0x05; 32]),
+            state: Some(vec![1]),
+            removed: false,
+            age_ms: None,
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(
+            v["data"].get("ageMs").is_none(),
+            "live deltas must omit ageMs entirely: {v}"
+        );
+    }
+
+    // A replayed entry carries the age, camelCase on the wire.
+    #[test]
+    fn ephemeral_replay_carries_camel_case_age() {
+        let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
+            author: PublicKey::from([0x05; 32]),
+            state: Some(vec![1]),
+            removed: false,
+            age_ms: Some(1_250),
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(v["data"]["ageMs"], serde_json::json!(1_250));
+        assert!(
+            v["data"].get("age_ms").is_none(),
+            "age must be camelCase on the wire"
+        );
+    }
+
+    // A payload persisted/serialized before `age_ms` existed still decodes
+    // (`#[serde(default)]`), landing as "no age" == a live delta.
+    #[test]
+    fn ephemeral_payload_without_age_still_deserializes() {
+        let json = serde_json::json!({
+            "type": "Ephemeral",
+            "data": { "author": PublicKey::from([0x05; 32]), "state": [1] }
+        });
+        let payload: ContextEventPayload = serde_json::from_value(json).expect("deserialize");
+        let ContextEventPayload::Ephemeral(payload) = payload else {
+            panic!("wrong variant");
+        };
+        assert_eq!(payload.age_ms, None);
     }
 
     // Ephemeral removal: state absent, removed=true.
@@ -402,6 +476,7 @@ mod tests {
             author: PublicKey::from([0x05; 32]),
             state: None,
             removed: true,
+            age_ms: None,
         });
         let v = serde_json::to_value(&payload).expect("serialize");
         assert!(v["data"].get("state").is_none());

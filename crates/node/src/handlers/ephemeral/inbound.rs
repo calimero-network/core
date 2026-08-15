@@ -209,17 +209,26 @@ pub(crate) async fn resolve_and_decrypt(
 ///
 /// Infallible to callers: a failed send (no receivers) is logged at debug
 /// and discarded — client events are best-effort.
+///
+/// `age_ms` is always `None` here: this is the *live* path, and a delta is
+/// fresh by construction — it is emitted the instant the awareness store
+/// changed, so the subscriber's own receipt time is a better reading than
+/// anything this node could stamp. Age is carried only on the replay path
+/// (`calimero-server`'s subscribe handlers), where the entry may be arbitrarily
+/// old within the TTL window. See [`EphemeralPayload::age_ms`].
 pub(crate) fn emit_ephemeral_diff(node_client: &NodeClient, context_id: ContextId, diff: Diff) {
     let payload = match diff {
         Diff::Upsert { author, slice } => ContextEventPayload::Ephemeral(EphemeralPayload {
             author,
             state: Some(slice),
             removed: false,
+            age_ms: None,
         }),
         Diff::Remove { author } => ContextEventPayload::Ephemeral(EphemeralPayload {
             author,
             state: None,
             removed: true,
+            age_ms: None,
         }),
     };
 
