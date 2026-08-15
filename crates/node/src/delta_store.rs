@@ -525,7 +525,6 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             &self.our_identity,
             "__calimero_sync_next".to_owned(),
             artifact,
-            vec![],
             atomic,
         );
         tokio::pin!(execute);

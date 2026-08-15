@@ -4,9 +4,9 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    CreateAliasRequest, CreateAliasResponse, CreateContextIdentityAlias, CreateContextRequest,
-    CreateContextResponse, GetApplicationResponse, InstallDevApplicationRequest,
-    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
+    CreateContextRequest, CreateContextResponse, GetApplicationResponse,
+    InstallDevApplicationRequest, UpdateContextApplicationRequest,
+    UpdateContextApplicationResponse,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -59,9 +59,6 @@ pub struct CreateCommand {
     )]
     pub context_seed: Option<Hash>,
 
-    #[clap(long = "as", help = "Create an alias for the context identity")]
-    pub identity: Option<Alias<PublicKey>>,
-
     #[clap(long = "name", help = "Create an alias for the context")]
     pub context: Option<Alias<ContextId>>,
 
@@ -106,7 +103,6 @@ impl CreateCommand {
                 context_seed,
                 metadata: None,
                 params,
-                identity,
                 context,
                 service,
                 group_id,
@@ -121,7 +117,6 @@ impl CreateCommand {
                         application_id: app_id,
                         service,
                         params,
-                        identity,
                         context,
                         group_id,
                         identity_secret,
@@ -136,7 +131,6 @@ impl CreateCommand {
                 context_seed,
                 metadata,
                 params,
-                identity,
                 context,
                 service,
                 group_id,
@@ -168,7 +162,6 @@ impl CreateCommand {
                         application_id,
                         service,
                         params,
-                        identity,
                         context,
                         group_id,
                         identity_secret,
@@ -204,7 +197,6 @@ pub async fn create_context(
         application_id,
         service,
         params,
-        identity,
         context,
         group_id,
         identity_secret,
@@ -235,20 +227,6 @@ pub async fn create_context(
 
     environment.output.write(&response);
 
-    if let Some(alias) = identity {
-        let alias_request = CreateAliasRequest {
-            alias,
-            value: CreateContextIdentityAlias {
-                identity: response.data.member_public_key,
-            },
-        };
-
-        let alias_response: CreateAliasResponse = client
-            .create_context_identity_alias(&response.data.context_id, alias_request)
-            .await?;
-
-        environment.output.write(&alias_response);
-    }
     if let Some(context_alias) = context {
         let res = client
             .create_alias(context_alias, response.data.context_id, None)
@@ -333,7 +311,6 @@ pub struct CreateContextArgs {
     pub application_id: ApplicationId,
     pub service: Option<String>,
     pub params: Option<String>,
-    pub identity: Option<Alias<PublicKey>>,
     pub context: Option<Alias<ContextId>>,
     pub group_id: String,
     pub identity_secret: Option<String>,

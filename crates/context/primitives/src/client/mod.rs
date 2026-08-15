@@ -6,7 +6,6 @@ use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextId};
@@ -1599,7 +1598,6 @@ impl ContextClient {
     ///   must be a member of the context.
     /// * `method` - The string name of the application method to call.
     /// * `payload` - The input data (e.g., serialized JSON) for the method.
-    /// * `aliases` - A list of public key aliases to use for this specific execution.
     /// * `atomic` - An optional handle for batching multiple executions into an atomic transaction.
     ///
     /// # Returns
@@ -1611,13 +1609,10 @@ impl ContextClient {
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
-        aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        self.execute_with_origin(
-            context_id, executor, method, payload, aliases, atomic, None, 0,
-        )
-        .await
+        self.execute_with_origin(context_id, executor, method, payload, atomic, None, 0)
+            .await
     }
 
     /// Like [`execute`](Self::execute), but tags the run with the source
@@ -1631,7 +1626,6 @@ impl ContextClient {
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
-        aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
         xcall_origin: Option<ContextId>,
         xcall_depth: u32,
@@ -1645,7 +1639,6 @@ impl ContextClient {
                     executor: *executor,
                     method,
                     payload,
-                    aliases,
                     atomic,
                     xcall_origin,
                     xcall_depth,
@@ -1750,7 +1743,6 @@ impl ContextClient {
                 executor,
                 "__calimero_merge_root_state".to_owned(),
                 payload,
-                vec![],
                 None,
             )
             .await?;

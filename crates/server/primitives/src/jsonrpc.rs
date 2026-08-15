@@ -1,7 +1,5 @@
 use calimero_context_client::messages::ExecuteError;
-use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -145,23 +143,15 @@ pub struct ExecutionRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
-    #[serde(default)]
-    pub substitute: Vec<Alias<PublicKey>>,
 }
 
 impl ExecutionRequest {
     #[must_use]
-    pub const fn new(
-        context_id: ContextId,
-        method: String,
-        args_json: serde_json::Value,
-        substitute: Vec<Alias<PublicKey>>,
-    ) -> Self {
+    pub const fn new(context_id: ContextId, method: String, args_json: serde_json::Value) -> Self {
         Self {
             context_id,
             method,
             args_json,
-            substitute,
         }
     }
 }
@@ -274,10 +264,8 @@ impl Validate for SyncStatusRequest {
 
 impl Validate for ExecutionRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        use crate::validation::helpers::{
-            validate_collection_size, validate_json_size, validate_method_name,
-        };
-        use crate::validation::{MAX_ARGS_JSON_SIZE, MAX_SUBSTITUTE_ALIASES};
+        use crate::validation::helpers::{validate_json_size, validate_method_name};
+        use crate::validation::MAX_ARGS_JSON_SIZE;
 
         let mut errors = Vec::new();
 
@@ -288,13 +276,6 @@ impl Validate for ExecutionRequest {
 
         // Validate args_json size
         if let Some(e) = validate_json_size(&self.args_json, "args_json", MAX_ARGS_JSON_SIZE) {
-            errors.push(e);
-        }
-
-        // Validate substitute aliases count
-        if let Some(e) =
-            validate_collection_size(&self.substitute, "substitute", MAX_SUBSTITUTE_ALIASES)
-        {
             errors.push(e);
         }
 
