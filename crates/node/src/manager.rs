@@ -139,6 +139,17 @@ pub struct NodeManager {
     /// silence exactly the member anti-entropy above. Still keyed on the
     /// namespace, never the peer: a Sybil swarm shares one budget.
     pub(crate) ns_provable_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
+    /// The same budget, same window, for the stranded-member arm: a node that
+    /// is a member of a group in the namespace but holds no key for it, pulling
+    /// off the *unverifiable* beacon that just arrived.
+    ///
+    /// Separate for the same reason the provable arm is: a stranded node cannot
+    /// verify any beacon, so every beacon it receives would contend for the
+    /// slot, and sharing would let that starve the two arms above. Keyed on the
+    /// namespace rather than the peer, so a Sybil swarm shares one budget — the
+    /// trigger is an unauthenticated message, and the whole point is to act on
+    /// it without trusting it.
+    pub(crate) ns_stranded_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
     /// Shared per-(namespace, peer) migration-heartbeat TTL cache (PR-6c
     /// Task 6c.8). The receiver-side
     /// `network_event::namespace::handle_namespace_governance_delta`
@@ -191,6 +202,7 @@ impl NodeManager {
             behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             ns_provable_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
+            ns_stranded_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
             migration_status_cache: Arc::new(MigrationStatusCache::default()),
             migration_emitter_addr: None,
         }

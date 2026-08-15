@@ -77,6 +77,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             expected_context_state_hashes,
         )?,
         GroupOp::GroupKeyRotated { departed } => group_key_rotated::apply(ctx, departed)?,
+        GroupOp::GroupKeyRotatedForDevice { device } => {
+            group_key_rotated::apply_for_device(ctx, device)?
+        }
         GroupOp::AccountDeviceLinked {
             genesis,
             chain,
