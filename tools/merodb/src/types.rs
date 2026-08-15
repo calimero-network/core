@@ -108,13 +108,13 @@ impl Column {
     /// Get value structure description
     pub const fn value_structure(&self) -> &'static str {
         match self {
-            Self::Meta => "ContextMeta { application: ApplicationId, root_hash: Hash, dag_heads: Vec<Hash> }",
-            Self::Config => "ContextConfig { protocol, network, contract, proxy_contract, application_revision, members_revision }",
+            Self::Meta => "ContextMeta { application: ApplicationId, root_hash: Hash, dag_heads: Vec<Hash>, service_name: Option<Box<str>> }",
+            Self::Config => "ContextConfig { application_revision: u64, members_revision: u64 }",
             Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]> }",
             Self::State => "Raw bytes (application-specific state)",
-            Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash }",
-            Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]> }",
-            Self::Application => "ApplicationMeta { bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str> }",
+            Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob }",
+            Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]>, refs: u32 }",
+            Self::Application => "ApplicationMeta { bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str>, signer_id: Box<str>, services: Vec<ServiceMeta>, state_version: u32 }",
             Self::Alias => "Hash (32 bytes) - can point to ContextId, PublicKey, or ApplicationId",
             Self::Generic => "Raw bytes (generic key-value storage)",
         }

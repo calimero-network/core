@@ -250,12 +250,12 @@ The tool supports all Calimero RocksDB column families:
 
 The tool automatically detects and decodes known Calimero types using Borsh deserialization:
 
-- **ContextMeta**: `{ application: ApplicationId, root_hash: Hash }`
-- **ContextConfig**: `{ protocol, network, contract, proxy_contract, application_revision, members_revision }`
-- **ContextIdentity**: `{ private_key: Option<[u8; 32]>, sender_key: Option<[u8; 32]> }`
-- **BlobMeta**: `{ size: u64, hash: [u8; 32], links: Box<[BlobId]> }`
-- **ApplicationMeta**: `{ bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId }`
-- **ContextDagDelta**: `{ delta_id, parents, actions, timestamp, hlc, applied }` with detailed HLC breakdown
+- **ContextMeta**: `{ application: ApplicationId, root_hash: Hash, dag_heads: Vec<Hash>, service_name: Option<Box<str>> }`
+- **ContextConfig**: `{ application_revision: u64, members_revision: u64 }`
+- **ContextIdentity**: `{ private_key: Option<[u8; 32]> }`
+- **BlobMeta**: `{ size: u64, hash: [u8; 32], links: Box<[BlobId]>, refs: u32 }`
+- **ApplicationMeta**: `{ bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str>, signer_id: Box<str>, services: Vec<ServiceMeta>, state_version: u32 }`
+- **ContextDagDelta**: `{ delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob }` with detailed HLC breakdown
 
 ### Unknown Data
 
