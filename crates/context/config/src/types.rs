@@ -527,22 +527,6 @@ impl ReprBytes for VerifyingKey {
     }
 }
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub enum Capability {
-    ManageApplication,
-    ManageMembers,
-    Proxy,
-}
-
-impl Capability {
-    /// Returns the bitmask for this capability (single bit set).
-    #[must_use]
-    pub const fn as_bit(self) -> u8 {
-        1 << (self as u8)
-    }
-}
-
 /// The structure represents an open invitation payload that allows any party to claim it.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct InvitationFromMember {
