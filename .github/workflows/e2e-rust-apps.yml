@@ -18,6 +18,16 @@ on:
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
+      - "apps/abi_conformance/**"
+      - "apps/collaborative-editor/**"
+      - "apps/kv-store-init/**"
+      - "apps/kv-store-with-handlers/**"
+      - "apps/kv-store-with-user-and-frozen-storage/**"
+      - "apps/kv-store/**"
+      - "apps/nested-crdt-test/**"
+      - "apps/private_data/**"
+      - "apps/team-metrics-custom/**"
+      - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
       - ".github/workflows/build-merod-image.yml"
 
@@ -30,6 +40,16 @@ on:
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
       - "apps/blobs/**"
+      - "apps/abi_conformance/**"
+      - "apps/collaborative-editor/**"
+      - "apps/kv-store-init/**"
+      - "apps/kv-store-with-handlers/**"
+      - "apps/kv-store-with-user-and-frozen-storage/**"
+      - "apps/kv-store/**"
+      - "apps/nested-crdt-test/**"
+      - "apps/private_data/**"
+      - "apps/team-metrics-custom/**"
+      - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
       - ".github/workflows/build-merod-image.yml"
 
@@ -180,6 +200,38 @@ jobs:
       - name: Build blobs app
         run: cargo mero build --manifest-path apps/blobs/Cargo.toml
 
+      - name: Build abi_conformance app
+        run: cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
+
+      - name: Build collaborative-editor app
+        run: cargo mero build --manifest-path apps/collaborative-editor/Cargo.toml
+
+      - name: Build kv-store-init app
+        run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
+
+      - name: Build kv-store-with-handlers app
+        run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
+
+      - name: Build kv-store-with-user-and-frozen-storage app
+        run: cargo mero build --manifest-path apps/kv-store-with-user-and-frozen-storage/Cargo.toml
+
+      - name: Build kv-store app
+        run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
+
+      - name: Build nested-crdt-test app
+        run: cargo mero build --manifest-path apps/nested-crdt-test/Cargo.toml
+
+      - name: Build private_data app
+        run: cargo mero build --manifest-path apps/private_data/Cargo.toml
+
+      - name: Build team-metrics-custom app
+        run: cargo mero build --manifest-path apps/team-metrics-custom/Cargo.toml
+
+      - name: Build team-metrics-macro app
+        run: cargo mero build --manifest-path apps/team-metrics-macro/Cargo.toml
+      - name: Build kv-store bundle
+        run: cargo mero bundle --dev --no-icon --app-version 0.0.0 --manifest-path apps/kv-store/Cargo.toml
+
       - name: Verify every built app wasm embeds the ABI (core#3287)
         run: ./scripts/check-embedded-abi.sh
 
@@ -203,6 +255,17 @@ jobs:
             apps/blobs/res/*.wasm
             apps/blobs/res/abi.json
             apps/blobs/res/state-schema.json
+            apps/abi_conformance/res/*
+            apps/collaborative-editor/res/*
+            apps/kv-store-init/res/*
+            apps/kv-store-with-handlers/res/*
+            apps/kv-store-with-user-and-frozen-storage/res/*
+            apps/kv-store/res/*
+            apps/nested-crdt-test/res/*
+            apps/private_data/res/*
+            apps/team-metrics-custom/res/*
+            apps/team-metrics-macro/res/*
+            apps/kv-store/dist/*.mpk
           retention-days: 1
 
   # ── Test phase: run each workflow in parallel ──
@@ -505,6 +568,60 @@ jobs:
           # always-fail because the stock merod:edge image lacks
           # iproute2 and inject_network_fault short-circuits with
           # `tc: executable file not found`.
+          # Scenarios that existed on disk but ran in no matrix. Most predate the
+          # glob-to-enumeration switch and stopped running when it landed; the
+          # newest three were written after it and never ran at all.
+          - workflow: abi-conformance
+            file: workflows/abi-conformance.yml
+            app: abi_conformance
+          - workflow: collaborative-editor
+            file: workflows/collaborative-editor.yml
+            app: collaborative-editor
+          - workflow: kv-store-init
+            file: workflows/kv-store-init.yml
+            app: kv-store-init
+          - workflow: kv-store-with-handlers
+            file: workflows/kv-store-with-handlers.yml
+            app: kv-store-with-handlers
+          - workflow: frozen-storage
+            file: workflows/test_frozen_storage.yml
+            app: kv-store-with-user-and-frozen-storage
+          - workflow: user-storage
+            file: workflows/test_user_storage.yml
+            app: kv-store-with-user-and-frozen-storage
+          - workflow: bundle-invitation
+            file: workflows/bundle-invitation-test.yml
+            app: kv-store
+          - workflow: kv-store-simple
+            file: workflows/simple-store.yml
+            app: kv-store
+          - workflow: kv-store-workflow-example
+            file: workflows/workflow-example.yml
+            app: kv-store
+          - workflow: nested-crdt
+            file: workflows/nested-crdt-test.yml
+            app: nested-crdt-test
+          - workflow: private-data-example
+            file: workflows/example.yml
+            app: private_data
+          - workflow: private-data
+            file: workflows/private-data.yml
+            app: private_data
+          - workflow: group-governance-cold-context-push-converge
+            file: workflows/group-governance-cold-context-push-converge.yml
+            app: scaffolding-e2e
+          - workflow: simple-sync
+            file: workflows/simple-sync.yml
+            app: scaffolding-e2e
+          - workflow: team-metrics-custom
+            file: workflows/team-metrics-custom.yml
+            app: team-metrics-custom
+          - workflow: team-metrics-macro
+            file: workflows/team-metrics-macro.yml
+            app: team-metrics-macro
+          - workflow: xcall-example-scenario
+            file: workflows/xcall-example.yml
+            app: xcall-example
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
