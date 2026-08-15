@@ -182,6 +182,14 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
   let buf = '';
   let sessionId = null;
 
+  // A transport failure inside the pump used to be swallowed, so a dead
+  // stream and a genuinely empty context produced the identical result: zero
+  // events, reported as "not seeded". Record the error instead and re-raise it
+  // from `settle()`, where a caller is actually looking. Same false-pass class
+  // the shell scripts were fixed for.
+  let pumpError = null;
+  let closed = false;
+
   const pump = (async () => {
     while (true) {
       const { done, value } = await reader.read();
@@ -216,15 +224,22 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
         }
       }
     }
-  })().catch(() => {});
+  })().catch((err) => {
+    // An abort from `close()` is the expected way this ends, not a failure.
+    if (!closed) pumpError = err;
+  });
 
   return {
     events,
     async settle(ms = 3000) {
       await new Promise((r) => setTimeout(r, ms));
+      if (pumpError) {
+        throw new Error(`SSE stream failed: ${pumpError.message} — this is a transport failure, NOT an empty seed`);
+      }
       return events;
     },
     close() {
+      closed = true;
       controller.abort();
       return pump;
     },

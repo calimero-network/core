@@ -130,7 +130,15 @@ let live;
 try {
   // Match on the LIVE shape specifically: a delta carries no age. Without this
   // the assertion could be satisfied by a replayed entry.
-  live = await watcher.waitFor((p) => JSON.stringify(p.state) === JSON.stringify(SLICE) && p.ageMs === undefined);
+  //
+  // `== null` (loose) is deliberate and matches BOTH absent and null. The wire
+  // contract is that ageMs is *absent* on a live delta, and the dedicated
+  // assertion below still holds the server to exactly that. Using a strict
+  // `=== undefined` here as well would mean that if the server ever started
+  // serializing `ageMs: null` this predicate would never match, the wait would
+  // time out, and the failure would read "gossip not delivered" — pointing at
+  // the network instead of at the wire-shape regression that actually broke.
+  live = await watcher.waitFor((p) => JSON.stringify(p.state) === JSON.stringify(SLICE) && p.ageMs == null);
   ok('node 2 subscriber received node 1 presence over gossip');
 } catch (e) {
   bad('node 2 subscriber received node 1 presence over gossip', `${e.message} — gossip not delivered`);
