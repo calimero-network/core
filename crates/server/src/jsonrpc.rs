@@ -18,7 +18,6 @@ use crate::config::ServerConfig;
 use crate::execute::CallerIdentity;
 
 mod execute;
-mod get_ephemeral;
 mod set_ephemeral;
 mod sync_status;
 #[cfg(test)]
@@ -197,16 +196,6 @@ async fn handle_request_inner(
                 span.record("method", "set_ephemeral");
 
                 set_req
-                    .handle(state, auth_key, auth_node_owner)
-                    .await
-                    .to_res_body()
-            }
-            RequestPayload::GetEphemeral(get_req) => {
-                let span = tracing::Span::current();
-                span.record("context_id", field::display(&get_req.context_id));
-                span.record("method", "get_ephemeral");
-
-                get_req
                     .handle(state, auth_key, auth_node_owner)
                     .await
                     .to_res_body()

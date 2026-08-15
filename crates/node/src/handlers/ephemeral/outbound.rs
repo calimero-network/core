@@ -318,8 +318,9 @@ pub(crate) fn set_local_ephemeral(
 /// original `set_local_ephemeral`. Without the touch, the sweep would evict
 /// the node's OWN presence one TTL later even though it is still heartbeating
 /// every `PRESENCE_HEARTBEAT_MS` and every remote peer holds a fresh copy —
-/// local readers (`get_ephemeral`, the event stream) would see the local
-/// author sawtooth in and out, with a spurious `Diff::Remove` each cycle.
+/// local readers (the event stream, and the replay a new subscriber is seeded
+/// with) would see the local author sawtooth in and out, with a spurious
+/// `Diff::Remove` each cycle.
 ///
 /// The sweep covers every context the store holds entries for — NOT just the
 /// ones this node has locally published to. A receive-only node (a read-only

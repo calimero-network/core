@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use calimero_context_client::messages::ExecuteError;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
@@ -78,7 +76,6 @@ pub enum RequestPayload {
     Execute(ExecutionRequest),
     SyncStatus(SyncStatusRequest),
     SetEphemeral(SetEphemeralRequest),
-    GetEphemeral(GetEphemeralRequest),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -318,99 +315,6 @@ pub enum SetEphemeralError {
     InternalError(String),
 }
 
-/// Request the current live ephemeral-presence snapshot for a context.
-///
-/// Returns all authors whose entry has not expired (within
-/// `PRESENCE_TTL_MS`). This is the client's initial seed; live deltas then
-/// arrive on the event stream (subscribe-then-seed, self-healing within the
-/// heartbeat interval).
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct GetEphemeralRequest {
-    pub context_id: ContextId,
-}
-
-impl GetEphemeralRequest {
-    #[must_use]
-    pub const fn new(context_id: ContextId) -> Self {
-        Self { context_id }
-    }
-}
-
-/// One author's live ephemeral-presence entry, as carried in the
-/// [`GetEphemeralResponse`] map (the author is the map key, not a field).
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct EphemeralEntryValue {
-    /// Opaque presence slice. The node never deserializes this — the encoding
-    /// is chosen client-side and travels client-to-client.
-    pub state: Vec<u8>,
-    /// Milliseconds since this author was last heard from, measured on the
-    /// responding node.
-    ///
-    /// **Relative by design.** The underlying `last_seen_ms` is stamped from
-    /// the responding node's wall clock; shipping it absolute would force a
-    /// caller on another machine to subtract against its own clock, and any
-    /// skew between the two would corrupt the result. A relative age needs no
-    /// clock agreement.
-    ///
-    /// Bounded above by the node's presence TTL (7s) for any entry still in
-    /// the snapshot, and typically below the heartbeat interval (2.5s) for a
-    /// live author. Events delivered over the event stream carry no age — they
-    /// are emitted at the moment of change, so a subscriber can stamp receipt
-    /// time itself; this field exists because a *snapshot* read cannot tell a
-    /// fresh entry from a nearly-expired one.
-    pub age_ms: u64,
-}
-
-impl EphemeralEntryValue {
-    #[must_use]
-    pub const fn new(state: Vec<u8>, age_ms: u64) -> Self {
-        Self { state, age_ms }
-    }
-}
-
-/// Response carrying the live ephemeral-presence snapshot for a context,
-/// keyed by author.
-///
-/// Author-keyed rather than a list: the node's awareness store is already a
-/// per-author map (author is unique within a context by construction), the
-/// events delivered over the event stream are per-author deltas, and every
-/// known consumer rebuilds a map immediately. Returning a list would flatten
-/// a map only to make each caller reconstruct it, and would leave the snapshot
-/// shape mismatched with the delta shape.
-///
-/// Keys are the author's public key in its string (base58) representation.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct GetEphemeralResponse {
-    pub entries: BTreeMap<String, EphemeralEntryValue>,
-}
-
-impl GetEphemeralResponse {
-    #[must_use]
-    pub const fn new(entries: BTreeMap<String, EphemeralEntryValue>) -> Self {
-        Self { entries }
-    }
-}
-
-/// Errors that the `get_ephemeral` handler can return to the client.
-#[derive(Debug, Deserialize, Serialize, thiserror::Error)]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum GetEphemeralError {
-    /// The authenticated caller is not a member of the target context, so it
-    /// may not read the (decrypted) presence snapshot for it.
-    #[error("caller is not a member of this context")]
-    Unauthorized,
-    /// Any node-level or internal error.
-    #[error("get_ephemeral failed: {0}")]
-    InternalError(String),
-}
-
 // -------------------------------------------- Validation Implementation --------------------------------------------
 
 impl Validate for SyncStatusRequest {
@@ -425,13 +329,6 @@ impl Validate for SetEphemeralRequest {
         // Size is enforced by the node layer (`EPHEMERAL_MAX_BYTES`); the
         // server handler propagates `SetEphemeralError::SliceTooLarge` if the
         // node rejects. Nothing to bound at the parse layer.
-        Vec::new()
-    }
-}
-
-impl Validate for GetEphemeralRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // `context_id` is a typed, fixed-size identifier — nothing to bound.
         Vec::new()
     }
 }

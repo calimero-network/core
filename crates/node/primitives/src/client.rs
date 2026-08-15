@@ -883,6 +883,15 @@ impl NodeClient {
     /// Snapshot the live ephemeral-presence entries for `context_id` from the
     /// node's in-memory `AwarenessStore`. Returns an empty `Vec` when the
     /// context has no recorded entries.
+    ///
+    /// Internal accessor, not a client-facing read: its one caller is the
+    /// server's replay-on-subscribe path, which seeds a newly-subscribed client
+    /// with these entries as ordinary `Ephemeral` events. Clients read presence
+    /// from the event stream only — there is no snapshot endpoint.
+    ///
+    /// Each entry is `(author, slice, age_ms)`; the age is what the replay
+    /// stamps onto `EphemeralPayload::age_ms` to distinguish a replayed entry
+    /// from a live delta.
     pub async fn ephemeral_snapshot(
         &self,
         context_id: ContextId,

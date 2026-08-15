@@ -40,7 +40,7 @@ pub(crate) enum CallerIdentity<'a> {
 /// confirmed the caller owns this node.
 ///
 /// Shared by every transport-level handler that gates on context membership
-/// (`execute`, `set_ephemeral`, `get_ephemeral`) so the gate cannot drift
+/// (`execute`, `set_ephemeral`) so the gate cannot drift
 /// between them. `Err` means the lookup itself failed and the caller must
 /// fail closed, not that the caller is a non-member.
 pub(crate) fn caller_authorized_for_context(

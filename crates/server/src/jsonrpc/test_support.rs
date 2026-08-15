@@ -17,9 +17,9 @@ use tokio::sync::broadcast;
 
 use super::ServiceState;
 
-// Re-exported so the JSON-RPC handler tests reach the shared node stub and the
-// membership seeder through one import alongside `state_with`.
-pub(crate) use crate::test_support::{seed_context_member, stub_node_manager};
+// Re-exported so the JSON-RPC handler tests reach the membership seeder through
+// one import alongside `state_with`.
+pub(crate) use crate::test_support::seed_context_member;
 
 /// A `ServiceState` wired to an in-memory store, plus the store itself (so a
 /// test can seed membership rows) and the `TempDir` backing the blob store
