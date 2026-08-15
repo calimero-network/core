@@ -1,9 +1,10 @@
 //! Outbound ephemeral-presence: set + encrypt + publish + heartbeat.
 //!
 //! **No state-delta, no RocksDB writes.** The only storage interaction is a
-//! *read* of the current group-key record (a synchronous keyring scan) used
-//! to encrypt the presence slice before gossiping. The awareness store is
-//! in-memory only; see `store.rs`.
+//! *read* of the group, its current key record, and this node's local signing
+//! key ([`resolve_publish_material`]) — all synchronous keyring scans, taken
+//! once per publish on the actor thread so the spawned publish itself touches
+//! no store at all. The awareness store is in-memory only; see `store.rs`.
 //!
 //! # Two entry points
 //!
@@ -22,7 +23,6 @@
 
 use std::borrow::Cow;
 
-use calimero_context_client::client::ContextClient;
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::sync::snapshot::BroadcastMessage;
@@ -89,30 +89,39 @@ fn now_ms() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Inner async function (testable without actix)
+// Publish material (synchronous store resolution)
 // ---------------------------------------------------------------------------
 
-/// Build, serialize, and publish an `Ephemeral` broadcast message.
+/// Everything a publish needs out of the store, resolved in one place.
 ///
-/// Loads the current group key from the keyring, generates a random nonce,
-/// AEAD-seals `slice`, wraps it in [`BroadcastMessage::Ephemeral`], borsh-
-/// serializes, and calls `network_client.publish` on the context gossip topic.
+/// Kept as one value because the three lookups are only ever useful together:
+/// a caller holding a group key but no signing key cannot publish, and one
+/// holding a signing key but no group key cannot encrypt. Resolving them as a
+/// unit is what lets [`set_local_ephemeral`] decide, synchronously, whether a
+/// publish is possible at all before it echoes anything to the local client.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PublishMaterial {
+    /// `sha256(group_key)` of the group's current key — goes on the wire so
+    /// receivers can check they hold the same key.
+    key_id: [u8; 32],
+    /// The group's current encryption key.
+    group_key: [u8; 32],
+    /// This node's local signing key for `author` in the context.
+    signing_key: [u8; 32],
+}
+
+/// Resolve the group, its current key, and the local signing key for `author`.
 ///
-/// Returns an error if the group/key lookup fails, encryption fails, or
-/// serialization fails.  A publish failure (e.g. no mesh peers) is logged at
-/// `debug` and treated as a no-op — ephemeral presence is best-effort.
+/// Synchronous: every one of these is a plain store read. Split out of
+/// [`do_publish_ephemeral`] so the failures are available to a caller *before*
+/// it commits to a local echo — see [`set_local_ephemeral`].
 ///
 /// **Never writes to the DAG, RocksDB, or any persistent store.**
-pub(crate) async fn do_publish_ephemeral(
-    network_client: &NetworkClient,
-    context_client: &ContextClient,
+pub(crate) fn resolve_publish_material(
+    store: &calimero_store::Store,
     context_id: ContextId,
     author: PublicKey,
-    seq: u64,
-    slice: Vec<u8>,
-) -> eyre::Result<()> {
-    let store = context_client.datastore();
-
+) -> eyre::Result<PublishMaterial> {
     // Resolve the group the context belongs to (same derivation as inbound).
     let group_id = calimero_governance_store::get_group_for_context(store, &context_id)?
         .ok_or(EphemeralOutboundError::NoGroup)?;
@@ -122,6 +131,42 @@ pub(crate) async fn do_publish_ephemeral(
         .load_current_key_record()?
         .ok_or(EphemeralOutboundError::NoGroupKey)?;
 
+    let signing_key =
+        calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?
+            .ok_or(EphemeralOutboundError::NoLocalSigningKey)?;
+
+    Ok(PublishMaterial {
+        key_id: record.key_id,
+        group_key: record.group_key,
+        signing_key,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Inner async function (testable without actix)
+// ---------------------------------------------------------------------------
+
+/// Build, serialize, and publish an `Ephemeral` broadcast message.
+///
+/// Takes its keys pre-resolved ([`PublishMaterial`]): both callers hold a store
+/// handle synchronously and resolve there, so this function does no store I/O
+/// at all — it generates a random nonce, AEAD-seals `slice`, signs the
+/// envelope, wraps it in [`BroadcastMessage::Ephemeral`], borsh-serializes, and
+/// calls `network_client.publish` on the context gossip topic.
+///
+/// Returns an error if encryption, signing, or serialization fails. A publish
+/// failure (e.g. no mesh peers) is logged at `debug` and treated as a no-op —
+/// ephemeral presence is best-effort.
+///
+/// **Never writes to the DAG, RocksDB, or any persistent store.**
+pub(crate) async fn do_publish_ephemeral(
+    network_client: &NetworkClient,
+    context_id: ContextId,
+    author: PublicKey,
+    seq: u64,
+    slice: Vec<u8>,
+    material: PublishMaterial,
+) -> eyre::Result<()> {
     // AEAD-seal the presence slice under the group key.
     // `SharedKey::from_sk` derives the symmetric key from the group private key
     // — identical to the `encrypt_op` pattern in `group_keys.rs`.
@@ -130,7 +175,7 @@ pub(crate) async fn do_publish_ephemeral(
     // slices have no ratchet to sequence them, so a per-message random nonce is
     // exactly the guarantee this path needs (`encrypt_with_nonce` is for the
     // sync stream, whose caller owns single-use).
-    let sk = PrivateKey::from(record.group_key);
+    let sk = PrivateKey::from(material.group_key);
     let (nonce, ciphertext) = SharedKey::from_sk(&sk)
         .encrypt(slice)
         .ok_or_else(|| eyre::eyre!("AEAD encrypt failed for ephemeral slice"))?;
@@ -143,18 +188,15 @@ pub(crate) async fn do_publish_ephemeral(
     // Sign the envelope. `author`, `seq` and `sent_at_ms` ride outside the
     // AEAD, so the signature is what makes them tamper-evident; the receive
     // path refuses anything that does not verify.
-    let signing_key =
-        calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?
-            .ok_or(EphemeralOutboundError::NoLocalSigningKey)?;
     let signature_payload = crate::handlers::ephemeral::auth::ephemeral_signature_payload(
         context_id,
         author,
         seq,
-        record.key_id,
+        material.key_id,
         sent_at_ms,
         &ciphertext,
     )?;
-    let signature = PrivateKey::from(signing_key)
+    let signature = PrivateKey::from(material.signing_key)
         .sign(&signature_payload)
         .map_err(|err| eyre::eyre!("failed to sign ephemeral envelope: {err}"))?
         .to_bytes();
@@ -164,7 +206,7 @@ pub(crate) async fn do_publish_ephemeral(
         context_id,
         author,
         seq,
-        key_id: record.key_id,
+        key_id: material.key_id,
         sent_at_ms,
         nonce,
         ciphertext: Cow::Owned(ciphertext),
@@ -205,14 +247,19 @@ pub(crate) async fn do_publish_ephemeral(
 /// * Spawns [`do_publish_ephemeral`] on this actor's Arbiter so the message
 ///   is gossiped to peers.
 ///
-/// Rejects synchronously (before the local echo and before the spawn) when
-/// the slice is oversized or when this node has no local signing key for
-/// `author` in `context_id` ([`EphemeralOutboundError::NoLocalSigningKey`]) —
-/// without a signing key nothing could ever actually be published, so the
-/// caller must not be told the set succeeded. `NoGroup` / `NoGroupKey` (the
-/// context/group-key lookups) and any network/mesh publish failure are
-/// resolved inside the spawned [`do_publish_ephemeral`] and remain
-/// best-effort: logged at `debug`, not propagated to the caller.
+/// Rejects synchronously — before the local echo and before the spawn — for
+/// every condition that makes a publish impossible: an oversized slice, no
+/// group for the context ([`EphemeralOutboundError::NoGroup`]), no current
+/// group key ([`EphemeralOutboundError::NoGroupKey`]), and no local signing key
+/// for `author` ([`EphemeralOutboundError::NoLocalSigningKey`]). All three
+/// store lookups happen here, in [`resolve_publish_material`], rather than
+/// inside the spawned publish, where a failure would be swallowed at `debug!`:
+/// the caller would get `Ok(())`, the local client would see its own presence
+/// echoed back, and nothing would ever reach a peer.
+///
+/// Only genuinely best-effort failures stay inside the spawn: encryption,
+/// signing, serialization, and the network/mesh publish itself, which is
+/// expected to fail whenever there are no mesh peers yet.
 pub(crate) fn set_local_ephemeral(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -227,19 +274,19 @@ pub(crate) fn set_local_ephemeral(
         return Err(EphemeralOutboundError::SliceTooLarge(slice.len()).into());
     }
 
-    // 1b. Signing-key guard. Resolved here — synchronously, before the local
-    // echo — rather than inside the spawned `do_publish_ephemeral`, where a
-    // `NoLocalSigningKey` failure would be swallowed at `debug!` and never
-    // reach the caller (see the doc comment above): the local echo would
-    // still fire, the setting client would see its own cursor working, and
-    // nothing would ever actually publish. Failing fast here keeps the
-    // caller's contract — "a synchronous error means nothing was set or
-    // published" — true for this failure mode too.
-    let store = this.clients.context.datastore();
-    if calimero_governance_store::resolve_local_signing_key(store, &context_id, &author)?.is_none()
-    {
-        return Err(EphemeralOutboundError::NoLocalSigningKey.into());
-    }
+    // 1b. Publishability guard. The group, its current key, and the local
+    // signing key are all resolved here — synchronously, before the local echo
+    // — rather than inside the spawned `do_publish_ephemeral`, where any of
+    // them failing would be swallowed at `debug!` and never reach the caller
+    // (see the doc comment above): the local echo would still fire, the
+    // setting client would see its own cursor working, and nothing would ever
+    // actually publish. Failing fast here keeps the caller's contract — "a
+    // synchronous error means nothing was set or published" — true for all
+    // three failure modes.
+    //
+    // The resolved material is then handed to the publish rather than looked up
+    // a second time inside the spawn.
+    let material = resolve_publish_material(this.clients.context.datastore(), context_id, author)?;
 
     // 2. Bump the sequence counter (or seed it at 1 for a new author).
     let local = this
@@ -269,21 +316,14 @@ pub(crate) fn set_local_ephemeral(
         emit_ephemeral_diff(&this.clients.node, context_id, diff);
     }
 
-    // 4. Spawn the async key-load + encrypt + publish.
+    // 4. Spawn the encrypt + sign + publish. No store reads left in here.
     let network_client = this.clients.node.network_client().clone();
-    let context_client = this.clients.context.clone();
 
     let _ignored = ctx.spawn(
         async move {
-            if let Err(err) = do_publish_ephemeral(
-                &network_client,
-                &context_client,
-                context_id,
-                author,
-                seq,
-                slice,
-            )
-            .await
+            if let Err(err) =
+                do_publish_ephemeral(&network_client, context_id, author, seq, slice, material)
+                    .await
             {
                 debug!(%context_id, %err, "ephemeral: outbound publish error");
             }
@@ -393,22 +433,37 @@ pub(crate) fn heartbeat_tick(
         emit_ephemeral_diff(&this.clients.node, context_id, diff);
     }
 
+    // Resolve each pair's publish material here, synchronously, for the same
+    // reason `set_local_ephemeral` does: these are plain store reads, and doing
+    // them on the actor thread keeps `do_publish_ephemeral` free of store
+    // access entirely. Re-resolved every tick rather than cached, so a key
+    // rotation is picked up on the next heartbeat. A pair whose material no
+    // longer resolves (the context left the group, the key was purged) is
+    // skipped with a `debug!` — there is no caller to return an error to on
+    // this path.
+    let store = this.clients.context.datastore();
+    let publishable: Vec<(ContextId, PublicKey, u64, Vec<u8>, PublishMaterial)> = local_snapshot
+        .into_iter()
+        .filter_map(|(context_id, author, seq, slice)| {
+            match resolve_publish_material(store, context_id, author) {
+                Ok(material) => Some((context_id, author, seq, slice, material)),
+                Err(err) => {
+                    debug!(%context_id, %author, %err, "ephemeral: heartbeat cannot publish — skipping");
+                    None
+                }
+            }
+        })
+        .collect();
+
     // Re-publish each local slice (bumped seq, fresh nonce, current key).
     let network_client = this.clients.node.network_client().clone();
-    let context_client = this.clients.context.clone();
 
     let _ignored = ctx.spawn(
         async move {
-            for (context_id, author, seq, slice) in local_snapshot {
-                if let Err(err) = do_publish_ephemeral(
-                    &network_client,
-                    &context_client,
-                    context_id,
-                    author,
-                    seq,
-                    slice,
-                )
-                .await
+            for (context_id, author, seq, slice, material) in publishable {
+                if let Err(err) =
+                    do_publish_ephemeral(&network_client, context_id, author, seq, slice, material)
+                        .await
                 {
                     debug!(%context_id, %err, "ephemeral: heartbeat re-publish error");
                 }
@@ -427,14 +482,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use actix::Actor;
-    use calimero_blobstore::config::BlobStoreConfig;
-    use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-    use calimero_context_client::client::ContextClient;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{register_context_in_group, GroupKeyring};
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
-    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_node_primitives::sync::snapshot::BroadcastMessage;
     use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -442,7 +493,6 @@ mod tests {
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
     use libp2p::gossipsub::TopicHash;
-    use tokio::sync::{broadcast, mpsc};
 
     use super::*;
     use crate::handlers::ephemeral::PRESENCE_HEARTBEAT_MS;
@@ -481,39 +531,6 @@ mod tests {
             }
             // All other message variants: no-op.
         }
-    }
-
-    /// Build a minimal `NodeClient` for the `ContextClient` (key-lookup only,
-    /// no publish operations triggered). The internal network client is
-    /// disconnected — all channels are inert stubs.
-    async fn minimal_node_client_for_ctx_client() -> (NodeClient, tempfile::TempDir) {
-        let store = fresh_store();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let blob_cfg = BlobStoreConfig::new(
-            std::path::PathBuf::from(tmp.path())
-                .try_into()
-                .expect("utf8 path"),
-        );
-        let fs = FileSystem::new(&blob_cfg).await.expect("blob fs");
-        let blob_manager = BlobManager::new(BlobStore::new(store.clone(), fs));
-
-        let (event_sender, _) = broadcast::channel(4);
-        let (tx1, _) = mpsc::channel(1);
-        let (tx2, _) = mpsc::channel(1);
-        let (tx3, _) = mpsc::channel(1);
-        let (tx4, _) = mpsc::channel(1);
-        let sync_client = SyncClient::new(tx1, tx2, tx3, tx4);
-
-        let client = NodeClient::new(
-            store,
-            blob_manager,
-            NetworkClient::new(LazyRecipient::new()),
-            LazyRecipient::new(),
-            event_sender,
-            sync_client,
-            None,
-        );
-        (client, tmp)
     }
 
     /// Build a `NetworkClient` backed by a live recording actor.
@@ -577,13 +594,13 @@ mod tests {
         store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
-        let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
-        let ctx_client = ContextClient::new(store, nc_for_ctx, LazyRecipient::new());
+        let material =
+            resolve_publish_material(&store, context_id, author).expect("publish material");
 
         let slice = b"cursor={x:10}".to_vec();
 
         // First call — seq == 1.
-        do_publish_ephemeral(&network_client, &ctx_client, context_id, author, 1, slice)
+        do_publish_ephemeral(&network_client, context_id, author, 1, slice, material)
             .await
             .expect("do_publish_ephemeral should succeed");
 
@@ -629,23 +646,23 @@ mod tests {
         store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
-        let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
-        let ctx_client = ContextClient::new(store, nc_for_ctx, LazyRecipient::new());
+        let material =
+            resolve_publish_material(&store, context_id, author).expect("publish material");
 
         let slice = b"cursor={x:10}".to_vec();
 
         do_publish_ephemeral(
             &network_client,
-            &ctx_client,
             context_id,
             author,
             1,
             slice.clone(),
+            material,
         )
         .await
         .expect("first publish");
 
-        do_publish_ephemeral(&network_client, &ctx_client, context_id, author, 2, slice)
+        do_publish_ephemeral(&network_client, context_id, author, 2, slice, material)
             .await
             .expect("second publish");
 
@@ -705,25 +722,25 @@ mod tests {
         store_local_identity(&store, &context_id, &author_sk);
 
         let (network_client, published) = recording_network_client();
-        let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
-        let ctx_client = ContextClient::new(store, nc_for_ctx, LazyRecipient::new());
+        let material =
+            resolve_publish_material(&store, context_id, author).expect("publish material");
 
         let slice = b"presence=typing".to_vec();
 
         // Initial set.
         do_publish_ephemeral(
             &network_client,
-            &ctx_client,
             context_id,
             author,
             1,
             slice.clone(),
+            material,
         )
         .await
         .expect("initial publish");
 
         // Heartbeat re-publish with bumped seq.
-        do_publish_ephemeral(&network_client, &ctx_client, context_id, author, 2, slice)
+        do_publish_ephemeral(&network_client, context_id, author, 2, slice, material)
             .await
             .expect("heartbeat re-publish");
 
@@ -751,39 +768,85 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 5: unknown context (no group) returns NoGroup error, no publish.
+    // Test 5: the three publishability failures are all reported by
+    //         `resolve_publish_material`, which `set_local_ephemeral` calls
+    //         SYNCHRONOUSLY — so each one reaches the RPC caller instead of
+    //         being swallowed at `debug!` inside the spawned publish while the
+    //         caller sees `Ok(())` and its own presence echoed back.
     // -----------------------------------------------------------------------
 
-    #[actix::test]
-    async fn unknown_context_returns_no_group_error() {
+    #[test]
+    fn unknown_context_returns_no_group_error() {
         let store = fresh_store();
         // Deliberately NOT seeding a group for this context.
         let context_id = ContextId::from([0x09u8; 32]);
         let author = PublicKey::from([0x0Au8; 32]);
 
-        let (network_client, published) = recording_network_client();
-        let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
-        let ctx_client = ContextClient::new(store, nc_for_ctx, LazyRecipient::new());
-
-        let result = do_publish_ephemeral(
-            &network_client,
-            &ctx_client,
-            context_id,
-            author,
-            1,
-            b"x".to_vec(),
-        )
-        .await;
-
-        assert!(result.is_err(), "must error for unknown context");
-        let err_str = result.unwrap_err().to_string();
+        let err = resolve_publish_material(&store, context_id, author)
+            .expect_err("must error for unknown context")
+            .to_string();
         assert!(
-            err_str.contains("no group"),
-            "error must mention 'no group', got: {err_str}"
+            err.contains("no group"),
+            "error must mention 'no group', got: {err}"
         );
+    }
 
-        let msgs = published.lock().expect("lock").clone();
-        assert_eq!(msgs.len(), 0, "no publish on error");
+    #[test]
+    fn context_without_a_group_key_returns_no_group_key_error() {
+        let store = fresh_store();
+        let context_id = ContextId::from([0x0Bu8; 32]);
+        let author_sk = PrivateKey::from([0x0Cu8; 32]);
+        let author = author_sk.public_key();
+
+        // Registered in a group, but the group's keyring is empty.
+        let group_id = ContextGroupId::from([0xAC; 32]);
+        register_context_in_group(&store, &group_id, &context_id).expect("register");
+        store_local_identity(&store, &context_id, &author_sk);
+
+        let err = resolve_publish_material(&store, context_id, author)
+            .expect_err("must error when the group holds no key")
+            .to_string();
+        assert!(
+            err.contains("no current group key"),
+            "error must mention the missing group key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn author_without_a_local_signing_key_returns_no_local_signing_key_error() {
+        let store = fresh_store();
+        let context_id = ContextId::from([0x0Du8; 32]);
+        let author = PublicKey::from([0x0Eu8; 32]);
+
+        // Group and key are fine; the author is simply not ours to sign for.
+        let (_group_id, _key_id, _) = seed_group_key(&store, context_id);
+
+        let err = resolve_publish_material(&store, context_id, author)
+            .expect_err("must error without a local signing key")
+            .to_string();
+        assert!(
+            err.contains("no local signing key"),
+            "error must mention the missing signing key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn fully_seeded_context_resolves_publish_material() {
+        // Positive control: with all three present, resolution succeeds and
+        // hands back the group's CURRENT key id, so the guards above are
+        // rejecting for the reason they claim rather than always failing.
+        let store = fresh_store();
+        let context_id = ContextId::from([0x0Fu8; 32]);
+        let author_sk = PrivateKey::from([0x10u8; 32]);
+        let author = author_sk.public_key();
+
+        let (_group_id, key_id, group_key_bytes) = seed_group_key(&store, context_id);
+        store_local_identity(&store, &context_id, &author_sk);
+
+        let material = resolve_publish_material(&store, context_id, author).expect("material");
+        assert_eq!(material.key_id, key_id);
+        assert_eq!(material.group_key, group_key_bytes);
+        assert_eq!(material.signing_key, *author_sk.as_bytes());
     }
 
     // -----------------------------------------------------------------------
@@ -809,16 +872,16 @@ mod tests {
         store_local_identity(&store, &context_id, &sk);
 
         let (network_client, published) = recording_network_client();
-        let (nc_for_ctx, _tmp_ctx) = minimal_node_client_for_ctx_client().await;
-        let ctx_client = ContextClient::new(store, nc_for_ctx, LazyRecipient::new());
+        let material =
+            resolve_publish_material(&store, context_id, author).expect("publish material");
 
         do_publish_ephemeral(
             &network_client,
-            &ctx_client,
             context_id,
             author,
             3,
             b"hi".to_vec(),
+            material,
         )
         .await
         .expect("publish");

@@ -18,14 +18,21 @@
 //!    `Err(SliceTooLarge)` and the awareness store is NOT modified — a
 //!    subsequent snapshot returns the previous (non-oversized) slice.
 //!
+//! 4. A context with no group — or a group with no key — returns the typed
+//!    error to the CALLER rather than echoing presence that can never be
+//!    published.
+//!
 //! Every test seeds a `ContextIdentity` row for its author via
-//! `store_local_identity` — `set_local_ephemeral` now resolves a local
-//! signing key synchronously before anything else, so a call for an author
-//! this node holds no key for returns `Err(NoLocalSigningKey)` before ever
-//! touching the awareness store.
+//! `store_local_identity` AND registers the context into a keyed group via
+//! `seed_group_and_key`: `set_local_ephemeral` resolves the group, the current
+//! group key, and the local signing key synchronously before anything else, so
+//! a call missing any of the three returns `Err` before ever touching the
+//! awareness store.
 //!
 //! Run with: `cargo test -p calimero-node ephemeral_node_client_e2e`
 
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{register_context_in_group, GroupKeyring};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PrivateKey;
 use serial_test::serial;
@@ -45,6 +52,18 @@ fn store_local_identity(node: &TestNode, context_id: &ContextId, sk: &PrivateKey
     node.store.handle().put(&key, &value).expect("put identity");
 }
 
+/// Register `context_id` into a group and seed that group's encryption key, so
+/// `set_local_ephemeral`'s synchronous group / group-key resolution succeeds.
+/// Without this the call now fails fast with `NoGroup` — see
+/// `no_group_error_reaches_the_caller` below.
+fn seed_group_and_key(node: &TestNode, context_id: &ContextId, group_id: [u8; 32]) {
+    let group_id = ContextGroupId::from(group_id);
+    register_context_in_group(&node.store, &group_id, context_id).expect("register context");
+    let _key_id = GroupKeyring::new(&node.store, group_id)
+        .store_key(&[0x42u8; 32])
+        .expect("store group key");
+}
+
 // -------------------------------------------------------------------------
 // Test 1 + 2: first call seeds; second call increments seq and updates slice
 // -------------------------------------------------------------------------
@@ -58,6 +77,7 @@ async fn set_ephemeral_seeds_then_updates_snapshot() {
     let author_sk = PrivateKey::from([0xF2u8; 32]);
     let author = author_sk.public_key();
     store_local_identity(&node, &context_id, &author_sk);
+    seed_group_and_key(&node, &context_id, [0xA1u8; 32]);
     let slice1 = b"cursor={x:1,y:2}".to_vec();
     let slice2 = b"cursor={x:9,y:8}".to_vec();
 
@@ -109,6 +129,7 @@ async fn oversized_slice_returns_error_and_store_unchanged() {
     let author_sk = PrivateKey::from([0xF4u8; 32]);
     let author = author_sk.public_key();
     store_local_identity(&node, &context_id, &author_sk);
+    seed_group_and_key(&node, &context_id, [0xA3u8; 32]);
     let good_slice = b"typing=true".to_vec();
 
     // Seed a valid slice first.
@@ -146,5 +167,87 @@ async fn oversized_slice_returns_error_and_store_unchanged() {
     assert_eq!(
         snap[0].1, good_slice,
         "previous good slice must still be in the store"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Test 4: a context that can never publish must say so to the caller
+//
+// These are the failures that used to be resolved inside the spawned publish
+// and swallowed at `debug!`: the RPC returned Ok(()), the local awareness
+// store was updated, and the setting client watched its own presence echo back
+// while no peer ever saw a byte of it. They are now resolved synchronously,
+// before the local echo, so they reach the caller exactly as SliceTooLarge and
+// NoLocalSigningKey already did.
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn no_group_error_reaches_the_caller_and_nothing_is_echoed() {
+    let node = boot_test_node().await;
+
+    let context_id = ContextId::from([0xF5u8; 32]);
+    let author_sk = PrivateKey::from([0xF6u8; 32]);
+    let author = author_sk.public_key();
+    // Signing identity present, but the context belongs to no group.
+    store_local_identity(&node, &context_id, &author_sk);
+
+    let err = node
+        .node_client
+        .set_local_ephemeral(context_id, author, b"cursor={x:1}".to_vec())
+        .await
+        .expect_err("a context with no group must return Err, not Ok(())");
+    assert!(
+        err.to_string().contains("no group"),
+        "error must name the missing group, got: {err}"
+    );
+
+    let snap = node
+        .node_client
+        .ephemeral_snapshot(context_id)
+        .await
+        .expect("ephemeral_snapshot must succeed");
+    assert!(
+        snap.is_empty(),
+        "nothing may be echoed locally when the publish is impossible, got {snap:?}"
+    );
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn no_group_key_error_reaches_the_caller_and_nothing_is_echoed() {
+    let node = boot_test_node().await;
+
+    let context_id = ContextId::from([0xF7u8; 32]);
+    let author_sk = PrivateKey::from([0xF8u8; 32]);
+    let author = author_sk.public_key();
+    store_local_identity(&node, &context_id, &author_sk);
+    // Registered in a group, but that group's keyring is empty — nothing could
+    // seal the slice.
+    register_context_in_group(
+        &node.store,
+        &ContextGroupId::from([0xA7u8; 32]),
+        &context_id,
+    )
+    .expect("register context");
+
+    let err = node
+        .node_client
+        .set_local_ephemeral(context_id, author, b"cursor={x:1}".to_vec())
+        .await
+        .expect_err("a group with no current key must return Err, not Ok(())");
+    assert!(
+        err.to_string().contains("no current group key"),
+        "error must name the missing group key, got: {err}"
+    );
+
+    let snap = node
+        .node_client
+        .ephemeral_snapshot(context_id)
+        .await
+        .expect("ephemeral_snapshot must succeed");
+    assert!(
+        snap.is_empty(),
+        "nothing may be echoed locally when the publish is impossible, got {snap:?}"
     );
 }
