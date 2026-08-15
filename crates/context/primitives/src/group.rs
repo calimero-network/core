@@ -966,7 +966,34 @@ pub struct RevokeDeviceRequest {
     pub proof: Option<SignedDeviceRevocation>,
 }
 
-/// What the revocation withdrew.
+/// Where one namespace's revocation landed.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct RevocationOutcome {
+    /// The namespace the revocation was published into.
+    pub namespace_id: ContextGroupId,
+    /// Whether the scope key was rotated in the same op.
+    ///
+    /// `false` means the device lost the right to write there immediately but
+    /// still holds the key it had — it can read until an admin rotates. Only an
+    /// admin may rotate, and the account holder revoking their own device usually
+    /// is not one, so this is commonly owed.
+    pub key_rotated: bool,
+}
+
+impl RevocationOutcome {
+    /// Build an outcome. Exists because the struct is `#[non_exhaustive]` and the
+    /// producer lives in another crate.
+    #[must_use]
+    pub const fn new(namespace_id: ContextGroupId, key_rotated: bool) -> Self {
+        Self {
+            namespace_id,
+            key_rotated,
+        }
+    }
+}
+
+/// What the revocation withdrew, and where.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RevokeDeviceResponse {
@@ -974,23 +1001,30 @@ pub struct RevokeDeviceResponse {
     pub account: AccountId,
     /// The device that was withdrawn.
     pub device: DeviceId,
-    /// Whether the scope key was rotated in the same op.
+    /// Every namespace the revocation was published into.
     ///
-    /// `false` means the device lost the right to write immediately but still
-    /// holds the key it had — it can read until an admin rotates. Only an admin
-    /// may rotate, so a self-service revocation always leaves this owed.
-    pub key_rotated: bool,
+    /// A device belongs to an account, not to a scope, so revoking it withdraws it
+    /// from every namespace that holds a binding for it — not only the one the
+    /// caller happened to name. Reported per namespace because publication is
+    /// per-DAG: a namespace missing from this list did not receive the op, and a
+    /// partially propagated revocation is a state an operator has to be able to
+    /// see.
+    pub revoked_in: Vec<RevocationOutcome>,
 }
 
 impl RevokeDeviceResponse {
     /// Build a response. Exists because the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
-    pub const fn new(account: AccountId, device: DeviceId, key_rotated: bool) -> Self {
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        revoked_in: Vec<RevocationOutcome>,
+    ) -> Self {
         Self {
             account,
             device,
-            key_rotated,
+            revoked_in,
         }
     }
 }

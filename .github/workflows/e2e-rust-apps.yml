@@ -337,6 +337,20 @@ jobs:
           - workflow: account-device-revoke-lockout
             file: workflows/account-device-revoke-lockout.yml
             app: scaffolding-e2e
+          # NOT REGISTERED YET — blocked on a calimero-client-py release.
+          #
+          # The scenario's whole assertion is on `revokedIn`, and that field
+          # cannot reach it: client-py is a typed Rust binding, so the released
+          # wheel deserializes this response into the struct as it was compiled
+          # — which has no `revoked_in` — and serde drops the field before
+          # merobox sees it. Registering it now buys a permanently red job that
+          # says nothing about the code.
+          #
+          # Register it in the same change that bumps the wheel to one built
+          # against `revokedIn` (calimero-client-py#89).
+          # - workflow: account-facts-cross-namespace
+          #   file: workflows/account-facts-cross-namespace.yml
+          #   app: scaffolding-e2e
           - workflow: account-root-backup-restore
             file: workflows/account-root-backup-restore.yml
             app: scaffolding-e2e

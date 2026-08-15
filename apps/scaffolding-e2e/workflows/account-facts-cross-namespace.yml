@@ -1,0 +1,274 @@
+name: E2E Account - A Device Is Paired And Revoked In Every Namespace
+description: >
+  The acceptance test for account facts being account-scoped (#3428). A device
+  belongs to an ACCOUNT, not to a namespace, so pairing one and revoking one are
+  statements about the account and have to hold everywhere the account speaks.
+
+  Every other account scenario runs in a single namespace, which is exactly the
+  shape that cannot see this. Before the change both operations reached one
+  namespace — whichever the caller happened to name — so a device revoked from
+  the namespace you were looking at went on writing in the one you were not,
+  under the same account, while the operator was told it was revoked.
+
+  The cast:
+
+    * node-1 — admin of BOTH namespaces, and the one that invites.
+    * node-2 — Alice's laptop. A member of both, and the holder of Alice's
+      account. It does the pairing and the revoking, because both are the
+      account's authority rather than an admin's.
+    * node-3 — Alice's phone. A member of NOTHING. Its whole right to
+      participate is being a device of Alice's account, which is what makes it
+      the right probe: anything it can do, it can do because of the account.
+
+  What each assertion is load-bearing for:
+
+    1. Pairing runs against namespace A only. The link is published into both,
+       because the certificate is root-signed and the endorsement is signed by
+       a node-level key — neither names a namespace. `keyDelivered` proves the
+       scope key for the namespace the pairing named actually reached the
+       device; the cross-namespace half is proven by the revocation below,
+       which can only name namespaces that hold a binding for the device.
+
+    2. Revocation runs against namespace A only, and `revokedIn` must name
+       BOTH. That list is built by walking the namespaces this node takes part
+       in and skipping any that hold no binding for the device — so two entries
+       means the pairing genuinely linked the device in both, and the
+       revocation genuinely reached both. One entry is the old behaviour and
+       the bug.
+
+  Deliberately not asserted here: the read/write lockout in the second
+  namespace. `account-device-revoke-lockout` already pins that end-to-end in
+  one namespace, and repeating it here would buy a slower scenario rather than
+  a stronger claim. What is unique to this one is the SET of namespaces the two
+  operations reach.
+
+  User-visible failure mode this guards against: "I revoked my stolen phone and
+  it kept writing to my other team's data."
+
+force_pull_image: false
+near_devnet: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-xns-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-xns-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-xns-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: account-xns-node-3
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: account-xns-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: account-xns-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: account-xns-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  # ── Two namespaces, both admined by node-1, both joined by node-2 ──
+
+  - name: Node-1 creates namespace A
+    type: create_namespace
+    node: account-xns-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns_a: namespaceId
+
+  - name: Node-1 creates namespace B
+    type: create_namespace
+    node: account-xns-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns_b: namespaceId
+
+  - name: Invite node-2 to namespace A
+    type: create_namespace_invitation
+    node: account-xns-node-1
+    namespace_id: '{{ns_a}}'
+    outputs:
+      invite_a: invitation
+
+  - name: Node-2 joins namespace A
+    type: join_namespace
+    node: account-xns-node-2
+    namespace_id: '{{ns_a}}'
+    invitation: '{{invite_a}}'
+
+  - name: Invite node-2 to namespace B
+    type: create_namespace_invitation
+    node: account-xns-node-1
+    namespace_id: '{{ns_b}}'
+    outputs:
+      invite_b: invitation
+
+  - name: Node-2 joins namespace B
+    type: join_namespace
+    node: account-xns-node-2
+    namespace_id: '{{ns_b}}'
+    invitation: '{{invite_b}}'
+
+  # Two barriers, because a namespace is a DAG and `wait_for_sync` settles one.
+  - name: Settle the join to namespace A
+    type: wait_for_sync
+    comment: >-
+      lint-convergence: ok — node-3 is deliberately outside both barriers. It is
+      a member of nothing at this point; its only mutation so far is a local
+      application install, which no other node reads. Its whole right to act
+      arrives later, from being a device of Alice's account, and that is the
+      point of the scenario. Barriering it on a namespace it never joined would
+      wait for convergence that is not coming.
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  - name: Settle the join to namespace B
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_b}}'
+    timeout: 120
+
+  # ── One account, taking part in both ───────────────────────────────
+
+  # `account create` is an ensure, not a create: one root key is one account
+  # everywhere, so the second call enrolls the same account into namespace B
+  # rather than minting a second one. Both are asserted below to be equal,
+  # because that equality is the premise the rest of the scenario rests on.
+  - name: Node-2 enrolls its account in namespace A
+    type: account_create
+    node: account-xns-node-2
+    namespace_id: '{{ns_a}}'
+    outputs:
+      account_a: accountId
+      device_a: deviceId
+      root_key: accountRootKey
+
+  - name: Node-2 enrolls the same account in namespace B
+    type: account_create
+    node: account-xns-node-2
+    namespace_id: '{{ns_b}}'
+    outputs:
+      account_b: accountId
+      device_b: deviceId
+
+  - name: One root key is one account, and one node is one device
+    type: json_assert
+    statements:
+      - 'json_equal({{account_a}}, {{account_b}})'
+      - 'json_equal({{device_a}}, {{device_b}})'
+
+  - name: Settle the link op in namespace A
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  - name: Settle the link op in namespace B
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_b}}'
+    timeout: 120
+
+  # ── Pair the phone, naming namespace A only ────────────────────────
+
+  - name: Pair node-3 onto Alice's account, via namespace A
+    type: account_pair
+    node: account-xns-node-3
+    holder: account-xns-node-2
+    namespace_id: '{{ns_a}}'
+    root_key: '{{root_key}}'
+    # merobox's step still declares `nonce` required, and core ignores whatever
+    # arrives — the genesis carries no nonce.
+    nonce: '00000000000000000000000000000000'
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+      key_delivered: keyDelivered
+
+  - name: The phone joined Alice's account, not one of its own
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{account_a}})'
+      - 'json_not_equal({{paired_device}}, {{device_a}})'
+      - 'json_equal({{key_delivered}}, true)'
+
+  - name: Settle the pairing in namespace A
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_a}}'
+    timeout: 120
+
+  # The load-bearing one. The pairing named A, so B settling is what proves the
+  # link was published there too — which is the precondition for `revokedIn`
+  # naming both below.
+  - name: Settle the pairing in namespace B
+    type: wait_for_sync
+    nodes:
+      - account-xns-node-1
+      - account-xns-node-2
+    group_id: '{{ns_b}}'
+    timeout: 120
+
+  # ── Revoke, naming namespace A only ────────────────────────────────
+
+  # Revoked by node-2, the account holder. Not by node-1: an admin governs who
+  # is a member, not which installations another person runs, and admin is no
+  # longer an authorization path for revoking somebody else's device.
+  - name: The account holder revokes the phone, naming namespace A
+    type: account_revoke
+    node: account-xns-node-2
+    namespace_id: '{{ns_a}}'
+    device_id: '{{paired_device}}'
+    outputs:
+      revoked_in: revokedIn
+
+  # The assertion this whole scenario exists for. `revokedIn` is built by
+  # walking the namespaces this node takes part in and skipping any that hold
+  # no binding for the device — so two entries means the pairing linked the
+  # phone in BOTH namespaces and the revocation reached BOTH, from a call that
+  # named only one. One entry is the pre-#3428 behaviour.
+  - name: The revocation reached both namespaces, from a call naming one
+    type: assert
+    statements:
+      - 'contains({{revoked_in}}, {{ns_a}})'
+      - 'contains({{revoked_in}}, {{ns_b}})'
+
+stop_all_nodes: true

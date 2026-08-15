@@ -6,7 +6,8 @@ use axum::Extension;
 use calimero_account::{DeviceId, SignedDeviceRevocation};
 use calimero_context_client::group::RevokeDeviceRequest;
 use calimero_server_primitives::admin::{
-    RevokeDeviceApiRequest, RevokeDeviceApiResponse, RevokeDeviceApiResponseData,
+    RevocationOutcomeApiEntry, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
+    RevokeDeviceApiResponseData,
 };
 use reqwest::StatusCode;
 use tracing::info;
@@ -102,7 +103,7 @@ pub async fn handler(
                 namespace_id = %namespace_id_str,
                 account = %resp.account,
                 device = %resp.device,
-                key_rotated = resp.key_rotated,
+                namespaces = resp.revoked_in.len(),
                 "device revoked"
             );
             ApiResponse {
@@ -110,7 +111,21 @@ pub async fn handler(
                     data: RevokeDeviceApiResponseData {
                         account_id: hex::encode(resp.account.as_bytes()),
                         device_id: hex::encode(resp.device.as_bytes()),
-                        key_rotated: resp.key_rotated,
+                        // The namespace the caller named, which is what this
+                        // field meant before one revocation reached several.
+                        key_rotated: resp
+                            .revoked_in
+                            .iter()
+                            .find(|o| o.namespace_id == namespace_id)
+                            .is_some_and(|o| o.key_rotated),
+                        revoked_in: resp
+                            .revoked_in
+                            .iter()
+                            .map(|o| RevocationOutcomeApiEntry {
+                                namespace_id: hex::encode(o.namespace_id.to_bytes()),
+                                key_rotated: o.key_rotated,
+                            })
+                            .collect(),
                     },
                 },
             }
