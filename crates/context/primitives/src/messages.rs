@@ -10,8 +10,8 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CreateAccountRequest, CreateGroupInvitationRequest,
-    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
+    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
@@ -486,10 +486,6 @@ pub enum ContextMessage {
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,
         outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
-    },
-    CreateAccount {
-        request: CreateAccountRequest,
-        outcome: oneshot::Sender<<CreateAccountRequest as Message>::Result>,
     },
     PairDeviceInit {
         request: PairDeviceInitRequest,

@@ -167,18 +167,16 @@ steps:
   # rather than minting a second one. Both are asserted below to be equal,
   # because that equality is the premise the rest of the scenario rests on.
   - name: Node-2 enrolls its account in namespace A
-    type: account_create
+    type: node_identity
     node: account-xns-node-2
-    namespace_id: '{{ns_a}}'
     outputs:
       account_a: accountId
       device_a: deviceId
-      root_key: accountRootKey
+      root_key: accountRootPublicKey
 
   - name: Node-2 enrolls the same account in namespace B
-    type: account_create
+    type: node_identity
     node: account-xns-node-2
-    namespace_id: '{{ns_b}}'
     outputs:
       account_b: accountId
       device_b: deviceId

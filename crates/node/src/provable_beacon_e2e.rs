@@ -33,6 +33,7 @@ use crate::readiness::{
     ReadinessState, ReadinessTier,
 };
 use crate::test_node_harness::{boot_test_node, TestNode};
+use serial_test::serial;
 
 const NS: [u8; 32] = [42u8; 32];
 
@@ -161,6 +162,7 @@ fn member_slot_claimed(node: &TestNode) -> bool {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn provable_beacon_pulls_from_its_signer_and_never_caches() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -205,6 +207,7 @@ async fn provable_beacon_pulls_from_its_signer_and_never_caches() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn provable_pull_does_not_consume_the_member_debounce_slot() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -244,6 +247,7 @@ async fn provable_pull_does_not_consume_the_member_debounce_slot() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn a_provable_pull_that_returns_nothing_gives_its_slot_back() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -272,6 +276,7 @@ async fn a_provable_pull_that_returns_nothing_gives_its_slot_back() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn unprovable_beacon_pulls_nothing() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -410,6 +415,7 @@ async fn emit_beacon(addr: &actix::Addr<ReadinessManager>) {
 /// tests above start their own actor and post `PendingRepublish` directly, so a
 /// break anywhere in that routing would leave every one of them green.
 #[actix::test]
+#[serial(boot_test_node)]
 async fn a_queued_join_reaches_the_wire_through_the_node_client() {
     let node = boot_test_node().await;
     let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -444,6 +450,7 @@ async fn a_queued_join_reaches_the_wire_through_the_node_client() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn queued_join_rides_the_next_beacon_as_its_admission_proof() {
     let node = boot_test_node().await;
     let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -479,6 +486,7 @@ async fn queued_join_rides_the_next_beacon_as_its_admission_proof() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn beacon_carries_no_proof_without_a_queued_join() {
     let node = boot_test_node().await;
     let joiner_sk = PrivateKey::random(&mut rand::thread_rng());

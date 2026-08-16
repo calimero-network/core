@@ -1656,58 +1656,11 @@ impl Validate for RetryGroupUpgradeApiRequest {
     }
 }
 
-/// Enroll this node's device into a namespace under a fresh account.
-///
-/// No body fields: the account is rooted at this node's own namespace identity,
-/// so there is nothing for a caller to choose — and nothing a caller could
-/// usefully spoof.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAccountApiRequest {}
-
-impl Validate for CreateAccountApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-/// What the node enrolled as.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAccountApiResponseData {
-    /// Hex-encoded `AccountId` this node now speaks for.
-    pub account_id: String,
-    /// Hex-encoded `DeviceId` — this node's replica id within the account.
-    pub device_id: String,
-    /// Hex-encoded epoch-0 root key of the account.
-    pub account_root_key: String,
-    /// Always 32 zeros. **Dead field, kept only so an older client can decode
-    /// this response.**
-    ///
-    /// The genesis carries no nonce any more, so there is nothing for this to
-    /// report. It cannot simply be dropped: `calimero-client-py` is a Rust
-    /// binding that deserializes into this very struct, compiled into the
-    /// released wheel while the field was required — so a response omitting it
-    /// fails to parse there, which is what merobox reports as "account create
-    /// failed". Note the direction: an unknown field in a REQUEST is ignored
-    /// (nothing here sets `deny_unknown_fields`), but a missing field in a
-    /// RESPONSE is fatal to a typed client.
-    ///
-    /// Removed once a client-py release has stopped requiring it.
-    pub account_nonce: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAccountApiResponse {
-    pub data: CreateAccountApiResponseData,
-}
-
 /// Adopt an existing account on this node and mint a device for it.
 ///
-/// Unlike `CreateAccountApiRequest` this one *does* carry a caller-supplied
-/// value, because the account being joined is not this node's to derive: the
-/// root key comes from the device that already holds it.
+/// Carries a caller-supplied value, because the account being joined is not
+/// this node's to derive: the root key comes from the device that already
+/// holds it.
 ///
 /// Nothing here is a credential. A genesis is public data, and naming somebody
 /// else's account gains a caller nothing: the device is inert until its
@@ -1994,7 +1947,9 @@ pub struct RevokeDeviceApiResponseData {
     /// released wheel while this field was required — dropping it makes every
     /// response fail to parse there, which merobox reports only as the useless
     /// "account revoke failed". The same mistake, with the same symptom, is
-    /// recorded on `CreateAccountApiResponseData::account_nonce`.
+    /// the same mistake was recorded on `create_account`'s `accountNonce`, a
+    /// field kept as 32 zeros for exactly this reason until that endpoint was
+    /// deleted.
     ///
     /// Removable once a wheel built against `revoked_in` is released and the
     /// merobox `account_revoke` step reads it instead of `keyRotated`.
@@ -2266,18 +2221,6 @@ pub struct SyncGroupApiResponseData {
 }
 
 // ---- Join Context ----
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinContextApiRequest {
-    pub context_id: ContextId,
-}
-
-impl Validate for JoinContextApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

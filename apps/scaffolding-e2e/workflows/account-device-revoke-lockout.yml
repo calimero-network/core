@@ -194,13 +194,12 @@ steps:
   # the node needs the scope key before it can publish one.
 
   - name: Node-2 enrolls a device for a fresh account
-    type: account_create
+    type: node_identity
     node: account-revoke-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       alice_account: accountId
       laptop_device: deviceId
-      root_key: accountRootKey
+      root_key: accountRootPublicKey
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -531,7 +530,7 @@ steps:
 #
 # Wired into `.github/workflows/e2e-rust-apps.yml`.
 #
-# The account operations are NATIVE merobox steps (>= 0.6.45): `account_create`,
+# The account operations are NATIVE merobox steps: `node_identity` (>= 0.6.54),
 # `account_pair`, `account_revoke`, `account_show`. They replaced four shell
 # scripts that drove the same admin-api endpoints. The scripts worked, but a
 # `script` step cannot export custom `outputs:` — it only sets

@@ -38,6 +38,7 @@
 //!
 //! Both funnel into the same idempotent request, so they can overlap harmlessly.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use calimero_context_client::client::ContextClient;
@@ -56,6 +57,27 @@ struct HandleState {
 }
 
 static HANDLE: Mutex<Option<HandleState>> = Mutex::new(None);
+
+/// Bumped on every successful `spawn`, so a caller can tell whether the
+/// listener it started is still the one running.
+///
+/// The listener is a process-global singleton bound to one `Store`, and
+/// `spawn` rebinds it. In production that is what you want — one node, one
+/// store. Under a parallel test binary it means any test that boots a node
+/// silently takes the listener away from whatever test was using it, and the
+/// symptom lands far away: a pending rotation that nobody discharges, which
+/// reads as a broken op-event → listener → rotate → publish chain.
+///
+/// Exposing the generation lets a test say which of the two it hit instead of
+/// blaming the chain. See `#[serial(boot_test_node)]` on every test that boots
+/// a node — that guard is what keeps this from happening, and this counter is
+/// how a future gap in it announces itself.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The current listener generation. See [`GENERATION`].
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
 
 /// Start the rotation listener. Returns immediately; it runs as a detached task.
 ///
@@ -80,6 +102,7 @@ pub fn spawn(store: Store, context_client: ContextClient) {
     })
     .abort_handle();
     *slot = Some(HandleState { abort });
+    let _ = GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Abort the listener. For tests and graceful shutdown; safe if none is running.
