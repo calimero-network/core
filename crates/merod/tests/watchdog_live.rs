@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 /// Debug builds start slowly on a loaded CI runner, so these are generous: they
 /// bound a hang, they do not measure latency.
-const STORE_OPEN_TIMEOUT: Duration = Duration::from_secs(90);
+const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Kills the node even when an assertion unwinds, and keeps its log so a timeout
@@ -23,6 +23,10 @@ impl Node {
     /// tag, not the node name, which several tests share.
     fn log_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("merod-live-{}-{tag}.log", std::process::id()))
+    }
+
+    fn tail_all(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
     fn tail(&self) -> String {
@@ -55,6 +59,24 @@ fn free_port() -> u16 {
         .local_addr()
         .expect("addr")
         .port()
+}
+
+/// The node only reaches the select that watches for a stop once every subsystem
+/// is up, so an open store is not enough to say it is listening.
+const READY_LINE: &str = "Node started successfully";
+
+fn wait_until_ready(node: &Node) {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    while Instant::now() < deadline {
+        if node.tail_all().contains(READY_LINE) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!(
+        "node never logged {READY_LINE:?} within {READY_TIMEOUT:?}. Its output:\n{}",
+        node.tail()
+    );
 }
 
 fn init(home: &Path, node: &str) {
@@ -94,22 +116,14 @@ fn run(home: &Path, node: &str, tag: &str) -> Node {
             node.as_ref(),
         ])
         .arg("run")
+        .env("RUST_LOG", "info")
         .stdout(Stdio::from(sink.try_clone().expect("clone log")))
         .stderr(Stdio::from(sink))
         .spawn()
         .expect("spawn merod run");
     let node_process = Node { child, log };
-
-    let marker = home.join(node).join("data").join("CURRENT");
-    let deadline = Instant::now() + STORE_OPEN_TIMEOUT;
-    while Instant::now() < deadline {
-        if marker.exists() {
-            std::thread::sleep(Duration::from_secs(2));
-            return node_process;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    panic!("node never opened its store at {}", marker.display());
+    wait_until_ready(&node_process);
+    node_process
 }
 
 fn wait_for_exit(node: &mut Node, what: &str) -> Duration {
@@ -144,6 +158,7 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
             "n1".as_ref(),
         ])
         .args(["run", "--exit-on-eof", "0"])
+        .env("RUST_LOG", "info")
         .stdin(Stdio::from(reader))
         .stdout(Stdio::from(sink.try_clone().expect("clone log")))
         .stderr(Stdio::from(sink))
@@ -151,13 +166,7 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
         .expect("spawn merod run");
     let mut node = Node { child, log };
 
-    let marker = home.join("n1").join("data").join("CURRENT");
-    let deadline = Instant::now() + STORE_OPEN_TIMEOUT;
-    while Instant::now() < deadline && !marker.exists() {
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    assert!(marker.exists(), "node never opened its store");
-    std::thread::sleep(Duration::from_secs(2));
+    wait_until_ready(&node);
     assert!(
         node.child.try_wait().expect("try_wait").is_none(),
         "node stopped before the pipe closed"
