@@ -28,7 +28,7 @@ use camino::Utf8PathBuf;
 use futures_util::FutureExt;
 use libp2p::identity::Keypair;
 use prometheus_client::registry::Registry;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -94,6 +94,46 @@ async fn shutdown_signal() {
     }
 }
 
+/// Why the node is stopping. Only a replaced data directory changes what happens
+/// next; the rest differ in wording alone.
+#[derive(Debug, Clone, Copy)]
+pub enum StopCause {
+    /// `SIGINT` or `SIGTERM`.
+    Signal,
+    /// The process that spawned this node exited - see `NodeConfig::stop_watch`.
+    ParentExited,
+    /// The data directory this node opened is no longer the one at its path, so a
+    /// flush would write into a directory that is not ours and compaction would
+    /// leave files in whoever's directory now sits there.
+    DataDirReplaced,
+}
+
+impl StopCause {
+    const fn flushes(self) -> bool {
+        !matches!(self, Self::DataDirReplaced)
+    }
+}
+
+/// A signal, or whatever the process that started us is watching on our behalf.
+async fn stop_trigger(watch: Option<oneshot::Receiver<StopCause>>) -> StopCause {
+    let watched = async move {
+        match watch {
+            // A dropped sender means the watchdog is gone, not that it fired, so
+            // this arm parks rather than reporting a shutdown nobody asked for.
+            Some(rx) => match rx.await {
+                Ok(cause) => cause,
+                Err(_) => std::future::pending().await,
+            },
+            None => std::future::pending().await,
+        }
+    };
+
+    tokio::select! {
+        () = shutdown_signal() => StopCause::Signal,
+        cause = watched => cause,
+    }
+}
+
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
@@ -108,6 +148,9 @@ pub struct NodeConfig {
     /// DAG compaction settings (issue #2026). Enabled by default.
     pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
+    /// Resolves when something that is not a signal requires this node to stop,
+    /// so it shuts down in an orderly way rather than being killed or left running.
+    pub stop_watch: Option<oneshot::Receiver<StopCause>>,
     /// Resolved per-execution VM resource limits from the `[runtime.limits]`
     /// config section (unset fields fall back to `VMLimits::default`).
     pub vm_limits: calimero_runtime::logic::VMLimits,
@@ -120,7 +163,7 @@ pub struct NodeConfig {
     pub mock_tee: bool,
 }
 
-pub async fn start(config: NodeConfig) -> eyre::Result<()> {
+pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     let mut registry = <Registry>::default();
 
     let peer_id = config.identity.public().to_peer_id();
@@ -503,7 +546,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut sync = pin!(sync_manager.start().fuse());
     let mut server = tokio::spawn(server);
     let mut bridge = bridge_handle;
-    let mut term_signal = pin!(shutdown_signal());
+    let mut term_signal = pin!(stop_trigger(config.stop_watch.take()));
 
     info!("Node started successfully");
     // All subsystems are up and the server is spawned — advertise readiness.
@@ -514,6 +557,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // one panics).
     let mut server_done = false;
     let mut bridge_done = false;
+    let mut stop_cause = StopCause::Signal;
 
     let exit: eyre::Result<()> = loop {
         tokio::select! {
@@ -535,8 +579,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 // and shuts down with it.
                 break res.map_err(eyre::Report::from).and_then(|inner| inner);
             }
-            () = &mut term_signal => {
-                info!("Shutdown signal received; draining and flushing before exit");
+            cause = &mut term_signal => {
+                info!(?cause, "Shutting down; draining before exit");
+                stop_cause = cause;
                 break Ok(());
             }
         }
@@ -616,7 +661,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // 5. Flush the datastore so an abrupt process exit immediately afterwards
     //    cannot lose what the just-drained writers persisted. The RocksDB
     //    `Drop` impl is a backstop for any path that skips this.
-    if let Err(err) = datastore.flush() {
+    if !stop_cause.flushes() {
+        tracing::error!(
+            "not flushing: the data directory this node opened is gone, so a flush would \
+             write into whatever directory now holds that path"
+        );
+    } else if let Err(err) = datastore.flush() {
         tracing::warn!(%err, "datastore flush on shutdown failed");
     }
 
