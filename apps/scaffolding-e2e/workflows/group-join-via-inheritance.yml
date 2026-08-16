@@ -80,7 +80,6 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -123,6 +122,10 @@ steps:
     group_id: '{{subgroup_id}}'
     outputs:
       ctx_id: contextId
+      # The key node-1 executes context calls as. It is the context creation
+      # that mints it — namespace creation answers with a namespace id and
+      # nothing else.
+      node1_key: memberPublicKey
 
   - name: Wait for subgroup visibility + context-registered ops to propagate
     # Same rationale as group-open-self-join-key-delivery.yml: node-2
