@@ -89,6 +89,9 @@ fn init(home: &Path, node: &str) {
         ])
         .args([
             "init",
+            // A sandboxed runner has no netlink socket, and mDNS retries that
+            // failure in a tight loop that floods the log and starves the node.
+            "--no-mdns",
             "--server-port",
             &free_port().to_string(),
             "--swarm-port",
@@ -207,5 +210,24 @@ fn the_node_keeps_running_while_its_data_directory_is_intact() {
         node.child.try_wait().expect("try_wait").is_none(),
         "a node whose directory is untouched must keep running"
     );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The control: if this fails too, the node cannot shut down in this environment
+/// at all, and the two watchdogs above are not what broke.
+#[test]
+fn the_node_stops_on_sigterm() {
+    let home = scratch("sigterm");
+    init(&home, "n1");
+    let mut node = run(&home, "n1", "sigterm");
+
+    let killed = Command::new("kill")
+        .args(["-TERM", &node.child.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(killed.success(), "could not signal the node");
+
+    let took = wait_for_exit(&mut node, "SIGTERM");
+    println!("node exited {took:?} after SIGTERM");
     let _ = std::fs::remove_dir_all(&home);
 }
