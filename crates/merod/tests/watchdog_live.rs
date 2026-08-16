@@ -1,5 +1,13 @@
 //! The watchdogs against a real node, because the unit tests cover the watches in
 //! isolation and every bug so far has been in the wiring between them.
+//!
+//! `cargo test -p merod --test watchdog_live -- --include-ignored`
+//!
+//! Ignored by default: they need an environment where a node can shut down at all.
+//! On a runner without netlink permissions, `if-watch` (used by QUIC and mDNS alike)
+//! retries its failure in a tight loop that starves the runtime, and the node then
+//! ignores every stop including `SIGTERM` - which `the_node_stops_on_sigterm` is
+//! here to distinguish from a fault in the watchdogs themselves.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -146,6 +154,7 @@ fn wait_for_exit(node: &mut Node, what: &str) -> Duration {
 /// `SIGKILL` on the parent runs no code, so the closed pipe is the only thing that
 /// can report it. Closing the write end here is that same event.
 #[test]
+#[ignore = "drives a real node; needs an environment with netlink"]
 fn the_node_stops_when_the_pipe_to_its_parent_closes() {
     let home = scratch("parent");
     init(&home, "n1");
@@ -185,6 +194,7 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
 /// `rm -rf` removes a name, not a file, so nothing tells the node - it has to
 /// notice that the directory it holds is no longer the one at its path.
 #[test]
+#[ignore = "drives a real node; needs an environment with netlink"]
 fn the_node_stops_when_its_data_directory_is_deleted() {
     let home = scratch("deleted");
     init(&home, "n1");
@@ -198,6 +208,7 @@ fn the_node_stops_when_its_data_directory_is_deleted() {
 
 /// The watch must not stop a node whose directory is merely busy.
 #[test]
+#[ignore = "drives a real node; needs an environment with netlink"]
 fn the_node_keeps_running_while_its_data_directory_is_intact() {
     let home = scratch("intact");
     init(&home, "n1");
@@ -216,6 +227,7 @@ fn the_node_keeps_running_while_its_data_directory_is_intact() {
 /// The control: if this fails too, the node cannot shut down in this environment
 /// at all, and the two watchdogs above are not what broke.
 #[test]
+#[ignore = "drives a real node; needs an environment with netlink"]
 fn the_node_stops_on_sigterm() {
     let home = scratch("sigterm");
     init(&home, "n1");
