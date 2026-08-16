@@ -1,0 +1,3 @@
+{
+  "apps/scaffolding-e2e/workflows/member-removed-partition-window-reconcile.yml": "Docker-bridge partition primitives cannot construct the divergence deterministically: signing after the heal races the TCP-buffer drain, and signing during the partition is blocked by the readiness gate that requires mesh peers. The reconcile path is covered by unit tests on apply_group_op_mutations; registering this needs a more surgical partition primitive (e.g. an iptables-level drop on one peer pair). See the comment beside the matrix entry in e2e-rust-apps.yml."
+}

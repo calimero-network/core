@@ -196,9 +196,8 @@ steps:
   # After the context join: enrolment publishes an encrypted GroupOp, so the node
   # needs the scope key it only holds once it has joined.
   - name: Node-2 enrols the account that will lose its device
-    type: account_create
+    type: node_identity
     node: revoke-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       lost_account: accountId
       lost_device: deviceId
@@ -379,9 +378,8 @@ steps:
     trigger_sync: true
 
   - name: Node-2 enrols again after losing its device
-    type: account_create
+    type: node_identity
     node: revoke-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       replacement_account: accountId
       replacement_device: deviceId

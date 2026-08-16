@@ -8,10 +8,6 @@ repository.workspace = true
 license.workspace = true
 publish = true
 
-[[example]]
-name = "blobstore"
-required-features = ["examples"]
-
 [dependencies]
 async-stream.workspace = true
 camino = { workspace = true, features = ["serde1"] }
@@ -32,13 +28,3 @@ tempfile.workspace = true
 # writer genuinely running at once, not cooperatively interleaved.
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util.workspace = true
-
-[features]
-examples = [
-  "tokio/io-std",
-  "tokio/io-util",
-  "tokio/macros",
-  "tokio/rt-multi-thread",
-  "tokio-util/io",
-  "tokio-util/compat",
-]

@@ -8,7 +8,7 @@
 #       target: local
 #       args: [ <holder>, <new-node>, <namespace-id>, <root-key> ]
 #
-# The root key comes from the `account_create` step's `accountRootKey` output —
+# The root key comes from the `node_identity` step's `accountRootPublicKey` output —
 # passed in rather than read from a file, because the step exports it and nothing
 # writes the temp files any more. There is no nonce: the account genesis carries
 # none, and `pair-init` needs only the root key.
@@ -44,7 +44,7 @@ namespace="$3"
 root_key="$4"
 
 init=$(api_post "${newnode}" "namespaces/${namespace}/account/pair-init" \
-    "{\"accountRootKey\":\"${root_key}\"}")
+    "{\"accountRootPublicKey\":\"${root_key}\"}")
 
 device=$(echo "${init}" | jq -r '.data.deviceId')
 kem=$(echo "${init}" | jq -r '.data.kemPublicKey')
