@@ -596,70 +596,6 @@ impl GetPeersCountResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct JwtTokenRequest {
-    pub context_id: ContextId,
-    pub executor_public_key: String,
-}
-
-impl JwtTokenRequest {
-    #[must_use]
-    pub const fn new(context_id: ContextId, executor_public_key: String) -> Self {
-        Self {
-            context_id,
-            executor_public_key,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct JwtRefreshRequest {
-    pub refresh_token: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct NodeChallenge {
-    #[serde(flatten)]
-    pub message: NodeChallengeMessage,
-    pub node_signature: String,
-}
-
-impl NodeChallenge {
-    #[must_use]
-    pub const fn new(message: NodeChallengeMessage, node_signature: String) -> Self {
-        Self {
-            message,
-            node_signature,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct NodeChallengeMessage {
-    pub nonce: String,
-    pub context_id: Option<ContextId>,
-    pub timestamp: i64,
-}
-
-impl NodeChallengeMessage {
-    #[must_use]
-    pub const fn new(nonce: String, context_id: Option<ContextId>, timestamp: i64) -> Self {
-        Self {
-            nonce,
-            context_id,
-            timestamp,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncContextResponse {
@@ -1220,52 +1156,6 @@ impl Validate for TeeAttestRequest {
         // Nonce must be exactly 64 hex characters (32 bytes)
         if let Some(e) = validate_hex_string(&self.nonce, "nonce", 32) {
             errors.push(e);
-        }
-
-        errors
-    }
-}
-
-impl Validate for JwtTokenRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        // executor_public_key should be a reasonable length
-        if self.executor_public_key.len() > 128 {
-            errors.push(ValidationError::StringTooLong {
-                field: "executor_public_key",
-                max: 128,
-                actual: self.executor_public_key.len(),
-            });
-        }
-
-        if self.executor_public_key.is_empty() {
-            errors.push(ValidationError::EmptyField {
-                field: "executor_public_key",
-            });
-        }
-
-        errors
-    }
-}
-
-impl Validate for JwtRefreshRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        // Refresh tokens are typically JWTs which shouldn't exceed a reasonable size
-        if self.refresh_token.len() > 4096 {
-            errors.push(ValidationError::StringTooLong {
-                field: "refresh_token",
-                max: 4096,
-                actual: self.refresh_token.len(),
-            });
-        }
-
-        if self.refresh_token.is_empty() {
-            errors.push(ValidationError::EmptyField {
-                field: "refresh_token",
-            });
         }
 
         errors
