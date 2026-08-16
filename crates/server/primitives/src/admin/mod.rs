@@ -2269,18 +2269,6 @@ pub struct SyncGroupApiResponseData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JoinContextApiRequest {
-    pub context_id: ContextId,
-}
-
-impl Validate for JoinContextApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct JoinContextApiResponse {
     pub data: JoinContextApiResponseData,
 }
