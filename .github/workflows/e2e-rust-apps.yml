@@ -636,6 +636,12 @@ jobs:
           - workflow: xcall-example-scenario
             file: workflows/xcall-example.yml
             app: xcall-example
+          # Shipped unregistered with #3435 and could not pass until a
+          # calimero-client-py built against a core carrying `revokedIn`
+          # was released (0.6.28).
+          - workflow: account-facts-cross-namespace
+            file: workflows/account-facts-cross-namespace.yml
+            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
