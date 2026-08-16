@@ -29,8 +29,7 @@ use calimero_context_client::group::UpgradeGroupRequest;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    apply_local_signed_group_op, MembershipRepository, NamespaceRepository, SigningKeysRepository,
-    UpgradesRepository,
+    apply_local_signed_group_op, MembershipRepository, NamespaceRepository, UpgradesRepository,
 };
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::events::{GroupMigrationEvent, GroupMigrationPayload, NodeEvent};
@@ -131,7 +130,7 @@ async fn heartbeat_burst(
 /// the rollup) and `peer` as a fellow member of the migration cohort.
 fn seat_cohort(store: &Store, ns: &ContextGroupId, admin_sk: &PrivateKey, peer: PublicKey) {
     NamespaceRepository::new(store)
-        .store_identity(ns, &admin_sk.public_key(), admin_sk.as_bytes(), &[0u8; 32])
+        .store_identity(ns, &admin_sk.public_key(), admin_sk.as_bytes())
         .expect("store namespace identity");
     // Enrolled at the anchor, so the cohort expansion resolves this row back to
     // the key the peer's heartbeats are signed with. A row with no binding
@@ -168,9 +167,6 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
     let ctx_ns = ContextId::from([0xD0; 32]);
     let ctx_sub = ContextId::from([0xD1; 32]);
     provision_namespace_pair(&node, &admin_sk, &blobs, ns, sub, ctx_ns, ctx_sub);
-    SigningKeysRepository::new(&node.store)
-        .store_key(&ns, &admin_pk, admin_sk.as_bytes())
-        .expect("store signing key");
     seat_cohort(&node.store, &ns, &admin_sk, peer_sk.public_key());
 
     // Subscribe FIRST: `receive_events` takes its broadcast subscription at call

@@ -1642,7 +1642,7 @@ async fn fleet_completion_stamps_the_record_once() {
     install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xC7; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
-        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
         .expect("store namespace identity");
     // Enrolled at the anchor, so the cohort expansion resolves this row back to
     // the key the peer's heartbeats are signed with. A row with no binding
@@ -1866,7 +1866,7 @@ async fn a_record_a_shipped_binary_wrote_still_drives_the_fleet_latch() {
     install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xCD; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
-        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
         .expect("store namespace identity");
     let peer_account =
         calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
@@ -2013,7 +2013,7 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
     install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xCB; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
-        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
         .expect("store namespace identity");
     // Enrolled at the anchor, so the cohort expansion resolves this row back to
     // the key the peer's heartbeats are signed with. A row with no binding
@@ -2133,7 +2133,7 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
     install_application(&node.store, app_v3, app_key, "0.3.0", 3);
     register_context_for(&node.store, &ns, ContextId::from([0xC9; 32]), app_v3);
     NamespaceRepository::new(&node.store)
-        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
         .expect("store namespace identity");
     // Enrolled at the anchor, so the cohort expansion resolves this row back to
     // the key the peer's heartbeats are signed with. A row with no binding
@@ -2258,7 +2258,7 @@ async fn never_migrated_namespace_announces_nothing() {
     install_application(&node.store, app_id_v1(), app_key, "0.1.0", 1);
     register_context_for(&node.store, &ns, ContextId::from([0xCA; 32]), app_id_v1());
     NamespaceRepository::new(&node.store)
-        .store_identity(&ns, &admin_pk, admin_sk.as_bytes(), &[0u8; 32])
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
         .expect("store namespace identity");
     // Enrolled at the anchor, so the cohort expansion resolves this row back to
     // the key the peer's heartbeats are signed with. A row with no binding
