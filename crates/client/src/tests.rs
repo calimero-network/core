@@ -638,9 +638,9 @@ async fn upgrade_group() {
             "data": {
                 "groupId": GID,
                 "status": "pending",
-                "localContextsTotal": null,
-                "localContextsSwapped": null,
-                "localContextsFailed": null
+                "localContextsTotal": 3,
+                "localContextsSwapped": 1,
+                "localContextsFailed": 0
             }
         })))
         .expect(1)
@@ -662,6 +662,11 @@ async fn upgrade_group() {
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
+    // Non-null counters, asserted: these are `Option`, so a fixture of nulls
+    // cannot tell a correct wire name from a drifted one.
+    assert_eq!(resp.data.local_contexts_total, Some(3));
+    assert_eq!(resp.data.local_contexts_swapped, Some(1));
+    assert_eq!(resp.data.local_contexts_failed, Some(0));
 }
 
 #[tokio::test]
@@ -730,9 +735,9 @@ async fn retry_group_upgrade() {
             "data": {
                 "groupId": GID,
                 "status": "pending",
-                "localContextsTotal": null,
-                "localContextsSwapped": null,
-                "localContextsFailed": null
+                "localContextsTotal": 4,
+                "localContextsSwapped": 2,
+                "localContextsFailed": 1
             }
         })))
         .expect(1)
@@ -746,6 +751,9 @@ async fn retry_group_upgrade() {
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
+    assert_eq!(resp.data.local_contexts_total, Some(4));
+    assert_eq!(resp.data.local_contexts_swapped, Some(2));
+    assert_eq!(resp.data.local_contexts_failed, Some(1));
 }
 
 #[tokio::test]

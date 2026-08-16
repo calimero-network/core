@@ -705,12 +705,18 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
         .expect("the single-group path must announce on the receiver too");
     match event.payload {
         GroupMigrationPayload::MigrationStarted {
+            from_version,
             to_version,
             to_state_version,
             local_contexts_total,
-            ..
         } => {
             assert_eq!(to_version, "0.2.0");
+            // The first rung already moved the group's target to this same id,
+            // so the row cannot answer the from side by the rung that announces.
+            assert_eq!(
+                from_version, "unknown",
+                "a from-version that cannot be resolved must say so, not echo the to-version"
+            );
             assert_eq!(
                 to_state_version, 2,
                 "read from the local application row, not the 0 sentinel"
@@ -1156,12 +1162,18 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .expect("the single-group path must announce on the initiator too");
     match event.payload {
         GroupMigrationPayload::MigrationStarted {
+            from_version,
             to_version,
             to_state_version,
             local_contexts_total,
-            ..
         } => {
             assert_eq!(to_version, "0.3.0");
+            // Every rung names the same bundle id, so by the announcing rung the
+            // "from" id IS the target and its row already reads the new version.
+            assert_eq!(
+                from_version, "unknown",
+                "a from-version that cannot be resolved must say so, not echo the to-version"
+            );
             assert_eq!(to_state_version, 3, "the ladder's final target");
             assert_eq!(local_contexts_total, 1);
         }
@@ -1809,6 +1821,190 @@ async fn fleet_completion_stamps_the_record_once() {
         stamp(&node.store),
         Some(stamped_at),
         "the stamp is written once, not refreshed on every recompute"
+    );
+}
+
+/// The rollup answers a COHORT question and never reads the local record, so it
+/// rolls up green while the propagator still holds that record `InProgress` -
+/// the one state the stamp must refuse. Refusing is right; SPENDING the
+/// completion edge on that refusal is not, and leaves the real completion, one
+/// beat later, with no edge left to announce.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn an_in_progress_record_defers_the_completion_edge_rather_than_spending_it() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x7B; 32]);
+    let app_key = [0xB9; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xCF; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The record as the propagator leaves it between its last context swap and
+    // its final status write: real target, counters still in flight.
+    let record = |status| GroupUpgradeValue {
+        from_version: "0.1.0".to_owned(),
+        to_version: "0.2.0".to_owned(),
+        migration: None,
+        initiated_at: 0,
+        initiated_by: admin_pk,
+        status,
+        cascade_hlc: None,
+        cascade_seq: None,
+        to_state_version: 2,
+    };
+    let upgrades = UpgradesRepository::new(&node.store);
+    upgrades
+        .save(
+            &ns,
+            &record(GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            }),
+        )
+        .expect("save the in-flight record");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let facts = MigrationFacts {
+        schema_version: 2,
+        residue_auto: 0,
+        synced_up_to_hlc: 0,
+        authored_remaining: 0,
+        migration_failed: None,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+
+    // Red, then green: a false-to-true edge this process really watched.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                ..facts
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("the first heartbeat must announce the fleet rollup")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the red rollup arms the edge"
+    );
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms + 1_000)
+            .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("the changed heartbeat must announce the fleet rollup")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the green rollup still reports progress"
+    );
+
+    // Correct so far: an unfinished record is neither stamped nor announced.
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "an InProgress record must not announce a completion"
+    );
+    assert_eq!(
+        upgrades.fleet_completed_at(&ns).expect("read stamp"),
+        None,
+        "an InProgress record must not be stamped"
+    );
+
+    // The propagator's final write. The cohort has not moved, so the rollup is
+    // the same green one - and this is the first beat that could announce it.
+    upgrades
+        .save(
+            &ns,
+            &record(GroupUpgradeStatus::Completed {
+                completed_at: Some(1),
+            }),
+        )
+        .expect("complete the record");
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                authored_remaining: 1,
+                ..facts
+            },
+            now_ms + 2_000,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("the changed heartbeat must announce the fleet rollup")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the completed record still reports progress"
+    );
+
+    let stamped_at = match next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the edge the InProgress beat deferred must still announce")
+        .payload
+    {
+        GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at,
+        } => {
+            assert_eq!(to_version, "0.2.0");
+            completed_at
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    };
+    assert_eq!(
+        upgrades.fleet_completed_at(&ns).expect("read stamp"),
+        Some(stamped_at),
+        "the announced timestamp is the one persisted"
     );
 }
 

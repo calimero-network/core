@@ -28,10 +28,13 @@ impl<'a> UpgradesRepository<'a> {
     /// observation about the record as last written, and the next migration is
     /// recorded by overwriting this one (the lazy path writes `Completed`
     /// directly, with no `InProgress` in between).
+    ///
+    /// Cleared FIRST because the pair is not atomic: a stranded unstamped record
+    /// self-heals, a new record beside a surviving stamp never does.
     pub fn save(&self, group_id: &ContextGroupId, upgrade: &GroupUpgradeValue) -> EyreResult<()> {
         let mut handle = self.store.handle();
-        handle.put(&GroupUpgradeKey::new(group_id.to_bytes()), upgrade)?;
         handle.delete(&GroupFleetCompletion::new(group_id.to_bytes()))?;
+        handle.put(&GroupUpgradeKey::new(group_id.to_bytes()), upgrade)?;
         Ok(())
     }
 

@@ -739,9 +739,10 @@ pub(crate) fn on_heartbeat_facts_changed(
 
     if status.rollup.all_migrated {
         let announce = previously == Some(false);
-        // The latch above already consumed the edge. A closed guard is a real
-        // answer and keeps it consumed, but a store fault is not - put the edge
-        // back so the next heartbeat announces instead of stamping silently.
+        // The latch above already consumed the edge. A guard that decided keeps
+        // it consumed; a store fault or a record still mid-write decided
+        // nothing - put the edge back so the next beat announces rather than
+        // stamping silently.
         if !stamp_fleet_completion(datastore, node_client, &ns, status.target_version, announce)
             && announce
         {
@@ -754,7 +755,9 @@ pub(crate) fn on_heartbeat_facts_changed(
 ///
 /// Guarded on a `Completed` record: an `InProgress` one still holds this node's
 /// `validate_upgrade` rule-4 mutex and must never be released from an
-/// observability path. The stamp is also the idempotence latch - once
+/// observability path. That guard DEFERS rather than decides: the rollup never
+/// reads the record, so spending the edge on it strands the real completion.
+/// The stamp is also the idempotence latch - once
 /// `fleet_completed_at` is set, every later heartbeat finds the guard closed and
 /// announces nothing, and that survives a restart.
 ///
@@ -778,8 +781,10 @@ pub(crate) fn on_heartbeat_facts_changed(
 /// root record and so gets no completion stamp, the same asymmetry
 /// `resolve_group_target_version` already carries.
 ///
-/// Returns `false` only when the store denied an answer. Every closed guard
-/// returns `true`: it decided, and the caller's consumed edge stays consumed.
+/// Returns `false` when no decision was reached - the store denied an answer,
+/// or the record has not finished being written - so the caller puts the
+/// completion edge back. A guard that DID decide returns `true` and the
+/// caller's consumed edge stays consumed.
 fn stamp_fleet_completion(
     datastore: &Store,
     node_client: &NodeClient,
@@ -803,7 +808,7 @@ fn stamp_fleet_completion(
         record.status,
         calimero_store::key::GroupUpgradeStatus::Completed { .. }
     ) {
-        return true;
+        return false;
     }
     match repo.fleet_completed_at(ns) {
         Ok(None) => {}

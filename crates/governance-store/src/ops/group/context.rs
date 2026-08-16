@@ -105,7 +105,13 @@ impl<'a> GroupApplyCtx<'a> {
         to_state_version: Option<u32>,
         local_contexts_total: u32,
     ) {
-        let from_version = application_version(self.store, previous_application_id);
+        // Bundle ids are version-stable and every ladder rung names the same one,
+        // so an equal "from" id means the row already holds the NEW version.
+        let from_version = if previous_application_id == target_application_id {
+            "unknown".to_owned()
+        } else {
+            application_version(self.store, previous_application_id)
+        };
         let to_state_version = to_state_version
             .or_else(|| {
                 self.store
