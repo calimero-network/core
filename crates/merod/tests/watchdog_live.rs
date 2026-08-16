@@ -9,15 +9,34 @@ use std::time::{Duration, Instant};
 /// Debug builds start slowly on a loaded CI runner, so these are generous: they
 /// bound a hang, they do not measure latency.
 const STORE_OPEN_TIMEOUT: Duration = Duration::from_secs(90);
-const EXIT_TIMEOUT: Duration = Duration::from_secs(45);
+const EXIT_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Kills the node even when an assertion unwinds.
-struct Node(Child);
+/// Kills the node even when an assertion unwinds, and keeps its log so a timeout
+/// can say what the node was doing rather than only that it was doing something.
+struct Node {
+    child: Child,
+    log: PathBuf,
+}
+
+impl Node {
+    /// Outside the node's home, since a test deletes that. Keyed on the test's own
+    /// tag, not the node name, which several tests share.
+    fn log_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("merod-live-{}-{tag}.log", std::process::id()))
+    }
+
+    fn tail(&self) -> String {
+        let body = std::fs::read_to_string(&self.log).unwrap_or_default();
+        let lines: Vec<&str> = body.lines().rev().take(25).collect();
+        lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+    }
+}
 
 impl Drop for Node {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.log);
     }
 }
 
@@ -64,7 +83,9 @@ fn init(home: &Path, node: &str) {
 
 /// Runs the node and waits until its store is open, so a test that follows is
 /// acting on a node that is actually up.
-fn run(home: &Path, node: &str) -> Node {
+fn run(home: &Path, node: &str, tag: &str) -> Node {
+    let log = Node::log_path(tag);
+    let sink = std::fs::File::create(&log).expect("log file");
     let child = Command::new(env!("CARGO_BIN_EXE_merod"))
         .args([
             "--home".as_ref(),
@@ -73,11 +94,11 @@ fn run(home: &Path, node: &str) -> Node {
             node.as_ref(),
         ])
         .arg("run")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(sink.try_clone().expect("clone log")))
+        .stderr(Stdio::from(sink))
         .spawn()
         .expect("spawn merod run");
-    let node_process = Node(child);
+    let node_process = Node { child, log };
 
     let marker = home.join(node).join("data").join("CURRENT");
     let deadline = Instant::now() + STORE_OPEN_TIMEOUT;
@@ -94,12 +115,15 @@ fn run(home: &Path, node: &str) -> Node {
 fn wait_for_exit(node: &mut Node, what: &str) -> Duration {
     let started = Instant::now();
     while started.elapsed() < EXIT_TIMEOUT {
-        match node.0.try_wait().expect("try_wait") {
+        match node.child.try_wait().expect("try_wait") {
             Some(_) => return started.elapsed(),
             None => std::thread::sleep(Duration::from_millis(100)),
         }
     }
-    panic!("node was still running {EXIT_TIMEOUT:?} after {what}");
+    panic!(
+        "node was still running {EXIT_TIMEOUT:?} after {what}. Its last output:\n{}",
+        node.tail()
+    );
 }
 
 /// `SIGKILL` on the parent runs no code, so the closed pipe is the only thing that
@@ -110,7 +134,9 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
     init(&home, "n1");
 
     let (reader, writer) = std::io::pipe().expect("pipe");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_merod"))
+    let log = Node::log_path("parent");
+    let sink = std::fs::File::create(&log).expect("log file");
+    let child = Command::new(env!("CARGO_BIN_EXE_merod"))
         .args([
             "--home".as_ref(),
             home.as_os_str(),
@@ -119,10 +145,11 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
         ])
         .args(["run", "--exit-on-eof", "0"])
         .stdin(Stdio::from(reader))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(sink.try_clone().expect("clone log")))
+        .stderr(Stdio::from(sink))
         .spawn()
         .expect("spawn merod run");
+    let mut node = Node { child, log };
 
     let marker = home.join("n1").join("data").join("CURRENT");
     let deadline = Instant::now() + STORE_OPEN_TIMEOUT;
@@ -132,13 +159,12 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
     assert!(marker.exists(), "node never opened its store");
     std::thread::sleep(Duration::from_secs(2));
     assert!(
-        child.try_wait().expect("try_wait").is_none(),
+        node.child.try_wait().expect("try_wait").is_none(),
         "node stopped before the pipe closed"
     );
 
     drop(writer);
 
-    let mut node = Node(child);
     let took = wait_for_exit(&mut node, "the pipe closed");
     println!("node exited {took:?} after its parent's pipe closed");
     let _ = std::fs::remove_dir_all(&home);
@@ -150,7 +176,7 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
 fn the_node_stops_when_its_data_directory_is_deleted() {
     let home = scratch("deleted");
     init(&home, "n1");
-    let mut node = run(&home, "n1");
+    let mut node = run(&home, "n1", "deleted");
 
     std::fs::remove_dir_all(&home).expect("delete the home under the node");
 
@@ -163,13 +189,13 @@ fn the_node_stops_when_its_data_directory_is_deleted() {
 fn the_node_keeps_running_while_its_data_directory_is_intact() {
     let home = scratch("intact");
     init(&home, "n1");
-    let mut node = run(&home, "n1");
+    let mut node = run(&home, "n1", "intact");
 
     std::fs::write(home.join("n1").join("data").join("scratch-file"), b"busy").expect("write");
     std::thread::sleep(Duration::from_secs(12));
 
     assert!(
-        node.0.try_wait().expect("try_wait").is_none(),
+        node.child.try_wait().expect("try_wait").is_none(),
         "a node whose directory is untouched must keep running"
     );
     let _ = std::fs::remove_dir_all(&home);
