@@ -3417,38 +3417,81 @@ async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
         "the leaver's membership row must be removed by the leave itself"
     );
 
-    // ...and the forward-secrecy debt is recorded, because the leaver could not have
-    // rotated for themselves.
+    // ...and the forward-secrecy debt is either still owed or already paid, because the
+    // leaver could not have rotated for themselves.
+    //
+    // Deliberately NOT `is_pending == true`. The row is transient by design: the
+    // rotation listener is concurrently racing to discharge it, which is the behaviour
+    // this test exists to prove. Asserting the row is still there asserts that the
+    // listener has NOT run yet — the opposite of what the test wants — and fails
+    // whenever it is quick. Either state is correct here; what must not happen is
+    // neither (a leave that recorded no debt and rotated nothing), which the key
+    // assertion at the end catches.
+    let debt_owed = PendingRotationRepository::new(&node.store)
+        .is_pending(
+            &sub_gid,
+            &calimero_context::test_support::account_for(&leaver_pk),
+        )
+        .expect("is_pending");
+    let already_paid = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .is_some_and(|k| k.key_id != key_before.key_id);
     assert!(
-        PendingRotationRepository::new(&node.store)
-            .is_pending(
-                &sub_gid,
-                &calimero_context::test_support::account_for(&leaver_pk)
-            )
-            .expect("is_pending"),
-        "the leave must record a pending rotation — nothing else will ever prompt one"
+        debt_owed || already_paid,
+        "the leave must record a pending rotation (or the listener must already have \
+         discharged it) — nothing else will ever prompt one"
     );
 
     // Now the part only this test covers: the listener fires on this node (a remaining
     // admin), publishes the rotation, and the pending row is discharged. Nothing here
     // is driven by the test — it is the production listener reacting to the op-event.
+    //
+    // The listener is a process-global singleton and every `boot_test_node` rebinds it
+    // to that node's store, so a concurrently-booting test steals it and this wait times
+    // out with the chain perfectly intact. Capture the generation to tell the two apart
+    // rather than leaving the next reader to re-derive it (as #3434 did).
+    let listener_generation = calimero_context::rotation_listener::generation();
     let store = node.store.clone();
+    let key_before_id = key_before.key_id;
     let cleared = wait_until(|| {
-        // A read error counts as "still pending" so a transient store fault cannot be
-        // mistaken for a successful rotation.
-        !PendingRotationRepository::new(&store)
+        // Wait for the OUTCOME, not the bookkeeping. The two land through different
+        // appliers: the new key rides as a sidecar on the enclosing namespace op and is
+        // stored by the namespace layer, while `GroupKeyRotated`'s own apply only clears
+        // the pending row (it "mutates no governance state" by design). Waiting on the
+        // row alone therefore returns in the window where the debt is discharged but the
+        // key has not landed yet, and the key assertion below fails on a rotation that
+        // was merely still in flight.
+        //
+        // A read error counts as "not yet" so a transient store fault cannot be mistaken
+        // for a successful rotation.
+        let discharged = !PendingRotationRepository::new(&store)
             .is_pending(
                 &sub_gid,
                 &calimero_context::test_support::account_for(&leaver_pk),
             )
-            .unwrap_or(true)
+            .unwrap_or(true);
+        let rekeyed = GroupKeyring::new(&store, sub_gid)
+            .load_current_key_record()
+            .ok()
+            .flatten()
+            .is_some_and(|k| k.key_id != key_before_id);
+        discharged && rekeyed
     })
     .await;
+    let rebound = calimero_context::rotation_listener::generation() != listener_generation;
     assert!(
         cleared,
-        "the rotation listener never discharged the pending rotation — the chain \
-         (op-event → listener → rotate_group_key handler → publisher) is broken, and the \
-         departed member would keep the subgroup key indefinitely"
+        "the rotation listener never discharged the pending rotation. {}",
+        if rebound {
+            "The listener was REBOUND to another store while this test ran (generation \
+             changed), so it was no longer watching this node — the chain is fine. Some \
+             test booted a node without #[serial(boot_test_node)]; add it there."
+        } else {
+            "The listener stayed bound to this node, so the chain (op-event → listener → \
+             rotate_group_key handler → publisher) is genuinely broken, and the departed \
+             member would keep the subgroup key indefinitely."
+        }
     );
 
     // The rotation was real: a fresh key, at a strictly higher epoch, is now current.
