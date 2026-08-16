@@ -265,7 +265,7 @@ pub enum NamespaceError {
     #[error("nesting depth exceeds MAX_NAMESPACE_DEPTH; tree would be unwalkable")]
     DepthExceeded,
 
-    /// No `NamespaceIdentity` row stored for the namespace root.
+    /// No `NamespaceParticipation` row stored for the namespace root.
     #[error("namespace identity not found for {0}")]
     NoNamespaceIdentity(String),
 

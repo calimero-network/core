@@ -6241,7 +6241,7 @@ fn curative_sweep_redrives_stranded_context() {
         .add_member(&ns_gid, &owner_account, GroupMemberRole::Admin)
         .unwrap();
     // This receiver node's namespace identity — makes the namespace a "known"
-    // one for `iter_identities`/`known_namespace_identities`.
+    // one for `participating_namespaces`/`known_namespace_identities`.
     NamespaceRepository::new(&store)
         .store_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .unwrap();
@@ -7493,9 +7493,9 @@ fn a_receiver_that_applied_genesis_can_authorize_the_founder() {
     );
 }
 
-/// `resolve_identity` reads; `get_or_create_identity` writes. Nothing in the
-/// names says so, and the difference is load-bearing: `get_or_create_identity`
-/// notes participation, and `iter_identities` — which the sync layer walks —
+/// `resolve_identity` reads; `participate_in` writes. Nothing in the
+/// names says so, and the difference is load-bearing: `participate_in`
+/// notes participation, and `participating_namespaces` — which the sync layer walks —
 /// enumerates exactly what that writes.
 ///
 /// So a caller that only wants to know "what do I sign with" and reaches for
@@ -7531,13 +7531,13 @@ fn resolving_an_identity_does_not_enlist_the_node_but_get_or_create_does() {
 
     // The write path, for contrast: this is what joining is supposed to use.
     let _ = NamespaceRepository::new(&store)
-        .get_or_create_identity(&ns)
+        .participate_in(&ns)
         .unwrap();
     assert!(
         NamespaceRepository::new(&store)
             .participates_in(&ns)
             .unwrap(),
-        "get_or_create_identity is the enlisting one; if this fails the join paths are broken"
+        "participate_in is the enlisting one; if this fails the join paths are broken"
     );
 
     // And now the read path finds it — same key, no second identity minted.
@@ -7546,7 +7546,7 @@ fn resolving_an_identity_does_not_enlist_the_node_but_get_or_create_does() {
         .unwrap()
         .expect("identity present after get_or_create");
     let again = NamespaceRepository::new(&store)
-        .get_or_create_identity(&ns)
+        .participate_in(&ns)
         .unwrap();
     assert_eq!(
         resolved.0, again.1,

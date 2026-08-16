@@ -222,13 +222,13 @@ async fn set_member_auto_follow_handler_error_paths() {
 // A governance call must never make the node a participant as a side effect.
 //
 // These exist because the reverse shipped and CI stayed green. `delete_context`
-// resolved its signing key through `get_or_create_identity`, which notes
+// resolved its signing key through `participate_in`, which notes
 // participation — so deleting a context whose group this node had never joined
-// wrote a `NamespaceIdentity` row saying it had. Nothing caught it: every gate
+// wrote a `NamespaceParticipation` row saying it had. Nothing caught it: every gate
 // passed, including the feature-gated suite, and it was found by reading the
 // diff.
 //
-// That row is not inert. `iter_identities` enumerates it, and the sync layer
+// That row is not inert. `participating_namespaces` enumerates it, and the sync layer
 // walks that set — so the residue is a node syncing against a namespace it was
 // never in. The assertion is therefore on `participates_in` specifically, not
 // just on the call failing: a handler can return the right error and still have
@@ -293,12 +293,12 @@ async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
 
 /// The regression that shipped in the identity collapse, now reachable.
 ///
-/// `delete_context` resolved its signing key through `get_or_create_identity`,
+/// `delete_context` resolved its signing key through `participate_in`,
 /// which notes participation — so deleting a context whose group this node had
 /// never joined recorded it as a participant. A stale `ContextGroupRef` is
 /// exactly the state that reaches here.
 ///
-/// The row is not inert: `iter_identities` enumerates it and the sync layer
+/// The row is not inert: `participating_namespaces` enumerates it and the sync layer
 /// walks that set, so the residue is a node syncing against a namespace it was
 /// never in. Asserted on `participates_in` and not merely on the error, because
 /// the handler returned the right error while writing the row anyway.

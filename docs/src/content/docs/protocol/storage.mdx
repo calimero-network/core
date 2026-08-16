@@ -77,7 +77,7 @@ All governance record types share one column, distinguished by a 1-byte prefix f
 | `0x26` | MemberCapability | `0x26 ‖ group_id(32) ‖ identity(32)` |
 | `0x30` | GroupOpLog | `0x30 ‖ group_id(32) ‖ sequence(8, big-endian)` |
 | `0x34` | GroupParentRef | `0x34 ‖ child_id(32)` → parent |
-| `0x36` | NamespaceIdentity | `0x36 ‖ namespace_id(32)` → keypair |
+| `0x36` | NamespaceParticipation | `0x36 ‖ namespace_id(32)` → marker (no key material) |
 | `0x38` | NamespaceGovOp | `0x38 ‖ namespace_id(32) ‖ delta_id(32)` |
 | `0x3A` | GroupKeyEntry | `0x3A ‖ group_id(32) ‖ key_id(32)` |
 | `0x3C` | NonceWindow | `0x3C ‖ group_id(32) ‖ signer(32)` |

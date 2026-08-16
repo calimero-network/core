@@ -309,7 +309,7 @@ pub struct JoinGroupResponse {
     pub member_identity: PublicKey,
     /// The principal the joiner's membership row is keyed by.
     ///
-    /// Returned beside the key for the same reason [`NamespaceIdentity`] carries
+    /// Returned beside the key for the same reason [`NamespaceParticipation`] carries
     /// both: the joiner is about to be addressed by account (capabilities, role,
     /// metadata, removal), and the account is a hash of the key that no caller
     /// can compute for itself.
@@ -1225,7 +1225,7 @@ pub struct GetNamespaceIdentityRequest {
 /// only ever learned the key cannot name the member it just looked up. Returning
 /// both from the one call is what closes that gap.
 #[derive(Clone, Copy, Debug)]
-pub struct NamespaceIdentity {
+pub struct NamespaceParticipation {
     /// The namespace the identity belongs to (the resolved root group).
     pub namespace_id: ContextGroupId,
     /// The key this node signs namespace ops with.
@@ -1235,7 +1235,7 @@ pub struct NamespaceIdentity {
 }
 
 impl Message for GetNamespaceIdentityRequest {
-    type Result = eyre::Result<Option<NamespaceIdentity>>;
+    type Result = eyre::Result<Option<NamespaceParticipation>>;
 }
 
 #[derive(Debug)]

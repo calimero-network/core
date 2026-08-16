@@ -570,7 +570,7 @@ impl ContextManager {
         calimero_primitives::identity::PublicKey,
         [u8; 32],
     )> {
-        NamespaceRepository::new(&self.datastore).get_or_create_identity(group_id)
+        NamespaceRepository::new(&self.datastore).participate_in(group_id)
     }
 }
 

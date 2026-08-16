@@ -69,7 +69,7 @@ pub async fn handler(
     }
 
     let (resolved_ns_id, signer_pk, sk_bytes) =
-        match NamespaceRepository::new(&state.store).get_or_create_identity(&namespace_id) {
+        match NamespaceRepository::new(&state.store).participate_in(&namespace_id) {
             Ok(r) => r,
             Err(err) => {
                 error!(?err, "Failed to resolve namespace identity");

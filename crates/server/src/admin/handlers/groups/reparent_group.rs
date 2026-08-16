@@ -52,12 +52,11 @@ pub async fn handler(
             Ok(id) => id,
             Err(err) => return parse_api_error(err).into_response(),
         };
-    let (namespace_id, signer_pk, sk_bytes) = match NamespaceRepository::new(&state.store)
-        .get_or_create_identity(&namespace_anchor_group_id)
-    {
-        Ok(result) => result,
-        Err(err) => return parse_api_error(err).into_response(),
-    };
+    let (namespace_id, signer_pk, sk_bytes) =
+        match NamespaceRepository::new(&state.store).participate_in(&namespace_anchor_group_id) {
+            Ok(result) => result,
+            Err(err) => return parse_api_error(err).into_response(),
+        };
 
     if let Some(requester) = requester {
         if requester != signer_pk {

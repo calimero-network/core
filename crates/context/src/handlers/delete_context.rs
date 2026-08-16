@@ -132,7 +132,7 @@ async fn delete_context(
     if let Some(group_id) =
         calimero_governance_store::get_group_for_context(&datastore, &context_id)?
     {
-        // A NON-creating read. `get_or_create_identity` notes participation as a
+        // A NON-creating read. `participate_in` notes participation as a
         // side effect, so resolving through it would have a *delete* leave behind
         // a row claiming this node takes part in the group — for a context whose
         // group it may never have joined, which is exactly when a stale

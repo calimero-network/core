@@ -296,7 +296,7 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
     // The key this node signs with in that namespace. Its binding — if this node
     // has enrolled — names the real account; otherwise the key writes as its own
     // stand-in, which is the only value a PEER can derive for it.
-    let (_, sign_pk, ..) = NamespaceRepository::new(store).get_or_create_identity(&namespace)?;
+    let (_, sign_pk, ..) = NamespaceRepository::new(store).participate_in(&namespace)?;
     let binding = crate::AccountBindingRepository::new(store)
         .binding_for_sign_pk(&namespace, &sign_pk)?
         .map(|binding| binding.account);
@@ -1889,18 +1889,16 @@ mod tests {
 
         // Both routes in: enrolling under this node's own root, and adopting an
         // account rooted elsewhere. Each provisions an identity for its namespace.
-        let _ = namespaces
-            .get_or_create_identity_bundle(&mine)
-            .expect("provision");
+        let _ = namespaces.participate_in_bundle(&mine).expect("provision");
         let _ = repo.ensure_enrolled(&mine).expect("mint");
         let _ = namespaces
-            .get_or_create_identity_bundle(&paired)
+            .participate_in_bundle(&paired)
             .expect("provision");
         let _ = repo
             .ensure_enrolled_into(&paired, AccountGenesis::new(root(9)))
             .expect("adopt");
 
-        let mut listed = namespaces.iter_identities().expect("scan");
+        let mut listed = namespaces.participating_namespaces().expect("scan");
         listed.sort_unstable();
         let mut want = vec![mine, paired];
         want.sort_unstable();
