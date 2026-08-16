@@ -38,7 +38,7 @@ runs:
         #            as a failing assertion rather than an unsupported one.
         # When this next moves: if the bundled client-py no longer requires
         # upgradePolicy, delete UPGRADE_POLICY_COMPAT (crates/server/primitives).
-        MIN_MEROBOX="0.6.52"
+        MIN_MEROBOX="0.6.55"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
