@@ -10,16 +10,13 @@ use calimero_server_primitives::admin::{
 use tracing::{error, info};
 
 use super::parse_group_id;
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<SetTeeAdmissionPolicyApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -28,11 +25,6 @@ pub async fn handler(
     };
 
     info!(group_id=%group_id_str, "Setting TEE admission policy");
-
-    let requester = match resolve_requester(auth_key, req.requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
 
     let result = state
         .ctx_client
@@ -45,7 +37,6 @@ pub async fn handler(
             allowed_rtmr3: req.allowed_rtmr3,
             allowed_tcb_statuses: req.allowed_tcb_statuses,
             accept_mock: req.accept_mock,
-            requester,
         })
         .await
         .map_err(parse_api_error);

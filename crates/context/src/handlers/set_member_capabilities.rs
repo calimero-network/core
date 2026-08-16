@@ -17,12 +17,11 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
             group_id,
             member,
             capabilities,
-            requester,
         }: SetMemberCapabilitiesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Admin check first — prevents non-admins from probing membership.
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
+        let preflight = match self.governance_preflight(&group_id, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

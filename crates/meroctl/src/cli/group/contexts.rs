@@ -1,5 +1,4 @@
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use clap::{Parser, Subcommand};
 use eyre::Result;
@@ -56,19 +55,11 @@ pub struct DetachContextCommand {
 
     #[clap(name = "CONTEXT_ID", help = "The context ID (base58)")]
     pub context_id: ContextId,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl DetachContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let request = DetachContextFromGroupApiRequest {
-            requester: self.requester,
-        };
+        let request = DetachContextFromGroupApiRequest {};
 
         let client = environment.client()?;
         let response = client

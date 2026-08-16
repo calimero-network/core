@@ -7,7 +7,6 @@ use calimero_context_client::local_governance::AckRouter;
 use calimero_context_client::messages::{DeleteContextRequest, DeleteContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_store::key::Key;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{key, Store};
@@ -24,10 +23,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        DeleteContextRequest {
-            context_id,
-            requester,
-        }: DeleteContextRequest,
+        DeleteContextRequest { context_id }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let context = self.contexts.get(&context_id);
@@ -57,21 +53,18 @@ impl Handler<DeleteContextRequest> for ContextManager {
             };
 
         if let Some(group_id) = group_id_for_context {
-            let requester = match requester {
-                Some(r) => r,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester required to delete a group context"
-                    )))
-                }
+            // The node signs as itself; there is one key and nothing to choose.
+            let (signer, _) = match self.resolve_signer(&group_id) {
+                Ok(pair) => pair,
+                Err(err) => return ActorResponse::reply(Err(err)),
             };
-            let requester_account =
-                match crate::member_account::require(&self.datastore, &group_id, &requester) {
+            let signer_account =
+                match crate::member_account::require(&self.datastore, &group_id, &signer) {
                     Ok(account) => account,
                     Err(err) => return ActorResponse::reply(Err(err)),
                 };
-            if let Err(err) = MembershipRepository::new(&self.datastore)
-                .require_admin(&group_id, &requester_account)
+            if let Err(err) =
+                MembershipRepository::new(&self.datastore).require_admin(&group_id, &signer_account)
             {
                 return ActorResponse::reply(Err(err));
             }
@@ -84,7 +77,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 None => None,
             };
 
-            delete_context(datastore, node_client, ack_router, context_id, requester).await?;
+            delete_context(datastore, node_client, ack_router, context_id).await?;
 
             Ok(DeleteContextResponse { deleted: true })
         };
@@ -102,7 +95,6 @@ async fn delete_context(
     node_client: NodeClient,
     ack_router: Arc<AckRouter>,
     context_id: ContextId,
-    requester: Option<PublicKey>,
 ) -> eyre::Result<()> {
     node_client.unsubscribe(&context_id).await?;
 
@@ -137,7 +129,7 @@ async fn delete_context(
         // a row claiming this node takes part in the group — for a context whose
         // group it may never have joined, which is exactly when a stale
         // registration reaches here.
-        let Some((node_pk, sk)) =
+        let Some((_node_pk, sk)) =
             NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
         else {
             eyre::bail!(
@@ -145,13 +137,6 @@ async fn delete_context(
                  the detach op"
             );
         };
-        // The node signs as itself. `requester`, when supplied, can only name
-        // this node's own key — it has exactly one.
-        if let Some(pk) = requester {
-            if pk != node_pk {
-                eyre::bail!("cannot act as {pk}: this node signs as {node_pk}");
-            }
-        }
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,

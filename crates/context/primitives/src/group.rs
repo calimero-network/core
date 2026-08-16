@@ -61,7 +61,6 @@ pub struct CreateGroupResponse {
 #[derive(Clone, Debug)]
 pub struct DeleteGroupRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteGroupRequest {
@@ -84,7 +83,6 @@ pub struct DeleteGroupResponse {
 #[derive(Clone, Debug)]
 pub struct DeleteNamespaceRequest {
     pub namespace_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteNamespaceRequest {
@@ -100,7 +98,6 @@ pub struct DeleteNamespaceResponse {
 pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<(PublicKey, GroupMemberRole)>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for AddGroupMembersRequest {
@@ -111,7 +108,6 @@ impl Message for AddGroupMembersRequest {
 pub struct RemoveGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<AccountId>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for RemoveGroupMembersRequest {
@@ -213,7 +209,6 @@ impl Message for StoreContextMetadataRequest {
 pub struct UpgradeGroupRequest {
     pub group_id: ContextGroupId,
     pub target_application_id: ApplicationId,
-    pub requester: Option<PublicKey>,
     /// When `true`, emit one atomic [`GroupOp::CascadeUpgrade`] fanning out
     /// to every descendant subgroup whose `app_key` matches the signed
     /// group's; when `false` (default), stay on the single-group path.
@@ -230,15 +225,10 @@ impl UpgradeGroupRequest {
     /// historical default. Use the struct literal with `cascade: true`
     /// for the cascade variant.
     #[must_use]
-    pub fn new(
-        group_id: ContextGroupId,
-        target_application_id: ApplicationId,
-        requester: Option<PublicKey>,
-    ) -> Self {
+    pub fn new(group_id: ContextGroupId, target_application_id: ApplicationId) -> Self {
         Self {
             group_id,
             target_application_id,
-            requester,
             cascade: false,
             force_code_only: false,
         }
@@ -267,7 +257,6 @@ impl Message for GetGroupUpgradeStatusRequest {
 #[derive(Debug)]
 pub struct RetryGroupUpgradeRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for RetryGroupUpgradeRequest {
@@ -277,7 +266,6 @@ impl Message for RetryGroupUpgradeRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
     /// Duration in seconds for the invitation validity.
     /// Defaults to 1 year when not provided.
     pub expiration_timestamp: Option<u64>,
@@ -347,7 +335,6 @@ pub struct UpdateMemberRoleRequest {
     pub group_id: ContextGroupId,
     pub identity: AccountId,
     pub new_role: GroupMemberRole,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for UpdateMemberRoleRequest {
@@ -358,7 +345,6 @@ impl Message for UpdateMemberRoleRequest {
 pub struct DetachContextFromGroupRequest {
     pub group_id: ContextGroupId,
     pub context_id: ContextId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DetachContextFromGroupRequest {
@@ -377,7 +363,6 @@ impl Message for GetGroupForContextRequest {
 #[derive(Debug)]
 pub struct SyncGroupRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SyncGroupRequest {
@@ -626,7 +611,6 @@ pub struct SetMemberCapabilitiesRequest {
     pub group_id: ContextGroupId,
     pub member: AccountId,
     pub capabilities: u32,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetMemberCapabilitiesRequest {
@@ -644,7 +628,6 @@ pub struct SetMemberAutoFollowRequest {
     pub target: AccountId,
     pub auto_follow_contexts: bool,
     pub auto_follow_subgroups: bool,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetMemberAutoFollowRequest {
@@ -670,7 +653,6 @@ pub struct GetMemberCapabilitiesResponse {
 pub struct SetDefaultCapabilitiesRequest {
     pub group_id: ContextGroupId,
     pub default_capabilities: u32,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetDefaultCapabilitiesRequest {
@@ -687,7 +669,6 @@ pub struct SetTeeAdmissionPolicyRequest {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetTeeAdmissionPolicyRequest {
@@ -1038,7 +1019,6 @@ impl Message for RotateGroupKeyRequest {
 pub struct SetSubgroupVisibilityRequest {
     pub group_id: ContextGroupId,
     pub subgroup_visibility: calimero_context_config::VisibilityMode,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetSubgroupVisibilityRequest {
@@ -1073,7 +1053,6 @@ pub struct SetMemberMetadataRequest {
     pub member: AccountId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetMemberMetadataRequest {
@@ -1099,7 +1078,6 @@ pub struct SetGroupMetadataRequest {
     pub group_id: ContextGroupId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetGroupMetadataRequest {
@@ -1112,7 +1090,6 @@ pub struct SetContextMetadataRequest {
     pub context_id: ContextId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetContextMetadataRequest {

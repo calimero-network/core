@@ -17,11 +17,10 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
         DetachContextFromGroupRequest {
             group_id,
             context_id,
-            requester,
         }: DetachContextFromGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
+        let preflight = match self.governance_preflight(&group_id, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

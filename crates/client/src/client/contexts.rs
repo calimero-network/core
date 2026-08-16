@@ -1,7 +1,6 @@
 //! Context and identity API operations for the Calimero client.
 
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
@@ -54,16 +53,12 @@ where
         Ok(response)
     }
 
-    pub async fn delete_context(
-        &self,
-        context_id: &ContextId,
-        requester: Option<PublicKey>,
-    ) -> Result<DeleteContextResponse> {
+    pub async fn delete_context(&self, context_id: &ContextId) -> Result<DeleteContextResponse> {
         let response = self
             .connection
             .delete_with_body(
                 &format!("admin-api/contexts/{context_id}"),
-                DeleteContextApiRequest { requester },
+                DeleteContextApiRequest {},
             )
             .await?;
         Ok(response)

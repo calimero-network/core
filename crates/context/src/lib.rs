@@ -577,8 +577,8 @@ impl ContextManager {
 /// Result of the governance preflight check, containing everything needed
 /// to sign and publish a governance op.
 pub struct GovernancePreflight {
-    /// The resolved requester public key.
-    pub requester: calimero_primitives::identity::PublicKey,
+    /// The key this node signs with. There is one, so there is nothing to pick.
+    pub signer: calimero_primitives::identity::PublicKey,
     /// The signing private key (as raw bytes).
     pub signing_key: [u8; 32],
     /// Cloned datastore for use in async blocks.
@@ -610,7 +610,7 @@ impl ContextManager {
     /// Common preflight for governance mutation handlers.
     ///
     /// Resolve the one key this node signs `group_id`'s ops with, refusing a
-    /// group that does not exist and a `requester` that is not this node.
+    /// group that does not exist.
     ///
     /// Order matters. Both the existence check and the identity read fail for a
     /// group that was never there, so whichever runs first decides the error the
@@ -623,14 +623,9 @@ impl ContextManager {
     /// naming a group this node takes no part in would leave a row behind saying
     /// it does.
     ///
-    /// `requester` predates one-key-per-node: it let a caller pick which of
-    /// several member identities to act as, and there is only one now. An
-    /// explicit value that is not this node's key is asking it to sign as
-    /// somebody else, which it cannot do and should not pretend to.
     pub fn resolve_signer(
         &self,
         group_id: &ContextGroupId,
-        requester: Option<calimero_primitives::identity::PublicKey>,
     ) -> eyre::Result<(calimero_primitives::identity::PublicKey, [u8; 32])> {
         if MetaRepository::new(&self.datastore)
             .load(group_id)?
@@ -645,42 +640,34 @@ impl ContextManager {
             )
         })?;
 
-        match requester {
-            Some(pk) if pk != node_pk => eyre::bail!(
-                "cannot act as {pk}: this node signs as {node_pk}. A node has one \
-                 signing identity, so `requester` can only name its own"
-            ),
-            _ => Ok((node_pk, node_sk)),
-        }
+        Ok((node_pk, node_sk))
     }
 
-    /// Resolves the requester identity, loads group metadata, checks admin
+    /// Resolves the signing identity, loads group metadata, checks admin
     /// authorization, resolves or stores the signing key, and returns
     /// everything needed for `sign_apply_and_publish`.
     ///
-    /// Returns `Err` if the group doesn't exist, the requester isn't authorized,
+    /// Returns `Err` if the group doesn't exist, the signer isn't authorized,
     /// or no signing key is available.
     pub fn governance_preflight(
         &self,
         group_id: &ContextGroupId,
-        requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
     ) -> eyre::Result<GovernancePreflight> {
-        let (requester, node_sk) = self.resolve_signer(group_id, requester)?;
+        let (signer, node_sk) = self.resolve_signer(group_id)?;
 
         if require_admin {
             // The caller presents a signing key; admin authority is held by the
             // account it acts as.
-            let requester_account =
-                crate::member_account::require(&self.datastore, group_id, &requester)?;
-            MembershipRepository::new(&self.datastore)
-                .require_admin(group_id, &requester_account)?;
+            let signer_account =
+                crate::member_account::require(&self.datastore, group_id, &signer)?;
+            MembershipRepository::new(&self.datastore).require_admin(group_id, &signer_account)?;
         }
 
         let signing_key = node_sk;
 
         Ok(GovernancePreflight {
-            requester,
+            signer,
             signing_key,
             datastore: self.datastore.clone(),
             node_client: self.node_client.clone(),
@@ -698,11 +685,10 @@ impl ContextManager {
     pub(crate) fn sign_and_publish_group_op(
         &mut self,
         group_id: &calimero_context_config::types::ContextGroupId,
-        requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
         op: calimero_context_client::local_governance::GroupOp,
     ) -> ActorResponse<Self, eyre::Result<()>> {
-        let preflight = match self.governance_preflight(group_id, requester, require_admin) {
+        let preflight = match self.governance_preflight(group_id, require_admin) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

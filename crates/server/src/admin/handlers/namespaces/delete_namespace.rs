@@ -10,17 +10,14 @@ use calimero_server_primitives::admin::{
 use tracing::{error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
-    ValidatedJson(req): ValidatedJson<DeleteNamespaceApiRequest>,
+    ValidatedJson(_req): ValidatedJson<DeleteNamespaceApiRequest>,
 ) -> impl IntoResponse {
     let namespace_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
@@ -29,19 +26,9 @@ pub async fn handler(
 
     info!(namespace_id=%namespace_id_str, "Deleting namespace");
 
-    // Prefer the authenticated identity over the caller-supplied requester to
-    // prevent authorization bypass via a spoofed public key in the request body.
-    let requester = match resolve_requester(auth_key, req.requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
-
     let result = state
         .ctx_client
-        .delete_namespace(DeleteNamespaceRequest {
-            namespace_id,
-            requester,
-        })
+        .delete_namespace(DeleteNamespaceRequest { namespace_id })
         .await
         .map_err(parse_api_error);
 

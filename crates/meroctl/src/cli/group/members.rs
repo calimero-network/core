@@ -115,12 +115,6 @@ pub struct AddMembersCommand {
         help = "Role to assign to the new member"
     )]
     pub role: MemberRoleArg,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl AddMembersCommand {
@@ -130,7 +124,6 @@ impl AddMembersCommand {
                 identity: self.identity,
                 role: self.role.into(),
             }],
-            requester: self.requester,
         };
 
         let client = environment.client()?;
@@ -160,12 +153,6 @@ pub struct RemoveMembersCommand {
     )]
     pub identities: Vec<calimero_account::AccountId>,
 
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
-
     #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
     pub yes: bool,
 }
@@ -186,7 +173,6 @@ impl RemoveMembersCommand {
 
         let request = RemoveGroupMembersApiRequest {
             members: self.identities,
-            requester: self.requester,
         };
 
         let client = environment.client()?;
@@ -216,12 +202,6 @@ pub struct SetRoleCommand {
 
     #[clap(name = "ROLE", value_enum, help = "New role to assign")]
     pub role: MemberRoleArg,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl SetRoleCommand {
@@ -230,7 +210,6 @@ impl SetRoleCommand {
 
         let request = UpdateMemberRoleApiRequest {
             role: self.role.into(),
-            requester: self.requester,
         };
 
         let client = environment.client()?;
@@ -289,12 +268,6 @@ pub struct SetCapabilitiesCommand {
         help = "Allow member to set name/data on the group, its members, or its contexts"
     )]
     pub can_manage_metadata: bool,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl SetCapabilitiesCommand {
@@ -311,10 +284,7 @@ impl SetCapabilitiesCommand {
 
         let identity_hex = hex::encode(self.identity.digest());
 
-        let request = SetMemberCapabilitiesApiRequest {
-            capabilities,
-            requester: self.requester,
-        };
+        let request = SetMemberCapabilitiesApiRequest { capabilities };
 
         let client = environment.client()?;
         let response = client
