@@ -246,11 +246,11 @@ steps:
     node: e2e-node-1
     group_id: '{{subgroup_id}}'
     outputs:
-      group_info: data
+      group_info_id: groupId
 
-  - name: Assert group info returned
+  - name: Assert group info describes the subgroup asked about
     type: assert
     statements:
-      - "is_set({{group_info}})"
+      - "{{group_info_id}} == {{subgroup_id}}"
 
 stop_all_nodes: false
