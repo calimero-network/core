@@ -11,7 +11,6 @@ pub mod admit_tee_node;
 pub mod apply_signed_group_op;
 pub mod apply_signed_namespace_op;
 pub mod broadcast_group_local_state;
-pub mod create_account;
 pub mod create_context;
 pub mod create_group;
 pub mod create_group_invitation;
@@ -189,9 +188,6 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AdmitTeeNode { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::CreateAccount { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::PairDeviceInit { request, outcome } => {
