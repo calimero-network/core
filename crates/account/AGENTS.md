@@ -5,7 +5,7 @@ The two stable ids that let one person hold several devices: `AccountId` (who) a
 ## Package Identity
 
 - **Crate**: `calimero-account`
-- **Entry**: `src/lib.rs` (single file, about half of it tests)
+- **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; the model lives in the modules below)
 - **Key deps**: `borsh` (wire format), `sha2` (content addressing), `thiserror`, `calimero-primitives` (`PublicKey`, with the `borsh` feature)
 
 ## Commands
@@ -59,9 +59,22 @@ This crate splits the identity half in two:
 
 ## Key Files
 
+Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::DeviceCert` works regardless of which module it lives in — the modules are private and exist for readability, not as API surface.
+
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | Everything: ids, credentials, chain walking, verification, and all tests |
+| `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
+| `src/account.rs` | `ACCOUNT_GENESIS_VERSION`, `AccountGenesis`, `AccountMemberEndorsement` + sign/verify |
+| `src/root_key.rs` | `MAX_ROOT_KEY_HANDOFFS`, `RootKeyHandoff`, `sign_root_key_handoff`, `root_key_at_epoch` (the chain walk) |
+| `src/device.rs` | `KemPublicKey`, `DeviceCert`, `VerifiedDeviceCert`, `sign_device_cert`, `verify_device_cert` |
+| `src/revocation.rs` | `DeviceRevocation`, `SignedDeviceRevocation`, `sign_device_revocation`, `verify_device_revocation` |
+| `src/pairing.rs` | Pairing statement (sign/verify/payload) and the confirmation code |
+| `src/domain.rs` | Every signing/content-address domain in one place, plus `borsh_bytes` |
+| `src/error.rs` | `AccountError` |
+| `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
+| `src/tests/<module>.rs` | Tests for the module of the same name, reaching it through `crate::` paths |
+| `src/tests/wire.rs` | Cross-cutting: borsh round-trips for every credential and id |
+| `src/tests/support.rs` | Shared fixtures (`key`, `genesis_for`, `rotated`, `sign_handoff`, `sign_cert`, `pairing_fixture`) |
 
 ## Invariants and Gotchas
 
