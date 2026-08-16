@@ -23,7 +23,7 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 pub mod testing;
 
 /// Last-writer-wins stamp for a slot: `(hlc, generation, op_id)` of the op that

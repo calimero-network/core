@@ -290,30 +290,6 @@ macro_rules! _imports {
                     mut env: wasmer::FunctionEnvMut<'_, fragile::Fragile<*mut ()>>,
                     $($arg: $arg_ty),*
                 ) -> Result<($( $returns )?), wasmer::RuntimeError> {
-                    #[cfg(feature = "host-traces")]
-                    use owo_colors::OwoColorize;
-
-                    #[cfg(feature = "host-traces")]
-                    {
-                        let params: &[String] = &[$(
-                            format!(
-                                "{}: {} = {}",
-                                stringify!($arg).fg_rgb::<253, 151, 31>(),
-                                stringify!($arg_ty).fg_rgb::<102, 217, 239>(),
-                                $arg.fg_rgb::<190, 132, 255>()
-                            )
-                        ),*][..];
-
-                        let decorator = format!(
-                            "{} {}({})",
-                            "fn".fg_rgb::<102, 217, 239>(),
-                            stringify!($func).fg_rgb::<166, 226, 46>(),
-                            params.join(", ")
-                        );
-
-                        println!("{}", decorator);
-                    };
-
                     let res = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
@@ -339,18 +315,6 @@ macro_rules! _imports {
                             location: Location::Unknown,
                         }.into())
                     });
-
-                    #[cfg(feature = "host-traces")]
-                    {
-                        #[allow(unused_mut, unused_assignments)]
-                        let mut return_ty = "()";
-                        $( return_ty = stringify!($returns); )?
-                        println!(
-                            " ⇲ {}(..) -> {} = {res:?}",
-                            stringify!($func).fg_rgb::<166, 226, 46>(),
-                            return_ty.fg_rgb::<102, 217, 239>()
-                        );
-                    }
 
                     res.map_err(|err| wasmer::RuntimeError::user(Box::new(err)))
                 }
