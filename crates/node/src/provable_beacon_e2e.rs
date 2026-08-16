@@ -39,7 +39,6 @@ use crate::readiness::{
     ReadinessState, ReadinessTier,
 };
 use crate::test_node_harness::{boot_test_node, TestNode};
-use serial_test::serial;
 
 const NS: [u8; 32] = [42u8; 32];
 
