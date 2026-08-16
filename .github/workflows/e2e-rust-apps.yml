@@ -394,6 +394,15 @@ jobs:
           - workflow: group-open-self-join-key-delivery
             file: workflows/group-open-self-join-key-delivery.yml
             app: scaffolding-e2e
+          # Answers whether calimero-network/core#3489 is reachable on live nodes:
+          # a namespace owner writing into an Open subgroup ANOTHER member
+          # created. The projection denies that at unit level; enrolment is
+          # implicit on join paths now, so this decides whether the window is
+          # actually open. Written so "closed" and "open" are distinguishable —
+          # the owner's local read and the peer's read are asserted separately.
+          - workflow: namespace-owner-writes-in-a-foreign-open-subgroup
+            file: workflows/namespace-owner-writes-in-a-foreign-open-subgroup.yml
+            app: scaffolding-e2e
           - workflow: group-join-via-inheritance
             file: workflows/group-join-via-inheritance.yml
             app: scaffolding-e2e
