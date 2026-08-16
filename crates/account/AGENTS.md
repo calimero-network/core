@@ -45,13 +45,12 @@ This crate splits the identity half in two:
 | `DeviceId::mint(account, nonce)` | fn | Mint a device id once per installation |
 | `DeviceId::hlc_seed()` | fn | First 16 bytes - the HLC instance seed for this replica |
 | `KemPublicKey` | struct (`[u8; 32]`) | X25519 scope-key delivery recipient; a distinct type from `PublicKey` |
-| `AccountGenesis` | struct | `{version, root_sign_pk, nonce}`; hashing it yields the `AccountId` |
+| `AccountGenesis` | struct | `{version, root_sign_pk}`; hashing it yields the `AccountId`. No per-scope salt — one root key is one account everywhere |
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
 | `RootKeyHandoff` | struct | Rolls the root key from `from_epoch` to `from_epoch + 1`, signed by the outgoing key |
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |
 | `AccountMemberEndorsement` | struct | A granted member key's signed statement that an account is theirs |
 | `sign_account_endorsement` / `verify_account_endorsement` | fn | Mint / check an endorsement; verification says nothing about whether the endorser IS a member |
-| `derive_account_nonce(root_secret, namespace_id)` | fn | Per-namespace genesis nonce from the node's account root |
 | `VerifiedDeviceCert` | struct | A cert whose anchor, chain and signature all checked - **not** a statement that the binding is in force |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
 | `verify_device_cert(claimed, genesis, chain, cert)` | fn | Full credential check against a claimed account |

@@ -18,10 +18,10 @@ use crate::cli::Environment;
 /// running `pair-complete`: if it does not match theirs, the payload was altered
 /// in transit and the device must not be certified.
 ///
-/// The root key and nonce come from that device — `account create` prints both.
-/// Neither is a secret: a genesis is public data, and naming an account you do
-/// not hold gains you nothing, because the device stays inert until the account
-/// root signs its certificate.
+/// The root key comes from that device — `account create` prints it. It is not a
+/// secret: a genesis is public data, and naming an account you do not hold gains
+/// you nothing, because the device stays inert until the account root signs its
+/// certificate.
 ///
 /// Unlike `account create`, this needs no scope key and no membership. That is
 /// the point — a paired device is a device of somebody else's account and a
@@ -38,13 +38,6 @@ pub struct PairInitCommand {
         help = "The account's epoch-0 root key, 64 hex chars"
     )]
     pub root_key: String,
-
-    #[clap(
-        long,
-        value_name = "HEX",
-        help = "The account's genesis nonce, 32 hex chars"
-    )]
-    pub nonce: String,
 }
 
 impl PairInitCommand {
@@ -54,8 +47,7 @@ impl PairInitCommand {
             .pair_device_init(
                 &self.namespace_id,
                 PairDeviceInitApiRequest {
-                    account_root_key: self.root_key,
-                    account_nonce: self.nonce,
+                    account_root_public_key: self.root_key,
                 },
             )
             .await?;

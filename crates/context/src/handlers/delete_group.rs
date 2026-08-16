@@ -29,7 +29,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // arm in execute_group_deleted re-enumerates locally and rejects
         // payload mismatches (deterministic-application check across peers).
         // See spec docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
-        let node_identity = self.node_namespace_identity(&group_id);
+        let node_identity = self.node_signing_key(&group_id);
 
         let requester = match requester {
             Some(pk) => pk,
@@ -48,7 +48,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // namespace, so this always succeeds for valid (non-root) targets.
         let namespace_identity =
             match NamespaceRepository::new(&self.datastore).resolve_identity(&group_id) {
-                Ok(Some((pk, sk, _sender))) => (pk, sk),
+                Ok(Some((pk, sk))) => (pk, sk),
                 Ok(None) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                 "no local namespace identity for group '{group_id:?}': cannot sign cascade delete"

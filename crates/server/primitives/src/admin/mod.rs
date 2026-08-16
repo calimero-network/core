@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use calimero_context_config::types::{Capability, SignedGroupOpenInvitation};
+use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{AccountId, ClientKey, ContextUser, PublicKey};
+use calimero_primitives::identity::{AccountId, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -385,46 +385,6 @@ impl<T> ListAliasesResponse<T> {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextClientKeysResponseData {
-    pub client_keys: Vec<ClientKey>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextClientKeysResponse {
-    pub data: GetContextClientKeysResponseData,
-}
-
-impl GetContextClientKeysResponse {
-    pub const fn new(client_keys: Vec<ClientKey>) -> Self {
-        Self {
-            data: GetContextClientKeysResponseData { client_keys },
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextUsersResponseData {
-    pub context_users: Vec<ContextUser>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextUsersResponse {
-    pub data: GetContextUsersResponseData,
-}
-
-impl GetContextUsersResponse {
-    pub const fn new(context_users: Vec<ContextUser>) -> Self {
-        Self {
-            data: GetContextUsersResponseData { context_users },
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextWithGroup {
@@ -697,92 +657,6 @@ impl NodeChallengeMessage {
             context_id,
             timestamp,
         }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrantPermissionRequest {
-    pub context_id: ContextId,
-    pub granter_id: PublicKey,
-    pub grantee_id: PublicKey,
-    pub capability: Capability,
-}
-
-impl GrantPermissionRequest {
-    pub const fn new(
-        context_id: ContextId,
-        granter_id: PublicKey,
-        grantee_id: PublicKey,
-        capability: Capability,
-    ) -> Self {
-        Self {
-            context_id,
-            granter_id,
-            grantee_id,
-            capability,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrantPermissionResponse {
-    pub data: Empty,
-}
-
-impl Default for GrantPermissionResponse {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GrantPermissionResponse {
-    pub const fn new() -> Self {
-        Self { data: Empty {} }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokePermissionRequest {
-    pub context_id: ContextId,
-    pub revoker_id: PublicKey,
-    pub revokee_id: PublicKey,
-    pub capability: Capability,
-}
-
-impl RevokePermissionRequest {
-    pub const fn new(
-        context_id: ContextId,
-        revoker_id: PublicKey,
-        revokee_id: PublicKey,
-        capability: Capability,
-    ) -> Self {
-        Self {
-            context_id,
-            revoker_id,
-            revokee_id,
-            capability,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokePermissionResponse {
-    pub data: Empty,
-}
-
-impl Default for RevokePermissionResponse {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RevokePermissionResponse {
-    pub const fn new() -> Self {
-        Self { data: Empty {} }
     }
 }
 
@@ -1059,6 +933,17 @@ pub struct FleetJoinResponse {
     pub group_id: String,
     pub namespace_id: String,
     pub public_key: String,
+    /// Hex-encoded `AccountId` this replica speaks for.
+    ///
+    /// `public_key` is its signing key, which is NOT what a member listing
+    /// reports — membership is recorded against the account. Without this a
+    /// caller cannot check that the replica was admitted, because it has no way
+    /// to turn the key it was given into the id the listing uses.
+    ///
+    /// `serde(default)` so a response from a node predating the field still
+    /// decodes here rather than failing outright.
+    #[serde(default)]
+    pub account: String,
     pub admitted: bool,
     /// `true` if the node successfully published `MemberSetAutoFollow` for
     /// itself after admission. `false` means admission succeeded but the
@@ -1324,21 +1209,6 @@ impl Validate for CreateContextRequest {
 impl Validate for UpdateContextApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
         // All fields are typed (ApplicationId, PublicKey) with their own validation
-        Vec::new()
-    }
-}
-
-impl Validate for GrantPermissionRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // Note: This is defined in grant_capabilities.rs handler, not here
-        // But we still validate the admin.rs version if used
-        Vec::new()
-    }
-}
-
-impl Validate for RevokePermissionRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        // All fields are typed which have their own validation
         Vec::new()
     }
 }
@@ -1936,11 +1806,19 @@ pub struct CreateAccountApiResponseData {
     pub device_id: String,
     /// Hex-encoded epoch-0 root key of the account.
     pub account_root_key: String,
-    /// Hex-encoded genesis nonce.
+    /// Always 32 zeros. **Dead field, kept only so an older client can decode
+    /// this response.**
     ///
-    /// Returned because pairing needs it: a second device computes its own id as
-    /// `H(account ‖ nonce)`, so the nonce has to travel for the account to be
-    /// join-able at all.
+    /// The genesis carries no nonce any more, so there is nothing for this to
+    /// report. It cannot simply be dropped: `calimero-client-py` is a Rust
+    /// binding that deserializes into this very struct, compiled into the
+    /// released wheel while the field was required — so a response omitting it
+    /// fails to parse there, which is what merobox reports as "account create
+    /// failed". Note the direction: an unknown field in a REQUEST is ignored
+    /// (nothing here sets `deny_unknown_fields`), but a missing field in a
+    /// RESPONSE is fatal to a typed client.
+    ///
+    /// Removed once a client-py release has stopped requiring it.
     pub account_nonce: String,
 }
 
@@ -1952,11 +1830,9 @@ pub struct CreateAccountApiResponse {
 
 /// Adopt an existing account on this node and mint a device for it.
 ///
-/// Unlike `CreateAccountApiRequest` this one *does* carry caller-supplied
-/// values, because the account being joined is not this node's to derive: the
-/// genesis comes from the device that already holds it, and both halves have to
-/// travel — the id is a hash over the nonce, so it cannot be recovered from the
-/// account id alone.
+/// Unlike `CreateAccountApiRequest` this one *does* carry a caller-supplied
+/// value, because the account being joined is not this node's to derive: the
+/// root key comes from the device that already holds it.
 ///
 /// Nothing here is a credential. A genesis is public data, and naming somebody
 /// else's account gains a caller nothing: the device is inert until its
@@ -1964,38 +1840,35 @@ pub struct CreateAccountApiResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairDeviceInitApiRequest {
-    /// Hex-encoded epoch-0 root key of the account to join (32 bytes).
-    pub account_root_key: String,
-    /// Hex-encoded genesis nonce (16 bytes).
-    pub account_nonce: String,
+    /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
+    ///
+    /// The whole genesis, now that it is `{version, root_sign_pk}` — so this is
+    /// the only thing that has to travel between the two devices.
+    ///
+    /// Named for the half it carries. An ed25519 private and public key are both
+    /// 32 bytes and both hex, so neither the type nor the length distinguishes
+    /// them; the old name (`accountRootKey`) left the reader nothing to go on
+    /// about a field where confusing the two would be catastrophic. The private
+    /// root never crosses this boundary at all — it leaves the node only via
+    /// `merod account export`, as a mnemonic, and the holder signs the paired
+    /// device's certificate locally.
+    #[serde(alias = "accountRootKey")]
+    pub account_root_public_key: String,
 }
 
 impl Validate for PairDeviceInitApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
-        if self.account_root_key.len() != 64 {
+        if self.account_root_public_key.len() != 64 {
             errors.push(ValidationError::InvalidLength {
-                field: "accountRootKey",
+                field: "accountRootPublicKey",
                 expected: 64,
-                actual: self.account_root_key.len(),
+                actual: self.account_root_public_key.len(),
             });
-        } else if hex::decode(&self.account_root_key).is_err() {
+        } else if hex::decode(&self.account_root_public_key).is_err() {
             errors.push(ValidationError::InvalidHexEncoding {
-                field: "accountRootKey",
-                reason: "not valid hex".to_owned(),
-            });
-        }
-
-        if self.account_nonce.len() != 32 {
-            errors.push(ValidationError::InvalidLength {
-                field: "accountNonce",
-                expected: 32,
-                actual: self.account_nonce.len(),
-            });
-        } else if hex::decode(&self.account_nonce).is_err() {
-            errors.push(ValidationError::InvalidHexEncoding {
-                field: "accountNonce",
+                field: "accountRootPublicKey",
                 reason: "not valid hex".to_owned(),
             });
         }
@@ -2007,6 +1880,16 @@ impl Validate for PairDeviceInitApiRequest {
 /// What the pairing device minted, for the account holder to certify.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Every field here is hex, including the two public keys, and that is
+/// deliberate rather than an oversight against the usual `PublicKey` rendering.
+///
+/// This payload is a set of round-trip tokens: a caller copies them verbatim
+/// from `pair-init` to `pair-complete`, which parses them back as hex. Nothing
+/// compares them against a key from anywhere else — the signing key here is the
+/// NEW device's, not one that appears in a member listing — so the convention
+/// that matters is the one inside the payload, and it is uniform. Rendering one
+/// field bs58 to match `PublicKey` elsewhere would make this payload mixed to
+/// make the wider surface consistent, which is the worse trade.
 pub struct PairDeviceInitApiResponseData {
     /// Hex-encoded `AccountId` this device will speak for once linked.
     pub account_id: String,
@@ -2225,10 +2108,43 @@ pub struct RevokeDeviceApiResponseData {
     pub account_id: String,
     /// Hex-encoded `DeviceId` that was withdrawn.
     pub device_id: String,
-    /// Whether the scope key rotated in the same op.
+    /// Whether the scope key rotated in the namespace **named in the request**.
     ///
-    /// `false` means the device stopped writing at once but still holds the key
-    /// it had, so it can read until an admin rotates. Only an admin may rotate.
+    /// `revoked_in` is the full picture; this reports the one namespace the
+    /// caller asked about, which is what it meant before a revocation reached
+    /// more than one.
+    ///
+    /// Kept rather than folded into `revoked_in` because `calimero-client-py` is
+    /// a Rust binding that deserializes into this struct, compiled into the
+    /// released wheel while this field was required — dropping it makes every
+    /// response fail to parse there, which merobox reports only as the useless
+    /// "account revoke failed". The same mistake, with the same symptom, is
+    /// recorded on `CreateAccountApiResponseData::account_nonce`.
+    ///
+    /// Removable once a wheel built against `revoked_in` is released and the
+    /// merobox `account_revoke` step reads it instead of `keyRotated`.
+    pub key_rotated: bool,
+    /// Every namespace the revocation was published into.
+    ///
+    /// A device belongs to an account, not to a scope, so revoking it withdraws
+    /// it from every namespace holding a binding for it — not only the one named
+    /// in the request. Reported per namespace because publication is per-DAG: a
+    /// namespace absent here did not receive the op, and a partially propagated
+    /// revocation is a state the caller has to be able to see.
+    pub revoked_in: Vec<RevocationOutcomeApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevocationOutcomeApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// Whether the scope key rotated in the same op, in THIS namespace.
+    ///
+    /// `false` means the device stopped writing there at once but still holds the
+    /// key it had, so it can read until an admin rotates. Only an admin may
+    /// rotate, and the account holder revoking their own device usually is not
+    /// one, so this is commonly owed.
     pub key_rotated: bool,
 }
 
@@ -2387,59 +2303,7 @@ pub struct JoinGroupApiResponseData {
     pub governance_op: String,
 }
 
-// ---- Claim Group Invitation ----
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimGroupInvitationApiRequest {
-    pub governance_op: String,
-}
-
-impl Validate for ClaimGroupInvitationApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        Vec::new()
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimGroupInvitationApiResponse {
-    pub data: ClaimGroupInvitationApiResponseData,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaimGroupInvitationApiResponseData {
-    pub success: bool,
-}
-
 // ---- List All Groups ----
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ListAllGroupsQuery {
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListAllGroupsApiResponse {
-    pub data: Vec<GroupSummaryApiData>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GroupSummaryApiData {
-    pub group_id: String,
-    pub app_key: String,
-    pub target_application_id: ApplicationId,
-    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
-    #[serde(default)]
-    pub upgrade_policy: String,
-    pub created_at: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
 
 // ---- Update Member Role ----
 
@@ -2493,38 +2357,6 @@ impl Validate for DetachContextFromGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         Vec::new()
     }
-}
-
-// ---- Register Group Signing Key ----
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterGroupSigningKeyApiRequest {
-    pub signing_key: String,
-}
-
-impl Validate for RegisterGroupSigningKeyApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        if self.signing_key.is_empty() {
-            errors.push(ValidationError::EmptyField {
-                field: "signing_key",
-            });
-        }
-        errors
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterGroupSigningKeyApiResponse {
-    pub data: RegisterGroupSigningKeyApiResponseData,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterGroupSigningKeyApiResponseData {
-    pub public_key: PublicKey,
 }
 
 // ---- Sync Group ----
@@ -3262,6 +3094,43 @@ pub struct GetNamespaceApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ListNamespacesApiResponse {
     pub data: Vec<NamespaceApiResponse>,
+}
+
+/// Who this node is, with no namespace involved.
+///
+/// Each field is node-level: one root key is one account everywhere, a node is
+/// one device, and it signs with one key. The namespaced endpoints this replaces
+/// took a namespace and returned the same answer regardless, which read as
+/// though the answer varied by scope.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeIdentityApiResponseData {
+    /// Hex-encoded `AccountId` this node writes as.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId`, or `None` when the node has not enrolled yet.
+    pub device_id: Option<String>,
+    /// The key this node signs ops with, base58.
+    ///
+    /// The device's signing key, not the account root — the root signs
+    /// certificates and handoffs and never an op, so a signature on the wire
+    /// verifies against this one.
+    pub public_key: String,
+    /// Hex-encoded epoch-0 root **public** key of this node's account.
+    ///
+    /// This is what a second device needs to pair into this account, and it is
+    /// public by construction: it is hashed into the `AccountId` and travels in
+    /// every genesis. Not optional, because the route 404s without an account
+    /// root — there is no account to report rather than an empty one.
+    ///
+    /// The private root is not reachable from any HTTP route. It leaves the
+    /// node only via `merod account export`, as a mnemonic.
+    pub account_root_public_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeIdentityApiResponse {
+    pub data: NodeIdentityApiResponseData,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

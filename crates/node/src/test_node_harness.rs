@@ -73,12 +73,27 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
         // `MessageId` is already in scope from the module-level import; only
         // `NetworkMessage` needs bringing in here for the match arms below.
         use calimero_network_primitives::messages::NetworkMessage;
-        // The admission publish path only samples mesh/peer state and
-        // best-effort-publishes. Resolve those `outcome` oneshots with a
-        // benign default so the awaiting client future completes; drop every
-        // other variant (none are reached by the paths under test, and a
-        // dropped receiver simply surfaces `MailboxError::Closed`). `let _ =`
-        // tolerates a caller that already stopped awaiting.
+        use calimero_network_primitives::network_status::{
+            AutonatEntry, NetworkStatusSnapshot, ReachabilityKind,
+        };
+        // EVERY variant is answered, and the match is deliberately exhaustive.
+        //
+        // `NetworkClient` resolves most of these with
+        // `.expect("Mailbox not to be dropped")`, so dropping a sender does not
+        // surface as a tidy `MailboxError` — it PANICS the caller. An unhandled
+        // variant therefore does not make a code path merely untested, it makes
+        // it untestable: the handler dies before reaching its own logic.
+        //
+        // That is not hypothetical. This arm list previously stopped at the
+        // paths one set of tests happened to touch, with a comment asserting
+        // none of the others were reached. `delete_context` calls `unsubscribe`
+        // as its first act, so it could not be driven by any test at all — and a
+        // real bug shipped on that handler, found by review rather than by a
+        // test, because no test could reach it.
+        //
+        // Exhaustive, so adding a `NetworkMessage` variant fails to compile here
+        // instead of quietly re-arming the trap. `let _ =` tolerates a caller
+        // that already stopped awaiting.
         match msg {
             NetworkMessage::MeshPeerCount { outcome, .. } => {
                 let _ = outcome.send(0);
@@ -122,7 +137,54 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
                     .push(request.0);
                 let _ = outcome.send(Err(eyre::eyre!("stub network: no transport")));
             }
-            _ => {}
+            // Echo the topic back, mirroring `Subscribe`. `delete_context` and
+            // the self-purge cascade both unsubscribe before doing anything
+            // else, so this is what makes those handlers reachable at all.
+            NetworkMessage::Unsubscribe { request, outcome } => {
+                let _ = outcome.send(Ok(request.0));
+            }
+            // No transport, so these are no-ops that succeed. Reporting failure
+            // would be a different lie from reporting success, and success keeps
+            // best-effort callers on their normal path rather than their error
+            // path — which is the one the tests here mean to exercise.
+            NetworkMessage::Dial { outcome, .. }
+            | NetworkMessage::ListenOn { outcome, .. }
+            | NetworkMessage::Bootstrap { outcome, .. } => {
+                let _ = outcome.send(Ok(()));
+            }
+            // Nobody is subscribed and no blob is anywhere: an empty answer, not
+            // an error. A caller that treats "no peers" as a failure is exercising
+            // its real degraded path.
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ = outcome.send(Vec::new());
+            }
+            NetworkMessage::QueryBlob { outcome, .. } => {
+                let _ = outcome.send(Ok(Vec::new()));
+            }
+            NetworkMessage::RequestBlob { outcome, .. } => {
+                let _ = outcome.send(Ok(None));
+            }
+            // Best-effort and already drop-tolerant on the client side, but
+            // answered anyway so the exhaustive match stays honest.
+            NetworkMessage::SetPeerScore { outcome, .. } => {
+                let _ = outcome.send(());
+            }
+            // A snapshot of a node with no transport: itself, reachable from
+            // nowhere.
+            NetworkMessage::NetworkStatus { outcome, .. } => {
+                let _ = outcome.send(NetworkStatusSnapshot {
+                    local_peer_id: libp2p::PeerId::random(),
+                    listen_addrs: Vec::new(),
+                    external_addrs: Vec::new(),
+                    relays: Vec::new(),
+                    rendezvous: Vec::new(),
+                    direct_upgrades: Vec::new(),
+                    autonat: AutonatEntry {
+                        reachability: ReachabilityKind::Unknown,
+                        last_test: None,
+                    },
+                });
+            }
         }
     }
 }

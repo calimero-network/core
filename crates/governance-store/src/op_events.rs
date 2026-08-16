@@ -17,7 +17,7 @@
 use calimero_governance_types::NamespaceId;
 use std::sync::OnceLock;
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use tokio::sync::broadcast;
@@ -100,6 +100,18 @@ pub enum OpEvent {
     TeeMemberRemoved {
         group_id: [u8; 32],
         member: AccountId,
+    },
+    /// `GroupOp::AccountDeviceUnlinked` — a device was withdrawn from an account.
+    ///
+    /// Distinct from [`OpEvent::MemberRemoved`] because the account is still a
+    /// member: only one of its devices is gone. A listener acting on this must
+    /// rotate excluding NOBODY by name — the revoked device is already absent from
+    /// the recipient list, and excluding its account would cut off a member who
+    /// never left.
+    DeviceRevoked {
+        group_id: [u8; 32],
+        account: AccountId,
+        device: DeviceId,
     },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including

@@ -1808,7 +1808,7 @@ fn get_root_hash_from_meta(
     db: &DBWithThreadMode<SingleThreaded>,
     context_id: &[u8],
 ) -> Result<[u8; 32]> {
-    use crate::types::{parse_key, parse_value, Column};
+    use crate::types::{parse_value, Column};
 
     let meta_cf = db
         .cf_handle("Meta")
@@ -2610,11 +2610,11 @@ fn decode_state_root_bfs(
         };
 
         // For Counter fields, ensure the value is visible in the data
-        let mut field_data_final = field_data_without_children.clone();
+        let field_data_final = field_data_without_children.clone();
         if let Some(field_obj_data) = field_data_without_children.as_object() {
             if let Some(value) = field_obj_data.get("value") {
                 // If there's a value, ensure it's visible in the data
-                if let Some(field_data_final_obj) = field_data_final.as_object_mut() {
+                if field_data_final.is_object() {
                     // The value is already in field_data_without_children, so it will be in data
                     eprintln!(
                         "[decode_state_root_bfs] Field {} has value in data: {:?}",
@@ -3334,7 +3334,6 @@ fn decode_collection_entries_bfs(
         })]);
     }
 
-    let collection_root_element_id = hex::encode(collection_root_index.id.as_bytes());
     let mut entries = Vec::new();
 
     // Find all children of collection root (entries in the collection)
@@ -3710,8 +3709,6 @@ fn decode_state_field(
                 .map(|children| children.iter().collect::<Vec<_>>())
                 .unwrap_or_default();
 
-            let mut collection_root_id: Option<String> = None;
-
             // Try to match a child to this field by checking if it's a collection root
             for child_info in children {
                 let child_element_id = hex::encode(child_info.id.as_bytes());
@@ -3746,7 +3743,6 @@ fn decode_state_field(
                 // Check if this child is a collection root (EntityIndex with children)
                 if let Ok(child_index) = borsh::from_slice::<EntityIndex>(&child_value) {
                     // This is a collection root node - it matches this collection field
-                    collection_root_id = Some(child_element_id.clone());
                     used_children.insert(child_element_id);
 
                     // Now get all entries in this collection by traversing the collection root's children
@@ -3878,6 +3874,20 @@ fn decode_collection_entry(
         }
         CollectionType::List { items } => decode_list_entry(bytes, field, items, manifest)
             .map_err(|e| eyre::eyre!("Failed to decode list entry: {}", e)),
+        CollectionType::Tuple { elements } => {
+            // Borsh lays a tuple out as its elements back to back with no length
+            // prefix, so arity comes from the schema and the elements decode
+            // positionally.
+            let mut cursor = std::io::Cursor::new(bytes);
+            let mut array = Vec::with_capacity(elements.len());
+            for element in elements {
+                array.push(
+                    deserializer::deserialize_type_ref_from_cursor(&mut cursor, element, manifest)
+                        .map_err(|e| eyre::eyre!("Failed to decode tuple element: {}", e))?,
+                );
+            }
+            Ok(json!(array))
+        }
         CollectionType::Record { .. } => {
             // For RGA, individual entries are (CharKey, RgaChar) tuples, not full RGA structures
             // They should be handled by collect_rga_entries, not decoded individually

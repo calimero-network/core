@@ -10,7 +10,7 @@
 //! crate directly — the `calimero_context::group_store` /
 //! `::governance_broadcast` aliases that eased the extraction are gone.
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -64,7 +64,6 @@ mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
 mod reentry;
-mod signing_keys;
 mod tee;
 pub mod unified_op_decode;
 mod upgrade_ladder;
@@ -91,7 +90,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-pub use self::pending_rotation::PendingRotationRepository;
+pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
 pub use self::governance_signer::GovernanceSigner;
@@ -135,7 +134,6 @@ pub use self::node_device::{
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
-pub use self::signing_keys::SigningKeysRepository;
 
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, tee_admission_record,
@@ -150,7 +148,7 @@ use self::local_state::{append_op_log_entry, set_op_head};
 use self::upgrades::extract_application_id;
 
 /// A resolved member identity: public key plus its two associated 32-byte keys.
-pub type ResolvedIdentity = (PublicKey, [u8; 32], [u8; 32]);
+pub type ResolvedIdentity = (PublicKey, [u8; 32]);
 
 /// The all-zeros sentinel written as the placeholder `admin_identity` /
 /// `owner_identity` by the bootstrap KeyDelivery seed
@@ -200,7 +198,7 @@ pub fn placeholder_admin_identity() -> AccountId {
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceCreatedRejection, NamespaceError, SigningKeysError,
+    NamespaceCreatedRejection, NamespaceError,
 };
 
 // ---------------------------------------------------------------------------
@@ -470,20 +468,6 @@ impl<'a> GroupHandle<'a> {
         sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op)
     }
 
-    // --- Signing keys ---
-    pub fn store_signing_key(&self, pk: &PublicKey, sk: &[u8; 32]) -> EyreResult<()> {
-        SigningKeysRepository::new(self.store).store_key(&self.group_id, pk, sk)
-    }
-    pub fn get_signing_key(&self, pk: &PublicKey) -> EyreResult<Option<[u8; 32]>> {
-        SigningKeysRepository::new(self.store).get_key(&self.group_id, pk)
-    }
-    pub fn delete_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
-        SigningKeysRepository::new(self.store).delete_key(&self.group_id, pk)
-    }
-    pub fn require_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
-        SigningKeysRepository::new(self.store).require_key(&self.group_id, pk)
-    }
-
     // --- Group keys ---
     pub fn store_key(&self, group_key: &[u8; 32]) -> EyreResult<[u8; 32]> {
         GroupKeyring::new(self.store, self.group_id).store_key(group_key)
@@ -641,7 +625,7 @@ impl<'a> GroupHandle<'a> {
     }
     pub fn get_or_create_namespace_identity(
         &self,
-    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32])> {
         NamespaceRepository::new(self.store).get_or_create_identity(&self.group_id)
     }
 
@@ -699,17 +683,11 @@ impl<'a> NamespaceHandle<'a> {
             .identity(&ContextGroupId::from(self.namespace_id.to_bytes()))
     }
 
-    pub fn store_identity(
-        &self,
-        pk: &PublicKey,
-        sk: &[u8; 32],
-        sender: &[u8; 32],
-    ) -> EyreResult<()> {
+    pub fn store_identity(&self, pk: &PublicKey, sk: &[u8; 32]) -> EyreResult<()> {
         NamespaceRepository::new(self.store).store_identity(
             &ContextGroupId::from(self.namespace_id.to_bytes()),
             pk,
             sk,
-            sender,
         )
     }
 
@@ -1601,6 +1579,22 @@ pub async fn sign_apply_and_publish_rotation(
 ) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
         .sign_apply_and_publish_rotation(ack_router, signer_sk, departed)
+        .await
+}
+
+/// Discharge the rotation a device revocation left owed.
+///
+/// `Ok(None)` is a deliberate skip — see [`sign_apply_and_publish`].
+pub async fn sign_apply_and_publish_device_rotation(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    device: &DeviceId,
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_device_rotation(ack_router, signer_sk, device)
         .await
 }
 

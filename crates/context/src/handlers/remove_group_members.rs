@@ -48,7 +48,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        let self_identity = self.node_namespace_identity(&group_id).map(|(pk, _)| pk);
+        let self_identity = self.node_signing_key(&group_id).map(|(pk, _)| pk);
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);

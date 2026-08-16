@@ -37,7 +37,7 @@ pub async fn handler(
     // resolved to one. An identity bound to no account here sees the same as no
     // identity at all: every Restricted child stays hidden.
     let caller = match NamespaceRepository::new(&state.store).resolve_identity(&group_id) {
-        Ok(Some((pk, _, _))) => Some(pk),
+        Ok(Some((pk, _))) => Some(pk),
         Ok(None) => None,
         Err(err) => {
             warn!(

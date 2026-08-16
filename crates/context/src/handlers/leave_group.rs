@@ -65,7 +65,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         }
 
-        let self_identity = match self.node_namespace_identity(&group_id) {
+        let self_identity = match self.node_signing_key(&group_id) {
             Some((pk, sk_bytes)) => (pk, sk_bytes),
             None => {
                 return ActorResponse::reply(Err(eyre::eyre!(

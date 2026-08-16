@@ -49,7 +49,7 @@ impl Handler<CreateAccountRequest> for ContextManager {
         // the offline account root, resolved below — and it is also the key
         // recorded as the device's `sign_pk`, because it is what actually signs
         // ops on the governance path.
-        let Some((self_pk, signer_sk_bytes)) = self.node_namespace_identity(&namespace_id) else {
+        let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&namespace_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node has no namespace identity for {namespace_id:?}; it cannot \
                  enroll a device there"

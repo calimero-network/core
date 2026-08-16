@@ -66,7 +66,7 @@ struct Account {
 impl Account {
     fn new(root_seed: u8) -> Self {
         let root = key(root_seed);
-        let genesis = AccountGenesis::new(root.public_key(), [root_seed; 16]);
+        let genesis = AccountGenesis::new(root.public_key());
         Self {
             id: genesis.account_id(),
             genesis,

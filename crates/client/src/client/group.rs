@@ -5,8 +5,6 @@ use eyre::Result;
 use calimero_server_primitives::admin::AbortMigrationApiResponse;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
-use calimero_server_primitives::admin::ClaimGroupInvitationApiRequest;
-use calimero_server_primitives::admin::ClaimGroupInvitationApiResponse;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DeleteGroupApiResponse;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
@@ -26,8 +24,6 @@ use calimero_server_primitives::admin::LeaveNamespaceApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
 use calimero_server_primitives::admin::ListSubgroupsApiResponse;
-use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
-use calimero_server_primitives::admin::RegisterGroupSigningKeyApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiResponse;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
@@ -176,29 +172,6 @@ where
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/subgroups"))
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn claim_group_invitation(
-        &self,
-        request: ClaimGroupInvitationApiRequest,
-    ) -> Result<ClaimGroupInvitationApiResponse> {
-        let response = self
-            .connection
-            .post("admin-api/groups/claim-invitation", request)
-            .await?;
-        Ok(response)
-    }
-
-    pub async fn register_group_signing_key(
-        &self,
-        group_id: &str,
-        request: RegisterGroupSigningKeyApiRequest,
-    ) -> Result<RegisterGroupSigningKeyApiResponse> {
-        let response = self
-            .connection
-            .post(&format!("admin-api/groups/{group_id}/signing-key"), request)
             .await?;
         Ok(response)
     }

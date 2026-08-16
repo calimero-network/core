@@ -1,4 +1,4 @@
-use calimero_governance_store::{MembershipRepository, SigningKeysRepository};
+use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 use core::error::Error;
 use std::sync::Arc;
 
@@ -132,17 +132,26 @@ async fn delete_context(
     if let Some(group_id) =
         calimero_governance_store::get_group_for_context(&datastore, &context_id)?
     {
-        let requester =
-            requester.ok_or_else(|| eyre::eyre!("requester required to delete a group context"))?;
-
-        let sk = SigningKeysRepository::new(&datastore)
-            .get_key(&group_id, &requester)?
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "signing key not found for requester in group '{group_id:?}'; \
-                     cannot publish local detach op"
-                )
-            })?;
+        // A NON-creating read. `get_or_create_identity` notes participation as a
+        // side effect, so resolving through it would have a *delete* leave behind
+        // a row claiming this node takes part in the group — for a context whose
+        // group it may never have joined, which is exactly when a stale
+        // registration reaches here.
+        let Some((node_pk, sk)) =
+            NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
+        else {
+            eyre::bail!(
+                "this node has no signing identity for {group_id:?}; it cannot publish \
+                 the detach op"
+            );
+        };
+        // The node signs as itself. `requester`, when supplied, can only name
+        // this node's own key — it has exactly one.
+        if let Some(pk) = requester {
+            if pk != node_pk {
+                eyre::bail!("cannot act as {pk}: this node signs as {node_pk}");
+            }
+        }
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,

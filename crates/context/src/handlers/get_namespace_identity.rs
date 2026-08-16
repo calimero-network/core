@@ -20,7 +20,7 @@ impl Handler<GetNamespaceIdentityRequest> for ContextManager {
                 // knows the binding. Reached only once an identity exists, so the
                 // `get_or_create_identity` inside cannot mint one as a side
                 // effect of what is a read.
-                Some((public_key, _sk, _sender)) => {
+                Some((public_key, _sk)) => {
                     let account = account_for_group(&self.datastore, &group_id)?;
                     Ok(Some(NamespaceIdentity {
                         namespace_id: ns_id,

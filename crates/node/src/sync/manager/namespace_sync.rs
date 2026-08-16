@@ -2391,7 +2391,7 @@ mod joiner_credential_tests {
     /// An account root plus a credential certifying `sign_pk` under it.
     fn credential_for(sign_pk: &PublicKey) -> (JoinAccountCredential, AccountGenesis) {
         let root_sk = PrivateKey::random(&mut OsRng);
-        let genesis = AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let genesis = AccountGenesis::new(root_sk.public_key());
         let cert = sign_device_cert(
             &root_sk,
             genesis.account_id(),

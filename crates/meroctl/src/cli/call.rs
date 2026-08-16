@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
     ExecutionRequest, Request, RequestId, RequestPayload, Response, ResponseBody,
     ResponseBodyResult, Version,
@@ -29,8 +28,7 @@ pub const EXAMPLES: &str = r#"
   # Call a view (e.g. get_item, get) on a context
   $ meroctl --node <NODE_ID> call <METHOD_NAME> \
     --context <CONTEXT_ID> \
-    --args '<ARGS_JSON>' \
-    --as <IDENTITY_PUBLIC_KEY>
+    --args '<ARGS_JSON>'
 
   # Open an interactive shell over a single persistent WebSocket and run
   # many calls without re-connecting on each one
@@ -62,14 +60,6 @@ pub struct CallCommand {
     pub id: Option<String>,
 
     #[arg(
-        long = "substitute",
-        help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
-        value_name = "ALIAS",
-        value_delimiter = ','
-    )]
-    pub substitute: Vec<Alias<PublicKey>>,
-
-    #[arg(
         long,
         short,
         help = "Open an interactive shell that keeps one WebSocket open and runs many calls through it"
@@ -99,7 +89,6 @@ impl CallCommand {
                 environment,
                 client,
                 self.context,
-                self.substitute,
                 self.method,
                 self.args,
                 timeout,
@@ -117,7 +106,6 @@ impl CallCommand {
             context_id,
             method,
             self.args.unwrap_or(json!({})),
-            self.substitute,
         ));
 
         let request = Request::new(
@@ -152,7 +140,6 @@ async fn run_shell(
     environment: &Environment,
     client: &Client,
     mut context: Alias<ContextId>,
-    substitute: Vec<Alias<PublicKey>>,
     seed_method: Option<String>,
     seed_args: Option<Value>,
     timeout: Option<Duration>,
@@ -174,16 +161,8 @@ async fn run_shell(
     // start, so a transport failure ends it.
     if let Some(method) = seed_method {
         let args = seed_args.unwrap_or_else(|| json!({}));
-        if let CallOutcome::Closed(err) = run_call(
-            &mut session,
-            timeout,
-            context_id,
-            &substitute,
-            method,
-            args,
-            format,
-        )
-        .await
+        if let CallOutcome::Closed(err) =
+            run_call(&mut session, timeout, context_id, method, args, format).await
         {
             eprintln!("Connection closed: {err}");
             return Ok(());
@@ -259,17 +238,7 @@ async fn run_shell(
             None => json!({}),
         };
 
-        match run_call(
-            &mut session,
-            timeout,
-            context_id,
-            &substitute,
-            method,
-            args,
-            format,
-        )
-        .await
-        {
+        match run_call(&mut session, timeout, context_id, method, args, format).await {
             CallOutcome::Done => {}
             CallOutcome::TimedOut(dur) => eprintln!(
                 "No response within {}s; the call may still be running on the node.",
@@ -304,12 +273,11 @@ async fn run_call(
     session: &mut WsSession,
     timeout: Option<Duration>,
     context_id: ContextId,
-    substitute: &[Alias<PublicKey>],
     method: String,
     args: Value,
     format: Format,
 ) -> CallOutcome {
-    let request = ExecutionRequest::new(context_id, method, args, substitute.to_vec());
+    let request = ExecutionRequest::new(context_id, method, args);
 
     let result = match timeout {
         Some(dur) => match tokio::time::timeout(dur, session.execute(request)).await {

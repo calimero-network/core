@@ -48,7 +48,7 @@ use calimero_account::{
 use calimero_context_client::group::{PairDeviceCompleteRequest, PairDeviceCompleteResponse};
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_crypto::X25519PublicKey;
-use calimero_governance_store::{GroupKeyring, NodeDeviceRepository};
+use calimero_governance_store::{GroupKeyring, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::identity::PrivateKey;
 use tracing::{info, warn};
 
@@ -73,7 +73,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrap. It must be a granted member: the endorsement is what carries the
         // link past the apply gate, and an endorsement from a non-member is
         // refused.
-        let Some((self_pk, signer_sk_bytes)) = self.node_namespace_identity(&namespace_id) else {
+        let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&namespace_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node has no namespace identity for {namespace_id:?}; it cannot \
                  certify a device there"
@@ -85,14 +85,14 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         let device_repo = NodeDeviceRepository::new(&store);
 
         // The account root is what certifies the device, and it is also what
-        // decides *which* account this node can pair into: the genesis is
-        // derived from the root secret and the namespace id, so this node can
-        // only ever certify devices for the account it owns here.
+        // decides *which* account this node can pair into: the genesis is the
+        // content address of this node's root key, so it can only ever certify
+        // devices for the one account that root owns.
         let account_root = match device_repo.ensure_account_root() {
             Ok(root) => root,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let genesis = account_root.genesis_for(&namespace_id);
+        let genesis = account_root.genesis();
         let account = genesis.account_id();
 
         // Check the key material before anything is signed over it. The
@@ -157,7 +157,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // its own root cannot name, so it has no standing to certify a second
         // one — it would mint a certificate for an account it does not hold and
         // the link would be refused downstream.
-        match device_repo.get(&namespace_id) {
+        match device_repo.get() {
             Ok(Some(enrolled)) if enrolled.account == account => {}
             Ok(Some(enrolled)) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
@@ -180,8 +180,12 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // publishing it needs the current key, and the delivery is that same key
         // wrapped for the new device. Checking it here, before anything is
         // signed, beats failing deep inside the publisher.
-        let group_key = match GroupKeyring::new(&store, namespace_id).load_current_key() {
-            Ok(Some((_key_id, group_key))) => group_key,
+        //
+        // Only the namespace the caller named is a precondition. The fan-out below
+        // reaches the others too, but a missing key there is a reason to skip that
+        // namespace rather than to refuse the pairing the caller asked for.
+        match GroupKeyring::new(&store, namespace_id).load_current_key() {
+            Ok(Some(_)) => {}
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "this node holds no current scope key for {namespace_id:?}; pairing both \
@@ -247,74 +251,129 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // Publish the link first. If it fails nothing else should happen
-                // — handing the scope key to a device the group has not been told
-                // about would give it read access with no recorded authority.
-                let report = calimero_governance_store::sign_apply_and_publish(
-                    &store,
-                    &node_client,
-                    &ack_router,
-                    &namespace_id,
-                    &signer_sk,
-                    link,
-                )
-                .await?;
+                // A device belongs to an account, not to a scope, so the link goes
+                // everywhere the account already speaks — not only the namespace
+                // the pairing happened to run in. Both credentials it carries are
+                // account-scoped: the certificate is signed by the account root,
+                // and the endorsement by this node's signing key, which is
+                // node-level. Neither says anything about a namespace.
+                //
+                // What does vary per namespace is the scope key, so each one gets
+                // its own delivery wrapped under the same device KEM key.
+                //
+                // KNOWN ASYMMETRY, not yet closed. This runs on the HOLDER and
+                // publishes into every namespace; the paired device subscribes in
+                // `pair_device_init`, which knows only the namespace the pairing
+                // named. So the device receives the key for that one and is not
+                // listening on the topics the rest travel on.
+                //
+                // Publishing to all of them is still right: the ops are on the
+                // namespace DAGs, so the device picks them up whenever it does
+                // subscribe, and the binding is what makes the later revocation
+                // reach everywhere. What it does not yet get is prompt delivery.
+                // Closing it needs the device to learn its account's namespace
+                // set — it cannot subscribe to a namespace it has not been told
+                // about, and at pair-init time it has been told about one.
+                let namespaces = NamespaceRepository::new(&store).iter_identities()?;
+                let mut linked_in = Vec::new();
+                let mut key_delivered_everywhere = true;
 
-                info!(
-                    namespace_id = ?namespace_id,
-                    %account,
-                    %device,
-                    published = report.is_some(),
-                    "linked a paired device"
-                );
+                for ns in namespaces {
+                    // No key here means this node cannot publish an encrypted group
+                    // op for the namespace, let alone deliver one. Skip rather than
+                    // fail: the namespace the caller asked about is checked above,
+                    // and the others are a bonus this pairing is extending.
+                    let Ok(Some((_key_id, ns_key))) =
+                        GroupKeyring::new(&store, ns).load_current_key()
+                    else {
+                        continue;
+                    };
 
-                // Wrap under the KEM key we were handed rather than re-reading it
-                // from the folded binding, so the delivery does not depend on this
-                // node having already folded the link it just published.
-                let envelope = GroupKeyring::wrap_for_device(
-                    &signer_sk,
-                    device,
-                    &X25519PublicKey::from(*kem_pk.as_bytes()),
-                    &namespace_id.to_bytes(),
-                    &group_key,
-                )?;
+                    let published = calimero_governance_store::sign_apply_and_publish(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        &ns,
+                        &signer_sk,
+                        link.clone(),
+                    )
+                    .await;
 
-                // A cleartext root op, so the keyless recipient can actually read
-                // it. `required_signers` is None because the paired device is not
-                // a member and so is not among the acking set — its receipt shows
-                // up as the device being able to read, not as an ack.
-                let delivery = NamespaceOp::Root(RootOp::KeyDelivery {
-                    group_id: namespace_id.to_bytes().into(),
-                    envelope,
-                });
+                    match published {
+                        Ok(report) => info!(
+                            namespace_id = ?ns,
+                            %account,
+                            %device,
+                            published = report.is_some(),
+                            "linked a paired device"
+                        ),
+                        // One namespace failing must not withhold the device from
+                        // the rest. The caller sees which ones landed.
+                        Err(err) => {
+                            warn!(namespace_id = ?ns, %device, %err,
+                                  "pairing: publishing the link failed here; others continue");
+                            continue;
+                        }
+                    }
 
-                let key_delivered = match calimero_governance_store::sign_and_publish_namespace_op(
-                    &store,
-                    &node_client,
-                    &ack_router,
-                    namespace_id.to_bytes().into(),
-                    &signer_sk,
-                    delivery,
-                    None,
-                )
-                .await
-                {
-                    Ok(_) => true,
-                    Err(err) => {
+                    // Wrap under the KEM key we were handed rather than re-reading
+                    // it from the folded binding, so the delivery does not depend
+                    // on this node having already folded the link it just
+                    // published.
+                    let envelope = GroupKeyring::wrap_for_device(
+                        &signer_sk,
+                        device,
+                        &X25519PublicKey::from(*kem_pk.as_bytes()),
+                        &ns.to_bytes(),
+                        &ns_key,
+                    )?;
+
+                    // A cleartext root op, so the keyless recipient can actually
+                    // read it. `required_signers` is None because the paired device
+                    // is not a member and so is not among the acking set — its
+                    // receipt shows up as the device being able to read, not as an
+                    // ack.
+                    let delivery = NamespaceOp::Root(RootOp::KeyDelivery {
+                        group_id: ns.to_bytes().into(),
+                        envelope,
+                    });
+
+                    if let Err(err) = calimero_governance_store::sign_and_publish_namespace_op(
+                        &store,
+                        &node_client,
+                        &ack_router,
+                        ns.to_bytes().into(),
+                        &signer_sk,
+                        delivery,
+                        None,
+                    )
+                    .await
+                    {
                         // Not fatal: the link already conferred authority, and the
                         // device's own sync pull re-requests the key it lacks. Say
                         // so rather than reporting a flat success, because until
-                        // that pull lands the device cannot read.
+                        // that pull lands the device cannot read there.
                         warn!(
                             ?err,
-                            namespace_id = ?namespace_id,
+                            namespace_id = ?ns,
                             %device,
                             "device linked but the scope-key delivery failed to publish; \
                              the device's sync pull is the durable retry"
                         );
-                        false
+                        key_delivered_everywhere = false;
                     }
-                };
+
+                    linked_in.push(ns);
+                }
+
+                if linked_in.is_empty() {
+                    eyre::bail!(
+                        "the link for {device} reached no namespace, so it is paired \
+                         nowhere and holds no scope key"
+                    );
+                }
+
+                let key_delivered = key_delivered_everywhere;
 
                 Ok(PairDeviceCompleteResponse::new(
                     account,

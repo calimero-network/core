@@ -2,8 +2,8 @@ use calimero_server_primitives::admin::{
     CreateAccountApiRequest, CreateAccountApiResponse, CreateGroupInvitationApiRequest,
     CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
     DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest, JoinGroupApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceAccountApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse, PairDeviceCompleteApiRequest,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
+    NamespaceIdentityApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiRequest,
     PairDeviceCompleteApiResponse, PairDeviceInitApiRequest, PairDeviceInitApiResponse,
     RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
@@ -99,21 +99,19 @@ where
             .await?;
         Ok(response)
     }
-
-    /// Which account this node speaks for in `namespace_id`, and the device it
-    /// holds there.
+    /// Who this node is: the account it writes as, the device it is, and the key
+    /// it signs with.
     ///
-    /// Read-only and always answerable: the account is derived from this node's
-    /// root, so it exists before any device is enrolled. Everything that names an
-    /// account — granting a writer, revoking a device — starts here.
-    pub async fn get_namespace_account(
-        &self,
-        namespace_id: &str,
-    ) -> Result<NamespaceAccountApiResponse> {
-        let response = self
-            .connection
-            .get(&format!("admin-api/namespaces/{namespace_id}/account"))
-            .await?;
+    /// Takes no namespace. Each field is node-level — one root key is one
+    /// account everywhere, a node is one device, and it signs with one key — so
+    /// the namespaced endpoint this replaces returned the same answer whatever
+    /// it was given, which read as though the answer varied by scope.
+    ///
+    /// Read-only and answerable before any device is enrolled: the account is
+    /// derived from this node's root. Everything that names an account —
+    /// granting a writer, revoking a device — starts here.
+    pub async fn get_node_identity(&self) -> Result<NodeIdentityApiResponse> {
+        let response = self.connection.get("admin-api/identity").await?;
         Ok(response)
     }
 

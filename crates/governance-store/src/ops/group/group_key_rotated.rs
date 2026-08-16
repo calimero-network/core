@@ -11,8 +11,8 @@
 //! recorded, so the worklist drains.
 
 use super::context::GroupApplyCtx;
-use crate::PendingRotationRepository;
-use calimero_account::AccountId;
+use crate::{PendingDeviceRotationRepository, PendingRotationRepository};
+use calimero_account::{AccountId, DeviceId};
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, departed: &AccountId) -> EyreResult<()> {
@@ -42,6 +42,40 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, departed: &AccountId) -> EyreRe
         group_id = %hex::encode(group_id.to_bytes()),
         ?departed,
         "group key rotated after member departure; pending rotation discharged"
+    );
+
+    Ok(())
+}
+
+/// `GroupOp::GroupKeyRotatedForDevice` apply — discharge the row a device
+/// revocation recorded.
+///
+/// Same shape as [`apply`], and the same admin gate, differing only in which
+/// worklist it clears. The distinction matters at the sidecar rather than here:
+/// this rotation excludes nobody by name, because the revoked device is already
+/// absent from the recipient list (built from live bindings) while the account it
+/// belonged to is still a member and must keep its other devices.
+pub(crate) fn apply_for_device(ctx: &mut GroupApplyCtx<'_>, device: &DeviceId) -> EyreResult<()> {
+    let signer = ctx.signer();
+    let group_id = ctx.group_id();
+    let store = ctx.store();
+
+    // Only an admin may rotate, mirroring the gate the namespace layer applies to
+    // the sidecar itself. If the two disagreed, a non-admin could clear the row
+    // here while every peer rejected the key meant to discharge it, and the group
+    // would believe it had rotated when it had not.
+    ctx.permissions().require_admin(signer)?;
+
+    // Idempotent, so two admins discharging the same revocation is harmless: the
+    // second finds nothing left to clear, and both keys converge on the keyring's
+    // total order with the revoked device excluded from each.
+    PendingDeviceRotationRepository::new(store).clear(group_id, device)?;
+
+    tracing::info!(
+        target: "calimero::governance::rotation",
+        group_id = %hex::encode(group_id.to_bytes()),
+        %device,
+        "group key rotated after a device revocation; pending rotation discharged"
     );
 
     Ok(())

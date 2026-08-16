@@ -72,7 +72,7 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 ## Identities & keys
 
-**Member identity** — A per-namespace Ed25519 keypair that authors operations and signs each operation's `id`. Membership, roles, and capabilities are all expressed in terms of member public keys; the same node in two namespaces presents two unrelated member keys. See [Identities & Keys](/protocol/identities/).
+**Member identity** — The node's Ed25519 keypair, one per node, that authors operations and signs each operation's `id`. It is also the node's device signing key. Membership, roles and capabilities are expressed in terms of the **account** it writes as. See [Identities & Keys](/protocol/identities/).
 
 **Transport identity** — A node's Ed25519 keypair used only by the network layer; its public key is the node's peer id — the address other nodes dial and the identity the encrypted transport authenticates. It names a box, not authority. See [Identities & Keys](/protocol/identities/).
 

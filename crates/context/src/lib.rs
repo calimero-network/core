@@ -1,8 +1,6 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use calimero_governance_store::{
-    MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -544,14 +542,18 @@ impl ContextManager {
         self
     }
 
-    /// Get this node's identity for the namespace (root group) that contains `group_id`.
-    /// Returns `None` if no identity has been stored for that namespace yet.
-    pub fn node_namespace_identity(
+    /// The key this node signs with, if it takes part in the namespace containing
+    /// `group_id`.
+    ///
+    /// One key, not one per namespace — the group is what decides whether this
+    /// node has any standing there, not which key comes back. `None` means "not
+    /// my namespace", which callers throughout rely on.
+    pub fn node_signing_key(
         &self,
         group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
         match NamespaceRepository::new(&self.datastore).resolve_identity(group_id) {
-            Ok(Some((pk, sk, _sender))) => Some((pk, sk)),
+            Ok(Some((pk, sk))) => Some((pk, sk)),
             Ok(None) => None,
             Err(e) => {
                 tracing::warn!(?group_id, error=?e, "failed to resolve namespace identity");
@@ -568,7 +570,6 @@ impl ContextManager {
     ) -> eyre::Result<(
         ContextGroupId,
         calimero_primitives::identity::PublicKey,
-        [u8; 32],
         [u8; 32],
     )> {
         NamespaceRepository::new(&self.datastore).get_or_create_identity(group_id)
@@ -610,6 +611,51 @@ impl ContextManager {
 
     /// Common preflight for governance mutation handlers.
     ///
+    /// Resolve the one key this node signs `group_id`'s ops with, refusing a
+    /// group that does not exist and a `requester` that is not this node.
+    ///
+    /// Order matters. Both the existence check and the identity read fail for a
+    /// group that was never there, so whichever runs first decides the error the
+    /// caller sees — and "group not found" names the actual problem, where "this
+    /// node has no signing identity there" reads like a provisioning fault.
+    ///
+    /// The identity read is deliberately the non-creating one. `node_signing_key`
+    /// resolves through `resolve_identity`, a pure read; the `get_or_create`
+    /// variant would note participation as a side effect, so a governance call
+    /// naming a group this node takes no part in would leave a row behind saying
+    /// it does.
+    ///
+    /// `requester` predates one-key-per-node: it let a caller pick which of
+    /// several member identities to act as, and there is only one now. An
+    /// explicit value that is not this node's key is asking it to sign as
+    /// somebody else, which it cannot do and should not pretend to.
+    pub fn resolve_signer(
+        &self,
+        group_id: &ContextGroupId,
+        requester: Option<calimero_primitives::identity::PublicKey>,
+    ) -> eyre::Result<(calimero_primitives::identity::PublicKey, [u8; 32])> {
+        if MetaRepository::new(&self.datastore)
+            .load(group_id)?
+            .is_none()
+        {
+            eyre::bail!("group '{group_id:?}' not found");
+        }
+
+        let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
+            eyre::eyre!(
+                "this node has no signing identity for {group_id:?}; it does not take part there"
+            )
+        })?;
+
+        match requester {
+            Some(pk) if pk != node_pk => eyre::bail!(
+                "cannot act as {pk}: this node signs as {node_pk}. A node has one \
+                 signing identity, so `requester` can only name its own"
+            ),
+            _ => Ok((node_pk, node_sk)),
+        }
+    }
+
     /// Resolves the requester identity, loads group metadata, checks admin
     /// authorization, resolves or stores the signing key, and returns
     /// everything needed for `sign_apply_and_publish`.
@@ -622,22 +668,8 @@ impl ContextManager {
         requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
     ) -> eyre::Result<GovernancePreflight> {
-        let requester = match requester {
-            Some(pk) => pk,
-            None => self
-                .node_namespace_identity(group_id)
-                .map(|(pk, _)| pk)
-                .ok_or_else(|| {
-                    eyre::eyre!("requester not provided and node has no configured group identity")
-                })?,
-        };
+        let (requester, node_sk) = self.resolve_signer(group_id, requester)?;
 
-        if MetaRepository::new(&self.datastore)
-            .load(group_id)?
-            .is_none()
-        {
-            eyre::bail!("group '{group_id:?}' not found");
-        }
         if require_admin {
             // The caller presents a signing key; admin authority is held by the
             // account it acts as.
@@ -647,11 +679,7 @@ impl ContextManager {
                 .require_admin(group_id, &requester_account)?;
         }
 
-        let signing_key = SigningKeysRepository::new(&self.datastore)
-            .resolve(group_id, &requester)?
-            .ok_or_else(|| {
-                eyre::eyre!("local group governance requires a signing key for the requester")
-            })?;
+        let signing_key = node_sk;
 
         Ok(GovernancePreflight {
             requester,

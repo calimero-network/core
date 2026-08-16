@@ -124,6 +124,79 @@ pub(super) fn handle_readiness_beacon(
             );
             return;
         }
+        // Last resort before the drop: this node may be the one the beacon
+        // could have rescued.
+        //
+        // A member that joined without ever reaching a mesh peer holds its
+        // membership row but no key and no governance ops. It cannot verify ANY
+        // beacon — `verify_readiness_beacon` requires the signer to be a known
+        // member, and knowing members requires the very governance state it is
+        // missing — so it drops every one and nothing it hears can move it
+        // forward. Meanwhile the beacons themselves are proof of what it needs:
+        // a namespace peer is up, reachable, and talking to us right now.
+        //
+        // Acting on that trusts nothing new. The beacon is still refused — no
+        // membership row, no cache entry, none of its claims are believed. We
+        // use only the fact of its arrival to pick a peer, then pull through
+        // the ordinary authenticated path where every governance op must still
+        // validate on apply. The alternative, relaxing the verification above,
+        // would widen what a stranger can assert about membership; this does
+        // not.
+        //
+        // Deliberately NOT routed through `spawn_beacon_divergence_sync`: its
+        // `local_has_state` guard skips a namespace with no non-zero DAG head,
+        // which is exactly this node, and that guard is load-bearing for more
+        // than its comment describes — relaxing it regressed a batch of
+        // app-migration scenarios. So this arm does its own narrow pull and
+        // leaves the guard alone.
+        let stranded_ns = beacon.namespace_id.to_bytes();
+        let stranded = matches!(
+            calimero_governance_store::namespace_groups_member_but_keyless(
+                &manager.datastore,
+                stranded_ns.into(),
+            ),
+            Ok(ref groups) if !groups.is_empty()
+        );
+        if stranded && beacon_ts_within_drift(beacon.ts_millis, now_millis()) {
+            let allowed = {
+                let mut guard = manager
+                    .ns_stranded_beacon_sync_debounce
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                debounce_allows_sync(&mut guard, stranded_ns, Instant::now())
+            };
+            if allowed {
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
+                    "stranded member: unverifiable beacon signals a reachable peer, pulling from it"
+                );
+                let sync_manager = manager.managers.sync.clone();
+                let _ignored = ctx.spawn(
+                    async move {
+                        let ops = sync_manager
+                            .sync_namespace_from_peer(stranded_ns, Some(peer_id))
+                            .await;
+                        debug!(
+                            %peer_id,
+                            namespace_id = %hex::encode(stranded_ns),
+                            ops,
+                            "stranded-member recovery: pulled governance from beacon signer"
+                        );
+                        sync_manager
+                            .recover_missing_group_keys(stranded_ns, Some(peer_id))
+                            .await;
+                        debug!(
+                            %peer_id,
+                            namespace_id = %hex::encode(stranded_ns),
+                            "stranded-member recovery: key pull complete"
+                        );
+                    }
+                    .into_actor(manager),
+                );
+                return;
+            }
+        }
         debug!(
             namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
             "ReadinessBeacon failed verification; dropping"

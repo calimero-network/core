@@ -1865,7 +1865,6 @@ mod tests {
                 ContextId::from([3u8; 32]),
                 "some_method".to_owned(),
                 json!({}),
-                vec![],
             )),
         };
         write

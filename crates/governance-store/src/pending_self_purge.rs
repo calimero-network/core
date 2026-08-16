@@ -209,11 +209,7 @@ mod tests {
             handle
                 .put(
                     &NamespaceIdentity::new([0x44; 32]),
-                    &NamespaceIdentityValue {
-                        public_key: [0x01; 32],
-                        private_key: [0x02; 32],
-                        sender_key: [0x03; 32],
-                    },
+                    &NamespaceIdentityValue { reserved: 0 },
                 )
                 .unwrap();
             handle

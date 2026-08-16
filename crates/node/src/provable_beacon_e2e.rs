@@ -316,7 +316,6 @@ fn start_readiness_manager(
             &ContextGroupId::from(NS),
             &joiner_sk.public_key(),
             joiner_sk.as_bytes(),
-            &[7u8; 32],
         )
         .expect("store namespace identity");
 
@@ -514,7 +513,7 @@ async fn beacon_carries_no_proof_without_a_queued_join() {
 /// well-formed — readiness and beacon tests assert on op flow, not on accounts.
 fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
-    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root);
     Box::new(
         calimero_context_client::local_governance::JoinAccountCredential {
             cert: calimero_account::DeviceCert {

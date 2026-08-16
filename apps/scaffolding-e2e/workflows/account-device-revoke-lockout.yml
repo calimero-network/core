@@ -201,7 +201,6 @@ steps:
       alice_account: accountId
       laptop_device: deviceId
       root_key: accountRootKey
-      nonce: accountNonce
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -258,7 +257,6 @@ steps:
       - account-revoke-node-3
       - '{{namespace_id}}'
       - '{{root_key}}'
-      - '{{nonce}}'
 
   # The sanctioned exchange, after the two refusals above. One step for both
   # halves because the ordering is forced: node-3 cannot mint its DeviceId
@@ -270,7 +268,10 @@ steps:
     holder: account-revoke-node-2
     namespace_id: '{{namespace_id}}'
     root_key: '{{root_key}}'
-    nonce: '{{nonce}}'
+    # merobox's step still declares `nonce` required, and core ignores whatever
+    # arrives — the genesis carries no nonce. A literal rather than a captured
+    # value, so nothing threads a dead field through the workflow.
+    nonce: '00000000000000000000000000000000'
     outputs:
       paired_account: accountId
       paired_device: deviceId
@@ -330,18 +331,18 @@ steps:
 
   # One identity, two replicas — the whole point of the feature.
   - name: The two devices authored as one account but distinct replicas
-    type: account_show
+    type: get_namespace_identity
     node: account-revoke-node-2
     namespace_id: '{{namespace_id}}'
     outputs:
-      laptop_shown: accountId
+      laptop_shown: account
 
   - name: What the phone speaks for
-    type: account_show
+    type: get_namespace_identity
     node: account-revoke-node-3
     namespace_id: '{{namespace_id}}'
     outputs:
-      phone_shown: accountId
+      phone_shown: account
 
   # The feature in two assertions, now readable in the scenario instead of buried
   # in a shell script comparing temp files. Same account means the second device
@@ -358,20 +359,42 @@ steps:
 
   # ── Phase 5: revoke the paired device ─────────────────────────────
 
-  - name: Admin revokes node-3's device
+  # Revoked by node-2, the ACCOUNT HOLDER, not by node-1 the admin. Revoking a
+  # device is the account's authority: an admin governs who is a member, not
+  # which installations another person runs. An admin who wants Alice out
+  # removes her account, which is strictly stronger. Node-1 attempting this now
+  # gets a refusal naming that distinction.
+  - name: The account holder revokes node-3's device
     type: account_revoke
-    node: account-revoke-node-1
+    node: account-revoke-node-2
     namespace_id: '{{namespace_id}}'
     device_id: '{{paired_device}}'
     outputs:
       key_rotated: keyRotated
 
-  # Asserted, not assumed: a revocation that did not rotate leaves the device
-  # able to keep READING, which is the failure this whole scenario exists for.
-  - name: Revoking rotated the scope key
+  # Reported per namespace now, because a device belongs to an account rather
+  # than to a scope and the revocation follows it everywhere the account speaks.
+  #
+  # Asserted on REACH rather than on the rotation, and the distinction is the
+  # point. Node-2 holds the account but joined as a plain member, so it may not
+  # rotate — peers accept a rotation only from an admin at the cut. The device
+  # therefore stops writing at once and keeps the key it holds until a remaining
+  # admin's rotation listener discharges the pending row, which is asynchronous
+  # and not what this step is timing.
+  # Asserted on `keyRotated` rather than `revokedIn`. `revokedIn` is the field
+  # that carries the per-namespace picture, but `calimero-client-py` is a typed
+  # binding: the released wheel deserializes this response into the struct as it
+  # was compiled, which has no such field, so serde drops it before merobox ever
+  # sees it — and `{{revoked_in}}` then resolves to the literal placeholder,
+  # making any comparison against it pass for the wrong reason. Switch this to
+  # `revokedIn` once a wheel built against it ships (calimero-client-py#89).
+  #
+  # `false` is the load-bearing value: node-2 holds the account but joined as a
+  # plain member, and only an admin may rotate. See the next comment.
+  - name: The revocation did not rotate, because the holder is not an admin
     type: json_assert
     statements:
-      - 'json_equal({{key_rotated}}, true)'
+      - 'json_equal({{key_rotated}}, false)'
 
   - name: Settle after the revocation and its key rotation
     type: wait_for_sync
@@ -379,6 +402,18 @@ steps:
       - account-revoke-node-1
       - account-revoke-node-2
     context_id: '{{context_id}}'
+
+  # NOT asserted, because it does not happen. The rotation this revocation owes
+  # is never discharged by anything: `AccountDeviceUnlinked`'s apply neither
+  # marks a `PendingRotationRepository` row nor emits an `OpEvent`, and the
+  # rotation listener reacts only to `OpEvent::MemberRemoved`, whose pending rows
+  # are written solely by member-left. So a device revoked by a non-admin account
+  # holder keeps the scope key — and therefore READ access — indefinitely.
+  # Tracked as calimero-network/core#3457.
+  #
+  # What this scenario does still prove is the half that works: the device stops
+  # WRITING at once, below. The read half is the gap, tracked separately rather
+  # than asserted here as though it were covered.
 
   # ── Phase 6: the revoked device is out, the survivor is not ───────
 

@@ -45,6 +45,11 @@ impl PredefinedEntry for key::NodeAccountRoot {
     type DataType<'a> = key::NodeAccountRootValue;
 }
 
+impl PredefinedEntry for key::NodeIdentity {
+    type Codec = Borsh;
+    type DataType<'a> = key::NodeIdentityValue;
+}
+
 impl PredefinedEntry for key::NodeDeviceIdentity {
     type Codec = Borsh;
     type DataType<'a> = key::NodeDeviceIdentityValue;
@@ -72,6 +77,11 @@ impl PredefinedEntry for key::GroupPendingKeyRotation {
     type DataType<'a> = ();
 }
 
+impl PredefinedEntry for key::GroupPendingDeviceRotation {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupContextIndex {
     type Codec = Borsh;
     type DataType<'a> = ();
@@ -95,11 +105,6 @@ impl PredefinedEntry for key::GroupFleetCompletion {
 impl PredefinedEntry for key::GroupUpgradeLadder {
     type Codec = Borsh;
     type DataType<'a> = key::UpgradeLadderValue;
-}
-
-impl PredefinedEntry for key::GroupSigningKey {
-    type Codec = Borsh;
-    type DataType<'a> = key::GroupSigningKeyValue;
 }
 
 impl PredefinedEntry for key::GroupMemberCapability {

@@ -1,4 +1,3 @@
-use calimero_governance_store::SigningKeysRepository;
 use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,24 +36,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        // Resolve requester: use provided value or fall back to node group identity
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
-                    )))
-                }
-            },
+        let (requester, node_sk) = match self.resolve_signer(&group_id, requester) {
+            Ok(pair) => pair,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
-
-        // Resolve signing_key from node identity key
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
 
         // Cascade path: emit `GroupOp::CascadeUpgrade` and dispatch one
         // `propagate_upgrade` per descendant subgroup whose current
@@ -69,8 +54,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 group_id,
                 target_application_id,
                 requester,
-                signing_key,
-                node_identity,
+                node_sk,
                 force_code_only,
             );
         }
@@ -81,7 +65,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             &group_id,
             &target_application_id,
             &requester,
-            signing_key.is_some(),
         ) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -100,21 +83,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             .unwrap_or_default()
             .as_secs();
 
-        // Auto-store signing key ONLY when the requester IS the node's own identity
-        if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
-            if requester == node_pk {
-                let _ = SigningKeysRepository::new(&self.datastore)
-                    .store_key(&group_id, &requester, &sk);
-            }
-        }
-
-        // Build contract call if signing_key is available (or from stored key)
-        let effective_signing_key = signing_key.or_else(|| {
-            SigningKeysRepository::new(&self.datastore)
-                .get_key(&group_id, &requester)
-                .ok()
-                .flatten()
-        });
+        let effective_signing_key = node_sk;
         let app_meta_for_contract = match (|| {
             let handle = self.datastore.handle();
             let key = key::ApplicationMeta::new(target_application_id);
@@ -209,9 +178,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     }
                 }
                 {
-                    let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                        eyre::eyre!("local group upgrade requires a signing key for the requester")
-                    })?);
+                    let sk = PrivateKey::from(effective_signing_key);
                     // One op pair per rung, in ladder order: the applies
                     // (local and on every receiver) append the upgrade
                     // ladder behind contexts replay. The migration set is
@@ -916,7 +883,6 @@ fn validate_upgrade(
     group_id: &ContextGroupId,
     target_application_id: &ApplicationId,
     requester: &PublicKey,
-    has_raw_signing_key: bool,
 ) -> eyre::Result<UpgradePreamble> {
     // 1. Group must exist
     let meta = MetaRepository::new(datastore)
@@ -926,11 +892,6 @@ fn validate_upgrade(
     // 2. Requester must be admin
     let requester_account = crate::member_account::require(datastore, group_id, requester)?;
     MembershipRepository::new(datastore).require_admin(group_id, &requester_account)?;
-
-    // 3. Verify node holds the key (skip if raw key was provided)
-    if !has_raw_signing_key {
-        SigningKeysRepository::new(datastore).require_key(group_id, requester)?;
-    }
 
     // 4. No active upgrade in progress
     if let Some(existing) = UpgradesRepository::new(datastore).load(group_id)? {
@@ -1359,8 +1320,7 @@ fn dispatch_cascade(
     group_id: ContextGroupId,
     target_application_id: ApplicationId,
     requester: PublicKey,
-    signing_key: Option<[u8; 32]>,
-    node_identity: Option<(PublicKey, [u8; 32])>,
+    node_sk: [u8; 32],
     force_code_only: bool,
 ) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
     // --- Lightweight cascade validation ---
@@ -1447,45 +1407,7 @@ fn dispatch_cascade(
             .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
     };
 
-    // Auto-store signing key when requester == node identity, mirroring
-    // the single-group path so subsequent cascade ops on the same group
-    // don't need an explicit key.
-    if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
-        if requester == node_pk {
-            if let Err(err) =
-                SigningKeysRepository::new(&actor.datastore).store_key(&group_id, &requester, &sk)
-            {
-                warn!(
-                    target: "calimero::cascade",
-                    ?err,
-                    ?group_id,
-                    "failed to auto-store signing key for cascade — next cascade on this group will require explicit key"
-                );
-            }
-        }
-    }
-
-    // Resolve the signing key once (prefer caller-passed key, fall back
-    // to the stored per-requester key) and validate the result with a
-    // single `ok_or_else`. The prior split — `require_group_signing_key`
-    // only when `signing_key.is_none()`, then `.or(...)` + later
-    // `ok_or_else` inside `publish_task` — could fall through validation
-    // when `signing_key` was `Some` but the stored key was absent,
-    // surfacing as a less clear failure deep in publish.
-    let effective_signing_key = match signing_key {
-        Some(sk) => sk,
-        None => match calimero_governance_store::SigningKeysRepository::new(&actor.datastore)
-            .get_key(&group_id, &requester)
-        {
-            Ok(Some(sk)) => sk,
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "local group upgrade requires a signing key for the requester"
-                )));
-            }
-            Err(err) => return ActorResponse::reply(Err(err)),
-        },
-    };
+    let effective_signing_key = node_sk;
 
     // --- Capture matched descendants BEFORE emitting the cascade op ---
     // After `sign_apply_and_publish` runs, the apply arm rewrites
@@ -2010,10 +1932,10 @@ mod tests {
             )
             .expect("save in-progress record");
 
-        // `has_raw_signing_key = true` skips the signing-key requirement; the
-        // InProgress guard fires before the target-differs / has-contexts checks.
+        // The InProgress guard fires before the target-differs / has-contexts
+        // checks.
         // (`UpgradePreamble` is not `Debug`, so match rather than `expect_err`.)
-        match super::validate_upgrade(&store, &group_id, &target_app, &requester, true) {
+        match super::validate_upgrade(&store, &group_id, &target_app, &requester) {
             Ok(_) => panic!("a pending upgrade must block a second one"),
             Err(err) => assert!(
                 err.to_string().contains("already in progress"),
