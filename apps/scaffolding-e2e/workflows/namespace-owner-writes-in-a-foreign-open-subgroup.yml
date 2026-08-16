@@ -1,0 +1,289 @@
+name: E2E Account - A Namespace Owner Writes In An Open Subgroup Someone Else Created
+
+description: >
+  Pins the live window for calimero-network/core#3489: does a namespace owner
+  with a REAL enrolled account lose writes in an Open subgroup created by
+  another member?
+
+  The projection says it should. `member_at_cut` answers `Some(false)` for a
+  real-account admin with no folded presence in the subgroup, and that verdict
+  is not advisory — it maps to `DeltaAuthOutcome::MembershipReject`, which
+  every receiving peer applies on gossip, on DAG-catchup parent-pull, and in
+  the sync manager. There is no live-resolver fallback behind it; the gossip
+  site calls the projection the "SOLE AUTHORITY".
+
+  What makes the owner have no folded presence is WHO CREATES THE SUBGROUP.
+  Node-2 creates it, so node-2 becomes the folded `group_admin`. Node-1 owns
+  the namespace above it and reaches the subgroup only by inheritance, through
+  the out-of-band root — which is exactly the path that compares the root's
+  `admin_identity` (a real account) against what an unfolded key resolves to.
+
+  This scenario exists to answer a question I could not answer by reading:
+  the unit-level probe proves the projection denies, but enrolment is implicit
+  on every join path now, so a real node may well fold a credential before it
+  ever writes. If it does, the window is closed in practice and #3489 is a
+  latent defect rather than a live one. Either answer is worth having, and the
+  scenario is written so the two are distinguishable rather than both showing
+  up as "failed".
+
+  Reading the result:
+
+    * Node-2 reads back node-1's value  →  the window is CLOSED. Something on
+      node-1's path folds its credential before the write, and #3489 cannot be
+      reached this way. The scenario documents that and stays as a regression
+      guard.
+
+    * Node-2 reads null/empty  →  the window is OPEN. Node-1's delta was
+      rejected by node-2 as not-a-member, and a namespace owner silently loses
+      writes in their own namespace. Node-1's own read still succeeds, because
+      the write applied locally — that asymmetry is the signature.
+
+  The control matters as much as the assertion: node-2 writes and node-1 reads
+  it back. Node-2 IS the folded subgroup admin, so that direction must work. If
+  both directions fail, the scenario is broken rather than the code.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: owner-foreign-sub-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: owner-foreign-sub-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: owner-foreign-sub-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: owner-foreign-sub-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: owner-foreign-sub-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  # ── Node-1 owns the namespace ──────────────────────────────────────
+
+  - name: Node-1 creates the namespace
+    type: create_namespace
+    node: owner-foreign-sub-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: owner-foreign-sub-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      ns_invite: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: owner-foreign-sub-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{ns_invite}}'
+    outputs:
+      node2_account: memberAccount
+
+  - name: Settle the join
+    type: wait_for_sync
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    group_id: '{{namespace_id}}'
+    timeout: 60
+
+  # ── Node-2 creates the Open subgroup — the whole point ─────────────
+  #
+  # Created by node-2, so node-2 is the folded `group_admin` and node-1 has no
+  # folded presence in this subgroup at all. Node-1's access is inherited from
+  # the namespace it owns, which is the path #3489 says is broken for a real
+  # account.
+
+  # Node-2 is a plain member, and creating a subgroup needs
+  # CAN_CREATE_SUBGROUP. `set_member_capabilities` REPLACES the bitmask rather
+  # than adding to it, so the default CAN_JOIN_OPEN_SUBGROUPS is included or it
+  # would be cleared:
+  #    4 = CAN_JOIN_OPEN_SUBGROUPS
+  #   32 = CAN_CREATE_SUBGROUP
+  #   ------------------------------- = 36
+  - name: Node-1 grants node-2 the right to create a subgroup
+    type: set_member_capabilities
+    node: owner-foreign-sub-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{node2_account}}'
+    capabilities: 36
+
+  - name: Settle the capability grant
+    type: wait_for_sync
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    group_id: '{{namespace_id}}'
+    timeout: 60
+
+  - name: Node-2 creates an Open subgroup
+    type: create_group_in_namespace
+    node: owner-foreign-sub-node-2
+    namespace_id: '{{namespace_id}}'
+    group_alias: foreign-open-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Mark the subgroup Open
+    type: set_subgroup_visibility
+    node: owner-foreign-sub-node-2
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  - name: Node-2 creates a context in its subgroup
+    type: create_context
+    node: owner-foreign-sub-node-2
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      ctx_id: contextId
+      node2_key: memberPublicKey
+
+  - name: Settle the subgroup and context ops
+    type: wait_for_sync
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    group_id: '{{namespace_id}}'
+    timeout: 60
+
+  # ── Control: the folded subgroup admin writes ──────────────────────
+  #
+  # Node-2 IS the folded admin here, so this direction must work. If it does
+  # not, the scenario is wrong and the assertion below proves nothing.
+
+  - name: Node-2 writes
+    type: call
+    node: owner-foreign-sub-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "from_subgroup_admin"
+      value: "node2_wrote_this"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Settle node-2's write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    timeout: 60
+
+  - name: Node-2 reads its own write
+    type: call
+    node: owner-foreign-sub-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_subgroup_admin"
+    executor_public_key: '{{node2_key}}'
+    outputs:
+      control_read: result
+
+  - name: Control - the folded subgroup admin's write landed
+    type: json_assert
+    statements:
+      - 'json_equal({{control_read}}, {"output": "node2_wrote_this"})'
+
+  # ── The question: can the NAMESPACE OWNER write here? ──────────────
+  #
+  # Node-1 joins the context first. Whether that join folds a credential for
+  # node-1 in this subgroup is precisely what decides the answer — if it does,
+  # the window is closed and #3489 is unreachable this way.
+
+  - name: Node-1 joins the context in node-2's subgroup
+    type: join_context
+    node: owner-foreign-sub-node-1
+    context_id: '{{ctx_id}}'
+    outputs:
+      node1_key: memberPublicKey
+
+  - name: Settle node-1's context join
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    timeout: 60
+
+  - name: The namespace owner writes into the foreign subgroup
+    type: call
+    node: owner-foreign-sub-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "from_namespace_owner"
+      value: "node1_wrote_this"
+    executor_public_key: '{{node1_key}}'
+
+  - name: Settle the owner's write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    timeout: 60
+
+  # Node-1 reads its OWN write first. This is expected to pass either way —
+  # the write applies locally regardless of what peers do with the delta — and
+  # it is what makes the failure below diagnosable rather than ambiguous.
+  - name: Node-1 reads its own write locally
+    type: call
+    node: owner-foreign-sub-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_namespace_owner"
+    executor_public_key: '{{node1_key}}'
+    outputs:
+      owner_local_read: result
+
+  - name: The owner's write applied locally
+    type: json_assert
+    statements:
+      - 'json_equal({{owner_local_read}}, {"output": "node1_wrote_this"})'
+
+  # THE ASSERTION. If node-2 cannot read it while node-1 can, node-2 rejected
+  # the delta as not-a-member — #3489 reproduced end to end, and a namespace
+  # owner loses writes in their own namespace.
+  - name: Node-2 reads the namespace owner's write
+    type: call
+    node: owner-foreign-sub-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_namespace_owner"
+    executor_public_key: '{{node2_key}}'
+    outputs:
+      owner_read_by_peer: result
+
+  - name: The namespace owner's write reached the peer
+    type: json_assert
+    statements:
+      - 'json_equal({{owner_read_by_peer}}, {"output": "node1_wrote_this"})'
+
+stop_all_nodes: true
