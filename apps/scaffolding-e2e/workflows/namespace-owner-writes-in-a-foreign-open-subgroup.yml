@@ -117,6 +117,28 @@ steps:
   # the namespace it owns, which is the path #3489 says is broken for a real
   # account.
 
+  # Node-2 is a plain member, and creating a subgroup needs
+  # CAN_CREATE_SUBGROUP. `set_member_capabilities` REPLACES the bitmask rather
+  # than adding to it, so the default CAN_JOIN_OPEN_SUBGROUPS is included or it
+  # would be cleared:
+  #    4 = CAN_JOIN_OPEN_SUBGROUPS
+  #   32 = CAN_CREATE_SUBGROUP
+  #   ------------------------------- = 36
+  - name: Node-1 grants node-2 the right to create a subgroup
+    type: set_member_capabilities
+    node: owner-foreign-sub-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{node2_account}}'
+    capabilities: 36
+
+  - name: Settle the capability grant
+    type: wait_for_sync
+    nodes:
+      - owner-foreign-sub-node-1
+      - owner-foreign-sub-node-2
+    group_id: '{{namespace_id}}'
+    timeout: 60
+
   - name: Node-2 creates an Open subgroup
     type: create_group_in_namespace
     node: owner-foreign-sub-node-2
