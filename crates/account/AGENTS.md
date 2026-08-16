@@ -36,6 +36,76 @@ This crate splits the identity half in two:
 
 **This crate decides nothing.** It verifies self-contained credentials only. The at-cut checks that make a credential *authoritative* - has this root key been superseded, has this device been revoked, is the account even a member here - belong to `calimero-projection` and `calimero-authz`, because only those see the causal cut.
 
+## How the pieces interact
+
+**What hashes to what, and who signs what.** Unlabelled arrows derive a value from the one above; labelled edges name the relation. The account root is the only key that certifies devices, and it is deliberately a member nowhere:
+
+```text
+   root_sk  (offline; survives losing every device)
+     │
+     │ names the epoch-0 key
+     ▼
+   AccountGenesis {version, root_sign_pk}
+     │
+     │ H(domain ‖ borsh)                     DeviceId::mint(account, nonce_16)
+     ▼                                                    │
+   AccountId ─────────────────────────────────────────────┴──▶ DeviceId
+     ▲            (the only authz subject)                       │
+     │                                                           └─▶ hlc_seed()  = first 16 bytes
+     │ covers                                                           (CRDT replica id + HLC seed)
+   AccountMemberEndorsement  ◀── signed by a GRANTED MEMBER key, never by the root
+
+   root-key epochs, each handoff signed by the OUTGOING key (an authorization chain, not a list):
+
+   pk_0 ──RootKeyHandoff──▶ pk_1 ──RootKeyHandoff──▶ pk_2 ─── … (capped at MAX_ROOT_KEY_HANDOFFS)
+     └── root_key_at_epoch(genesis, chain, e) walks it as far as `e` and stops ──▶ pk_e
+                                                                                   │ signs
+                                    ┌──────────────────────────────────────────────┤
+                                    ▼                                              ▼
+   DeviceCert {account, device, sign_pk, kem_pk, key_epoch=e, device_epoch}   DeviceRevocation
+                                                                             {account, device, e}
+```
+
+**Linking a device, end to end** - and where this crate stops:
+
+```text
+ new device                                account holder (root_sk offline + a granted member key)
+ ──────────                                ─────────────────────────────────────────────────────
+ mint sign_pk + kem_pk
+ DeviceId::mint(account, nonce)
+ sign_pairing_statement ──────────────────▶ verify_pairing_statement    refuses a PARTIAL key swap
+ shows confirmation code ──human reads───▶  pairing_code_matches         refuses a WHOLESALE swap
+                                                       │ both pass
+                                                       ▼
+                                             sign_device_cert(root_sk, …)
+                                             sign_account_endorsement(member_sk, account)
+                                                       │
+                                                       ▼
+                                            ONE self-contained link op ──gossip──┐
+                                                                                 │
+ every receiver, with no prior state and no ordering dependency:  ◀───────────────┘
+   verify_device_cert(op.author, genesis, chain, cert) → VerifiedDeviceCert
+   verify_account_endorsement(endorsement)
+                          │  internally valid - NOT "in force"
+ ═════════════════════════▼══════════ crate boundary ══════════════════════════════
+ calimero-projection / calimero-authz answer what only the causal cut can:
+   is key_epoch superseded?   is the device revoked?   is the endorser a member here?
+   of two devices sharing an hlc_seed, which is live?  (lower DeviceId, decided on read)
+```
+
+**Module map.** Dependencies run one way, so a change to the anchor cannot be shadowed by a change to a credential:
+
+```text
+   pairing.rs ──▶ device.rs ────┐
+                                ├──▶ root_key.rs ──▶ account.rs ──▶ domain.rs
+   revocation.rs ───────────────┘     (chain walk)    (the anchor)   (every signing domain
+                                                                      + borsh preimages)
+
+   error.rs ◀── every fallible path in all of the above returns AccountError
+```
+
+`pairing.rs` reaches into `device.rs` for `KemPublicKey` alone - it certifies nothing itself. `revocation.rs` does *not* go through `device.rs`: a revocation is verified against the key chain directly, which is why it stays valid under any epoch the chain resolves while a certificate's superseded epochs get filtered on read.
+
 ## Public API
 
 | Item | Kind | Purpose |
