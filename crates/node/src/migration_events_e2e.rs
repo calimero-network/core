@@ -246,6 +246,23 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
         fleet_completed_at,
         "the admin read must surface the stamp the fleet latch wrote"
     );
+    // The announced timestamp IS the stored one. Two actors reach the stamp for
+    // the same namespace, and the store has no compare-and-swap, so a second
+    // writer overwriting the stamp after its peer announced would leave an
+    // operator holding a `completed_at` the admin read no longer agrees with -
+    // silently, because both values are plausible.
+    let announced_at = seen
+        .iter()
+        .find_map(|event| match event.payload {
+            GroupMigrationPayload::MigrationCompleted { completed_at, .. } => Some(completed_at),
+            _ => None,
+        })
+        .expect("the completion must have been announced to assert its timestamp");
+    assert_eq!(
+        Some(announced_at),
+        fleet_completed_at,
+        "the announced completed_at must be the timestamp the fleet latch persisted"
+    );
     assert_eq!(
         count(&tags, "MigrationCompleted"),
         1,
