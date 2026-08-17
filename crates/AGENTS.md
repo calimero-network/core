@@ -158,9 +158,131 @@ sequenceDiagram
   NW-->>ND: peers: NetworkEvent (the receive path, mirrored)
 ```
 
-The receive path runs the same participants in reverse — `network` → `node` →
-`context` → apply → `storage` — with `SyncManager` in `crates/node/src/sync/`
-driving reconciliation when the two sides have diverged.
+### Life of a read
+
+Same entry point — there is no separate query RPC — but the path forks early and
+never reaches the node or network layer at all. A method the app declared
+`#[app::view]` is looked up in the ABI's read-only set, keyed by the executing
+bytecode blob, and any miss falls back to the exclusive write lock.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant CL as client / meroctl
+  participant SV as server
+  participant CC as context-client
+  participant CX as context
+  participant RT as runtime
+  participant ST as storage + store
+  CL->>SV: JSON-RPC execute of a view method
+  SV->>CC: ContextClient::execute
+  CC->>CX: ContextMessage::Execute
+  CX->>CX: read_only_methods lookup, keyed by executing blob
+  Note over CX: a miss falls back to the write lock (fail-safe)
+  CX->>CX: context.lock_read() — shared, reads do not serialise
+  CX->>RT: module.run_with_origin(.., ReadOnlyContextStorage)
+  RT->>ST: storage reads, write host-calls silenced
+  ST-->>RT: CRDT entities
+  RT-->>CX: Outcome {returns, logs, events}
+  CX->>CX: assert no mutation, else discard + warn (ABI mismatch)
+  CX-->>SV: returns
+  SV-->>CL: JSON-RPC result
+```
+
+Three defences stack here, and it is worth knowing all three exist: the shared
+`lock_read()` lets concurrent reads run without serialising; `ReadOnlyContextStorage`
+silences write host-calls at the boundary; and if a mutation nonetheless comes
+back, `context` discards it rather than committing. The absence of the last four
+steps of the write path — sign, persist, broadcast — is the whole difference.
+
+### Receiving a delta
+
+What happens on the other side of that broadcast. Note the shape: authorization
+happens *before* decryption, and a delta that arrives before the governance state
+that authorizes it is buffered rather than dropped.
+
+```mermaid
+flowchart TD
+  NW["network<br/>gossipsub: BroadcastMessage::StateDelta"] --> NE["node<br/>handlers/network_event.rs"]
+  NE --> RO{"sender still a writer?"}
+  NE -. "state-delta mailbox full: drop;<br/>peer heartbeat rebroadcast retries" .-> DROP(["dropped"])
+  RO -->|"no"| REJ(["reject"])
+  RO -->|"yes"| DRAIN["drain the governance-pending buffer"]
+  DRAIN --> AUTH{"authorize_delta_at_edge_projected<br/>at the sender's governance edge"}
+  AUTH -->|"governance state<br/>behind the edge"| BUF["buffer as governance-pending"]
+  AUTH -->|"unauthorized"| REJ
+  AUTH -->|"authorized"| SIG["verify_delta_signature"]
+  SIG --> KEY["look up the group key<br/>waits, within a bounded window"]
+  KEY --> DEC["decrypt_delta_actions<br/>artifact + nonce to actions,<br/>expected root hash, events"]
+  DEC --> DAG{"dag.add_delta_with_events<br/>parents present?"}
+  DAG -->|"no"| PEND["pend in the DAG,<br/>request_missing_deltas"]
+  DAG -->|"yes"| APPLY["ContextStorageApplier::apply"]
+  APPLY --> EXEC["context.execute, method __calimero_sync_next"]
+  EXEC --> STO["storage merge, new root hash"]
+  STO --> EV["event handlers, WebSocket re-emit"]
+  BUF -. "later governance ops<br/>drain the buffer" .-> DRAIN
+
+  classDef net  fill:#e4effb,stroke:#3f7ec0,color:#0d2440
+  classDef ok   fill:#e3f7e6,stroke:#2f8f3e,color:#0f2a14
+  classDef hold fill:#fdf3d9,stroke:#a37b12,color:#3a2a02
+  classDef bad  fill:#fbe6e6,stroke:#b34d4d,color:#3d0f0f
+  class NW,NE net
+  class SIG,KEY,DEC,APPLY,EXEC,STO,EV ok
+  class BUF,PEND hold
+  class REJ,DROP bad
+```
+
+The last hop is the one to internalise: **applying a peer's delta re-enters the
+same execute path as a local write**, with the method name `__calimero_sync_next`.
+That is why `crates/context/src/handlers/execute/mod.rs` branches on `is_state_op`
+throughout — same code, two callers — and why an applied delta does not
+re-broadcast.
+
+### When sync kicks in
+
+Gossip is best-effort, so deltas get dropped, arrive out of order, or miss a peer
+that was offline. `SyncManager` (`crates/node/src/sync/`, a long-lived task rather
+than an actor) is the backstop that reconciles whatever gossip missed.
+
+```mermaid
+flowchart TD
+  T1["periodic sync interval"] --> DISP
+  T2["HashHeartbeat divergence<br/>DAG heads or root hash differ"] --> DISP
+  T3["namespace / open-subgroup join"] --> DISP
+  DISP{"SessionTracker::dispatch_decision<br/>backoff, wedge-watchdog,<br/>at most one sync per context per cycle"}
+  DISP -->|"skip"| SKIP(["skip this cycle"])
+  DISP -->|"dispatch"| SESS["sync session over an encrypted libp2p stream"]
+  SESS --> HS["handshake: exchange root hash + DAG heads"]
+  HS --> SEL{"select_protocol<br/>from the divergence metrics"}
+  SEL -->|"roots match"| DONE(["converged, no-op"])
+  SEL -->|"DeltaSync"| DS["request DAG heads,<br/>pull the missing deltas"]
+  SEL -->|"HashComparison"| HC["Merkle DFS<br/>hash_comparison_protocol.rs"]
+  SEL -->|"LevelWise"| LW["level-wise BFS, for wide trees<br/>level_sync.rs"]
+  SEL -->|"Snapshot"| SN["snapshot transfer<br/>snapshot.rs"]
+  HC -. "on failure" .-> DS
+  LW -. "on failure" .-> DS
+  DS -. "still divergent" .-> SN
+  DS --> AP["entities land through the same apply path"]
+  HC --> AP
+  LW --> AP
+  SN --> AP
+
+  classDef trig fill:#f1fadd,stroke:#6f8f22,color:#26300a
+  classDef prot fill:#ddf5f6,stroke:#2b9aa1,color:#062c2e
+  classDef done fill:#e3f7e6,stroke:#2f8f3e,color:#0f2a14
+  class T1,T2,T3 trig
+  class DS,HC,LW,SN prot
+  class DONE,AP done
+```
+
+The dotted edges are a fallback chain, not alternatives: `HashComparison` and
+`LevelWise` fall back to DAG-heads sync on failure, and that falls back to a full
+snapshot. Snapshot is correct but expensive, so a system that keeps reaching for
+it is telling you something. `BloomFilter` and `SubtreePrefetch` appear in the
+selector but are not implemented — they fall through to snapshot.
+
+Missing *parents* are a separate, cheaper mechanism: the receive path requests
+them directly via `request_missing_deltas` without opening a sync session.
 
 ### The unified causal log
 
