@@ -32,6 +32,10 @@ use tracing::debug;
 /// obtained the key) from turning that into unbounded growth on every
 /// receiving node.
 ///
+/// Reaching the cap **evicts the stalest author rather than refusing the new
+/// one** — see [`AwarenessStore::apply`] for why refusing is the worse of the
+/// two failure modes.
+///
 /// 512 sits far above any plausible real context — presence is a
 /// cursors/typing/online channel for humans in one shared document — while
 /// keeping the worst case a bounded few MiB.
@@ -80,24 +84,45 @@ impl AwarenessStore {
     /// Apply an incoming awareness slice for `author` in `ctx`.
     ///
     /// LWW rule: if an entry with `seq >= incoming_seq` already exists the
-    /// call is a no-op and returns `None`.
+    /// call is a no-op and returns no diffs.
     ///
-    /// On accept the entry is updated. Returns `Some(Diff::Upsert)` **only**
-    /// if the live slice bytes changed; a same-bytes re-apply with a higher
-    /// `seq` updates liveness but returns `None` (no visible diff).
+    /// On accept the entry is updated. Yields a `Diff::Upsert` **only** if the
+    /// live slice bytes changed; a same-bytes re-apply with a higher `seq`
+    /// updates liveness but yields nothing (no visible diff).
     ///
-    /// A *new* author is refused once the context already holds
-    /// [`MAX_AUTHORS_PER_CONTEXT`] of them. An author already present is always
-    /// allowed to update, full map or not — otherwise a flood would freeze
-    /// every real participant's presence at whatever it was when the map
-    /// filled, which is worse than dropping the flood.
+    /// An author already present is always allowed to update, full map or not
+    /// — otherwise a flood would freeze every real participant's presence at
+    /// whatever it was when the map filled.
+    ///
+    /// # Behaviour at the cap
+    ///
+    /// When a *new* author arrives and the context already holds
+    /// [`MAX_AUTHORS_PER_CONTEXT`], the **stalest** entry (largest
+    /// `now_ms - last_seen_ms`) is evicted to make room, and the call returns
+    /// both diffs: `Diff::Remove` for the evicted author, then `Diff::Upsert`
+    /// for the newcomer. The map never exceeds the cap.
+    ///
+    /// Refusing the newcomer instead — the original behaviour — turned a
+    /// bounded-memory win into an availability loss: anyone holding the current
+    /// group key can mint 512 throwaway keypairs and keep them alive with
+    /// heartbeats under the TTL, permanently locking out every legitimate
+    /// member who had not yet published. The lockout never self-heals, because
+    /// the flooder's own heartbeats keep each occupied slot fresh.
+    ///
+    /// Eviction cannot restore correctness under an active flood (the attacker
+    /// still churns the table), but it downgrades a permanent lockout to
+    /// transient churn, and it is free in the honest case: presence is
+    /// TTL-bounded, so the stalest entry is the one closest to being swept
+    /// anyway.
+    ///
+    /// Note that the newcomer is stamped at `now_ms` and is therefore always at
+    /// least as fresh as every incumbent, so an "evict only if the victim is
+    /// staler than the newcomer" refinement would never refuse — it is
+    /// deliberately not implemented.
     ///
     /// The local-echo path (`set_local_ephemeral`) also lands here, so a node
-    /// setting its own presence for the first time into a context whose map is
-    /// full sees no echo. The publish still goes out — only the local echo is
-    /// skipped — and the TTL sweep frees the map within
-    /// [`crate::handlers::ephemeral::PRESENCE_TTL_MS`], so the next heartbeat
-    /// re-applies it.
+    /// setting its own presence into a full context now displaces the stalest
+    /// remote author rather than silently losing its own echo.
     pub fn apply(
         &mut self,
         ctx: ContextId,
@@ -105,37 +130,53 @@ impl AwarenessStore {
         seq: u64,
         slice: Vec<u8>,
         now_ms: u64,
-    ) -> Option<Diff> {
+    ) -> Vec<Diff> {
         let per_ctx = self.inner.entry(ctx).or_default();
 
         if let Some(entry) = per_ctx.get_mut(&author) {
             // Stale or equal seq → no-op.
             if seq <= entry.seq {
-                return None;
+                return vec![];
             }
             let slice_changed = entry.slice != slice;
             entry.seq = seq;
             entry.last_seen_ms = now_ms;
             if slice_changed {
                 entry.slice = slice.clone();
-                return Some(Diff::Upsert { author, slice });
+                return vec![Diff::Upsert { author, slice }];
             }
             // Same bytes, higher seq → liveness updated, no diff.
-            return None;
+            return vec![];
         }
 
         // New entry — the only case the author cap applies to.
+        let mut diffs = Vec::new();
         if per_ctx.len() >= MAX_AUTHORS_PER_CONTEXT {
+            // Evict the stalest incumbent. Tie-break on author bytes so the
+            // choice is deterministic when several share a `last_seen_ms`.
+            let victim = per_ctx
+                .iter()
+                .min_by_key(|(author, entry)| (entry.last_seen_ms, **author))
+                .map(|(author, _)| *author);
+
+            let Some(victim) = victim else {
+                // Only reachable with a cap of 0; nothing to evict, so the
+                // insert cannot proceed without breaching the bound.
+                return vec![];
+            };
+
+            let _ignored = per_ctx.remove(&victim);
             debug!(
                 %ctx,
                 %author,
-                authors = per_ctx.len(),
+                %victim,
                 max = MAX_AUTHORS_PER_CONTEXT,
-                "ephemeral: author cap reached for context — dropping presence from a new author"
+                "ephemeral: author cap reached — evicting the stalest author to admit a new one"
             );
-            return None;
+            diffs.push(Diff::Remove { author: victim });
         }
-        per_ctx.insert(
+
+        let _ignored = per_ctx.insert(
             author,
             Entry {
                 slice: slice.clone(),
@@ -143,7 +184,8 @@ impl AwarenessStore {
                 last_seen_ms: now_ms,
             },
         );
-        Some(Diff::Upsert { author, slice })
+        diffs.push(Diff::Upsert { author, slice });
+        diffs
     }
 
     /// Refresh liveness for `author` in `ctx` without changing the slice.
@@ -274,10 +316,10 @@ mod tests {
         let mut s = AwarenessStore::new();
         assert_eq!(
             s.apply(ctx(), pk(1), 1, vec![1], 1000),
-            Some(Diff::Upsert {
+            vec![Diff::Upsert {
                 author: pk(1),
                 slice: vec![1]
-            })
+            }]
         );
         // now_ms 1000 == the apply timestamp, so age is 0.
         assert_eq!(s.snapshot(ctx(), 1000), vec![(pk(1), vec![1], 0)]);
@@ -287,10 +329,10 @@ mod tests {
     fn lww_ignores_stale_or_equal_seq() {
         let mut s = AwarenessStore::new();
         s.apply(ctx(), pk(1), 5, vec![5], 1000);
-        assert!(s.apply(ctx(), pk(1), 4, vec![4], 1001).is_none()); // stale
-        assert!(s.apply(ctx(), pk(1), 5, vec![9], 1002).is_none()); // equal seq
-                                                                    // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
-                                                                    // 1000, so at now_ms 1500 the entry reads 500ms old.
+        assert!(s.apply(ctx(), pk(1), 4, vec![4], 1001).is_empty()); // stale
+        assert!(s.apply(ctx(), pk(1), 5, vec![9], 1002).is_empty()); // equal seq
+                                                                     // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
+                                                                     // 1000, so at now_ms 1500 the entry reads 500ms old.
         assert_eq!(s.snapshot(ctx(), 1500), vec![(pk(1), vec![5], 500)]);
     }
 
@@ -313,7 +355,7 @@ mod tests {
             "an emptied context must not linger as an empty map"
         );
         // Re-applying must still work — removal is reclamation, not tombstoning.
-        assert!(s.apply(ctx(), pk(1), 2, vec![2], 2001).is_some());
+        assert!(!s.apply(ctx(), pk(1), 2, vec![2], 2001).is_empty());
         assert_eq!(s.contexts().count(), 1);
     }
 
@@ -351,41 +393,113 @@ mod tests {
         assert!(s.sweep(ctx(), 7000, 9000).is_empty()); // touched at 6000 → not expired at 9000
     }
 
-    /// Fill a context to exactly `MAX_AUTHORS_PER_CONTEXT` distinct authors.
-    /// Author keys are derived from the index so they are all distinct.
-    fn fill_to_cap(s: &mut AwarenessStore, now_ms: u64) {
+    /// Fill to the cap with staggered `last_seen_ms`, so exactly one entry is
+    /// unambiguously the stalest. Author `i` is stamped at `base_ms + i`, so
+    /// index 0 is the stalest. Returns the stalest author's key.
+    fn fill_to_cap_staggered(s: &mut AwarenessStore, base_ms: u64) -> PublicKey {
+        let mut stalest = None;
         for i in 0..MAX_AUTHORS_PER_CONTEXT {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
-            // 0xFF marks these as flood authors, keeping them clear of the
-            // single-byte `pk(n)` helper the other tests use.
             bytes[31] = 0xFF;
-            assert!(
-                s.apply(ctx(), PublicKey::from(bytes), 1, vec![1], now_ms)
-                    .is_some(),
-                "author {i} must be admitted while under the cap"
-            );
+            let author = PublicKey::from(bytes);
+            let _ignored = s.apply(ctx(), author, 1, vec![1], base_ms + i as u64);
+            if i == 0 {
+                stalest = Some(author);
+            }
         }
+        stalest.expect("cap is non-zero, so index 0 was inserted")
     }
 
-    /// A holder of the current group key can mint unlimited throwaway keypairs
-    /// — the receive path authenticates the signature, not membership — so
-    /// inserts beyond the cap must be refused rather than grown into.
+    /// A full map must not lock out a legitimate new author. Refusing the
+    /// newcomer let anyone holding the group key mint 512 throwaway keypairs,
+    /// heartbeat them under the TTL, and permanently deny presence to every
+    /// member who had not yet published. Evicting the stalest incumbent keeps
+    /// the bound while letting new authors in.
     #[test]
-    fn new_authors_beyond_the_cap_are_refused() {
+    fn a_full_map_admits_a_new_author_by_evicting_the_stalest() {
         let mut s = AwarenessStore::new();
-        fill_to_cap(&mut s, 1000);
-        assert_eq!(s.snapshot(ctx(), 1000).len(), MAX_AUTHORS_PER_CONTEXT);
+        let stalest = fill_to_cap_staggered(&mut s, 1000);
+        assert_eq!(s.snapshot(ctx(), 9_000).len(), MAX_AUTHORS_PER_CONTEXT);
 
-        let intruder = PublicKey::from([0xAB; 32]);
-        assert!(
-            s.apply(ctx(), intruder, 1, vec![9], 1001).is_none(),
-            "a new author must be refused once the context is at the cap"
-        );
+        let newcomer = PublicKey::from([0xAB; 32]);
+        let diffs = s.apply(ctx(), newcomer, 1, vec![9], 9_000);
+
         assert_eq!(
-            s.snapshot(ctx(), 1001).len(),
+            diffs,
+            vec![
+                Diff::Remove { author: stalest },
+                Diff::Upsert {
+                    author: newcomer,
+                    slice: vec![9]
+                }
+            ],
+            "the eviction must be reported so clients drop the evicted author"
+        );
+
+        let live = s.snapshot(ctx(), 9_000);
+        assert_eq!(
+            live.len(),
             MAX_AUTHORS_PER_CONTEXT,
-            "the refusal must not have grown the map"
+            "eviction-then-insert must hold the map exactly at the cap"
+        );
+        assert!(
+            live.iter().any(|(a, _, _)| *a == newcomer),
+            "the newcomer must be live"
+        );
+        assert!(
+            !live.iter().any(|(a, _, _)| *a == stalest),
+            "the stalest author must be gone"
+        );
+    }
+
+    /// Eviction must never let the map grow past the bound, however many new
+    /// authors arrive — that bound is the whole reason the cap exists.
+    #[test]
+    fn a_flood_of_new_authors_never_exceeds_the_cap() {
+        let mut s = AwarenessStore::new();
+        let _stalest = fill_to_cap_staggered(&mut s, 1000);
+
+        for i in 0..(MAX_AUTHORS_PER_CONTEXT * 2) {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bytes[30] = 0xEE; // distinct from the fill authors
+            let _ignored = s.apply(ctx(), PublicKey::from(bytes), 1, vec![1], 9_000 + i as u64);
+            assert!(
+                s.snapshot(ctx(), 20_000).len() <= MAX_AUTHORS_PER_CONTEXT,
+                "the map exceeded the cap after {i} flood inserts"
+            );
+        }
+        assert_eq!(s.snapshot(ctx(), 20_000).len(), MAX_AUTHORS_PER_CONTEXT);
+    }
+
+    /// Freshness is what protects an active author: a live incumbent is never
+    /// the stalest entry, so heartbeating members are not evicted by a flood
+    /// of newcomers while they keep publishing.
+    #[test]
+    fn a_fresh_incumbent_is_not_the_eviction_victim() {
+        let mut s = AwarenessStore::new();
+        let _stalest = fill_to_cap_staggered(&mut s, 1000);
+
+        // A fresh incumbent: already present, and just heartbeated.
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&5u64.to_le_bytes());
+        bytes[31] = 0xFF;
+        let incumbent = PublicKey::from(bytes);
+        s.touch(ctx(), incumbent, 9_000);
+
+        let newcomer = PublicKey::from([0xAB; 32]);
+        let diffs = s.apply(ctx(), newcomer, 1, vec![9], 9_001);
+
+        assert!(
+            !diffs.contains(&Diff::Remove { author: incumbent }),
+            "a freshly-heartbeated incumbent must not be evicted"
+        );
+        assert!(
+            s.snapshot(ctx(), 9_001)
+                .iter()
+                .any(|(a, _, _)| *a == incumbent),
+            "the fresh incumbent must still be live"
         );
     }
 
@@ -395,24 +509,26 @@ mod tests {
     #[test]
     fn an_existing_author_still_updates_when_the_map_is_full() {
         let mut s = AwarenessStore::new();
-        let incumbent = pk(1);
-        assert!(s.apply(ctx(), incumbent, 1, vec![1], 1000).is_some());
-        // Fill the REMAINING slots, so the incumbent is one of the capped set.
-        for i in 0..MAX_AUTHORS_PER_CONTEXT {
-            let mut bytes = [0u8; 32];
-            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
-            bytes[31] = 0xFF;
-            let _ignored = s.apply(ctx(), PublicKey::from(bytes), 1, vec![1], 1000);
-        }
-        assert_eq!(s.snapshot(ctx(), 1000).len(), MAX_AUTHORS_PER_CONTEXT);
+        // Fill to the cap, then update one of the authors already in the set.
+        let _stalest = fill_to_cap_staggered(&mut s, 1000);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&7u64.to_le_bytes());
+        bytes[31] = 0xFF;
+        let incumbent = PublicKey::from(bytes);
+        assert_eq!(s.snapshot(ctx(), 2000).len(), MAX_AUTHORS_PER_CONTEXT);
 
         assert_eq!(
             s.apply(ctx(), incumbent, 2, vec![7], 2000),
-            Some(Diff::Upsert {
+            vec![Diff::Upsert {
                 author: incumbent,
                 slice: vec![7]
-            }),
-            "an author already present must update at the cap"
+            }],
+            "an author already present must update at the cap, evicting nobody"
+        );
+        assert_eq!(
+            s.snapshot(ctx(), 2000).len(),
+            MAX_AUTHORS_PER_CONTEXT,
+            "an incumbent update must not change the population"
         );
     }
 

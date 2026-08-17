@@ -343,7 +343,7 @@ pub(crate) fn set_local_ephemeral(
     //    implication (not every event of this type has actually been through
     //    signature verification).
     let now = now_ms();
-    if let Some(diff) = this
+    for diff in this
         .awareness_store
         .apply(context_id, author, seq, slice.clone(), now)
     {

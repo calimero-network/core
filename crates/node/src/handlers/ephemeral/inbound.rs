@@ -339,7 +339,9 @@ pub(crate) fn handle_ephemeral_broadcast(
                 return;
             };
 
-            if let Some(diff) = actor
+            // May yield two diffs: admitting a new author into a full context
+            // evicts the stalest one, and clients must be told it went away.
+            for diff in actor
                 .awareness_store
                 .apply(context_id, author, seq, slice, now_ms)
             {
@@ -516,9 +518,13 @@ mod tests {
         // Apply to store and emit event.
         let now_ms = 1_000u64;
         let mut store_under_test = AwarenessStore::new();
-        let diff = store_under_test
-            .apply(context_id, author, 1, plaintext.clone(), now_ms)
-            .expect("new entry must produce a Diff::Upsert");
+        let mut diffs = store_under_test.apply(context_id, author, 1, plaintext.clone(), now_ms);
+        assert_eq!(
+            diffs.len(),
+            1,
+            "a new entry under the cap must produce exactly one Diff::Upsert"
+        );
+        let diff = diffs.pop().expect("just asserted one diff");
 
         emit_ephemeral_diff(&node_client, context_id, diff);
 
@@ -960,17 +966,17 @@ mod tests {
         // First apply: new entry → Upsert (would trigger an event).
         let diff1 = store.apply(context_id, author, 1, slice.to_vec(), 1_000);
         assert!(
-            matches!(diff1, Some(Diff::Upsert { .. })),
+            matches!(diff1.as_slice(), [Diff::Upsert { .. }]),
             "first apply must produce Diff::Upsert"
         );
 
         // Second apply: same bytes, higher seq → liveness refreshed, no diff.
-        // The inbound handler only calls emit_ephemeral_diff when apply returns
-        // Some(_); returning None here means no event is emitted.
+        // The inbound handler emits one event per diff apply returns, so an
+        // empty result means no event is emitted.
         let diff2 = store.apply(context_id, author, 2, slice.to_vec(), 2_000);
         assert!(
-            diff2.is_none(),
-            "same-bytes re-apply with higher seq must return None (no WebSocket push)"
+            diff2.is_empty(),
+            "same-bytes re-apply with higher seq must yield no diffs (no WebSocket push)"
         );
 
         // Entry is still present with the refreshed liveness timestamp. Reading
