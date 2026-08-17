@@ -45,12 +45,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key
-    type: node_identity
-    node: app-migration-uset-1
-    outputs:
-      admin_key: publicKey
-
   - name: Create Open subgroup under namespace
     type: create_group_in_namespace
     node: app-migration-uset-1
