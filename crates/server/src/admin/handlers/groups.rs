@@ -50,7 +50,7 @@ pub(crate) const MAX_LIST_LIMIT: usize = 1000;
 pub(crate) const DEFAULT_LIST_LIMIT: usize = 100;
 
 fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiData {
-    let (status, total, completed, failed, completed_at) = match &info.status {
+    let (status, local_total, local_swapped, local_failed, completed_at) = match &info.status {
         GroupUpgradeStatus::InProgress {
             total,
             completed,
@@ -62,7 +62,9 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
             Some(*failed),
             None,
         ),
-        GroupUpgradeStatus::Completed { completed_at } => {
+        // `completed_at` is this node's own swap. Fleet convergence is a
+        // different question, answered by the migration-status rollup.
+        GroupUpgradeStatus::Completed { completed_at, .. } => {
             ("completed", None, None, None, *completed_at)
         }
     };
@@ -73,9 +75,9 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
         initiated_at: info.initiated_at,
         initiated_by: info.initiated_by,
         status: status.to_owned(),
-        total,
-        completed,
-        failed,
+        local_contexts_total: local_total,
+        local_contexts_swapped: local_swapped,
+        local_contexts_failed: local_failed,
         completed_at,
     }
 }

@@ -42,9 +42,9 @@ pub async fn handler(
                     data: UpgradeGroupApiResponseData {
                         group_id: hex::encode(resp.group_id.to_bytes()),
                         status: status_str,
-                        total,
-                        completed,
-                        failed,
+                        local_contexts_total: total,
+                        local_contexts_swapped: completed,
+                        local_contexts_failed: failed,
                     },
                 },
             }

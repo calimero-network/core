@@ -16,8 +16,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    CreateContextRequest, CreateContextResponseData, ReparentGroupApiRequest,
-    ReparentGroupApiResponse,
+    CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
+    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -32,7 +32,7 @@ fn check<T: DeserializeOwned + Serialize>(rel: &str) -> Result<(), String> {
     let raw =
         std::fs::read_to_string(&path).map_err(|e| format!("{rel}: cannot read fixture: {e}"))?;
 
-    // Deserialize into the DTO — a removed/renamed required field fails right here.
+    // Deserialize into the DTO - a removed/renamed required field fails right here.
     let typed: T = serde_json::from_str(&raw)
         .map_err(|e| format!("{rel}: does not deserialize into {}: {e}", type_name::<T>()))?;
     let canonical = serde_json::to_value(&typed).map_err(|e| format!("{rel}: {e}"))?;
@@ -83,6 +83,10 @@ wire_fixtures! {
     create_context_res: CreateContextResponseData => "contexts/create_context.res.json",
     reparent_req: ReparentGroupApiRequest => "groups/reparent.req.json",
     reparent_res: ReparentGroupApiResponse => "groups/reparent.res.json",
+    // Populated counters, not nulls: these three are `Option`, so a renamed
+    // field still deserializes and only a value proves the key survived.
+    upgrade_res: UpgradeGroupApiResponse => "groups/upgrade.res.json",
+    upgrade_status_res: GetGroupUpgradeStatusApiResponse => "groups/upgrade_status.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
 }

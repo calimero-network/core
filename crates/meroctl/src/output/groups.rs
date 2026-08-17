@@ -73,7 +73,7 @@ impl Report for NodeIdentityApiResponse {
             self.data
                 .device_id
                 .as_deref()
-                .unwrap_or("none - run `account create <NAMESPACE_ID>` to enroll this node"),
+                .unwrap_or("none - joining a namespace enrols one"),
         ]);
         let _ = table.add_row(vec!["Signing key", &self.data.public_key]);
         println!("{table}");
@@ -437,14 +437,14 @@ impl Report for UpgradeGroupApiResponse {
         ]);
         let _ = table.add_row(vec!["Group ID", &d.group_id]);
         let _ = table.add_row(vec!["Status", &d.status]);
-        if let Some(total) = d.total {
-            let _ = table.add_row(vec!["Total", &total.to_string()]);
+        if let Some(total) = d.local_contexts_total {
+            let _ = table.add_row(vec!["Local Contexts Total", &total.to_string()]);
         }
-        if let Some(completed) = d.completed {
-            let _ = table.add_row(vec!["Completed", &completed.to_string()]);
+        if let Some(swapped) = d.local_contexts_swapped {
+            let _ = table.add_row(vec!["Local Contexts Swapped", &swapped.to_string()]);
         }
-        if let Some(failed) = d.failed {
-            let _ = table.add_row(vec!["Failed", &failed.to_string()]);
+        if let Some(failed) = d.local_contexts_failed {
+            let _ = table.add_row(vec!["Local Contexts Failed", &failed.to_string()]);
         }
         println!("{table}");
     }
@@ -465,14 +465,14 @@ impl Report for GetGroupUpgradeStatusApiResponse {
                 let _ = table.add_row(vec!["Status", &upgrade.status]);
                 let _ = table.add_row(vec!["Initiated By", &upgrade.initiated_by.to_string()]);
                 let _ = table.add_row(vec!["Initiated At", &upgrade.initiated_at.to_string()]);
-                if let Some(total) = upgrade.total {
-                    let _ = table.add_row(vec!["Total", &total.to_string()]);
+                if let Some(total) = upgrade.local_contexts_total {
+                    let _ = table.add_row(vec!["Local Contexts Total", &total.to_string()]);
                 }
-                if let Some(completed) = upgrade.completed {
-                    let _ = table.add_row(vec!["Completed", &completed.to_string()]);
+                if let Some(swapped) = upgrade.local_contexts_swapped {
+                    let _ = table.add_row(vec!["Local Contexts Swapped", &swapped.to_string()]);
                 }
-                if let Some(failed) = upgrade.failed {
-                    let _ = table.add_row(vec!["Failed", &failed.to_string()]);
+                if let Some(failed) = upgrade.local_contexts_failed {
+                    let _ = table.add_row(vec!["Local Contexts Failed", &failed.to_string()]);
                 }
                 if let Some(completed_at) = upgrade.completed_at {
                     let _ = table.add_row(vec!["Completed At", &completed_at.to_string()]);

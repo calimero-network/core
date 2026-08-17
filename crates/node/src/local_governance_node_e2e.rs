@@ -240,6 +240,7 @@ async fn set_member_auto_follow_handler_error_paths() {
 /// The signer resolution refuses a group this node takes no part in, and
 /// leaves no trace of having been asked.
 #[actix::test]
+#[serial(boot_test_node)]
 async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
     let node = boot_test_node().await;
 
@@ -300,6 +301,7 @@ async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
 /// never in. Asserted on `participates_in` and not merely on the error, because
 /// the handler returned the right error while writing the row anyway.
 #[actix::test]
+#[serial(boot_test_node)]
 async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() {
     let node = boot_test_node().await;
 

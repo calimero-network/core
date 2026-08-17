@@ -33,12 +33,14 @@ mod cache;
 pub mod config;
 pub mod error;
 pub mod governance_dag;
+mod group_key_pull;
 pub mod handlers;
 pub mod hlc_fence;
 pub mod join_credential;
 mod lifecycle;
 pub mod member_account;
 pub mod membership_events;
+pub mod migration_events;
 pub mod migration_plan;
 pub mod rotation_listener;
 pub mod scope_projection;
@@ -778,10 +780,11 @@ impl Actor for ContextManager {
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
 
-        // Forwards membership OpEvents to connected clients as `NodeEvent::GroupMembership`.
-        // `shutdown` before `spawn` rebinds to this instance's `node_client` on restart.
+        // Forwards membership + migration OpEvents to connected clients as
+        // `NodeEvent::GroupMembership` / `NodeEvent::GroupMigration`. `shutdown` before
+        // `spawn` rebinds to this instance's handles on restart.
         membership_events::shutdown();
-        membership_events::spawn(self.node_client.clone());
+        membership_events::spawn(self.node_client.clone(), self.datastore.clone());
 
         // Transparent per-subgroup TEE admission (proposal.md §12d, Phase 1).
         // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE

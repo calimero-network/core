@@ -97,6 +97,11 @@ impl PredefinedEntry for key::GroupUpgradeKey {
     type DataType<'a> = key::GroupUpgradeValue;
 }
 
+impl PredefinedEntry for key::GroupFleetCompletion {
+    type Codec = Borsh;
+    type DataType<'a> = u64;
+}
+
 impl PredefinedEntry for key::GroupUpgradeLadder {
     type Codec = Borsh;
     type DataType<'a> = key::UpgradeLadderValue;

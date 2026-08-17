@@ -13,6 +13,8 @@
 //! adding one would silently drag `cascade_dispatch_e2e` back behind the
 //! feature gate.
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -378,5 +380,96 @@ pub(crate) async fn boot_test_node() -> TestNode {
         ns_beacon_sync_debounce,
         stream_opens,
         publishes,
+    }
+}
+
+/// Every `boot_test_node()` call site must carry `#[serial(boot_test_node)]`.
+///
+/// A boot rebinds process-global singletons (the `op_events` bridges, the
+/// TEE-admit subscriber), so an unannotated one does not fail on itself: it
+/// silently steals a concurrently running module's event stream mid-assertion.
+/// Scanning source text rather than the compiled crate is deliberate, so the
+/// `mock-attestation`-gated modules are covered by an ungated `cargo test` too.
+/// The lint above fails CI, so a signature shape it cannot parse reports a
+/// correctly-annotated test as an offender. Every shape that reaches the
+/// enclosing `async fn` must find the same attribute block.
+#[test]
+fn attribute_block_survives_visibility_modifiers_and_indentation() {
+    for signature in [
+        "async fn t()",
+        "pub async fn t()",
+        "pub(crate) async fn t()",
+        "    async fn t()",
+        "    pub(super) async fn t()",
+    ] {
+        let head = format!(
+            "mod outer {{\n\n#[serial(boot_test_node)]\n{signature} {{\n    boot_test_node().await"
+        );
+        assert!(
+            enclosing_attribute_block(&head).contains("#[serial(boot_test_node)]"),
+            "signature {signature:?} hid its attribute block"
+        );
+    }
+}
+
+#[test]
+fn every_boot_test_node_call_site_is_serialized() {
+    let mut sources = Vec::new();
+    collect_rs_sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+    assert!(!sources.is_empty(), "found no sources to scan");
+
+    let mut offenders = Vec::new();
+    for path in sources {
+        // This file carries the pattern as a search needle, not as a call.
+        if path.ends_with(file!()) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read source");
+        for (idx, _) in text.match_indices("boot_test_node().await") {
+            let head = &text[..idx];
+            if !enclosing_attribute_block(head).contains("#[serial(boot_test_node)]") {
+                offenders.push(format!(
+                    "{}:{}",
+                    path.display(),
+                    head.matches('\n').count() + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "boot_test_node() without #[serial(boot_test_node)]: {offenders:#?}"
+    );
+}
+
+/// The doc comment and attributes above the `async fn` that encloses the end of
+/// `head` - the span between the blank line above the signature and the
+/// signature itself.
+///
+/// Anchored on the signature's own LINE, not on a newline immediately before
+/// `async fn`: a visibility modifier or an indented (nested-module) signature
+/// puts other bytes there, and a needle carrying its own `\n` silently matched
+/// nothing and reported the call site as an offender.
+fn enclosing_attribute_block(head: &str) -> &str {
+    let Some(keyword) = head.rfind("async fn ") else {
+        return "";
+    };
+    let sig = head[..keyword].rfind('\n').map_or(0, |i| i + 1);
+    let block_start = head[..sig].rfind("\n\n").map_or(0, |i| i + 1);
+    &head[block_start..sig]
+}
+
+fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read_dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_rs_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
     }
 }

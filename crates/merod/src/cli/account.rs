@@ -339,16 +339,15 @@ impl ImportCommand {
         // where an operator most needs to know the device just went.
         if !outcome.released && !outcome.retained {
             println!(
-                "No device is restored: this node holds none yet. Enrol one \
-                 (`meroctl account create <NAMESPACE_ID>`) and a peer will deliver \
-                 the current scope key."
+                "No device is restored: this node holds none yet. Joining a namespace \
+                 enrols one, and a peer then delivers the current scope key."
             );
         } else if outcome.released {
             println!();
             println!(
                 "Dropped the device that belonged to the replaced root — its id is \
-                 spent. Enrol again (`meroctl account create <NAMESPACE_ID>`); a peer \
-                 delivers the current scope key to the new device."
+                 spent. Joining a namespace again mints a fresh device, and a peer \
+                 delivers the current scope key to it."
             );
         } else {
             println!();

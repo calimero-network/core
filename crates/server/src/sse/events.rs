@@ -81,11 +81,12 @@ pub async fn handle_node_events(
             },
         };
 
-        let (subscriptions, group_subscriptions) = {
+        let (subscriptions, group_subscriptions, admin_group_subscriptions) = {
             let inner = session_state.inner.read().await;
             (
                 inner.subscriptions.clone(),
                 inner.group_subscriptions.clone(),
+                inner.admin_group_subscriptions.clone(),
             )
         };
 
@@ -105,6 +106,17 @@ pub async fn handle_node_events(
                 NodeEvent::GroupMembership(event)
             }
             NodeEvent::GroupMembership(_) => continue,
+            NodeEvent::GroupMigration(event)
+                if crate::ws::may_deliver_group_event(
+                    event.payload.requires_group_admin(),
+                    &event.group_id,
+                    &group_subscriptions,
+                    &admin_group_subscriptions,
+                ) =>
+            {
+                NodeEvent::GroupMigration(event)
+            }
+            NodeEvent::GroupMigration(_) => continue,
         };
 
         let body = match to_json_value(event) {

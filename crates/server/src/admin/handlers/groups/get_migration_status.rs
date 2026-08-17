@@ -4,9 +4,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::{
-    GetMigrationStatusRequest, MemberMigrationReport, MigrationFailureKind,
-};
+use calimero_context_client::group::{GetMigrationStatusRequest, MemberMigrationReport};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     GetMigrationStatusApiResponse, MemberMigrationReportApiData, MemberMigrationStatusApiEntry,
@@ -18,15 +16,15 @@ use super::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// `GET /admin-api/groups/{namespace_id}/migration-status` — the operator-facing
-/// "have all peers migrated?" rollup (Task 6c.10).
+/// `GET /admin-api/groups/{namespace_id}/migration-status` - the admin-only,
+/// operator-facing "have all peers migrated?" rollup.
 ///
 /// Mirrors [`super::get_cascade_status::handler`]: parse the namespace id,
 /// dispatch the read to the context actor, map the typed result into the admin
 /// JSON shape. The per-member heartbeat reports are snapshotted from the
-/// node-side TTL cache (Task 6c.8) via `NodeClient::migration_status_reports`
-/// and threaded into the rollup request, because the context actor cannot reach
-/// that node-local cache itself. Observability only — never gates a write.
+/// node-side TTL cache via `NodeClient::migration_status_reports` and threaded
+/// into the rollup request, because the context actor cannot reach that
+/// node-local cache itself. Observability only - never gates a write.
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -47,19 +45,7 @@ pub async fn handler(
     {
         Ok(reports) => reports
             .into_iter()
-            .map(|(peer, r)| {
-                (
-                    peer,
-                    MemberMigrationReport {
-                        schema_version: r.schema_version,
-                        residue_auto: r.residue_auto,
-                        synced_up_to_hlc: r.synced_up_to_hlc,
-                        reported_at: r.reported_at,
-                        authored_remaining: r.authored_remaining,
-                        migration_failed: MigrationFailureKind::from_u8(r.migration_failed),
-                    },
-                )
-            })
+            .map(|(peer, r)| (peer, r.into()))
             .collect(),
         Err(err) => {
             error!(namespace_id=%namespace_id_str, error=?err, "Failed to read migration heartbeat cache");
@@ -101,6 +87,7 @@ pub async fn handler(
                     target_version: status.target_version,
                     expected_members: status.expected_members,
                     cohort_pinned_at_hlc: status.cohort_pinned_at_hlc.map(|ts| ts.to_string()),
+                    fleet_completed_at: status.fleet_completed_at,
                     rollup: MigrationStatusRollupApiData {
                         migrated: status.rollup.migrated,
                         in_progress: status.rollup.in_progress,

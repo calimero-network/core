@@ -25,34 +25,46 @@ use std::time::Duration;
 use calimero_context_client::group::{
     GetGroupUpgradeStatusRequest, RetryGroupUpgradeRequest, UpgradeGroupRequest,
 };
+use calimero_context_client::local_governance::{
+    GroupOp, NamespaceTopicMsg, SignedGroupOp, SignedMigrationHeartbeat,
+};
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::register_context_in_group;
+use calimero_governance_store::{apply_local_signed_group_op, register_context_in_group};
+use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, NetworkEvent};
+use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
+use calimero_primitives::events::{GroupMigrationEvent, GroupMigrationPayload, NodeEvent};
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
     GroupUpgradeStatus, GroupUpgradeValue,
 };
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
+use core::pin::pin;
+use futures_util::StreamExt;
+use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serial_test::serial;
 use tokio::time::sleep;
 
+use crate::migration_status::{build_signed_heartbeat, MigrationFacts};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
 /// The app-keys the fixture runs on. Blob ids are content hashes, so the
 /// fixture seeds REAL blob bytes (a minimal wasm module with an embedded
 /// `calimero_abi_v1` section) and uses the returned ids — the cascade
 /// dispatch resolves the migration decision from these very blobs.
-struct AppBlobs {
+pub(crate) struct AppBlobs {
     /// Current bytecode: declares `state_version = 1`.
-    v1: [u8; 32],
+    pub(crate) v1: [u8; 32],
     /// Code-only target: also `state_version = 1` (1 → 1 ⇒ CodeOnly).
-    v2: [u8; 32],
+    pub(crate) v2: [u8; 32],
     /// Migration-declaring target: `state_version = 2` + a v1→v2 edge.
-    v2_migrating: [u8; 32],
+    pub(crate) v2_migrating: [u8; 32],
     /// Heterogeneous sibling key for the predicate-skip test.
     other: [u8; 32],
 }
@@ -60,7 +72,7 @@ struct AppBlobs {
 /// Minimal valid wasm module: magic + version, no sections.
 const EMPTY_WASM: [u8; 8] = [0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
 
-async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
+pub(crate) async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     use calimero_wasm_abi::embed::write_embedded_state_schema;
     use calimero_wasm_abi::schema::{Manifest, MigrationEdgeAbi};
 
@@ -102,10 +114,10 @@ async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     }
 }
 
-fn app_id_v1() -> ApplicationId {
+pub(crate) fn app_id_v1() -> ApplicationId {
     ApplicationId::from([0xAA; 32])
 }
-fn app_id_v2() -> ApplicationId {
+pub(crate) fn app_id_v2() -> ApplicationId {
     ApplicationId::from([0xBB; 32])
 }
 fn app_id_other() -> ApplicationId {
@@ -136,7 +148,7 @@ fn meta_for(
 /// direct Admin row. The cascade apply arm's
 /// `can_manage_application` pre-scan requires direct admin (or
 /// inherited admin via an Open chain) on every matched descendant.
-fn provision_group(
+pub(crate) fn provision_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
@@ -159,7 +171,7 @@ fn provision_group(
 /// `new_app_key = app_meta.bytecode.blob_id()` for the target — so
 /// driving the test's target app_key through this field is what makes
 /// the apply arm rewrite descendants to `APP_KEY_V2`.
-fn install_application(
+pub(crate) fn install_application(
     store: &Store,
     app_id: ApplicationId,
     app_key: [u8; 32],
@@ -196,7 +208,7 @@ fn install_application(
 /// the execute write-gate (Test 2) needs the row to exist with a
 /// non-zero root_hash (otherwise `ExecuteError::Uninitialized` would
 /// preempt the `UpgradeInProgress` gate).
-fn register_context_for(
+pub(crate) fn register_context_for(
     store: &Store,
     group_id: &ContextGroupId,
     context_id: ContextId,
@@ -329,6 +341,53 @@ async fn wait_until<F: Fn() -> bool>(cond: F) -> bool {
     cond()
 }
 
+/// Poll `events` for the next `NodeEvent::GroupMigration`, skipping every
+/// other variant, until `timeout` elapses. Shared by every test that observes
+/// a migration announcement, here and in `migration_events_e2e`.
+pub(crate) async fn next_migration_event(
+    events: &mut (impl futures_util::Stream<Item = NodeEvent> + Unpin),
+    timeout: Duration,
+) -> Option<GroupMigrationEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, events.next()).await {
+            Ok(Some(NodeEvent::GroupMigration(event))) => return Some(event),
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return None,
+        }
+    }
+}
+
+/// Poll `events` for the next `MigrationStarted`, skipping the other migration
+/// phases. Tests that count announcements need this rather than
+/// [`next_migration_event`]: a live propagator interleaves `CascadeProgress`.
+async fn next_migration_started(
+    events: &mut (impl futures_util::Stream<Item = NodeEvent> + Unpin),
+    timeout: Duration,
+) -> Option<GroupMigrationEvent> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next_migration_event(events, remaining).await {
+            Some(event) => {
+                if matches!(
+                    event.payload,
+                    GroupMigrationPayload::MigrationStarted { .. }
+                ) {
+                    return Some(event);
+                }
+            }
+            None => return None,
+        }
+    }
+}
+
+/// How long to wait for a *surplus* announcement before calling it absent. The
+/// duplicates this guards against are emitted on the same apply as the first
+/// event, so they are already in the channel by the time we look.
+const NO_SECOND_EVENT_WINDOW: Duration = Duration::from_millis(750);
+
 /// Test 1 — emitter happy path on a single node.
 ///
 /// Drives a real `ContextManager` actor through `UpgradeGroupRequest {
@@ -447,6 +506,324 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
         }
         assert_eq!(upgrade.initiated_by, fx.admin_pk, "initiated_by mismatch");
     }
+}
+
+/// A cascade announces itself once, keyed on the namespace root a client
+/// subscribes with, carrying the resolved target state version - not the `0`
+/// the synchronous InProgress record holds.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn cascade_emits_migration_started_on_the_namespace_root() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
+
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
+    let _response = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: fx.ns,
+            target_application_id: app_id_v2(),
+            cascade: true,
+            force_code_only: false,
+        })
+        .await
+        .expect("cascade upgrade should succeed");
+
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("a MigrationStarted must reach subscribers");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            to_state_version,
+            local_contexts_total,
+            ..
+        } => {
+            assert_eq!(
+                to_state_version, 2,
+                "the resolved target, never the 0 sentinel"
+            );
+            assert!(
+                local_contexts_total > 0,
+                "local_contexts_total is this node's own context count"
+            );
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert_eq!(
+        event.group_id.as_bytes(),
+        &fx.ns.to_bytes(),
+        "routed on the namespace root, not a descendant"
+    );
+    // The initiator applies the op it published, so it must announce from the
+    // apply and nowhere else - an emitter-side announcement on top would show
+    // up here as a second event.
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "the initiator announces once, not once per emit site"
+    );
+}
+
+/// The gap this closes: `send_event` reaches only the emitting node's own
+/// clients, so a member's node has to announce the migration it APPLIES. This
+/// node never runs `upgrade_group` - it only folds a peer's op.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn receiver_announces_a_cascade_it_did_not_initiate() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
+
+    // The admin that initiates the upgrade on some other node.
+    let peer_sk = PrivateKey::random(&mut rng);
+    // Enrolled at the anchor: the apply resolves the op's signer to an account
+    // before checking its authority, and an unbound key resolves to nothing.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &fx.ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&fx.ns, &peer_account, GroupMemberRole::Admin)
+        .expect("seat the initiating peer as admin");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let op = SignedGroupOp::sign(
+        &peer_sk,
+        fx.ns.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::CascadeUpgrade {
+            from_app_key: blobs.v1.into(),
+            app_key: blobs.v2_migrating.into(),
+            target_application_id: app_id_v2(),
+            to_state_version: 2,
+            migration: Some(b"migrate_v1_to_v2".to_vec()),
+            cascade_hlc: HybridTimestamp::zero(),
+        },
+    )
+    .expect("sign CascadeUpgrade");
+    apply_local_signed_group_op(&node.store, &op).expect("receiver applies the peer's cascade");
+
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("a node that applies the op must announce it, initiator or not");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            from_version,
+            to_version,
+            to_state_version,
+            local_contexts_total,
+        } => {
+            assert_eq!(from_version, "0.1.0");
+            assert_eq!(to_version, "0.2.0");
+            assert_eq!(
+                to_state_version, 2,
+                "the initiator's resolved version rides on the op"
+            );
+            assert_eq!(
+                local_contexts_total, 3,
+                "one context per matched descendant on this node (NS, G1, G2)"
+            );
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert_eq!(
+        event.group_id.as_bytes(),
+        &fx.ns.to_bytes(),
+        "routed on the namespace root, not a descendant"
+    );
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "one announcement for the whole cascade, not one per matched descendant"
+    );
+}
+
+/// A plain one-group upgrade reaches receivers too, and announces once per
+/// upgrade rather than once per rung of a multi-hop ladder.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2_migrating);
+
+    let peer_sk = PrivateKey::random(&mut rng);
+    // Enrolled at the ANCHOR even though the row sits on the subgroup: bindings
+    // live at the namespace root and readers resolve up to it, so a binding
+    // written against the nested child would be invisible.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &fx.ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&fx.g1, &peer_account, GroupMemberRole::Admin)
+        .expect("seat the initiating peer as admin");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let rung = |nonce: u64, app_key: [u8; 32]| {
+        SignedGroupOp::sign(
+            &peer_sk,
+            fx.g1.to_bytes().into(),
+            vec![],
+            nonce,
+            GroupOp::TargetApplicationSet {
+                app_key: app_key.into(),
+                target_application_id: app_id_v2(),
+            },
+        )
+        .expect("sign TargetApplicationSet")
+    };
+
+    // Intermediate rung: lands on a blob that is not the target's bytecode, so
+    // the upgrade has not arrived yet and nothing is announced.
+    apply_local_signed_group_op(&node.store, &rung(1, blobs.other))
+        .expect("receiver applies the intermediate rung");
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "an intermediate ladder rung is not its own migration"
+    );
+
+    apply_local_signed_group_op(&node.store, &rung(2, blobs.v2_migrating))
+        .expect("receiver applies the final rung");
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the single-group path must announce on the receiver too");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            from_version,
+            to_version,
+            to_state_version,
+            local_contexts_total,
+        } => {
+            assert_eq!(to_version, "0.2.0");
+            // The first rung already moved the group's target to this same id,
+            // so the row cannot answer the from side by the rung that announces.
+            assert_eq!(
+                from_version, "unknown",
+                "a from-version that cannot be resolved must say so, not echo the to-version"
+            );
+            assert_eq!(
+                to_state_version, 2,
+                "read from the local application row, not the 0 sentinel"
+            );
+            assert_eq!(local_contexts_total, 1, "G1 holds one context here");
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert_eq!(
+        event.group_id.as_bytes(),
+        &fx.ns.to_bytes(),
+        "routed on the namespace root a client subscribes with, not on G1"
+    );
+}
+
+/// The propagator's per-context persist and the event a subscriber sees are
+/// the same number: a client can render "3 of 5" without polling.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn cascade_progress_mirrors_the_persisted_counters() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let blobs = seed_app_blobs(&node).await;
+    let fx = provision_namespace(&node.store, &admin_sk, &blobs, false, blobs.v2);
+
+    // G1 gets a second context so its cascade run reports more than a
+    // trivial "1 of 1". Both need a local signing identity, or
+    // `propagate_upgrade` marks them failed instead of completed.
+    let ctx_g1b = ContextId::from([0xB1; 32]);
+    register_context_for(&node.store, &fx.g1, ctx_g1b, app_id_v1());
+    provision_local_context_identity(&node.store, fx.ctx_g1, &admin_sk);
+    provision_local_context_identity(&node.store, ctx_g1b, &admin_sk);
+
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
+    let _response = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: fx.ns,
+            target_application_id: app_id_v2(),
+            cascade: true,
+            force_code_only: false,
+        })
+        .await
+        .expect("cascade upgrade should succeed");
+
+    // NS and G2's contexts have no local signing identity in this fixture,
+    // so their propagators churn through retries in the background; only G1
+    // is set up to actually complete, and only G1's frames are asserted on.
+    let g1_subgroup = Hash::from(fx.g1.to_bytes());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut final_frame = None;
+    while final_frame.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Some(event) = next_migration_event(&mut events, remaining).await else {
+            break;
+        };
+        let GroupMigrationPayload::CascadeProgress {
+            subgroup_id,
+            local_contexts_swapped: completed,
+            local_contexts_total: total,
+        } = event.payload
+        else {
+            continue;
+        };
+        if subgroup_id == g1_subgroup && completed == total {
+            final_frame = Some((completed, total));
+        }
+    }
+
+    let (completed, total) =
+        final_frame.expect("must observe a CascadeProgress frame reaching completed == total");
+
+    // Not a literal: the propagator's own authoritative total, re-derived the
+    // same way `propagate_upgrade` does (`enumerate_group_contexts().len()`).
+    let expected_total = MetadataRepository::new(&node.store)
+        .count_contexts(&fx.g1)
+        .expect("count_group_contexts") as u32;
+    assert_eq!(
+        total, expected_total,
+        "the event's total must be the number the propagator itself persists"
+    );
+    assert_eq!(
+        completed, total,
+        "the final frame settles at completed == total"
+    );
+
+    // The propagator's terminal write is the record this event mirrors: once
+    // every context completes, `update_upgrade_status` replaces the InProgress
+    // counters with `Completed`, so a settled `Completed` row confirms the
+    // numbers on the wire weren't floated without a matching persist.
+    let settled = wait_until(|| {
+        matches!(
+            UpgradesRepository::new(&node.store)
+                .load(&fx.g1)
+                .ok()
+                .flatten()
+                .map(|v| v.status),
+            Some(GroupUpgradeStatus::Completed { .. })
+        )
+    })
+    .await;
+    assert!(settled, "g1's propagation must have persisted Completed");
 }
 
 /// Test 2 — write-gate refuses a state-op `ExecuteRequest` against a
@@ -757,6 +1134,10 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .replace_identity(&gid, &admin_pk, admin_sk.as_bytes())
         .expect("seed node identity");
 
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
     let response = node
         .context_client
         .upgrade_group(UpgradeGroupRequest {
@@ -768,6 +1149,37 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .await
         .expect("multi-hop lazy upgrade should succeed");
     assert_eq!(response.group_id, gid);
+
+    // The initiator announces from the apply like every receiver does, and a
+    // two-rung ladder is still one migration.
+    let event = next_migration_started(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the single-group path must announce on the initiator too");
+    match event.payload {
+        GroupMigrationPayload::MigrationStarted {
+            from_version,
+            to_version,
+            to_state_version,
+            local_contexts_total,
+        } => {
+            assert_eq!(to_version, "0.3.0");
+            // Every rung names the same bundle id, so by the announcing rung the
+            // "from" id IS the target and its row already reads the new version.
+            assert_eq!(
+                from_version, "unknown",
+                "a from-version that cannot be resolved must say so, not echo the to-version"
+            );
+            assert_eq!(to_state_version, 3, "the ladder's final target");
+            assert_eq!(local_contexts_total, 1);
+        }
+        other => panic!("expected MigrationStarted, got {other:?}"),
+    }
+    assert!(
+        next_migration_started(&mut events, NO_SECOND_EVENT_WINDOW)
+            .await
+            .is_none(),
+        "one announcement per upgrade, not one per ladder rung"
+    );
 
     let meta = MetaRepository::new(&node.store)
         .load(&gid)
@@ -933,7 +1345,11 @@ async fn crash_recovery_resumes_a_stranded_cascade_descendant() {
 /// context-config row `finalize_application_update` requires. Without both the
 /// propagator bails before `update_application` and the fixture can no longer
 /// observe whether a bytecode swap happened.
-fn provision_local_context_identity(store: &Store, context_id: ContextId, sk: &PrivateKey) {
+pub(crate) fn provision_local_context_identity(
+    store: &Store,
+    context_id: ContextId,
+    sk: &PrivateKey,
+) {
     let mut handle = store.handle();
     handle
         .put(
@@ -1175,5 +1591,906 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
         app_id_v1(),
         "retry trusted the record's `migration: None` and swapped the bytecode \
          without migrating - it must re-resolve the migration from the target's ABI"
+    );
+}
+
+/// Deliver `heartbeat` to the running node exactly as gossipsub would: wrapped
+/// in the namespace-topic envelope, on `ns/<id>`, through `Handler<NetworkEvent>`.
+pub(crate) async fn deliver_heartbeat(
+    node: &TestNode,
+    ns: ContextGroupId,
+    heartbeat: SignedMigrationHeartbeat,
+) {
+    let payload =
+        borsh::to_vec(&NamespaceTopicMsg::MigrationHeartbeat(heartbeat)).expect("borsh heartbeat");
+    let envelope = BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id: ns.to_bytes(),
+        delta_id: [0u8; 32],
+        parent_ids: Vec::new(),
+        payload,
+    };
+    node.node_addr
+        .send(NetworkEvent::Message {
+            id: MessageId(b"test-heartbeat".to_vec()),
+            message: Message {
+                source: Some(PeerId::random()),
+                data: borsh::to_vec(&envelope).expect("borsh envelope"),
+                sequence_number: Some(1),
+                topic: IdentTopic::new(format!("ns/{}", hex::encode(ns.to_bytes()))).hash(),
+            },
+        })
+        .await
+        .expect("deliver NetworkEvent to node actor");
+}
+
+/// `fleet_completed_at` is `None` until the fleet is actually done, and no node
+/// has another way to learn that moment: the rollup's `all_migrated` edge is it.
+/// This stamps the record and announces once, and a later heartbeat that still
+/// rolls up green announces nothing more.
+///
+/// The edge has to be one THIS PROCESS watched, so the fleet rolls up red here
+/// before it rolls up green - see
+/// `first_rollup_after_boot_backfills_the_stamp_without_announcing` for what
+/// happens when a node only ever sees the green side.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn fleet_completion_stamps_the_record_once() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    // A namespace whose sole context is already loaded at the target state
+    // version, so this node's own self-report is `migrated` and only the peer's
+    // heartbeat is outstanding.
+    let ns = ContextGroupId::from([0x71; 32]);
+    let app_key = [0xB2; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xC7; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The record a lazy upgrade leaves behind: completed as far as this node
+    // can tell, with no timestamp because the fleet's state was unknowable.
+    UpgradesRepository::new(&node.store)
+        .save(
+            &ns,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 0,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::Completed { completed_at: None },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 2,
+            },
+        )
+        .expect("save upgrade record");
+
+    // Subscribe before acting: `receive_events` is a broadcast subscription
+    // taken at call time, so an event emitted before this line would be missed.
+    let mut events = pin!(node.node_client.receive_events());
+
+    let facts = MigrationFacts {
+        schema_version: 2,
+        residue_auto: 0,
+        synced_up_to_hlc: 0,
+        authored_remaining: 0,
+        migration_failed: None,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    // The peer is a version behind, so the first rollup this process computes
+    // is red. That is the `false` half of the edge the completion announces.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                ..facts
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    let pending = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the first heartbeat must announce the fleet rollup");
+    match pending.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated,
+            in_progress,
+            total,
+            ..
+        } => {
+            assert_eq!(total, 2, "total is the COHORT size, not a node-local count");
+            assert_eq!(migrated, 1, "this node only; the peer is still behind");
+            assert_eq!(in_progress, 1, "the peer");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms + 1_000)
+            .expect("sign heartbeat"),
+    )
+    .await;
+
+    let progress = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup");
+    match progress.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "total is the COHORT size, not a node-local count");
+            assert_eq!(migrated, 2, "this node's self-report plus the peer's");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    let completed = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the all_migrated edge must announce completion");
+    let stamped_at = match completed.payload {
+        GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at,
+        } => {
+            assert_eq!(to_version, "0.2.0");
+            completed_at
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    };
+
+    let stamp = |store: &Store| {
+        UpgradesRepository::new(store)
+            .fleet_completed_at(&ns)
+            .expect("read stamp")
+    };
+    assert_eq!(
+        stamp(&node.store),
+        Some(stamped_at),
+        "the announced timestamp is the one persisted"
+    );
+
+    // A newer heartbeat carrying different facts (the peer now owes authored
+    // re-signatures) recomputes and rolls up green again. The persisted stamp
+    // is the latch: a subscriber must never see a second completion banner.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                authored_remaining: 1,
+                ..facts
+            },
+            now_ms + 2_000,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    let second = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("a changed heartbeat still announces progress");
+    assert!(
+        matches!(
+            second.payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "expected MigrationProgress, got {:?}",
+        second.payload
+    );
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "completion must not re-announce while the stamp is already written"
+    );
+    assert_eq!(
+        stamp(&node.store),
+        Some(stamped_at),
+        "the stamp is written once, not refreshed on every recompute"
+    );
+}
+
+/// The rollup answers a COHORT question and never reads the local record, so it
+/// rolls up green while the propagator still holds that record `InProgress` -
+/// the one state the stamp must refuse. Refusing is right; SPENDING the
+/// completion edge on that refusal is not, and leaves the real completion, one
+/// beat later, with no edge left to announce.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn an_in_progress_record_defers_the_completion_edge_rather_than_spending_it() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x7B; 32]);
+    let app_key = [0xB9; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xCF; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The record as the propagator leaves it between its last context swap and
+    // its final status write: real target, counters still in flight.
+    let record = |status| GroupUpgradeValue {
+        from_version: "0.1.0".to_owned(),
+        to_version: "0.2.0".to_owned(),
+        migration: None,
+        initiated_at: 0,
+        initiated_by: admin_pk,
+        status,
+        cascade_hlc: None,
+        cascade_seq: None,
+        to_state_version: 2,
+    };
+    let upgrades = UpgradesRepository::new(&node.store);
+    upgrades
+        .save(
+            &ns,
+            &record(GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            }),
+        )
+        .expect("save the in-flight record");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let facts = MigrationFacts {
+        schema_version: 2,
+        residue_auto: 0,
+        synced_up_to_hlc: 0,
+        authored_remaining: 0,
+        migration_failed: None,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+
+    // Red, then green: a false-to-true edge this process really watched.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                ..facts
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("the first heartbeat must announce the fleet rollup")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the red rollup arms the edge"
+    );
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms + 1_000)
+            .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("the changed heartbeat must announce the fleet rollup")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the green rollup still reports progress"
+    );
+
+    // Correct so far: an unfinished record is neither stamped nor announced.
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "an InProgress record must not announce a completion"
+    );
+    assert_eq!(
+        upgrades.fleet_completed_at(&ns).expect("read stamp"),
+        None,
+        "an InProgress record must not be stamped"
+    );
+
+    // The propagator's final write. The cohort has not moved, so the rollup is
+    // the same green one - and this is the first beat that could announce it.
+    upgrades
+        .save(
+            &ns,
+            &record(GroupUpgradeStatus::Completed {
+                completed_at: Some(1),
+            }),
+        )
+        .expect("complete the record");
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                authored_remaining: 1,
+                ..facts
+            },
+            now_ms + 2_000,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("the changed heartbeat must announce the fleet rollup")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the completed record still reports progress"
+    );
+
+    let stamped_at = match next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the edge the InProgress beat deferred must still announce")
+        .payload
+    {
+        GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at,
+        } => {
+            assert_eq!(to_version, "0.2.0");
+            completed_at
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    };
+    assert_eq!(
+        upgrades.fleet_completed_at(&ns).expect("read stamp"),
+        Some(stamped_at),
+        "the announced timestamp is the one persisted"
+    );
+}
+
+/// Write the `Completed` record a shipped binary wrote, as raw bytes rather
+/// than through this binary's own encoder. `status` sits mid-struct, so a field
+/// added inside the variant shifts `cascade_hlc`, `cascade_seq` and
+/// `to_state_version` and the row stops decoding.
+fn put_shipped_completed_record(store: &Store, ns: &ContextGroupId, initiated_by: PublicKey) {
+    use borsh::BorshSerialize;
+    use calimero_store::layer::WriteLayer;
+
+    let mut bytes = Vec::new();
+    "0.1.0".to_owned().serialize(&mut bytes).unwrap();
+    "0.2.0".to_owned().serialize(&mut bytes).unwrap();
+    None::<Vec<u8>>.serialize(&mut bytes).unwrap();
+    0u64.serialize(&mut bytes).unwrap();
+    initiated_by.serialize(&mut bytes).unwrap();
+    // `Completed`: variant tag, then `completed_at` and nothing else.
+    bytes.push(1);
+    None::<u64>.serialize(&mut bytes).unwrap();
+    // `cascade_hlc` then `cascade_seq`, both absent (one `0` tag each).
+    bytes.extend_from_slice(&[0, 0]);
+    2u32.serialize(&mut bytes).unwrap();
+
+    store
+        .clone()
+        .put(
+            &key::GroupUpgradeKey::new(ns.to_bytes()),
+            calimero_store::slice::Slice::from(&bytes[..]),
+        )
+        .expect("write the shipped-layout record");
+}
+
+/// The whole fleet-progress feature, driven off the record every namespace that
+/// has already migrated once holds the moment its node upgrades.
+///
+/// The heartbeat reaction opens with the namespace rollup, which opens with
+/// this read. A record it cannot decode leaves `MigrationProgress` and
+/// `MigrationCompleted` dark on that namespace on every beat forever, and
+/// re-arms the completion latch each time instead of stamping it - silently,
+/// because the reaction only warns and returns. Every other test here builds
+/// its record in-process, so none of them read a row this binary did not write.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_record_a_shipped_binary_wrote_still_drives_the_fleet_latch() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x79; 32]);
+    let app_key = [0xB7; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xCD; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    put_shipped_completed_record(&node.store, &ns, admin_pk);
+
+    // The admin read answers from this row too, and it is the same rollup the
+    // heartbeat reaction below runs.
+    assert_eq!(
+        calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+            &node.store,
+            &ns,
+            |_| None,
+        )
+        .expect("the admin read must answer over a stored record")
+        .target_version,
+        2,
+    );
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let facts = MigrationFacts {
+        schema_version: 2,
+        residue_auto: 0,
+        synced_up_to_hlc: 0,
+        authored_remaining: 0,
+        migration_failed: None,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    // Red first, so the completion announces an edge this process watched.
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                ..facts
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+    assert!(
+        matches!(
+            next_migration_event(&mut events, Duration::from_secs(5))
+                .await
+                .expect("a stored record must not silence the fleet frames")
+                .payload,
+            GroupMigrationPayload::MigrationProgress { .. }
+        ),
+        "the first heartbeat must announce the fleet rollup"
+    );
+
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(&peer_sk, ns.to_bytes(), facts, now_ms + 1_000)
+            .expect("sign heartbeat"),
+    )
+    .await;
+    match next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup")
+        .payload
+    {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "this node plus the peer");
+            assert_eq!(migrated, 2, "both are at the target");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    let stamped_at = match next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the all_migrated edge must announce completion")
+        .payload
+    {
+        GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at,
+        } => {
+            assert_eq!(
+                to_version, "0.2.0",
+                "the version comes off the stored record"
+            );
+            completed_at
+        }
+        other => panic!("expected MigrationCompleted, got {other:?}"),
+    };
+
+    // The latch is stamped, not re-armed: a read that errors makes
+    // `stamp_fleet_completion` return false forever, re-arming on every beat.
+    assert_eq!(
+        UpgradesRepository::new(&node.store)
+            .fleet_completed_at(&ns)
+            .expect("read stamp"),
+        Some(stamped_at),
+    );
+    assert_eq!(
+        calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+            &node.store,
+            &ns,
+            |_| None,
+        )
+        .expect("rollup")
+        .fleet_completed_at,
+        Some(stamped_at),
+        "the admin read must surface the stamp the fleet latch wrote"
+    );
+}
+
+/// A node that boots onto an already-converged fleet observed no transition.
+///
+/// Every installation that ever upgraded carries a root record sitting at
+/// `Completed` with no fleet stamp, so the first rollup after boot
+/// finds an armed latch over a green fleet. The version is right and the stamp
+/// is owed, but the event is not: `MigrationCompleted` announces a false-to-true edge,
+/// and this process never saw one. Announcing anyway would banner a migration
+/// that finished months ago to every member subscriber of every such namespace,
+/// once, on the first heartbeat after deploying this build.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x75; 32]);
+    let app_key = [0xB5; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
+    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    register_context_for(&node.store, &ns, ContextId::from([0xCB; 32]), app_id_v2());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The historical record: this migration is long done, the fleet has been
+    // green for months, and nothing has ever stamped it.
+    UpgradesRepository::new(&node.store)
+        .save(
+            &ns,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 0,
+                initiated_by: admin_pk,
+                status: GroupUpgradeStatus::Completed { completed_at: None },
+                cascade_hlc: None,
+                cascade_seq: None,
+                to_state_version: 2,
+            },
+        )
+        .expect("save upgrade record");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 2,
+                residue_auto: 0,
+                synced_up_to_hlc: 0,
+                authored_remaining: 0,
+                migration_failed: None,
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    // The rollup really is green at the target, so the completion path is
+    // reached - the unobserved edge, not a red fleet, is what withholds below.
+    let progress = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup");
+    match progress.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "this node plus the peer");
+            assert_eq!(migrated, 2, "both are already at the target");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "a completion this process never watched happen must not be announced"
+    );
+
+    // The stamp is still written: it is the latch, and leaving it armed would
+    // re-run this decision on every heartbeat for the life of the namespace.
+    assert!(
+        UpgradesRepository::new(&node.store)
+            .fleet_completed_at(&ns)
+            .expect("read stamp")
+            .is_some(),
+        "the backfill must disarm the latch"
+    );
+}
+
+/// The completion stamp must describe the migration the rollup measured.
+///
+/// Every installation that ever upgraded carries a root record sitting at
+/// `Completed` with no fleet stamp, so the first heartbeat on an
+/// already-converged fleet finds an armed latch. The rollup's target is the max
+/// across the root AND every descendant: once a subgroup has been upgraded past
+/// the root, a green fleet is the subgroup's migration converging, and stamping
+/// the root would announce its stale `to_version` to every member subscriber.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn stale_root_record_does_not_announce_a_newer_migration() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    // The namespace's sole context is already loaded at state version 3, so
+    // this node's self-report is `migrated` against the subtree target.
+    let ns = ContextGroupId::from([0x72; 32]);
+    let subgroup = ContextGroupId::from([0x73; 32]);
+    let app_key = [0xB3; 32];
+    let app_v3 = ApplicationId::from([0xDD; 32]);
+    provision_group(&node.store, &ns, admin_pk, app_key, app_v3);
+    provision_group(&node.store, &subgroup, admin_pk, app_key, app_v3);
+    NamespaceRepository::new(&node.store)
+        .nest(&ns, &subgroup)
+        .expect("nest subgroup");
+    install_application(&node.store, app_v3, app_key, "0.3.0", 3);
+    register_context_for(&node.store, &ns, ContextId::from([0xC9; 32]), app_v3);
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    // The old root migration, latch still armed months later.
+    let stale_root = GroupUpgradeValue {
+        from_version: "0.1.0".to_owned(),
+        to_version: "0.2.0".to_owned(),
+        migration: None,
+        initiated_at: 0,
+        initiated_by: admin_pk,
+        status: GroupUpgradeStatus::Completed { completed_at: None },
+        cascade_hlc: None,
+        cascade_seq: None,
+        to_state_version: 2,
+    };
+    UpgradesRepository::new(&node.store)
+        .save(&ns, &stale_root)
+        .expect("save stale root record");
+    // The migration actually in flight, recorded on the subgroup alone by a
+    // bare `upgrade_group` - this is what pulls the subtree target to 3.
+    UpgradesRepository::new(&node.store)
+        .save(
+            &subgroup,
+            &GroupUpgradeValue {
+                from_version: "0.2.0".to_owned(),
+                to_version: "0.3.0".to_owned(),
+                to_state_version: 3,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
+                ..stale_root.clone()
+            },
+        )
+        .expect("save subgroup record");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 3,
+                residue_auto: 0,
+                synced_up_to_hlc: 0,
+                authored_remaining: 0,
+                migration_failed: None,
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    // The fleet really is green at the subtree target, so the completion path
+    // is reached - the guard, not a false rollup, is what declines below.
+    let progress = next_migration_event(&mut events, Duration::from_secs(5))
+        .await
+        .expect("the changed heartbeat must announce the fleet rollup");
+    match progress.payload {
+        GroupMigrationPayload::MigrationProgress {
+            migrated, total, ..
+        } => {
+            assert_eq!(total, 2, "this node plus the peer");
+            assert_eq!(migrated, 2, "both report the subtree target of 3");
+        }
+        other => panic!("expected MigrationProgress, got {other:?}"),
+    }
+
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "the stale root record must not announce a completion for a migration \
+         it does not describe"
+    );
+    match UpgradesRepository::new(&node.store)
+        .load(&ns)
+        .expect("load record")
+        .expect("record exists")
+        .status
+    {
+        GroupUpgradeStatus::Completed { .. } => {}
+        other => panic!("the unmeasured record must be left untouched, got {other:?}"),
+    }
+}
+
+/// A namespace that has never migrated has nothing to report.
+///
+/// With no upgrade record anywhere in the subtree the target is `0`, every
+/// member is trivially at it, and the rollup is green forever - so an unguarded
+/// reaction would announce progress on every heartbeat, on every such
+/// namespace, for the life of the node.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn never_migrated_namespace_announces_nothing() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let peer_sk = PrivateKey::random(&mut rng);
+
+    let ns = ContextGroupId::from([0x74; 32]);
+    let app_key = [0xB4; 32];
+    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v1());
+    install_application(&node.store, app_id_v1(), app_key, "0.1.0", 1);
+    register_context_for(&node.store, &ns, ContextId::from([0xCA; 32]), app_id_v1());
+    NamespaceRepository::new(&node.store)
+        .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
+        .expect("store namespace identity");
+    // Enrolled at the anchor, so the cohort expansion resolves this row back to
+    // the key the peer's heartbeats are signed with. A row with no binding
+    // contributes nobody, and the cohort reads as converged without the peer.
+    let peer_account =
+        calimero_context::test_support::enrol(&node.store, &ns, &peer_sk.public_key());
+    MembershipRepository::new(&node.store)
+        .add_member(&ns, &peer_account, GroupMemberRole::Member)
+        .expect("seat the peer");
+
+    let mut events = pin!(node.node_client.receive_events());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_millis() as u64;
+    deliver_heartbeat(
+        &node,
+        ns,
+        build_signed_heartbeat(
+            &peer_sk,
+            ns.to_bytes(),
+            MigrationFacts {
+                schema_version: 1,
+                residue_auto: 0,
+                synced_up_to_hlc: 0,
+                authored_remaining: 0,
+                migration_failed: None,
+            },
+            now_ms,
+        )
+        .expect("sign heartbeat"),
+    )
+    .await;
+
+    assert_eq!(
+        next_migration_event(&mut events, Duration::from_millis(500))
+            .await
+            .map(|e| format!("{:?}", e.payload)),
+        None,
+        "a namespace with no upgrade record has no migration to report on"
     );
 }

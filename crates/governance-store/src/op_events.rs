@@ -143,6 +143,22 @@ pub enum OpEvent {
     /// re-trigger the inherited-follow decision for that subgroup's contexts.
     /// Auto-follow subscribes to this so a late-arriving flip is not a dead end.
     SubgroupVisibilityChanged { group_id: [u8; 32], open: bool },
+    /// A group upgrade op applied here. Fires on EVERY node that applies it,
+    /// not just the one that authored it: `send_event` is process-local, so
+    /// announcing from the request handler leaves every other member's node
+    /// silent about its own workspace.
+    ///
+    /// Fields mirror `GroupMigrationPayload::MigrationStarted` and are resolved
+    /// per node from local state - `local_contexts_total` is the contexts THIS
+    /// node holds, and the versions degrade to `unknown` / `0` on a node that
+    /// has not installed the target application yet.
+    MigrationStarted {
+        group_id: [u8; 32],
+        from_version: String,
+        to_version: String,
+        to_state_version: u32,
+        local_contexts_total: u32,
+    },
 }
 
 /// The process-wide broadcast channel. Tests share this channel, so

@@ -1383,6 +1383,19 @@ pub struct MemberMigrationReport {
     pub migration_failed: Option<MigrationFailureKind>,
 }
 
+impl From<calimero_node_primitives::messages::MigrationStatusReport> for MemberMigrationReport {
+    fn from(r: calimero_node_primitives::messages::MigrationStatusReport) -> Self {
+        Self {
+            schema_version: r.schema_version,
+            residue_auto: r.residue_auto,
+            synced_up_to_hlc: r.synced_up_to_hlc,
+            reported_at: r.reported_at,
+            authored_remaining: r.authored_remaining,
+            migration_failed: MigrationFailureKind::from_u8(r.migration_failed),
+        }
+    }
+}
+
 /// Why a member's migration did not complete. A categorized, `Copy`-safe
 /// reason (the human string is derived from this in the UI); kept narrow so
 /// the report stays `Copy` and the heartbeat carries a single discriminant.
@@ -1507,6 +1520,11 @@ pub struct MigrationStatus {
     pub expected_members: usize,
     /// The governance HLC the cohort was pinned at (migration expand-entry).
     pub cohort_pinned_at_hlc: Option<HybridTimestamp>,
+    /// When this node watched the cohort converge, read off the stored upgrade
+    /// record: the durable answer, unlike `rollup.all_migrated`, which is
+    /// recomputed from in-TTL heartbeats and lapses when a member goes quiet.
+    /// The pure rollup below has no record to read and leaves it `None`.
+    pub fleet_completed_at: Option<u64>,
     pub rollup: MigrationStatusRollup,
     pub members: Vec<MemberMigrationStatus>,
 }
@@ -1616,6 +1634,7 @@ pub fn compute_migration_status_rollup(
         target_version,
         expected_members: total,
         cohort_pinned_at_hlc,
+        fleet_completed_at: None,
         rollup: MigrationStatusRollup {
             migrated,
             in_progress,
@@ -2016,6 +2035,33 @@ mod migration_status_tests {
         assert!(
             !status.rollup.all_migrated,
             "a member still on the old binary must not count as migrated"
+        );
+    }
+
+    /// Four of the mapped fields are `u64`, so a transposition compiles
+    /// silently - swapping `synced_up_to_hlc` with `reported_at` would corrupt
+    /// the cohort pin comparison. Distinct values per field pin the mapping.
+    #[test]
+    fn heartbeat_report_maps_field_for_field() {
+        let mapped: MemberMigrationReport =
+            calimero_node_primitives::messages::MigrationStatusReport {
+                schema_version: 7,
+                residue_auto: 11,
+                synced_up_to_hlc: 22,
+                reported_at: 33,
+                authored_remaining: 44,
+                migration_failed: 2,
+            }
+            .into();
+
+        assert_eq!(mapped.schema_version, 7);
+        assert_eq!(mapped.residue_auto, 11);
+        assert_eq!(mapped.synced_up_to_hlc, 22);
+        assert_eq!(mapped.reported_at, 33);
+        assert_eq!(mapped.authored_remaining, 44);
+        assert_eq!(
+            mapped.migration_failed,
+            Some(MigrationFailureKind::ApplyFailed)
         );
     }
 }

@@ -1,12 +1,14 @@
 //! Bridges the governance `OpEvent` bus to the client-facing `NodeEvent` bus for
-//! group-membership changes. Structural twin of [`crate::auto_follow`]; observational only.
+//! group-membership changes and migration announcements. Structural twin of
+//! [`crate::auto_follow`]; observational only.
 
 use std::sync::Mutex;
 
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::events::{
-    GroupMembershipEvent, MembershipChange, MembershipChangePayload, NodeEvent,
+    GroupMembershipEvent, GroupMigrationPayload, MembershipChange, MembershipChangePayload,
+    NodeEvent,
 };
 use calimero_primitives::hash::Hash;
 use tokio::sync::broadcast;
@@ -19,7 +21,7 @@ static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 
 /// Spawn the membership-event bridge. Idempotent: a no-op while a prior task
 /// is still running.
-pub fn spawn(node_client: NodeClient) {
+pub fn spawn(node_client: NodeClient, datastore: calimero_store::Store) {
     let mut slot = HANDLE.lock().expect("membership-events HANDLE poisoned");
     if slot.as_ref().is_some_and(|h| !h.is_finished()) {
         debug!("membership-events bridge already running; skipping re-spawn");
@@ -28,7 +30,7 @@ pub fn spawn(node_client: NodeClient) {
     // Subscribe synchronously, before spawning, so no event emitted right after can be missed.
     let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
-        run(rx, node_client).await;
+        run(rx, node_client, datastore).await;
     })
     .abort_handle();
     *slot = Some(abort);
@@ -46,7 +48,11 @@ pub fn shutdown() {
     }
 }
 
-async fn run(mut rx: broadcast::Receiver<OpEvent>, node_client: NodeClient) {
+async fn run(
+    mut rx: broadcast::Receiver<OpEvent>,
+    node_client: NodeClient,
+    datastore: calimero_store::Store,
+) {
     info!("membership-events bridge started");
     loop {
         let event = match rx.recv().await {
@@ -72,6 +78,28 @@ async fn run(mut rx: broadcast::Receiver<OpEvent>, node_client: NodeClient) {
             if let Err(err) = node_client.send_event(node_event) {
                 debug!(?err, "membership-events: send_event failed (no receivers?)");
             }
+        }
+        // Announced from the apply, so it fires on every node that folds the
+        // upgrade op rather than only on the one whose client asked for it.
+        if let OpEvent::MigrationStarted {
+            group_id,
+            from_version,
+            to_version,
+            to_state_version,
+            local_contexts_total,
+        } = event
+        {
+            crate::migration_events::emit(
+                &node_client,
+                &datastore,
+                &group_id.into(),
+                GroupMigrationPayload::MigrationStarted {
+                    from_version,
+                    to_version,
+                    to_state_version,
+                    local_contexts_total,
+                },
+            );
         }
     }
 }

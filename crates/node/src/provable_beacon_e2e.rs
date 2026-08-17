@@ -7,6 +7,11 @@
 //! nothing, and that a beacon accepted on this path never enters the readiness
 //! cache. The emit-path case runs a real `ReadinessManager` over the same
 //! harness and decodes what it actually published.
+//!
+//! Every case is `#[serial(boot_test_node)]` for the reason the sibling
+//! `boot_test_node` modules are: booting a node rebinds process-global
+//! singletons (the `op_events` bridges, the TEE-admit subscriber), so a
+//! concurrent boot steals another module's event stream mid-assertion.
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +30,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use libp2p::PeerId;
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
@@ -33,7 +39,6 @@ use crate::readiness::{
     ReadinessState, ReadinessTier,
 };
 use crate::test_node_harness::{boot_test_node, TestNode};
-use serial_test::serial;
 
 const NS: [u8; 32] = [42u8; 32];
 
@@ -217,9 +222,14 @@ async fn provable_pull_does_not_consume_the_member_debounce_slot() {
     // A seeded member's beacon verifies, so it takes the established-member arm
     // and claims that arm's slot. Nothing releases it: the member pull is not
     // targeted, so a zero-op result says nothing about the peer that beaconed.
+    //
+    // It pulls from `member_peer` because there are no namespace-topic
+    // subscribers in this harness, and that arm now names the beacon's own signer
+    // as its fallback rather than giving up — the whole point of the fallback.
+    let member_peer = PeerId::random();
     deliver(
         &node,
-        PeerId::random(),
+        member_peer,
         signed_beacon(&admin_sk, now_millis(), None),
     )
     .await;
@@ -241,8 +251,10 @@ async fn provable_pull_does_not_consume_the_member_debounce_slot() {
     .await;
     assert_eq!(
         stream_opens(&node),
-        vec![joiner_peer],
-        "an in-window member sync must not block the provable pull"
+        vec![member_peer, joiner_peer],
+        "an in-window member sync must not block the provable pull — and the \
+         member pull itself must have reached the beacon's signer, since \
+         discovery had nobody to offer"
     );
 }
 

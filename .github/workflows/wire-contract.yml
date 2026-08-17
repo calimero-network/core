@@ -49,3 +49,12 @@ jobs:
 
       - name: Wire-contract fixtures
         run: cargo test -p calimero-server-primitives --test wire_fixtures
+
+      # The fixtures are derived files, so regenerating them must be a no-op:
+      # this proves the documented regeneration command still works and that
+      # nobody hand-edited a fixture into a shape the DTO no longer produces.
+      - name: Fixtures regenerate clean
+        run: |
+          UPDATE_FIXTURES=1 cargo test -p calimero-server-primitives --test wire_fixtures
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
