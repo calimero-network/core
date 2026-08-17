@@ -9,7 +9,6 @@ pub mod create_group;
 pub mod delete;
 pub mod get;
 pub mod groups;
-pub mod identity;
 pub mod invite;
 pub mod join;
 pub mod leave;
@@ -60,8 +59,6 @@ pub enum NamespaceSubCommands {
     CreateGroup(create_group::CreateGroupCommand),
     #[command(alias = "ls")]
     List(list::ListCommand),
-    #[command(alias = "id")]
-    Identity(identity::IdentityCommand),
 }
 
 impl NamespaceCommand {
@@ -78,7 +75,6 @@ impl NamespaceCommand {
             NamespaceSubCommands::Groups,
             NamespaceSubCommands::CreateGroup,
             NamespaceSubCommands::List,
-            NamespaceSubCommands::Identity,
         )
     }
 }
