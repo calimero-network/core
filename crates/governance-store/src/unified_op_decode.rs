@@ -8,6 +8,7 @@
 //! op-store can never lag the gov-DAG). `calimero-context` re-exports these so the
 //! existing projection callers keep compiling unchanged.
 
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
@@ -16,6 +17,25 @@ use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 
 use calimero_context_client::local_governance::GroupOp;
+
+/// The account and device `sign_pk` speaks for in `namespace`, as the live
+/// bindings record it.
+///
+/// The one resolution every producer of a projected op should use, so they cannot
+/// disagree about who authored it. Returns `None` for a key with no live binding —
+/// a joiner whose own join is what creates one, or pre-credential data — and the
+/// caller then gets the stand-in rather than a fabricated claim to a real account.
+pub fn signer_binding_for(
+    store: &calimero_store::Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    sign_pk: &PublicKey,
+) -> Option<(AccountId, DeviceId)> {
+    crate::AccountBindingRepository::new(store)
+        .binding_for_sign_pk(namespace, sign_pk)
+        .ok()
+        .flatten()
+        .map(|binding| (binding.account, binding.device))
+}
 
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
 /// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
@@ -120,6 +140,24 @@ pub fn op_from_namespace_op(
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
 ) -> Op {
+    op_from_namespace_op_with_binding(signed, decrypted_group_op, None, id, hlc, parents)
+}
+
+/// [`op_from_namespace_op`], told who the signer is.
+///
+/// Every production producer should use this one. The bare version attributes an
+/// op with no carried credential to a stand-in derived from its signing key, and
+/// a stand-in is not the account any row is keyed by — so a fold that compares
+/// the two (`AccountKeysRotated` does) silently drops the op.
+#[must_use]
+pub fn op_from_namespace_op_with_binding(
+    signed: &SignedNamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
+    signer_binding: Option<(AccountId, DeviceId)>,
+    id: [u8; 32],
+    hlc: HybridTimestamp,
+    parents: &[[u8; 32]],
+) -> Op {
     let payload = match &signed.op {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF, not a
         // direct membership: live's apply requires `check_path == Inherited` and
@@ -146,11 +184,32 @@ pub fn op_from_namespace_op(
         // preserving causal structure without inventing a payload.
         _ => OpPayload::Noop,
     };
-    // The op's own certificate when it has one, and the stand-in only when it
-    // does not. That ordering is the fix: a join used to be attributed to an
-    // account derived from its signing key, so the device it named was fiction
-    // and no check downstream could compare against it.
+    // Three answers, in the only order that can work.
+    //
+    // The op's own certificate first: a joiner has no binding yet — its join is
+    // what creates one — so only the credential it carries can name it.
+    //
+    // Then the binding the CALLER resolved, which covers an established device
+    // whose op carries no credential. `AccountKeysRotated` is that case, and
+    // getting a stand-in there meant the fold compared a real `handoff.account`
+    // against a derived one and silently dropped every rotation.
+    //
+    // The stand-in last, for a key nothing knows: pre-credential data.
+    //
+    // Resolving the binding in the CALLER is what makes it safe. Both producers
+    // have already APPLIED this op, and an op cannot apply unless the signer's
+    // binding is present — so every node that folds it resolves the same account.
+    // Resolving inside the fold would not be safe: the fold walks raw logs in
+    // arrival order, so reading a binding there answers "has the link folded
+    // yet" and splits the root by delivery order.
     let authorship = carried_authorship(&signed.op, decrypted_group_op, signed.signer)
+        .or_else(|| {
+            signer_binding.map(|(account, device)| Authorship {
+                account,
+                device,
+                device_key: signed.signer,
+            })
+        })
         .unwrap_or_else(|| legacy_authorship(signed.signer));
     build_op(
         id,

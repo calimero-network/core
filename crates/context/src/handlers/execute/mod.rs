@@ -1028,8 +1028,23 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 continue;
                             };
                             for entry in &log.entries {
+                                // Same resolution the apply and backfill paths
+                                // use: a rotation entry names a KEY, and the
+                                // writer plane is keyed by account.
+                                let signer_binding = entry.signer.and_then(|signer| {
+                                    calimero_governance_store::signer_binding_for(
+                                        &xcall_datastore,
+                                        &calimero_context_config::types::ContextGroupId::from(
+                                            *context_id.digest(),
+                                        ),
+                                        &signer,
+                                    )
+                                });
                                 if let Some(op) = crate::scope_projection::op_from_rotation_entry(
-                                    *object, scope, entry,
+                                    *object,
+                                    scope,
+                                    entry,
+                                    signer_binding,
                                 ) {
                                     ops.push(op);
                                 }

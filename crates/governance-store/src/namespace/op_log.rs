@@ -156,9 +156,15 @@ impl<'a> NamespaceOpLogService<'a> {
             _ => None,
         };
 
-        let unified_op = crate::unified_op_decode::op_from_namespace_op(
+        let signer_binding = crate::unified_op_decode::signer_binding_for(
+            self.store,
+            &self.namespace_id.to_bytes().into(),
+            &signed.signer,
+        );
+        let unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
             signed,
             decrypted.as_ref(),
+            signer_binding,
             delta.id,
             delta.hlc,
             &delta.parents,
