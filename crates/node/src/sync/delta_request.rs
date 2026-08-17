@@ -701,7 +701,7 @@ impl SyncManager {
         stream: &mut Stream,
         _nonce: Nonce,
     ) -> Result<()> {
-        info!(
+        debug!(
             %context_id,
             "Handling DAG heads request from peer"
         );
@@ -712,7 +712,7 @@ impl SyncManager {
             .get_context(&context_id)?
             .ok_or_eyre("Context not found")?;
 
-        info!(
+        debug!(
             %context_id,
             heads_count = context.dag_heads.len(),
             root_hash = %context.root_hash,

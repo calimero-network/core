@@ -801,7 +801,7 @@ impl ReadinessManager {
         let log_strong = strong;
         actix::spawn(async move {
             match net.publish(topic, bytes).await {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracing::debug!(
                     namespace_id = %hex::encode(log_ns),
                     applied_through = log_applied,
                     strong = log_strong,

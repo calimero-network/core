@@ -750,7 +750,7 @@ impl SyncManager {
             }
         };
 
-        info!(
+        debug!(
             %context_id,
             peer_count = peers.len(),
             attempts = final_attempt,
@@ -1171,7 +1171,7 @@ impl SyncManager {
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
         let start = Instant::now();
 
-        info!(%context_id, %peer_id, "Attempting to sync with peer");
+        debug!(%context_id, %peer_id, "Attempting to sync with peer");
 
         // Metrics: every sync attempt goes through this chokepoint, so
         // `sync_start / sync_complete / sync_failure` here covers every
@@ -1201,7 +1201,7 @@ impl SyncManager {
 
         let took = start.elapsed();
 
-        info!(%context_id, %peer_id, ?took, ?protocol, "Sync with peer completed successfully");
+        debug!(%context_id, %peer_id, ?took, ?protocol, "Sync with peer completed successfully");
 
         // Use the variant-only `SyncProtocolKind` for the protocol label
         // so it matches the fixed `KNOWN_PROTOCOLS` set in
@@ -1641,7 +1641,7 @@ impl SyncManager {
                 }
             }
 
-            info!(
+            debug!(
                 %context_id,
                 %chosen_peer,
                 protocol = ?selection.protocol,
@@ -1866,7 +1866,7 @@ impl SyncManager {
             .await?;
 
         let is_uninitialized = *context.root_hash == [0; 32];
-        info!(
+        debug!(
             %context_id,
             %chosen_peer,
             is_uninitialized,

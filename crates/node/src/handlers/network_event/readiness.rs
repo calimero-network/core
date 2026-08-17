@@ -212,7 +212,7 @@ pub(super) fn handle_readiness_beacon(
     // (Phase 8.1). Must run AFTER `cache.insert` so a waiter that
     // re-checks the cache on wakeup sees the new entry.
     manager.readiness_notify.notify(namespace_id);
-    info!(
+    debug!(
         namespace_id = %hex::encode(namespace_id),
         peer = %peer_pubkey,
         applied_through,
