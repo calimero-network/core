@@ -385,6 +385,35 @@ mod tests {
         assert!(s.snapshot(ctx(), 9000).is_empty());
     }
 
+    /// A pre-epoch clock makes `ephemeral::now_ms` return 0, which freezes
+    /// presence (ages saturate to 0, so nothing expires) rather than aggressively
+    /// expiring it. What makes 0 the right fallback is that it is *self-healing*:
+    /// entries stamped during the outage are swept on the first sweep with a
+    /// real clock. The rejected `u64::MAX` alternative inverts exactly this —
+    /// `real_now.saturating_sub(u64::MAX) == 0` would pin those entries fresh
+    /// forever.
+    #[test]
+    fn entries_stamped_by_a_broken_clock_are_swept_once_it_recovers() {
+        let mut s = AwarenessStore::new();
+        // now_ms == 0: what the pre-epoch fallback stamps.
+        let _ignored = s.apply(ctx(), pk(1), 1, vec![1], 0);
+
+        // While the clock is still broken, nothing expires.
+        assert!(
+            s.sweep(ctx(), 7000, 0).is_empty(),
+            "a frozen clock must not expire entries"
+        );
+        assert_eq!(s.snapshot(ctx(), 0), vec![(pk(1), vec![1], 0)]);
+
+        // First sweep after recovery reclaims it.
+        assert_eq!(
+            s.sweep(ctx(), 7000, 1_700_000_000_000),
+            vec![Diff::Remove { author: pk(1) }],
+            "an entry stamped at 0 must expire against a real clock"
+        );
+        assert_eq!(s.contexts().count(), 0);
+    }
+
     #[test]
     fn touch_extends_liveness() {
         let mut s = AwarenessStore::new();

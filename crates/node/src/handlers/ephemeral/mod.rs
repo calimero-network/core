@@ -59,6 +59,43 @@ const _: () = assert!(
 /// node's enforcement and the server's pre-validation can never drift.
 pub use calimero_primitives::events::EPHEMERAL_MAX_BYTES;
 
+/// Milliseconds since the UNIX epoch — the single wall-clock reading the whole
+/// presence subsystem uses (inbound apply, outbound publish and heartbeat
+/// sweep, and the snapshot RPC), so a `now_ms` can never mean two different
+/// things across the three.
+///
+/// # Pre-epoch clock
+///
+/// `duration_since(UNIX_EPOCH)` fails only when the host clock is set before
+/// 1970. Rather than panic, this degrades to `0`, and the honest description of
+/// what that produces is **"presence freezes"**, not "everything looks
+/// maximally aged":
+///
+/// - ages are computed as `now_ms.saturating_sub(last_seen_ms)`, so with
+///   `now_ms == 0` every entry reports `age_ms == 0` — maximally *fresh*;
+/// - the TTL sweep tests `now_ms.saturating_sub(last_seen_ms) >= ttl_ms`, which
+///   is therefore never true, so nothing expires for as long as the clock reads
+///   pre-epoch.
+///
+/// That is deliberately preferred to the "conservative" alternative of
+/// returning [`u64::MAX`], which is worse in the case that actually matters —
+/// clock *recovery*. Entries stamped `u64::MAX` would, once the clock is sane
+/// again, report `now_ms.saturating_sub(u64::MAX) == 0` forever: permanently
+/// fresh, never swept, a genuine leak. Stamping `0` is self-healing in exactly
+/// the same situation — a real `now_ms` minus `0` exceeds any TTL, so every
+/// entry written during the outage is swept on the first tick after recovery.
+///
+/// The exposure while the clock is broken is bounded: entries stop expiring,
+/// but [`store::MAX_AUTHORS_PER_CONTEXT`] still bounds how many can accumulate,
+/// nothing is persisted, and presence is a best-effort signal that clients are
+/// already told not to treat as authoritative.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub mod auth;
 pub(crate) mod inbound;
 pub(crate) mod outbound;

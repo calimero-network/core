@@ -307,12 +307,9 @@ pub(crate) fn handle_ephemeral_broadcast(
     // envelope accepted as fresh is recorded against the same reading it was
     // judged by. The AwarenessStore and the freshness gate are both
     // time-parameterised so tests can inject arbitrary timestamps; callers
-    // supply the wall-clock reading. `unwrap_or(0)` degrades to "always
-    // expired" rather than panicking on a pre-epoch clock.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    // supply the wall-clock reading. See `ephemeral::now_ms` for what a
+    // pre-epoch clock degrades to (it freezes presence; it does not expire it).
+    let now_ms = crate::handlers::ephemeral::now_ms();
 
     let _ignored = ctx.spawn(
         async move {

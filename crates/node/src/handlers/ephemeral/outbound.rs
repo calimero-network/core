@@ -32,7 +32,10 @@ use libp2p::gossipsub::TopicHash;
 use tracing::debug;
 
 use crate::handlers::ephemeral::inbound::emit_ephemeral_diff;
-use crate::handlers::ephemeral::{EPHEMERAL_MAX_BYTES, PRESENCE_TTL_MS};
+// `now_ms` lives in the parent module so the publish path, the inbound apply,
+// and the snapshot RPC cannot disagree about what a `now_ms` means; see there
+// for the pre-epoch behaviour.
+use crate::handlers::ephemeral::{now_ms, EPHEMERAL_MAX_BYTES, PRESENCE_TTL_MS};
 use crate::NodeManager;
 
 // ---------------------------------------------------------------------------
@@ -102,19 +105,6 @@ pub(crate) struct LocalEphemeral {
 /// bound as before and strictly better than the guaranteed hit at 0.
 fn initial_seq() -> u64 {
     now_ms()
-}
-
-// ---------------------------------------------------------------------------
-// Wall-clock helper
-// ---------------------------------------------------------------------------
-
-/// Milliseconds since the UNIX epoch.  Degrades to 0 on a pre-epoch clock
-/// rather than panicking — the AwarenessStore's `now_ms` contract allows 0.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
