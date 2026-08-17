@@ -40,6 +40,7 @@ name = "demo"
 
 [dev-dependencies]
 assert-json-diff.workspace = true
+tracing-subscriber.workspace = true
 eyre.workspace = true
 owo-colors.workspace = true
 rand.workspace = true

@@ -515,12 +515,20 @@ impl VMHostFunctions<'_> {
         }
         self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
+        // The message itself is deliberately not repeated here. It is already
+        // pushed onto `logic.logs` above and returned to the caller in the
+        // execution outcome, which is where it belongs: the app's own log line
+        // is written by app code over app state, so it can hold anything the
+        // app was given, and a node operator is not supposed to see user data.
+        // Copying it into the node's log put it in a place with a different
+        // audience and a different retention — a CI artifact, a support bundle —
+        // for no diagnostic gain the count does not already provide.
         let total_logs = self.borrow_logic().logs.len();
         info!(
             target: "runtime::guest::log",
             interesting = false,
             total_logs,
-            message = %message,
+            message_len = message.len(),
             "guest log (js_std_d_print)"
         );
 
@@ -852,11 +860,15 @@ impl VMHostFunctions<'_> {
         let total_logs = self.borrow_logic().logs.len();
         let interesting = message.contains("[dispatcher]") || message.contains("QuickJS");
 
+        // As in `js_std_d_print`: the message goes to the caller via
+        // `logic.logs`, not into the operator's log. `interesting` still says
+        // whether it was a dispatcher/QuickJS line, which is what this flag was
+        // for, and needs no user data to answer.
         info!(
             target: "runtime::guest::log",
             interesting,
             total_logs,
-            message = %message,
+            message_len = message.len(),
             "guest log"
         );
 
