@@ -8764,6 +8764,66 @@ mod apply_auth_at_cut {
         }
     }
 
+    /// The persisted record and the announced event derive `from_version`
+    /// through this one function, because deriving it twice is how they came to
+    /// disagree: the record fell back to "unknown" on an ABSENT previous id
+    /// while the event fell back on one EQUAL to the target, so a no-op cascade
+    /// stored a real semver and announced "unknown" for the same transition.
+    #[test]
+    fn from_version_falls_back_identically_for_absent_and_equal_previous_ids() {
+        use crate::ops::group::context::migration_from_version;
+
+        let store = test_store();
+        let target = ApplicationId::from([0x5B; 32]);
+        let other = ApplicationId::from([0x5C; 32]);
+
+        assert_eq!(
+            migration_from_version(&store, None, &target),
+            "unknown",
+            "no previous id names no version"
+        );
+        // Registered with a real semver, so a short-circuit to "unknown" is
+        // distinguishable: an unregistered id reads "unknown" too, and asserting
+        // against that would pass no matter which branch ran.
+        let register = |id, version: &str| {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ApplicationMeta::new(id),
+                    &calimero_store::types::ApplicationMeta::new(
+                        calimero_store::key::BlobMeta::new([0x01; 32].into()),
+                        0,
+                        "".into(),
+                        Box::new([]),
+                        calimero_store::key::BlobMeta::new([0x02; 32].into()),
+                        calimero_store::types::PackageInfo {
+                            package: "pkg".into(),
+                            version: version.into(),
+                            signer_id: "".into(),
+                            state_version: 1,
+                        },
+                    ),
+                )
+                .unwrap();
+        };
+        // BOTH registered with real, distinct semvers. If either resolved to an
+        // unregistered id, `application_version` would answer "unknown" and the
+        // fallback assertions would pass without the predicate running at all.
+        register(other, "1.2.3");
+        register(target, "9.9.9");
+
+        assert_eq!(
+            migration_from_version(&store, Some(&target), &target),
+            "unknown",
+            "a previous id equal to the target means the row already holds the new version"
+        );
+        assert_eq!(
+            migration_from_version(&store, Some(&other), &target),
+            "1.2.3",
+            "a distinct previous id is resolved, not short-circuited"
+        );
+    }
+
     #[test]
     fn target_application_set_honors_at_cut_grant_over_live_denial() {
         // The catching-up replica: its live rows say the signer has no authority

@@ -43,16 +43,14 @@ pub(crate) fn apply(
     if target_blob.is_some_and(|blob| blob != *app_key) {
         return Ok(());
     }
-    if let Some(previous_application_id) = previous_application_id {
-        let local_contexts_total = MetadataRepository::new(store)
-            .count_contexts(group_id)
-            .unwrap_or_default() as u32;
-        ctx.queue_migration_started(
-            &previous_application_id,
-            target_application_id,
-            None,
-            local_contexts_total,
-        );
-    }
+    let local_contexts_total = MetadataRepository::new(store)
+        .count_contexts(group_id)
+        .unwrap_or_default() as u32;
+    ctx.queue_migration_started(
+        previous_application_id.as_ref(),
+        target_application_id,
+        None,
+        local_contexts_total,
+    );
     Ok(())
 }

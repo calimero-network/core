@@ -98,20 +98,18 @@ impl<'a> GroupApplyCtx<'a> {
     /// it comes off the local application row. Every lookup here is
     /// best-effort: an announcement is observational, so a store error must
     /// degrade the event rather than fail the apply and diverge this replica.
+    /// `previous_application_id` is optional: a group with no meta row yet (its
+    /// first target) still migrated its contexts, and a caller that skipped the
+    /// announcement on `None` went silent on exactly that migration.
     pub(crate) fn queue_migration_started(
         &mut self,
-        previous_application_id: &ApplicationId,
+        previous_application_id: Option<&ApplicationId>,
         target_application_id: &ApplicationId,
         to_state_version: Option<u32>,
         local_contexts_total: u32,
     ) {
-        // Bundle ids are version-stable and every ladder rung names the same one,
-        // so an equal "from" id means the row already holds the NEW version.
-        let from_version = if previous_application_id == target_application_id {
-            "unknown".to_owned()
-        } else {
-            application_version(self.store, previous_application_id)
-        };
+        let from_version =
+            migration_from_version(self.store, previous_application_id, target_application_id);
         let to_state_version = to_state_version
             .or_else(|| {
                 self.store
@@ -246,6 +244,24 @@ impl<'a> GroupApplyCtx<'a> {
 /// Nothing on the wire carries these, so every migration announcement resolves
 /// them against this node's own rows. One reader keeps the announcement and the
 /// per-descendant cascade record from falling back differently.
+/// The `from` side of a migration, for both the persisted record and the
+/// announced event. One predicate, because two sites deriving it independently
+/// is how the record and the event came to disagree on a no-op cascade.
+///
+/// "unknown" when there is no previous id to name, or when it equals the target:
+/// bundle ids are version-stable and every ladder rung names the same one, so an
+/// equal id means the row already holds the NEW version.
+pub(crate) fn migration_from_version(
+    store: &Store,
+    previous_application_id: Option<&ApplicationId>,
+    target_application_id: &ApplicationId,
+) -> String {
+    match previous_application_id {
+        Some(id) if id != target_application_id => application_version(store, id),
+        _ => "unknown".to_owned(),
+    }
+}
+
 pub(crate) fn application_version(store: &Store, id: &ApplicationId) -> String {
     store
         .handle()

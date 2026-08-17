@@ -91,9 +91,10 @@ pub(crate) fn apply(
     // to write are what a receiver's completion banner renders. Shares the
     // announcement's reader, so the two cannot fall back differently.
     let to_version = super::context::application_version(store, target_application_id);
-    let from_version = previous_application_id.as_ref().map_or_else(
-        || "unknown".to_owned(),
-        |id| super::context::application_version(store, id),
+    let from_version = super::context::migration_from_version(
+        store,
+        previous_application_id.as_ref(),
+        target_application_id,
     );
 
     let mut any_applied = false;
@@ -183,9 +184,9 @@ pub(crate) fn apply(
     // bridge resolves to a namespace root. `to_state_version` rides on the op:
     // it is the initiator's resolved value, so every node reports the same
     // target even when it has not fetched the bytecode yet.
-    if let Some(previous_application_id) = previous_application_id.filter(|_| any_applied) {
+    if any_applied {
         ctx.queue_migration_started(
-            &previous_application_id,
+            previous_application_id.as_ref(),
             target_application_id,
             Some(to_state_version),
             local_contexts_total,
