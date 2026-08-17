@@ -50,6 +50,13 @@ pub const DEFAULT_HEARTBEAT_TTL: Duration = Duration::from_secs(60);
 /// [`MigrationStatusCache::insert`].
 pub const MAX_HEARTBEAT_CLOCK_DRIFT_MS: u64 = 60_000;
 
+/// Serializes the fleet-stamp read-check-write. The store layer has no
+/// compare-and-swap, and two actors reach [`stamp_fleet_completion`] for the
+/// same namespace (the gossip receive path and `MigrationEmitter`), so without
+/// this both can read an absent stamp and both write - the later one landing
+/// last and replacing the timestamp its peer already announced.
+static FLEET_STAMP_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 /// Per-(namespace, peer) snapshot of the most recent fresh heartbeat we
 /// have received from that peer.
 #[derive(Debug, Clone)]
@@ -810,6 +817,12 @@ fn stamp_fleet_completion(
     ) {
         return false;
     }
+    // Held across the read and the write below: the announcing caller must be
+    // the one whose timestamp persists, and a second actor that observed the
+    // same absent stamp would otherwise overwrite it.
+    let stamp_guard = FLEET_STAMP_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     match repo.fleet_completed_at(ns) {
         Ok(None) => {}
         Ok(Some(_)) => return true,
@@ -829,6 +842,9 @@ fn stamp_fleet_completion(
         tracing::error!(?err, "failed to stamp migration completion");
         return false;
     }
+    // The stamp is durable now, so a concurrent caller reads `Some` and stops.
+    // Emitting below must not hold a process-global lock.
+    drop(stamp_guard);
     let to_version = record.to_version;
     if !announce {
         return true;
