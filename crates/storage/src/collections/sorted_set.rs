@@ -351,7 +351,7 @@ where
     /// the synced state — so a peer never inherits this node's marker.
     fn stamp_index_marker(&self) {
         let full = self.current_full_hash();
-        tracing::debug!(
+        tracing::trace!(
             target: "calimero_storage::sorted_index_dbg",
             collection = %self.inner.id(),
             hash = %hex::encode(full),
@@ -366,7 +366,7 @@ where
         let full = self.current_full_hash();
         let stored = S::index_meta_get(self.inner.id());
         let current = stored.as_deref() == Some(&full[..]);
-        tracing::debug!(
+        tracing::trace!(
             target: "calimero_storage::sorted_index_dbg",
             collection = %self.inner.id(),
             current_full_hash = %hex::encode(full),
@@ -395,7 +395,7 @@ where
                 .into_iter()
                 .map(|(order_key, _id)| order_key)
                 .collect();
-        tracing::debug!(
+        tracing::trace!(
             target: "calimero_storage::sorted_index_dbg",
             %collection,
             desired_len = desired.len(),
