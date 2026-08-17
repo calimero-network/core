@@ -129,16 +129,29 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
 fn build_op(
     id: [u8; 32],
     scope: ScopeId,
+    signer_binding: Option<(calimero_account::AccountId, calimero_account::DeviceId)>,
     author: PublicKey,
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
     payload: OpPayload,
 ) -> Op {
+    // A rotation-log entry names a KEY, so without the caller's resolution this
+    // op is attributed to a stand-in — and `SetWriters` is gated on
+    // `is_owner(op.author(), object)`, where the owner is a real account. Every
+    // rotation-derived writer-set op would be refused as `NotOwner`.
+    let authorship = signer_binding.map_or_else(
+        || calimero_op_adapter::legacy_authorship(author),
+        |(account, device)| calimero_op::Authorship {
+            account,
+            device,
+            device_key: author,
+        },
+    );
     Op::from_parts(
         id,
         scope,
         parents.to_vec(),
-        calimero_op_adapter::legacy_authorship(author),
+        authorship,
         hlc,
         payload,
         [0u8; 32],
@@ -163,12 +176,18 @@ fn build_op(
 /// layer, below the projection, so the independent feed needs storage to
 /// surface applied rotations rather than re-deriving them from the resolver.
 #[must_use]
-pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEntry) -> Option<Op> {
+pub fn op_from_rotation_entry(
+    object: Id,
+    scope: ScopeId,
+    entry: &RotationLogEntry,
+    signer_binding: Option<(calimero_account::AccountId, calimero_account::DeviceId)>,
+) -> Option<Op> {
     let author = entry.signer?;
     let payload = set_writers_payload(object, entry);
     Some(build_op(
         entry.delta_id,
         scope,
+        signer_binding,
         author,
         entry.delta_hlc,
         &[],
@@ -2275,14 +2294,33 @@ mod tests {
             writers_nonce: 1,
         };
 
-        let op = op_from_rotation_entry(object, scope, &entry).expect("signed rotation maps");
+        // Told who the signer is, the op names the real account — which matters
+        // because `SetWriters` is gated on `is_owner(op.author(), object)` against
+        // a real owner, so a stand-in author is refused as `NotOwner`.
+        let signer_account = calimero_account::AccountId::from([0xA7; 32]);
+        let signer_device = calimero_account::DeviceId::from([0xD7; 32]);
+        let op =
+            op_from_rotation_entry(object, scope, &entry, Some((signer_account, signer_device)))
+                .expect("signed rotation maps");
         assert_eq!(
             op.author(),
+            signer_account,
+            "the op must name the account the signing key speaks for"
+        );
+        assert_eq!(op.device(), signer_device, "and the device that signed it");
+        assert_ne!(
+            signer_account,
             calimero_op_adapter::legacy_account_id(&signer),
-            "author is the rotation signer, and a rotation entry names a KEY — so \
-             the adapter derives the author rather than resolving a binding. This \
-             is an assertion ABOUT the bridge, so it stays until `build_op` gets a \
-             real credential to attribute the op to."
+            "precondition: the stand-in differs, so the assertion above cannot \
+             hold whichever value was used"
+        );
+        // Without the caller's resolution it still stands in — the state that made
+        // every rotation-derived writer-set op unauthorizable.
+        assert_eq!(
+            op_from_rotation_entry(object, scope, &entry, None)
+                .expect("still maps")
+                .author(),
+            calimero_op_adapter::legacy_account_id(&signer),
         );
         assert_eq!(op.hlc, hlc(5));
         assert_eq!(
@@ -2300,7 +2338,7 @@ mod tests {
             signer: None,
             ..entry
         };
-        assert!(op_from_rotation_entry(object, scope, &unsigned).is_none());
+        assert!(op_from_rotation_entry(object, scope, &unsigned, None).is_none());
     }
 
     #[test]
