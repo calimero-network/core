@@ -2,7 +2,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
-use calimero_node::{start, NodeConfig, NodeMode};
+use calimero_node::{start, NodeConfig, NodeMode, StopCause};
 use calimero_server::config::{AuthMode, ServerConfig};
 use calimero_store::config::StoreConfig;
 use clap::Parser;
@@ -10,7 +10,7 @@ use eyre::{bail, Result as EyreResult, WrapErr};
 use mero_auth::config::StorageConfig as AuthStorageConfig;
 use mero_auth::embedded::default_config;
 use multiaddr::{Multiaddr, Protocol};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::auth_mode::AuthModeArg;
 use super::validation::validate_config;
@@ -23,6 +23,11 @@ pub struct RunCommand {
     /// Override the authentication mode configured in config.toml
     #[arg(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
+
+    /// Stop when this file descriptor reaches EOF. The process that spawns merod
+    /// holds the other end of a pipe, so merod exits when that process does.
+    #[arg(long, value_name = "FD")]
+    pub exit_on_eof: Option<i32>,
 
     /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
     /// Insecure — never use in production. Refuses to start alongside a real KMS.
@@ -46,6 +51,11 @@ impl RunCommand {
                  Rebuild with `cargo build -p merod --features mock-attestation` (dev/test only); \
                  release binaries intentionally contain no mock attestation code."
             );
+        }
+
+        #[cfg(not(unix))]
+        if self.exit_on_eof.is_some() {
+            bail!("--exit-on-eof is only supported on unix");
         }
 
         let path = root_args.home.join(root_args.node_name);
@@ -223,6 +233,32 @@ impl RunCommand {
             None => StoreConfig::new(datastore_path),
         };
 
+        #[cfg(unix)]
+        let stop_watch = {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let data_dir = datastore_config.path.clone().into_std_path_buf();
+            let parent_fd = self.exit_on_eof;
+            drop(tokio::spawn(async move {
+                let cause = tokio::select! {
+                    detail = crate::watchdog::parent_closed(parent_fd) => {
+                        warn!("{detail}; shutting down");
+                        StopCause::ParentExited
+                    }
+                    detail = crate::watchdog::data_dir_replaced(
+                        data_dir,
+                        crate::watchdog::DATA_DIR_CHECK_INTERVAL,
+                    ) => {
+                        error!("{detail}; shutting down without writing anything further");
+                        StopCause::DataDirReplaced
+                    }
+                };
+                let _ = tx.send(cause);
+            }));
+            Some(rx)
+        };
+        #[cfg(not(unix))]
+        let stop_watch = None;
+
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.keypair.clone(),
@@ -246,6 +282,7 @@ impl RunCommand {
             gc_interval_secs: None, // Use default (12 hours)
             dag_compaction: config.dag_compaction,
             mode: node_mode,
+            stop_watch,
             vm_limits: config.runtime.vm_limits(),
             #[cfg(feature = "mock-attestation")]
             mock_tee: self.mock_tee,
