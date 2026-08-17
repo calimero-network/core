@@ -125,7 +125,7 @@ mod tests {
         Op::new(
             scope,
             parents,
-            calimero_op_adapter::legacy_authorship(author),
+            calimero_op::Authorship::unattributed(author),
             h,
             payload,
             [0u8; 32],

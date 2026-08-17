@@ -6,7 +6,7 @@ Transitional pure-function adapter that maps each per-plane operation type onto 
 
 - **Crate**: `calimero-op-adapter`
 - **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; one module per plane holds the encoders themselves)
-- **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `RotationLogEntry`, `Id` - the data and ACL plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`), `sha2` (the stand-in account derivation)
+- **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `RotationLogEntry`, `Id` - the data and ACL plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`)
 - **Dev-deps**: `calimero-projection` (`ScopeState` - folds the encoded ops back down in tests to prove fold-equivalence), `calimero-authz` (`AclView` - the shape a receiver resolves a signature against, used only by the writer-plane test)
 
 ## Commands
@@ -35,9 +35,6 @@ cargo test -p calimero-op-adapter group_op_encoder_mapping -- --nocapture
 | `payload_from_root_op(op: &RootOp) -> Option<OpPayload>` | fn | Admin/namespace plane (root governance ops): maps to `AdminChanged`/`PolicyUpdated`/`MemberAdded`/`MemberJoinedWithDevice`/`DeviceLinked`/`SubgroupCreated`/`SubgroupReparented`/`SubgroupDeleted`; `KeyDelivery` -> `None`. Takes **no signer** - every arm reads the account off the op |
 | `join_credential_binds(member: &AccountId, genesis, chain, cert) -> bool` | fn | The op-local half of credential admission: does this credential name `member`, and does it verify? Shared verbatim with the governance apply path |
 | `join_credential_certifies(member: &PublicKey, genesis, chain, cert) -> bool` | fn | The same question for the one join op that names a **key** (`MemberJoinedViaTeeAttestation`, whose quote binds to the attested signing key) |
-| `legacy_account_id(member: &PublicKey) -> AccountId` | fn | The stand-in account for a bare member key - the seam between key-named legacy ops and account-keyed unified planes. Adapter-local, deliberately not something `calimero-account` offers |
-| `writer_account(binding: Option<AccountId>, key: &PublicKey) -> AccountId` | fn | What a signing key writes as on the **writer** plane: its device binding if published, else its stand-in. One rule, used by both the node populating a writer set and the peer resolving a signature against one |
-| `legacy_authorship(signer: PublicKey) -> Authorship` | fn | The `Authorship` a bridged legacy op carries - device derived from the stand-in rather than enrolled |
 
 Every function is pure - no I/O, no state, no async. They only ever consume a per-plane source type and produce an `OpPayload` (or `None`, or a verdict). Assembling the rest of the `Op` (id, parents, author, hlc, signature) is always the caller's job.
 
@@ -64,9 +61,6 @@ which file it lives in.
                                     twice is how one node folds a device its
                                     peer refuses
 
-                                    legacy.rs
-                                    the stand-in account seam (legacy_account_id,
-                                    writer_account, legacy_authorship) - the part
                                     that is deleted first at cutover
 ```
 
@@ -101,7 +95,6 @@ Both `GroupOp` and `RootOp` are `#[non_exhaustive]` upstream, so every match her
 | `src/group.rs` | Membership plane: `payload_from_group_op` + its in-model/out-of-model coverage doc |
 | `src/root.rs` | Admin/namespace plane: `payload_from_root_op` + its coverage doc and caveats |
 | `src/credential.rs` | `join_credential_binds`, `join_credential_certifies`, and the private `credential_binds_the_member` dispatcher over the join variants |
-| `src/legacy.rs` | `LEGACY_ACCOUNT_DOMAIN`, `legacy_account_id`, `writer_account`, `legacy_authorship` |
 | `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
 | `src/tests/<module>.rs` | Tests for the module of the same name, reaching it through `crate::` paths |
 | `src/tests/support.rs` | Shared fixtures (`authorship_of`, `hlc`, `real_join_account_for`, `test_join_account_for`) |

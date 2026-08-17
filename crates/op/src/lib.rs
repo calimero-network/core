@@ -77,6 +77,44 @@ pub struct Authorship {
     pub device_key: PublicKey,
 }
 
+impl Authorship {
+    /// The account id that names **nobody** — the answer for an op whose author
+    /// cannot be established.
+    ///
+    /// A key becomes attributable through a credential the op carries or a
+    /// binding a producer resolved. When neither exists there is no principal to
+    /// name, and the honest record of that is one well-known value rather than a
+    /// per-key derivation. The old stand-in hashed the signing key into an
+    /// account-shaped id, which read as a real principal at every call site that
+    /// saw it, and *looked* different for every key — so "we could not attribute
+    /// this" was indistinguishable from "this is somebody".
+    ///
+    /// Every gate on this plane asks whether the author equals some real
+    /// principal, so a value no genesis can produce **fails closed everywhere by
+    /// construction**: membership, admin, ownership and the account-plane
+    /// handoff check all answer "no" without any of them needing a special case.
+    /// That is why this is a sentinel and not an `Option` — an option would put
+    /// the same decision in a dozen places and rely on each getting it right.
+    pub const UNATTRIBUTED_ACCOUNT: AccountId = AccountId::from_raw([0u8; 32]);
+
+    /// The device id paired with [`Self::UNATTRIBUTED_ACCOUNT`].
+    pub const UNATTRIBUTED_DEVICE: DeviceId = DeviceId::from_raw([0u8; 32]);
+
+    /// Authorship for an op whose author could not be established.
+    ///
+    /// `device_key` is still recorded, because it is a fact: that key signed the
+    /// op, and `Op::verify` checks the signature against it. Only the principal
+    /// it speaks for is unknown.
+    #[must_use]
+    pub const fn unattributed(device_key: PublicKey) -> Self {
+        Self {
+            account: Self::UNATTRIBUTED_ACCOUNT,
+            device: Self::UNATTRIBUTED_DEVICE,
+            device_key,
+        }
+    }
+}
+
 /// One envelope for every kind of change in a scope.
 ///
 /// `parents` are the op's causal predecessors **within its scope**, and MAY

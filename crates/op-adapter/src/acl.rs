@@ -17,7 +17,7 @@ pub fn set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload {
         object,
         // Passed through, not bridged: a rotation log's writer set is ALREADY
         // account-keyed, so there is no key here to stand in for. The entry's
-        // `signer` still needs `legacy_account_id`, because a signature names a
+        // `signer` names a KEY, not an account, because a signature names a
         // key — which is exactly the split the account plane draws.
         writers: entry.new_writers.clone(),
     }

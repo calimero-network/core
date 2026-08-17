@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use calimero_network_primitives::messages::NetworkEvent;
 use libp2p::gossipsub::Event;
 use libp2p_metrics::Recorder;
@@ -11,10 +13,21 @@ impl EventHandler<Event> for NetworkManager {
 
         match event {
             Event::Message {
+                propagation_source,
                 message_id: id,
                 message,
-                ..
             } => {
+                // A forwarder that is missing from our subscriber table means
+                // the two ends of the mesh disagree, and only we can see it.
+                // See `subscription_repair` for why that state is permanent
+                // and why a delivery is the evidence that resolves it.
+                let _repaired: bool = self.subscription_repair.on_delivery(
+                    &mut self.swarm.behaviour_mut().gossipsub,
+                    &propagation_source,
+                    &message.topic,
+                    Instant::now(),
+                );
+
                 // Log only non-sensitive metadata. The previous `{:?}` of the
                 // whole event dumped the raw `message.data` payload on a hot
                 // path (data leak) and injected ANSI color codes into the logs.
