@@ -63,12 +63,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key (for teardown)
-    type: node_identity
-    node: app-migration-mstatus-1
-    outputs:
-      admin_key: publicKey
-
   - name: Create descendant Open subgroup on node 1
     type: create_group_in_namespace
     node: app-migration-mstatus-1

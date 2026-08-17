@@ -53,12 +53,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key (for teardown)
-    type: node_identity
-    node: app-migration-baseline-1
-    outputs:
-      admin_key: publicKey
-
   - name: Create Open subgroup on node 1
     # Open visibility lets node 2 materialise its inherited membership
     # via `join_subgroup_inheritance`.
