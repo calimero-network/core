@@ -358,6 +358,37 @@ pub(crate) fn set_local_ephemeral(
     Ok(())
 }
 
+/// Whether a failed [`resolve_publish_material`] means this `(context, author)`
+/// pair is gone for good, and its `ephemeral_local` entry should be reclaimed.
+///
+/// The distinction matters because the alternative to reclaiming is heartbeating
+/// forever, and the alternative to *keeping* is losing a live author's presence
+/// over a transient blip.
+///
+/// Permanent — the pair is dropped:
+/// * [`EphemeralOutboundError::NoGroup`] — the context is not registered in any
+///   group. That is what a deleted or left context looks like from here, and it
+///   does not come back for the same context id.
+/// * [`EphemeralOutboundError::NoLocalSigningKey`] — this node no longer holds a
+///   signing identity for `author` in the context, i.e. the member departed or
+///   the identity was removed. Presence is unpublishable without it, and this is
+///   the same condition that would reject a fresh `set_local_ephemeral`.
+///
+/// Not permanent — the entry is kept:
+/// * [`EphemeralOutboundError::NoGroupKey`] — the group exists but this node
+///   currently resolves no current key. A node mid-rotation or still syncing the
+///   keyring hits this, and it resolves itself; dropping here would silently end
+///   a live author's presence.
+/// * any other error (store I/O and the like) — transient by assumption, and
+///   the wrong thing to widen: an unrecognised failure should not be able to
+///   delete state.
+fn is_permanent_publish_failure(err: &eyre::Report) -> bool {
+    matches!(
+        err.downcast_ref::<EphemeralOutboundError>(),
+        Some(EphemeralOutboundError::NoGroup | EphemeralOutboundError::NoLocalSigningKey)
+    )
+}
+
 /// Refresh the local author entries, then expire everything stale.
 ///
 /// Pure over the [`AwarenessStore`] — no actor, no network — so the ordering
@@ -461,23 +492,44 @@ pub(crate) fn heartbeat_tick(
     // reason `set_local_ephemeral` does: these are plain store reads, and doing
     // them on the actor thread keeps `do_publish_ephemeral` free of store
     // access entirely. Re-resolved every tick rather than cached, so a key
-    // rotation is picked up on the next heartbeat. A pair whose material no
-    // longer resolves (the context left the group, the key was purged) is
-    // skipped with a `debug!` — there is no caller to return an error to on
-    // this path.
+    // rotation is picked up on the next heartbeat.
+    //
+    // A pair that no longer resolves is either *departed* or *degraded*, and
+    // the two are treated differently — see `is_permanent_publish_failure`.
+    // Departed pairs are dropped from `ephemeral_local` here; this is the
+    // subsystem's only reclamation path for locally-set presence, and without
+    // it a long-lived node accumulates one permanent entry per
+    // `(context, author)` it ever published for, heartbeating forever into
+    // contexts it has left.
     let store = this.clients.context.datastore();
+    let mut departed: Vec<(ContextId, PublicKey)> = Vec::new();
     let publishable: Vec<(ContextId, PublicKey, u64, Vec<u8>, PublishMaterial)> = local_snapshot
         .into_iter()
         .filter_map(|(context_id, author, seq, slice)| {
             match resolve_publish_material(store, context_id, author) {
                 Ok(material) => Some((context_id, author, seq, slice, material)),
                 Err(err) => {
-                    debug!(%context_id, %author, %err, "ephemeral: heartbeat cannot publish — skipping");
+                    let permanent = is_permanent_publish_failure(&err);
+                    debug!(
+                        %context_id, %author, %err, permanent,
+                        "ephemeral: heartbeat cannot publish"
+                    );
+                    if permanent {
+                        departed.push((context_id, author));
+                    }
                     None
                 }
             }
         })
         .collect();
+
+    // Reclaim after the `store` borrow ends. Dropping the entry stops the
+    // heartbeat from refreshing this author, so the local echo still sitting in
+    // the awareness store ages out on its own within `PRESENCE_TTL_MS` and the
+    // sweep emits the `Diff::Remove` — no separate teardown needed.
+    for pair in departed {
+        let _ignored = this.ephemeral_local.remove(&pair);
+    }
 
     // Re-publish each local slice (bumped seq, fresh nonce, current key).
     let network_client = this.clients.node.network_client().clone();
@@ -837,6 +889,51 @@ mod tests {
         assert!(
             err.contains("no group"),
             "error must mention 'no group', got: {err}"
+        );
+    }
+
+    /// `ephemeral_local` has no TTL, so the heartbeat's classification of a
+    /// failed resolve is the only thing that reclaims a departed pair. Getting
+    /// this wrong in either direction is a real bug: too narrow leaks an entry
+    /// that heartbeats forever into a context the node has left, too wide
+    /// deletes a live author's presence over a transient blip.
+    #[test]
+    fn only_departure_failures_are_treated_as_permanent() {
+        assert!(
+            is_permanent_publish_failure(&eyre::Report::new(EphemeralOutboundError::NoGroup)),
+            "a context in no group is gone — reclaim it"
+        );
+        assert!(
+            is_permanent_publish_failure(&eyre::Report::new(
+                EphemeralOutboundError::NoLocalSigningKey
+            )),
+            "no local signing identity means the member departed — reclaim it"
+        );
+        assert!(
+            !is_permanent_publish_failure(&eyre::Report::new(EphemeralOutboundError::NoGroupKey)),
+            "a missing current key can be mid-rotation — keep the entry"
+        );
+        assert!(
+            !is_permanent_publish_failure(&eyre::Report::msg("transient store failure")),
+            "an unrecognised error must never delete state"
+        );
+    }
+
+    /// The permanent classification must line up with what the store actually
+    /// reports for a departed context, not just with the error enum in
+    /// isolation — a deleted/left context surfaces here as `NoGroup`.
+    #[test]
+    fn a_context_in_no_group_classifies_as_permanent() {
+        let store = fresh_store();
+        let err = resolve_publish_material(
+            &store,
+            ContextId::from([0x3Au8; 32]),
+            PublicKey::from([0x3Bu8; 32]),
+        )
+        .expect_err("unregistered context must error");
+        assert!(
+            is_permanent_publish_failure(&err),
+            "a departed context must be reclaimable, got: {err}"
         );
     }
 

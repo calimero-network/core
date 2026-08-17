@@ -185,6 +185,16 @@ pub struct NodeManager {
     /// its other source (the awareness store's own contexts) is unordered and
     /// a sorted-then-`dedup` would only collapse *adjacent* duplicates.
     ///
+    /// **Reclamation.** Unlike `awareness_store`, this map has no TTL — an
+    /// entry is authoritative outbound state and must survive as long as the
+    /// author keeps publishing. It is instead reclaimed by the heartbeat: a
+    /// pair whose publish material no longer resolves *permanently* (the
+    /// context is in no group, or this node holds no signing identity for the
+    /// author — i.e. the context was left or the member departed) is dropped by
+    /// `heartbeat_tick`. That bounds the map by what this node currently
+    /// participates in rather than by everything it ever published for.
+    ///
+
     /// [`set_local_ephemeral`]: crate::handlers::ephemeral::outbound::set_local_ephemeral
     pub(crate) ephemeral_local:
         BTreeMap<(ContextId, PublicKey), crate::handlers::ephemeral::outbound::LocalEphemeral>,
