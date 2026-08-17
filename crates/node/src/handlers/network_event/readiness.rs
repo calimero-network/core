@@ -72,6 +72,24 @@ fn beacon_indicates_divergence(
     (local_has_state || is_namespace_member) && dag_head != [0u8; 32] && !head_op_present_locally
 }
 
+/// Which of the two beacon paths asked for a governance pull.
+///
+/// One value rather than an `Option<PeerId>` alongside the signer, because the
+/// two would have to agree and nothing could enforce it — passing one peer as the
+/// pull target and a different one as the beacon's signer would compile and then
+/// pull from the wrong place. The signer is always known, so it is passed
+/// unconditionally and this says only what to do with it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BeaconTrigger {
+    /// The beacon did not verify, but its admission proof did. Only its signer
+    /// holds the not-yet-gossiped join op, so the pull targets that signer and
+    /// nobody else — and takes the provable path's own debounce slot.
+    ProvableAdmission,
+    /// The beacon verified. Any member that applied the op can serve it, so the
+    /// pull prefers a subscriber and falls back to the signer.
+    EstablishedMember,
+}
+
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
 /// no beacon-triggered sync fired for `namespace_id` within
 /// [`NS_BEACON_SYNC_DEBOUNCE`]; returns `false` otherwise.
@@ -120,7 +138,8 @@ pub(super) fn handle_readiness_beacon(
                 ctx,
                 beacon.namespace_id.to_bytes(),
                 beacon.dag_head,
-                Some(peer_id),
+                BeaconTrigger::ProvableAdmission,
+                peer_id,
             );
             return;
         }
@@ -175,7 +194,7 @@ pub(super) fn handle_readiness_beacon(
                 let _ignored = ctx.spawn(
                     async move {
                         let ops = sync_manager
-                            .sync_namespace_from_peer(stranded_ns, Some(peer_id))
+                            .sync_namespace_from_peer(stranded_ns, Some(peer_id), None)
                             .await;
                         debug!(
                             %peer_id,
@@ -220,7 +239,14 @@ pub(super) fn handle_readiness_beacon(
         "readiness beacon received"
     );
 
-    spawn_beacon_divergence_sync(manager, ctx, namespace_id, beacon.dag_head, None);
+    spawn_beacon_divergence_sync(
+        manager,
+        ctx,
+        namespace_id,
+        beacon.dag_head,
+        BeaconTrigger::EstablishedMember,
+        peer_id,
+    );
 
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(ApplyBeaconLocal { namespace_id });
@@ -255,15 +281,14 @@ fn spawn_beacon_divergence_sync(
     ctx: &mut actix::Context<NodeManager>,
     namespace_id: [u8; 32],
     dag_head: [u8; 32],
-    source: Option<PeerId>,
+    trigger: BeaconTrigger,
+    beacon_peer: PeerId,
 ) {
     let datastore = manager.datastore.clone();
-    let node_client = manager.clients.node.clone();
     let sync_manager = manager.managers.sync.clone();
-    let debounce = if source.is_some() {
-        manager.ns_provable_beacon_sync_debounce.clone()
-    } else {
-        manager.ns_beacon_sync_debounce.clone()
+    let debounce = match trigger {
+        BeaconTrigger::ProvableAdmission => manager.ns_provable_beacon_sync_debounce.clone(),
+        BeaconTrigger::EstablishedMember => manager.ns_beacon_sync_debounce.clone(),
     };
     let _ignored = ctx.spawn(
         async move {
@@ -345,17 +370,18 @@ fn spawn_beacon_divergence_sync(
             info!(
                 namespace_id = %hex::encode(namespace_id),
                 dag_head = %hex::encode(dag_head),
-                ?source,
+                ?trigger,
+                %beacon_peer,
                 "beacon advertises an unknown namespace DAG head; \
                  triggering governance sync"
             );
-            match source {
+            match trigger {
                 // Issues the same `NamespaceBackfillRequest` with empty
-                // `delta_ids` ("give me everything"), but against `source`
-                // directly rather than an arbitrary subscriber.
-                Some(peer) => {
+                // `delta_ids` ("give me everything"), but against the beacon's
+                // signer directly rather than an arbitrary subscriber.
+                BeaconTrigger::ProvableAdmission => {
                     let ops = sync_manager
-                        .sync_namespace_from_peer(namespace_id, Some(peer))
+                        .sync_namespace_from_peer(namespace_id, Some(beacon_peer), None)
                         .await;
                     if ops == 0 {
                         // The pull delivered nothing, so give the slot back
@@ -366,19 +392,42 @@ fn spawn_beacon_divergence_sync(
                             .remove(&namespace_id);
                         debug!(
                             namespace_id = %hex::encode(namespace_id),
-                            %peer,
+                            %beacon_peer,
                             "provable-admission pull returned no ops; released the debounce slot"
                         );
                     }
                 }
-                None => {
-                    if let Err(err) = node_client.sync_namespace(namespace_id).await {
-                        warn!(
-                            ?err,
-                            namespace_id = %hex::encode(namespace_id),
-                            "beacon-triggered namespace governance sync failed"
-                        );
-                    }
+                // The established-member path: prefer a subscriber, because any
+                // member that applied the op can serve it. But name the beacon's
+                // own signer as the fallback, because discovery can come up empty
+                // while that signer is demonstrably reachable — its beacon just
+                // verified, which is proof of membership, of being caught up, and
+                // of being able to reach us, all at once. Asking an empty
+                // subscriber table and giving up is how a node stays stranded with
+                // the answer talking to it every few seconds.
+                //
+                // Run inline rather than queueing through `NodeClient::sync_namespace`,
+                // because the queue carries a namespace id and nothing else — there
+                // is nowhere to put the fallback peer without widening that channel
+                // and every constructor of it.
+                //
+                // The slot is deliberately NOT released on a zero-op pull, unlike
+                // the arm above. That arm's pull is targeted, so an empty result is
+                // a fact about the peer that beaconed; this one usually goes to
+                // whichever subscriber discovery picked, so an empty result says
+                // nothing about the beacon's signer and releasing on it would let
+                // every beacon re-trigger a pull. The debounce window IS the retry
+                // interval here: the next beacon after it re-evaluates from scratch.
+                BeaconTrigger::EstablishedMember => {
+                    let ops = sync_manager
+                        .sync_namespace_from_peer(namespace_id, None, Some(beacon_peer))
+                        .await;
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        %beacon_peer,
+                        ops,
+                        "beacon-triggered namespace governance pull finished"
+                    );
                 }
             }
         }
