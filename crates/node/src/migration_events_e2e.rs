@@ -158,7 +158,6 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
-    let admin_pk = admin_sk.public_key();
     let peer_sk = PrivateKey::random(&mut rng);
     let blobs = seed_app_blobs(&node).await;
 
