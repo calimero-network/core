@@ -45,6 +45,153 @@ Core library crates for Calimero infrastructure. Each crate is conceptually sepa
 | `calimero-op`         | Unified op envelope types + id/root hashing                     |
 | `calimero-governance-types` | Signed group-operation types (local governance)           |
 
+## How the Crates Fit Together
+
+Three views the tables above cannot give you: which crate may import which, which
+crate owns each hop of a live request, and how the four unified-causal-log crates
+relate to each other.
+
+Everything else — the actor model, the host ABI boundary, the DAG fold, the
+column-family layout, the scope tree — is already drawn as SVG on the docs site
+under [`docs/src/components/diagrams/`](../docs/src/components/diagrams/), wired
+into the [architecture orientation](../docs/src/content/docs/contribute/architecture.mdx)
+and the [protocol reference](../docs/src/content/docs/protocol/overview.mdx).
+Link to those rather than redrawing them here; two copies of a diagram drift.
+
+### Dependency spine
+
+The load-bearing edges only — the full graph is roughly 90. Arrows point *from*
+the dependent *to* what it depends on. Colours match the six bands in the docs
+site's `CrateStack` figure, which shows the same layering without the edges.
+
+```mermaid
+flowchart TD
+  merod["merod"] --> node["calimero-node"]
+  merod --> server["calimero-server"]
+  merod --> store["calimero-store"]
+  meroctl["meroctl"] --> client["calimero-client"]
+  auth["mero-auth"] --> store
+  client -. "HTTP / WS" .-> server
+  server --> ctxc["calimero-context-client<br/><i>context/primitives</i>"]
+  server --> ctx["calimero-context"]
+  node --> ctx
+  node --> net["calimero-network"]
+  node --> rt["calimero-runtime"]
+  node --> store
+  ctx --> ctxc
+  ctx --> rt
+  ctx --> gov["calimero-governance-store"]
+  ctx --> opad["calimero-op-adapter"]
+  ctx --> dag["calimero-dag"]
+  ctxc --> nodep["calimero-node-primitives"]
+  gov --> govt["calimero-governance-types"]
+  gov --> proj["calimero-projection"]
+  opad --> op["calimero-op"]
+  opad --> authz["calimero-authz"]
+  proj --> op
+  authz --> op
+  dag --> storage["calimero-storage"]
+  store --> storage
+  rt --> sys["calimero-sys"]
+  storage --> sdk["calimero-sdk"]
+  sdk --> sys
+  op --> acct["calimero-account"]
+  acct --> prim["calimero-primitives"]
+  storage --> prim
+  net --> prim
+
+  classDef bin  fill:#fdf3d9,stroke:#a37b12,color:#3a2a02
+  classDef srv  fill:#f1fadd,stroke:#6f8f22,color:#26300a
+  classDef core fill:#e3f7e6,stroke:#2f8f3e,color:#0f2a14
+  classDef infra fill:#e4effb,stroke:#3f7ec0,color:#0d2440
+  classDef log  fill:#ddf5f6,stroke:#2b9aa1,color:#062c2e
+  classDef base fill:#efe7fb,stroke:#7b52c0,color:#1f0f38
+  class merod,meroctl bin
+  class server,client,auth,ctxc srv
+  class node,ctx core
+  class net,rt,store,storage infra
+  class dag,op,opad,proj,authz,gov,govt log
+  class sdk,sys,acct,prim,nodep base
+```
+
+What the shape tells you:
+
+- Everything converges on `calimero-primitives`. If you are adding a type two
+  crates both need, that is where it goes — see the Primitives Crates Pattern below.
+- `calimero-network` never imports application-level types. It ferries opaque
+  bytes and hands them up as `NetworkEvent`; decoding happens in the node layer.
+- `calimero-context-client` does **not** depend on `calimero-context`. It holds a
+  message `Recipient`, which is what keeps the two out of a dependency cycle.
+- The unified-log crates (`op`, `op-adapter`, `projection`, `authz`) sit *below*
+  `context` and `governance-store`, not beside them.
+
+### Life of one write
+
+Which crate owns each hop when a JSON-RPC `execute` arrives. Worth noting because
+it surprises people: the server does **not** route through `NodeManager` on the
+way in — it calls `ContextClient::execute` directly. The node layer is on the
+*outbound* broadcast side.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant CL as client / meroctl
+  participant SV as server
+  participant CC as context-client
+  participant CX as context
+  participant RT as runtime
+  participant ST as storage + store
+  participant ND as node
+  participant NW as network
+  CL->>SV: JSON-RPC execute
+  SV->>CC: ContextClient::execute
+  CC->>CX: ContextMessage::Execute
+  CX->>CX: context.lock()
+  CX->>RT: module.run_with_origin(method, args)
+  RT->>ST: host functions: storage read / write
+  ST-->>RT: CRDT entities
+  RT-->>CX: Outcome {returns, logs, events, artifact}
+  CX->>CX: sign_authorized_actions
+  CX->>ST: persist, new root_hash
+  CX->>ND: NodeClient::broadcast(artifact, delta_id, parent_ids, hlc)
+  ND->>NW: publish on the context topic
+  NW-->>ND: peers: NetworkEvent (the receive path, mirrored)
+```
+
+The receive path runs the same participants in reverse — `network` → `node` →
+`context` → apply → `storage` — with `SyncManager` in `crates/node/src/sync/`
+driving reconciliation when the two sides have diverged.
+
+### The unified causal log
+
+Why there are four crates here and not one. `op-adapter` is explicitly
+transitional: it exists to map the older per-plane operation types onto the
+unified payload, and goes away once everything speaks `Op` natively.
+
+```mermaid
+flowchart LR
+  A["app write<br/>storage action"] --> AD
+  G["governance op<br/>governance-types"] --> AD
+  AD["op-adapter<br/><i>per-plane to unified</i>"] --> OP["op<br/>Op envelope,<br/>id + root hashing"]
+  OP --> DG["dag<br/>causal order, heads"]
+  DG --> PR["projection<br/>ScopeState fold"]
+  PR --> RH(["root hash"])
+  PR -. "ACL view at the causal cut" .-> AZ["authz<br/>authorize()"]
+  AZ -. "accept / reject" .-> AD
+
+  classDef in  fill:#f1fadd,stroke:#6f8f22,color:#26300a
+  classDef log fill:#ddf5f6,stroke:#2b9aa1,color:#062c2e
+  classDef out fill:#fdf3d9,stroke:#a37b12,color:#3a2a02
+  class A,G in
+  class AD,OP,DG,PR,AZ log
+  class RH out
+```
+
+The dotted back-edge is the part to internalise: **authorization reads the
+projection, and the projection is built from the log it authorizes into.** That
+loop is why the ordering rules are subtle, and why `authorize` resolves its ACL
+view at the op's causal cut rather than at the current head.
+
 ## Patterns & Conventions
 
 ### Primitives Crates Pattern
