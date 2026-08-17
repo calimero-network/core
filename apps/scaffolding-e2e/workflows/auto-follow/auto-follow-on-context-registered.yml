@@ -69,10 +69,9 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Node-1 captures its namespace identity
-    type: get_namespace_identity
+  - name: Node-1 captures its signing key
+    type: node_identity
     node: af-baseline-node-1
-    namespace_id: "{{namespace_id}}"
     outputs:
       node1_identity: publicKey
 
