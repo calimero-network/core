@@ -10,7 +10,7 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMemberContext, GroupOpHead,
-    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceIdentity,
+    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceParticipation,
     GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
@@ -556,7 +556,7 @@ pub fn delete_namespace_local_state(
 
     let mut handle = store.handle();
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
-    handle.delete(&NamespaceIdentity::new(ns_bytes))?;
+    handle.delete(&NamespaceParticipation::new(ns_bytes))?;
     drop(handle);
 
     // The device is node-level, so leaving ONE namespace cannot take it: every
@@ -575,7 +575,7 @@ pub fn delete_namespace_local_state(
     // not sit on key material. Scoped to the last departure so it cannot break the
     // namespaces that remain.
     if NamespaceRepository::new(store)
-        .iter_identities()?
+        .participating_namespaces()?
         .is_empty()
     {
         crate::NodeDeviceRepository::new(store).delete()?;

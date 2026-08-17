@@ -295,9 +295,9 @@ fn provision_namespace(
         },
     );
 
-    // `dispatch_cascade` requires a signing key resolvable for the
-    // requester on the signed group: the node signs as its own identity,
-    // so seed that identity as the admin's key.
+    // `dispatch_cascade` requires a signing key resolvable on the signed
+    // group: the node signs as its own identity, so seed that identity as
+    // the admin's key.
     NamespaceRepository::new(store)
         .replace_identity(&ns, &admin_pk, admin_sk.as_bytes())
         .expect("seed node identity");
@@ -363,7 +363,6 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
         .upgrade_group(UpgradeGroupRequest {
             group_id: fx.ns,
             target_application_id: app_id_v2(),
-            requester: Some(fx.admin_pk),
             cascade: true,
             force_code_only: false,
         })
@@ -559,7 +558,6 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
         .upgrade_group(UpgradeGroupRequest {
             group_id: fx.ns,
             target_application_id: app_id_v2(),
-            requester: Some(fx.admin_pk),
             cascade: true,
             force_code_only: false,
         })
@@ -764,7 +762,6 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .upgrade_group(UpgradeGroupRequest {
             group_id: gid,
             target_application_id: app_id,
-            requester: Some(admin_pk),
             cascade: false,
             force_code_only: false,
         })
@@ -824,7 +821,6 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
         .upgrade_group(UpgradeGroupRequest {
             group_id: gid,
             target_application_id: app_id,
-            requester: Some(admin_pk),
             cascade: false,
             force_code_only: false,
         })
@@ -1088,6 +1084,11 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
+    // Retry resolves the signer from the node's own namespace identity, so the
+    // admin has to BE this node — the same seeding the other tests here do.
+    NamespaceRepository::new(&node.store)
+        .replace_identity(&gid, &admin_pk, admin_sk.as_bytes())
+        .expect("seed node identity");
 
     let progressed = tokio::task::LocalSet::new()
         .run_until(async {
@@ -1133,10 +1134,7 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
                 .expect("seed post-recovery failed record");
 
             manager
-                .send(RetryGroupUpgradeRequest {
-                    group_id: gid,
-                    requester: Some(admin_pk),
-                })
+                .send(RetryGroupUpgradeRequest { group_id: gid })
                 .await
                 .expect("retry mailbox")
                 .expect("retry should be accepted");

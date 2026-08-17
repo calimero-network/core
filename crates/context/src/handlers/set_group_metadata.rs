@@ -13,15 +13,9 @@ impl Handler<SetGroupMetadataRequest> for ContextManager {
             group_id,
             name,
             data,
-            requester,
         }: SetGroupMetadataRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        self.sign_and_publish_group_op(
-            &group_id,
-            requester,
-            false,
-            GroupOp::GroupMetadataSet { name, data },
-        )
+        self.sign_and_publish_group_op(&group_id, false, GroupOp::GroupMetadataSet { name, data })
     }
 }

@@ -15,14 +15,10 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        AddGroupMembersRequest {
-            group_id,
-            members,
-            requester,
-        }: AddGroupMembersRequest,
+        AddGroupMembersRequest { group_id, members }: AddGroupMembersRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
+        let preflight = match self.governance_preflight(&group_id, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -31,7 +27,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
         let sk = preflight.signer_sk();
-        let requester = preflight.requester;
+        let signer = preflight.signer;
         let members = members.clone();
 
         ActorResponse::r#async(
@@ -108,7 +104,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                 info!(
                     ?group_id,
                     count = members.len(),
-                    %requester,
+                    %signer,
                     "members added to group (local governance signed ops)"
                 );
                 Ok(())

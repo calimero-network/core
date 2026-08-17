@@ -626,7 +626,7 @@ impl<'a> GroupHandle<'a> {
     pub fn get_or_create_namespace_identity(
         &self,
     ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32])> {
-        NamespaceRepository::new(self.store).get_or_create_identity(&self.group_id)
+        NamespaceRepository::new(self.store).participate_in(&self.group_id)
     }
 
     // --- Per-context capabilities ---

@@ -1,4 +1,3 @@
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use clap::Parser;
 use eyre::Result;
@@ -18,19 +17,12 @@ pub struct ReparentCommand {
 
     #[clap(name = "NEW_PARENT_ID", help = "The hex-encoded new parent group ID")]
     pub new_parent_id: String,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (namespace admin). Auto-resolved from node namespace identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl ReparentCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = ReparentGroupApiRequest {
             new_parent_id: self.new_parent_id,
-            requester: self.requester,
         };
 
         let client = environment.client()?;

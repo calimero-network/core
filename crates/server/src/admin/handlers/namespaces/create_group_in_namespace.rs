@@ -11,7 +11,6 @@ use tracing::{error, info, warn};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
@@ -40,15 +39,12 @@ pub struct CreateGroupInNamespaceResponse {
 pub async fn handler(
     Path(namespace_id_hex): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     Json(body): Json<CreateGroupInNamespaceBody>,
 ) -> impl IntoResponse {
     let namespace_id = match parse_group_id(&namespace_id_hex) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
-    let requester = auth_key.map(|Extension(k)| k.0);
-
     info!(
         namespace_id = %namespace_id_hex,
         "Creating group in namespace via namespace governance"
@@ -69,22 +65,13 @@ pub async fn handler(
     }
 
     let (resolved_ns_id, signer_pk, sk_bytes) =
-        match NamespaceRepository::new(&state.store).get_or_create_identity(&namespace_id) {
+        match NamespaceRepository::new(&state.store).participate_in(&namespace_id) {
             Ok(r) => r,
             Err(err) => {
                 error!(?err, "Failed to resolve namespace identity");
                 return parse_api_error(err).into_response();
             }
         };
-
-    if let Some(requester) = requester {
-        if requester != signer_pk {
-            return parse_api_error(eyre::eyre!(
-                "requester does not match local namespace identity"
-            ))
-            .into_response();
-        }
-    }
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 

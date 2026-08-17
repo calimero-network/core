@@ -70,7 +70,10 @@ pub fn resolve_owned_namespace_signer(
     // Walking to the root still matters: a node signs for a context only where it
     // takes part in that context's namespace, and the marker row is what says so.
     // The key it signs WITH is node-level — one node, one signing key.
-    if handle.get(&key::NamespaceIdentity::new(ns_root))?.is_none() {
+    if handle
+        .get(&key::NamespaceParticipation::new(ns_root))?
+        .is_none()
+    {
         return Ok(None); // this node does not take part in the namespace
     }
 
@@ -122,8 +125,8 @@ mod tests {
             // is "this node takes part here", the singleton is what it signs with.
             handle
                 .put(
-                    &key::NamespaceIdentity::new(*chain.last().unwrap()),
-                    &key::NamespaceIdentityValue { reserved: 0 },
+                    &key::NamespaceParticipation::new(*chain.last().unwrap()),
+                    &key::NamespaceParticipationValue { reserved: 0 },
                 )
                 .unwrap();
             handle

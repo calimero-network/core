@@ -14,13 +14,11 @@ impl Handler<SetContextMetadataRequest> for ContextManager {
             context_id,
             name,
             data,
-            requester,
         }: SetContextMetadataRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         self.sign_and_publish_group_op(
             &group_id,
-            requester,
             false,
             GroupOp::ContextMetadataSet {
                 context_id,

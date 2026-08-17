@@ -1,5 +1,4 @@
 use calimero_context_config::MemberCapabilities;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     SetDefaultCapabilitiesApiRequest, SetSubgroupVisibilityApiRequest,
 };
@@ -122,12 +121,6 @@ pub struct SetDefaultCapabilitiesCommand {
 
     #[clap(long, help = "Allow new members to join open subgroups by default")]
     pub can_join_open_subgroups: bool,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl SetDefaultCapabilitiesCommand {
@@ -145,7 +138,6 @@ impl SetDefaultCapabilitiesCommand {
 
         let request = SetDefaultCapabilitiesApiRequest {
             default_capabilities: capabilities,
-            requester: self.requester,
         };
 
         let client = environment.client()?;
@@ -176,12 +168,6 @@ pub struct SetSubgroupVisibilityCommand {
 
     #[clap(long, value_enum, help = "Subgroup visibility: open or restricted")]
     pub mode: VisibilityModeArg,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl SetSubgroupVisibilityCommand {
@@ -193,7 +179,6 @@ impl SetSubgroupVisibilityCommand {
 
         let request = SetSubgroupVisibilityApiRequest {
             subgroup_visibility: mode_str.to_owned(),
-            requester: self.requester,
         };
 
         let client = environment.client()?;

@@ -34,7 +34,7 @@ impl Handler<RotateGroupKeyRequest> for ContextManager {
         // Who are we in this namespace? This is the identity that will SIGN the
         // rotation, and therefore the identity peers check against the
         // authorized-rotator gate — so it is the identity whose admin-ness matters,
-        // not the requester's.
+        // not the caller's.
         let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&group_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node has no namespace identity for the namespace owning {group_id:?}; \
