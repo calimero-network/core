@@ -2044,6 +2044,27 @@ mod tests {
 
     use super::*;
 
+    /// A **real** account for `sign_pk` — minted from a genesis the way
+    /// production does, not derived from the signing key by the bridge. That
+    /// distinction is the whole point of these fixtures: a plane that only works
+    /// because the account happens to be a function of the key proves nothing
+    /// about a plane keyed by real accounts.
+    ///
+    /// Deterministic in `sign_pk`, so every mention of the same key inside a test
+    /// names the same account without threading a value through.
+    fn test_account(sign_pk: &PublicKey) -> calimero_account::AccountId {
+        calimero_account::AccountGenesis::new(test_root_sk(sign_pk).public_key()).account_id()
+    }
+
+    /// The root key behind [`test_account`]. Distinct from `sign_pk` itself — an
+    /// account whose root IS the signing key would hide exactly the confusion
+    /// these tests exist to catch.
+    fn test_root_sk(sign_pk: &PublicKey) -> calimero_primitives::identity::PrivateKey {
+        let mut seed = **sign_pk;
+        seed[0] ^= 0xA5;
+        calimero_primitives::identity::PrivateKey::from(seed)
+    }
+
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
@@ -2068,7 +2089,7 @@ mod tests {
     /// `MemberJoinedOpen` inheritance proof.
     fn member_joined(group: ContextGroupId, member: PublicKey) -> RootOp {
         RootOp::MemberJoined {
-            member: legacy_account_id(&member),
+            member: test_account(&member),
             signed_invitation: SignedGroupOpenInvitation {
                 inviter_account: None,
                 invitation: GroupInvitationFromAdmin {
@@ -2205,7 +2226,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::AdminChanged {
-                    new_admin: legacy_account_id(&signer),
+                    new_admin: test_account(&signer),
                 },
             ),
             None,
@@ -2217,7 +2238,7 @@ mod tests {
         assert_eq!(
             op.payload,
             OpPayload::AdminChanged {
-                new_admin: legacy_account_id(&signer),
+                new_admin: test_account(&signer),
             }
         );
     }
@@ -2271,9 +2292,11 @@ mod tests {
         let op = op_from_rotation_entry(object, scope, &entry).expect("signed rotation maps");
         assert_eq!(
             op.author(),
-            legacy_account_id(&signer),
+            calimero_op_adapter::legacy_account_id(&signer),
             "author is the rotation signer, and a rotation entry names a KEY — so \
-             the adapter derives the author rather than resolving a binding"
+             the adapter derives the author rather than resolving a binding. This \
+             is an assertion ABOUT the bridge, so it stays until `build_op` gets a \
+             real credential to attribute the op to."
         );
         assert_eq!(op.hlc, hlc(5));
         assert_eq!(
@@ -2319,7 +2342,7 @@ mod tests {
             vec![],
             OpPayload::MemberAdded {
                 group,
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 role: GroupMemberRole::Member,
             },
         );
@@ -2328,7 +2351,7 @@ mod tests {
             vec![add.id()],
             OpPayload::MemberRemoved {
                 group,
-                member: legacy_account_id(&member),
+                member: test_account(&member),
             },
         );
 
@@ -2342,7 +2365,7 @@ mod tests {
         assert_eq!(
             pre.groups
                 .get(&group)
-                .and_then(|m| m.get(&legacy_account_id(&member))),
+                .and_then(|m| m.get(&test_account(&member))),
             Some(&GroupMemberRole::Member),
         );
 
@@ -2351,7 +2374,7 @@ mod tests {
         assert_eq!(
             post.groups
                 .get(&group)
-                .and_then(|m| m.get(&legacy_account_id(&member))),
+                .and_then(|m| m.get(&test_account(&member))),
             None
         );
 
@@ -2393,7 +2416,7 @@ mod tests {
             10,
             vec![],
             OpPayload::AdminChanged {
-                new_admin: legacy_account_id(&admin),
+                new_admin: test_account(&admin),
             },
         );
         reg.ingest_op(&admin_op);
@@ -2410,7 +2433,7 @@ mod tests {
             vec![admin_op.id()],
             OpPayload::MemberAdded {
                 group,
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 role: GroupMemberRole::Member,
             },
         ));
@@ -2442,23 +2465,16 @@ mod tests {
 
         let mut reg = ScopeProjections::new();
         // Before the join: nothing recorded.
-        assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
-            None
-        );
+        assert_eq!(reg.role_of(&ns_scope, &group, &test_account(&member)), None);
         reg.ingest_op(&join);
         // After: the member is recorded for the group, under the namespace scope.
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            reg.role_of(&ns_scope, &group, &test_account(&member)),
             Some(GroupMemberRole::Member),
         );
         // A different namespace's scope is unaffected (isolation across namespaces).
         assert_eq!(
-            reg.role_of(
-                &ScopeId::from([0xEE; 32]),
-                &group,
-                &legacy_account_id(&member)
-            ),
+            reg.role_of(&ScopeId::from([0xEE; 32]), &group, &test_account(&member)),
             None,
         );
     }
@@ -2477,7 +2493,7 @@ mod tests {
         let add = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberAdded {
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 role: GroupMemberRole::Admin,
             }),
             [0xAB; 32],
@@ -2493,7 +2509,7 @@ mod tests {
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            reg.role_of(&ns_scope, &group, &test_account(&member)),
             Some(GroupMemberRole::Admin),
         );
 
@@ -2501,7 +2517,7 @@ mod tests {
         let remove = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberRemoved {
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             }),
@@ -2510,10 +2526,7 @@ mod tests {
             &[[0xAB; 32]],
         );
         reg.ingest_op(&remove);
-        assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
-            None
-        );
+        assert_eq!(reg.role_of(&ns_scope, &group, &test_account(&member)), None);
 
         // A truly out-of-model group op folds as a Noop node (still recorded).
         let other = op_from_namespace_op(
@@ -2550,7 +2563,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::AdminChanged {
-                    new_admin: legacy_account_id(&signer),
+                    new_admin: test_account(&signer),
                 },
             ),
             None,
@@ -2572,7 +2585,7 @@ mod tests {
         assert!(
             view.groups
                 .get(&group)
-                .is_some_and(|m| m.contains_key(&legacy_account_id(&member))),
+                .is_some_and(|m| m.contains_key(&test_account(&member))),
             "member must be visible at the namespace-head cut"
         );
     }
