@@ -814,28 +814,24 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 
     // The admin is a direct member of the ROOT ONLY — its subgroup access is
     // inherited, exactly like the namespace owner in the scenario.
-    // Keyed by the KEY-derived account throughout this test, unlike the suites
-    // above. Its whole premise is that the admin has no folded presence, so the
-    // projection can only reach it through the out-of-band root — and that path
-    // compares the ROOT's `admin_identity` against what a key resolves to with
-    // nothing folded, which is this derivation. An enrolment-derived account
-    // would be unreachable there, and the test would fail for its setup rather
-    // than for the behaviour it guards.
+    //
+    // Keyed by the admin's REAL account, and its device link folded, because
+    // that is what production looks like: `admin_identity` is a real account at
+    // every site that writes it, and a founder reaches the view through the
+    // credential its `NamespaceCreated` carries. This test used to seed BOTH
+    // sides as key-derived stand-ins, so the out-of-band root matched what a
+    // bare key resolved to — the two agreed only because they were the same
+    // derivation, which no production namespace reproduces.
+    let admin_credential = real_join_account_for(&admin, [0x6C; 32]);
+    let admin_account = admin_credential.cert.account;
     MetaRepository::new(&store)
-        .save(&ns, &meta(calimero_op_adapter::legacy_account_id(&admin)))
+        .save(&ns, &meta(admin_account))
         .unwrap();
     MetaRepository::new(&store)
-        .save(
-            &subgroup,
-            &meta(calimero_op_adapter::legacy_account_id(&admin)),
-        )
+        .save(&subgroup, &meta(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(
-            &ns,
-            &calimero_op_adapter::legacy_account_id(&admin),
-            GroupMemberRole::Admin,
-        )
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&ns, &subgroup)
@@ -861,27 +857,22 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         [0xBF; 32],
     );
 
-    // Baseline: before any join folds, the admin inherits into the subgroup.
-    assert_eq!(
-        proj.member_at_cut(&store, subgroup, &admin, &[s2]),
-        Some(true),
-        "baseline: the root admin reaches an Open child by inheritance"
-    );
-
-    // The ADMIN's OWN device folds — the case that matters. The genesis admin has
-    // no membership OP anywhere: it is seeded as a store row and reaches the
-    // folded view only through the out-of-band `root` parameter, keyed by
-    // `legacy_account_id`. So it is exactly the principal `account_for_author`'s
-    // own precedence guard cannot see.
+    // The admin's own credential folds first, because that is the only way a key
+    // becomes attributable: a namespace's founder reaches the view through the
+    // credential its `NamespaceCreated` carries. Asserting the baseline before
+    // ANY credential folded — as this test used to — asks whether a bare key
+    // with no binding is an admin, and the honest answer is that nobody knows
+    // who that key is. It read as "yes" only while a stand-in derived from the
+    // key was compared against a root seeded with the same derivation.
     let admin_join_open = SignedNamespaceOp::sign(
         &admin_sk,
         ns.to_bytes().into(),
         vec![],
         7,
         NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_op_adapter::legacy_account_id(&admin),
+            member: admin_account,
             group_id: subgroup.to_bytes().into(),
-            account: real_join_account_for(&admin, [0x7A; 32]),
+            account: admin_credential,
         }),
     )
     .expect("sign admin open-join");
@@ -894,12 +885,12 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         &[s2],
     ));
 
+    // Baseline: with its own device bound, the admin inherits into the Open
+    // child, and folding that device did not un-member it.
     assert_eq!(
         proj.member_at_cut(&store, subgroup, &admin, &[id0]),
         Some(true),
-        "folding the admin's OWN device must not un-member it: membership on this \
-         plane is keyed by the stand-in, and the genesis admin is known only \
-         through the out-of-band root"
+        "baseline: the root admin reaches an Open child by inheritance"
     );
 
     // The joiner joins the namespace carrying a credential that really folds.
@@ -916,7 +907,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     )
     .expect("sign join_ns");
     let id1 = [0xB1; 32];
-    proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[s2]));
+    proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[id0]));
 
     // ...and then into the Open subgroup by inheritance, credential and all.
     let join_sub = SignedNamespaceOp::sign(
