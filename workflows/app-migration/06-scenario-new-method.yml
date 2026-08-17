@@ -54,9 +54,8 @@ steps:
       namespace_id: namespaceId
 
   - name: Capture admin key
-    type: get_namespace_identity
+    type: node_identity
     node: app-migration-newmethod-1
-    namespace_id: "{{namespace_id}}"
     outputs:
       admin_key: publicKey
 

@@ -43,9 +43,8 @@ steps:
       namespace_a: namespaceId
 
   - name: Capture admin key (for teardown)
-    type: get_namespace_identity
+    type: node_identity
     node: app-migration-coexist-1
-    namespace_id: "{{namespace_a}}"
     outputs:
       admin_key_a: publicKey
 
@@ -73,12 +72,10 @@ steps:
     outputs:
       namespace_b: namespaceId
 
-  - name: Capture namespace B admin key (for teardown)
-    type: get_namespace_identity
-    node: app-migration-coexist-1
-    namespace_id: "{{namespace_b}}"
-    outputs:
-      admin_key_b: publicKey
+  # No second capture for namespace B: this is the same node, and a node signs
+  # with one key everywhere, so the read above already answered for both. It was
+  # two steps only because the per-namespace route made it look like two
+  # questions.
 
   - name: Create subgroup in namespace B
     type: create_group_in_namespace

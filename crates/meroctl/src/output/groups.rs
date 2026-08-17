@@ -7,11 +7,11 @@ use calimero_server_primitives::admin::{
     JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
     LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NamespaceIdentityApiResponse, NodeIdentityApiResponse,
-    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RemoveGroupMembersApiResponse,
-    ReparentGroupApiResponse, RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SyncGroupApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
+    PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
+    RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
+    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
+    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -232,20 +232,6 @@ impl Report for ListNamespacesApiResponse {
                 ns.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
-        println!("{table}");
-    }
-}
-
-impl Report for NamespaceIdentityApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Namespace Identity").fg(Color::Green),
-            Cell::new("Value").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
-        let _ = table.add_row(vec!["Public Key", &self.public_key]);
-        let _ = table.add_row(vec!["Account", &self.account]);
         println!("{table}");
     }
 }

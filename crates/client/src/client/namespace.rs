@@ -2,10 +2,9 @@ use calimero_server_primitives::admin::{
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
     JoinGroupApiRequest, JoinGroupApiResponse, ListNamespaceGroupsApiResponse,
-    ListNamespacesApiResponse, NamespaceApiResponse, NamespaceIdentityApiResponse,
-    NodeIdentityApiResponse, PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiRequest, PairDeviceInitApiResponse, RevokeDeviceApiRequest,
-    RevokeDeviceApiResponse,
+    ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceInitApiRequest,
+    PairDeviceInitApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -25,17 +24,6 @@ where
 {
     pub async fn list_namespaces(&self) -> Result<ListNamespacesApiResponse> {
         let response = self.connection.get("admin-api/namespaces").await?;
-        Ok(response)
-    }
-
-    pub async fn get_namespace_identity(
-        &self,
-        namespace_id: &str,
-    ) -> Result<NamespaceIdentityApiResponse> {
-        let response = self
-            .connection
-            .get(&format!("admin-api/namespaces/{namespace_id}/identity"))
-            .await?;
         Ok(response)
     }
 

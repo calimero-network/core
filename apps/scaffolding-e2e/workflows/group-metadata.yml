@@ -299,12 +299,11 @@ steps:
   # admin). Node-2 still has no capability — writing node-1's record
   # must fail.
 
-  - name: Get node-1 namespace identity
-    type: get_namespace_identity
+  - name: Get node-1's account
+    type: node_identity
     node: e2e-node-1
-    namespace_id: '{{ns}}'
     outputs:
-      node1_account: account
+      node1_account: accountId
 
   - name: Node-2 tries to write node-1 member metadata without capability
     type: set_member_metadata
