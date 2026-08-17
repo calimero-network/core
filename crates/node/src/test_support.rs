@@ -12,6 +12,7 @@ use std::sync::Arc;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ContextMessage;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_primitives::context::ContextId;
@@ -46,7 +47,20 @@ pub(crate) struct KeepAlive(#[allow(dead_code)] Box<dyn std::any::Any>);
 /// store and then "restart" by building a fresh `DeltaStore` over the same rows.
 /// The returned `TempDir` guard must be kept alive for the blob filesystem, and
 /// the [`KeepAlive`] for the client channel receivers.
+///
+/// The context manager is left unresolved, so the applied path (which runs WASM
+/// through the executor) is out of reach — see [`delta_store_over_with_manager`]
+/// for a caller that wires a stand-in actor to reach it.
 pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::TempDir, KeepAlive) {
+    delta_store_over_with_manager(store, LazyRecipient::new()).await
+}
+
+/// [`delta_store_over`], but with the context-manager recipient supplied by the
+/// caller, so a test can stand an actor in front of the execute path.
+pub(crate) async fn delta_store_over_with_manager(
+    store: Store,
+    context_manager: LazyRecipient<ContextMessage>,
+) -> (DeltaStore, tempfile::TempDir, KeepAlive) {
     let tmp = tempfile::tempdir().expect("tempdir");
 
     let blob_config =
@@ -84,7 +98,7 @@ pub(crate) async fn delta_store_over(store: Store) -> (DeltaStore, tempfile::Tem
         None,
     );
 
-    let context_client = ContextClient::new(store, node_client, LazyRecipient::new());
+    let context_client = ContextClient::new(store, node_client, context_manager);
     let our_identity = PublicKey::from([0xBB; 32]);
 
     (
