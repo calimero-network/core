@@ -1146,7 +1146,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     // whole reason the precedence matters.
     assert_ne!(
         founder_account,
-        calimero_op_adapter::legacy_account_id(&founder_key),
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         "the derived stand-in is not the account a credential certifies"
     );
 
@@ -1175,7 +1175,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
         &[],
     ));
 
-    // A GroupCreated folds `admin = legacy_account_id(signer)` — authority in the
+    // A GroupCreated used to fold `admin` as a stand-in for the signer — authority in the
     // view under the STAND-IN, which is exactly the condition that used to make
     // the stand-in win.
     let created = SignedNamespaceOp::sign(
@@ -1213,7 +1213,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
 ///
 /// This is the property the whole bridge deletion turns on. While
 /// `op_from_namespace_op` synthesised authorship with
-/// `legacy_authorship(signer)`, a join op's `device` was a reinterpretation of
+/// `calimero_op::Authorship::unattributed(signer)`, a join op's `device` was a reinterpretation of
 /// the derived account's bytes — a device that was never enrolled and holds no
 /// key. `calimero_authz::authorize` says so at its `MemberJoinedWithDevice`
 /// arm, where two cross-checks its `DeviceLinked` sibling runs are documented
@@ -1269,7 +1269,7 @@ fn a_join_is_attributed_to_the_account_its_certificate_names() {
     );
     assert_ne!(
         certified_account,
-        calimero_op_adapter::legacy_account_id(&joiner),
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         "the stand-in must differ from the certified account, or the assertions \
          above would hold no matter which one was used"
     );
@@ -1284,7 +1284,7 @@ fn a_join_is_attributed_to_the_account_its_certificate_names() {
 ///
 /// But `GroupOp::AccountKeysRotated` carries no credential, so the production
 /// converter has nothing to attribute the op to and stamps
-/// `legacy_authorship(signer)` — a stand-in derived from the signing key. A
+/// `calimero_op::Authorship::unattributed(signer)` — a stand-in derived from the signing key. A
 /// stand-in never equals the real `handoff.account`, so the comparison fails on
 /// an honest rotation and the handoff is dropped.
 ///
@@ -1364,7 +1364,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
     // And the stand-in it would otherwise have used is a different account — so
     // the assertion below cannot pass by coincidence.
     assert_ne!(
-        calimero_op_adapter::legacy_account_id(&device_key),
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         account,
         "precondition: the derived stand-in differs from the real account"
     );

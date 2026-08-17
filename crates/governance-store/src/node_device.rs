@@ -260,6 +260,12 @@ impl NodeDevice {
 /// `Map<account_id, Vote>` silently one-vote-per-device again, which is the exact
 /// failure this split exists to end.
 ///
+/// Derived from this node's root only when this node holds no device of somebody
+/// else's account. A PAIRED node speaks for the account it adopted, and its device
+/// row is the only place that account is written down — re-deriving from the root
+/// there would answer with an account the group has never heard of, so every row
+/// keyed by the real one misses. See [`account_for_group`].
+///
 /// The scope is the context's **namespace**, so all of a person's contexts in one
 /// namespace agree on who they are, and their accounts in two namespaces stay
 /// uncorrelatable. A context with no owning group has no namespace to resolve, so
@@ -293,14 +299,44 @@ pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<
 /// Propagates the namespace resolution or account-root generation failure.
 pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<AccountId> {
     let namespace = NamespaceRepository::new(store).resolve(group)?;
-    // The key this node signs with in that namespace. Its binding — if this node
-    // has enrolled — names the real account; otherwise the key writes as its own
-    // stand-in, which is the only value a PEER can derive for it.
-    let (_, sign_pk, ..) = NamespaceRepository::new(store).participate_in(&namespace)?;
-    let binding = crate::AccountBindingRepository::new(store)
-        .binding_for_sign_pk(&namespace, &sign_pk)?
-        .map(|binding| binding.account);
-    Ok(calimero_op_adapter::writer_account(binding, &sign_pk))
+    let devices = NodeDeviceRepository::new(store);
+
+    // This node's OWN device row, not the binding table.
+    //
+    // The two answer different questions. `AccountBindingRepository` is populated
+    // by APPLIED ops, so it knows a key's account only once that key's device link
+    // has landed — which for the node that is currently creating a context has not
+    // happened yet. Reading it here left a window where a node could not name its
+    // own account and wrote as a stand-in instead, and that stand-in is not the
+    // account any row is keyed by: `init` seeded a writer set nobody could resolve.
+    //
+    // The device row needs no ops at all, so it holds an answer at every moment
+    // the binding table does not.
+    //
+    // Read it as [`reusable_device`], never as `ensure_enrolled`. A PAIRED row
+    // names an account rooted at another node's key, and enrolment is entitled to
+    // replace such a row — it is how a mistyped `pair-init` is recovered from. In
+    // a resolver that is destruction rather than recovery: a linked pairing makes
+    // every call on the device fail with a refusal to move machines between
+    // accounts, and an unlinked one is silently re-minted, taking the KEM secret
+    // the certificate in flight is addressed to. Reusing a paired device is the
+    // whole point of having paired it.
+    if let Some(held) = devices.reusable_device(&namespace)? {
+        return Ok(held.account);
+    }
+
+    // Nothing usable held: no row at all, or one this node has revoked. The account
+    // is derived from the root, which needs no device and no ops — so naming it here
+    // keeps the invariant `account_for_context` documents ("there is no state in
+    // which this node has no account to name") without minting anything.
+    //
+    // Deliberately the root rather than `ensure_enrolled`, which would answer the
+    // same in both cases and RELEASE the held row to do it. One row serves every
+    // namespace while a revocation is per-namespace, so a resolver that enrolled
+    // would let a read in the namespace that revoked this device destroy the device
+    // it still holds in the others. Minting belongs to the enrolment path, which
+    // knows which namespace it is enrolling into; a resolver only reports.
+    Ok(devices.ensure_account_root()?.account())
 }
 
 /// What a revocation of one device is about, resolved from the group's own
@@ -1537,6 +1573,126 @@ mod tests {
         let reloaded = repo.get().expect("read").expect("present");
         assert_eq!(reloaded.device(), mine.device());
         assert_eq!(reloaded.account, mine.account);
+    }
+
+    #[test]
+    fn a_paired_device_resolves_the_account_it_speaks_for() {
+        // What a paired node answers `env::account_id()` with. Its device row names
+        // the account it adopted, and that is the account every row this node
+        // touches is keyed by — writer sets, `Authored` owners, grants. Deriving
+        // the answer from this node's OWN root instead names an account nobody in
+        // the group has heard of, so every one of those lookups misses.
+        //
+        // The refusal is the sharper half: a linked row for another account is
+        // exactly what `ensure_enrolled` will not enroll over, so resolving through
+        // it turns a plain read into a hard error and every call on the paired
+        // device fails — the pairing is complete and correct, and the node cannot
+        // say who it is.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let alice_sk = PrivateKey::from([1u8; 32]);
+        let alice = AccountGenesis::new(alice_sk.public_key());
+        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let cert = calimero_account::sign_device_cert(
+            &alice_sk,
+            paired.account,
+            paired.device(),
+            &root(9),
+            &paired.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &alice, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        assert_eq!(
+            account_for_group(&store, &ns).expect("a paired device must be able to name itself"),
+            alice.account_id(),
+            "the account is the adopted one, not the one this node's own root owns"
+        );
+    }
+
+    #[test]
+    fn resolving_the_account_never_re_mints_over_the_held_device() {
+        // The pairing window: the row is minted by `pair-init` and stays UNLINKED
+        // until the account holder's certificate applies. `ensure_enrolled` treats
+        // an unlinked row for another account as a squatter and replaces it — which
+        // is right when a node is enrolling itself, and destroying when the caller
+        // only wanted to READ the account. The KEM secret goes with the row, so the
+        // certificate already in flight arrives addressed to a device that no
+        // longer exists and pairing can never complete.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let alice = AccountGenesis::new(root(1));
+        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+
+        assert_eq!(
+            account_for_group(&store, &ns).expect("resolve"),
+            alice.account_id(),
+            "an unlinked pairing still names the account it was minted for"
+        );
+        let reloaded = repo.get().expect("read").expect("present");
+        assert_eq!(
+            reloaded.device(),
+            paired.device(),
+            "and resolving is a read: the device the certificate is addressed to \
+             must survive it"
+        );
+        assert_eq!(
+            reloaded.secret.kem_secret.as_bytes(),
+            paired.secret.kem_secret.as_bytes(),
+            "including the agreement secret, without which the delivered key \
+             cannot be unwrapped"
+        );
+    }
+
+    #[test]
+    fn a_revoked_device_stops_naming_the_account_it_spoke_for() {
+        // The mirror case, and why this reads `reusable_device` rather than the raw
+        // row: a revocation is terminal, so the node cannot go on presenting the
+        // account of a device every peer refuses. Falling through to a fresh
+        // enrolment names the account this node's own root owns, which is the only
+        // one it can still certify a device for.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let alice = AccountGenesis::new(root(1));
+        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, paired.device())
+            .expect("tombstone the device");
+
+        let named = account_for_group(&store, &ns).expect("resolve");
+        assert_ne!(
+            named,
+            alice.account_id(),
+            "a revoked device speaks for nobody — presenting its account asks for \
+             the keys the revocation withheld"
+        );
+        assert_eq!(
+            named,
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .account(),
+            "so the answer is this node's own account, the one it can still enroll \
+             into"
+        );
+        assert_eq!(
+            repo.get().expect("read").expect("present").device(),
+            paired.device(),
+            "and naming it is still only a read: one row serves every namespace, so \
+             releasing it here would spend the device this node may still hold in a \
+             namespace that never revoked it"
+        );
     }
 
     /// Link `device` of `genesis`'s account into `ns`, signed by `root_sk`.

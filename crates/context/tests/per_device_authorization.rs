@@ -321,7 +321,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 /// IDENTITY — the very key the group's membership row is keyed under. So a member
 /// who enrols a device becomes, at every cut that contains its own link, a key that
 /// `account_for_author` resolves to the account's real `AccountId` — while
-/// membership on this plane is keyed by `legacy_account_id`. The member disappears.
+/// membership on this plane is keyed by account. The member disappears.
 ///
 /// The blast radius is every at-cut authority read for that key, not just the
 /// device-link gate: the endorser check refuses their next link, and the cross-DAG
@@ -405,8 +405,8 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
 
 /// The join's two planes must resolve a joiner's key to the SAME account.
 ///
-/// A node's writer principal comes from the materialized binding rows
-/// (`env::account_id()` → `account_for_group` → `binding_for_sign_pk`), while the
+/// A node's writer principal comes from its own device row
+/// (`env::account_id()` → `account_for_group` → `reusable_device`), while the
 /// peer verifying that node's signature resolves it from the FOLDED projection
 /// (`device_account_at_cut` → `AclView::devices`). Both are fed by a join, and
 /// they have to agree: a writer set the joiner seeds names whatever the first
@@ -414,7 +414,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
 ///
 /// Recording the binding at apply time without folding the credential broke
 /// exactly this. The joiner wrote as its real account while every peer resolved
-/// it to `legacy_account_id`, so the joiner's `Shared` writes matched no grant —
+/// it to a key-derived stand-in, so the joiner's `Shared` writes matched no grant —
 /// which surfaces far from the join, as data that silently never converges.
 #[test]
 fn a_joiners_writer_account_matches_what_its_peers_resolve() {
@@ -514,7 +514,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         .binding_for_sign_pk(&ns, &joiner)
         .expect("read bindings")
         .map(|b| b.account);
-    let writes_as = calimero_op_adapter::writer_account(binding, &joiner);
+    let writes_as = binding.expect("the join bound the device, so a binding exists");
     assert_eq!(
         writes_as, real_account,
         "a join binds the device, so the joiner writes as its real account"

@@ -82,7 +82,7 @@ type AuthCutContext = (
 /// Which account does `key` speak for at this cut?
 ///
 /// A device's signing key is **not** a member key, so deriving an account from
-/// the key itself — all `legacy_account_id` can do — answers about somebody who
+/// the key itself — all a derived stand-in could do — answers about somebody who
 /// does not exist. That is why a second device could be handed scope keys and
 /// then fail to author with them: delivery resolved the device, authorization did
 /// not.
@@ -93,7 +93,7 @@ type AuthCutContext = (
 /// identity, which is exactly the key the group's membership row is keyed under. So
 /// preferring the binding made a member who enrolled a device resolve to the
 /// account's real `AccountId` at every cut containing its own link — while
-/// membership on this plane is keyed by `legacy_account_id`. The member simply
+/// membership on this plane is keyed by account. The member simply
 /// disappeared: its next device link was refused as "account is not a member", its
 /// devices' state deltas were refused at the cross-DAG check, and because a
 /// publisher decides its own op from LIVE state and accepts, receivers refused an op
@@ -101,7 +101,7 @@ type AuthCutContext = (
 ///
 /// The bindings are consulted only for a key membership does not know, which is what
 /// the fallthrough is for: a paired device signs with a namespace identity that is a
-/// member of nothing, so `legacy_account_id` would answer about somebody who does
+/// member of nothing, so a derived id would answer about somebody who does
 /// not exist. That is the case this function exists for, and it still holds.
 ///
 /// Resolved from `view` — **at the cut** — deliberately. Reading the live binding
@@ -140,7 +140,7 @@ fn build_op(
     // `is_owner(op.author(), object)`, where the owner is a real account. Every
     // rotation-derived writer-set op would be refused as `NotOwner`.
     let authorship = signer_binding.map_or_else(
-        || calimero_op_adapter::legacy_authorship(author),
+        || calimero_op::Authorship::unattributed(author),
         |(account, device)| calimero_op::Authorship {
             account,
             device,
@@ -1461,12 +1461,19 @@ impl ScopeProjections {
         // keyed that way. The writer plane is populated from `env::account_id()`,
         // which resolves binding-first, so it has to answer in the same space or a
         // node's own writes are refused by every peer. Same rule, one function.
-        let binding = view
-            .devices
+        // A folded binding or nothing. There is no stand-in to fall back to any
+        // more, and there should not be: this answers "who does somebody else's
+        // key speak for", and the honest answer for a key no op has bound is that
+        // this node cannot say. Returning a derived account instead named a
+        // principal no row is keyed by, so every check downstream turned it into
+        // "not authorized" one step later anyway — just less legibly.
+        //
+        // A node's OWN key never reaches here: `account_for_group` reads the local
+        // device row, which is minted without waiting for any op.
+        view.devices
             .values()
             .find(|binding| binding.sign_pk == *key)
-            .map(|binding| binding.account);
-        Some(calimero_op_adapter::writer_account(binding, key))
+            .map(|binding| binding.account)
     }
 
     pub fn member_at_cut(
@@ -2310,7 +2317,7 @@ mod tests {
         assert_eq!(op.device(), signer_device, "and the device that signed it");
         assert_ne!(
             signer_account,
-            calimero_op_adapter::legacy_account_id(&signer),
+            calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
             "precondition: the stand-in differs, so the assertion above cannot \
              hold whichever value was used"
         );
@@ -2320,7 +2327,7 @@ mod tests {
             op_from_rotation_entry(object, scope, &entry, None)
                 .expect("still maps")
                 .author(),
-            calimero_op_adapter::legacy_account_id(&signer),
+            calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         );
         assert_eq!(op.hlc, hlc(5));
         assert_eq!(
@@ -2353,7 +2360,7 @@ mod tests {
             Op::new(
                 scope,
                 parents,
-                calimero_op_adapter::legacy_authorship(admin),
+                calimero_op::Authorship::unattributed(admin),
                 h,
                 payload,
                 [0u8; 32],
@@ -2423,7 +2430,7 @@ mod tests {
             Op::new(
                 scope,
                 parents,
-                calimero_op_adapter::legacy_authorship(admin),
+                calimero_op::Authorship::unattributed(admin),
                 h,
                 payload,
                 [0u8; 32],

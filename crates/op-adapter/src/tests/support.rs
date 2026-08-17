@@ -12,7 +12,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
 /// The [`Authorship`] for an op whose author is named directly.
 ///
-/// [`crate::legacy_authorship`] derives the account by hashing the signing key,
+/// An unattributed authorship names no account at all,
 /// which couples a test to the stand-in bridge even when all it wanted was "some
 /// author". This states the principal and the key separately, which is what the
 /// two fields actually mean.

@@ -12,7 +12,7 @@ use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
-use calimero_op_adapter::{legacy_authorship, payload_from_group_op, payload_from_root_op};
+use calimero_op_adapter::{payload_from_group_op, payload_from_root_op};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 
@@ -194,7 +194,9 @@ pub fn op_from_namespace_op_with_binding(
     // getting a stand-in there meant the fold compared a real `handoff.account`
     // against a derived one and silently dropped every rotation.
     //
-    // The stand-in last, for a key nothing knows: pre-credential data.
+    // And last, an explicit `unattributed` for a key nothing knows — a value no
+    // genesis can produce, so every gate that compares the author against a real
+    // principal fails closed without needing a case for it.
     //
     // Resolving the binding in the CALLER is what makes it safe. Both producers
     // have already APPLIED this op, and an op cannot apply unless the signer's
@@ -210,7 +212,7 @@ pub fn op_from_namespace_op_with_binding(
                 device_key: signed.signer,
             })
         })
-        .unwrap_or_else(|| legacy_authorship(signed.signer));
+        .unwrap_or_else(|| Authorship::unattributed(signed.signer));
     build_op(
         id,
         ScopeId::from(signed.namespace_id.to_bytes()),
