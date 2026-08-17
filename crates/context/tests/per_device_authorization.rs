@@ -405,8 +405,8 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
 
 /// The join's two planes must resolve a joiner's key to the SAME account.
 ///
-/// A node's writer principal comes from the materialized binding rows
-/// (`env::account_id()` → `account_for_group` → `binding_for_sign_pk`), while the
+/// A node's writer principal comes from its own device row
+/// (`env::account_id()` → `account_for_group` → `reusable_device`), while the
 /// peer verifying that node's signature resolves it from the FOLDED projection
 /// (`device_account_at_cut` → `AclView::devices`). Both are fed by a join, and
 /// they have to agree: a writer set the joiner seeds names whatever the first
