@@ -326,9 +326,9 @@ fn a_join_replayed_by_another_device_is_refused() {
         group,
         member: genesis.account_id(),
         role: GroupMemberRole::Member,
-        genesis: genesis.clone(),
+        genesis,
         chain: vec![],
-        cert: cert.clone(),
+        cert,
     };
 
     // Authored by the ADMIN's device rather than the granted one: the replay.

@@ -26,7 +26,7 @@ use calimero_governance_store::{
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{legacy_account_id, set_writers_payload};
+use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
@@ -113,41 +113,17 @@ type AuthCutContext = (
 /// precisely what `denied_members` and `accounts_by_endorsing_member` avoid: it can
 /// only be populated while observing bindings, so it comes back empty after a
 /// projection rebuild and silently reverts every device to the fallback.
-fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> AccountId {
-    // An explicit binding wins over the derived id. A folded `DeviceLinked` is a
-    // signed statement about THIS key; `legacy_account_id` is a guess that names a
-    // real principal nowhere now that the live plane keys every row by account.
-    //
-    // This order is the reverse of what it was, and the reversal is the point.
-    // While membership was key-keyed, preferring the binding made a member who
-    // enrolled a device resolve to an account the rows did not know, and the
-    // member vanished — so the derived id had to win. Keying the rows by account
-    // removes that hazard and introduces the mirror one: stale key-derived ids
-    // still enter this view (`SubgroupCreated.admin` folds one), and letting them
-    // win makes the founder stop being admin of its own namespace the moment it
-    // creates a subgroup. Every peer then refuses what the founder signs while
-    // the founder accepts it — which is a `scope_root` split, not a hiccup.
-    if let Some(binding) = view
-        .devices
+fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
+    // A folded `DeviceLinked` is a signed statement that this key speaks for an
+    // account. There is no second answer any more: the stand-in that used to be
+    // returned here named a principal nowhere, since every row on this plane is
+    // account-keyed, and every caller below turned it into "not authorized" one
+    // step later. Returning `None` says that directly instead of routing it
+    // through an account nobody has heard of.
+    view.devices
         .values()
         .find(|binding| binding.sign_pk == *key)
-    {
-        return binding.account;
-    }
-    // No binding folded for this key, so all that is left is the stand-in. It
-    // names a real principal nowhere — every row on this plane is account-keyed —
-    // which is the correct answer for an author nobody has heard of: the
-    // authorization queries downstream all resolve it to "no".
-    //
-    // There used to be a `view_knows_author` check here, asking whether the
-    // derived id was one the view recognised. It could not change the outcome —
-    // both arms returned the same value — and it has not been able to since the
-    // binding/derived precedence was reversed. Measured before removing it: over
-    // the fold-equivalence suites the fallback is taken 13 times, and the only 4
-    // where the derived id WAS recognised come from a fixture that seeds the
-    // namespace's genesis admin as a stand-in itself. Production writes real
-    // accounts at every `admin_identity` site.
-    legacy_account_id(key)
+        .map(|binding| binding.account)
 }
 
 fn build_op(
@@ -1504,12 +1480,8 @@ impl ScopeProjections {
             .flatten()
             .unwrap_or(0);
         if view.as_ref().is_some_and(|v| {
-            v.is_member_at_cut(
-                group,
-                &account_for_author(v, author),
-                root,
-                default_cap_base,
-            )
+            account_for_author(v, author)
+                .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
         }) {
             return Some(true);
         }
@@ -1653,12 +1625,8 @@ impl ScopeProjections {
             .flatten()
             .unwrap_or(0);
         Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
-            v.is_member_at_cut(
-                group,
-                &account_for_author(&v, author),
-                root,
-                default_cap_base,
-            )
+            account_for_author(&v, author)
+                .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
         }))
     }
 
@@ -1677,7 +1645,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
-        Some(view.is_authorized_admin(group, &account_for_author(&view, author), root))
+        Some(
+            account_for_author(&view, author)
+                .is_some_and(|account| view.is_authorized_admin(group, &account, root)),
+        )
     }
 
     /// Is `member` an admin of `group` at the cut? The account-typed sibling of
@@ -1726,10 +1697,15 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        if view.is_authorized_admin(group, &account_for_author(&view, author), root) {
+        // An author no binding speaks for holds no capability and is no admin:
+        // there is no account to look either up against.
+        let Some(account) = account_for_author(&view, author) else {
+            return Some(false);
+        };
+        if view.is_authorized_admin(group, &account, root) {
             return Some(true);
         }
-        let folded = view.capability(&group, &account_for_author(&view, author));
+        let folded = view.capability(&group, &account);
         let effective = if folded != 0 {
             folded
         } else {
@@ -1882,7 +1858,7 @@ impl ScopeProjections {
         // with the decision it is meant to explain.
         let author_in_any = view
             .as_ref()
-            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author)));
+            .is_some_and(|v| account_for_author(v, author).is_some_and(|a| v.is_scope_member(&a)));
         // Is the DECISION group folded at all, and how big? Distinguishes
         // "subgroup membership never folded" (group absent / size 0 — a
         // decrypt/sync gap) from "folded but author absent" (re-add / deny-list).
@@ -1949,7 +1925,7 @@ impl ScopeProjections {
         // key was a member and the role lookup found nobody, which is the
         // "member at cut but role unresolved" the caller then logged before
         // guessing `Member`.
-        let account = account_for_author(&view, member);
+        let account = account_for_author(&view, member)?;
         match view.member_path_at_cut(group, &account, root, default_cap_base) {
             calimero_authz::MemberPathAtCut::None => None,
             calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
