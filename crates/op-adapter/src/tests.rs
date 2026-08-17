@@ -20,5 +20,4 @@ mod acl;
 mod credential;
 mod data;
 mod group;
-mod legacy;
 mod root;

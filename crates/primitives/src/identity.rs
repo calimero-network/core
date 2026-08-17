@@ -227,6 +227,15 @@ macro_rules! content_address_id {
             pub const fn as_bytes(&self) -> &[u8; 32] {
                 &self.0
             }
+
+            /// This id from its raw bytes, in a `const` context.
+            ///
+            /// `From<[u8; 32]>` cannot be `const`, so a sentinel or a fixed
+            /// well-known id has no way to be a `const` item without this.
+            #[must_use]
+            pub const fn from_raw(bytes: [u8; 32]) -> Self {
+                Self(bytes)
+            }
         }
 
         impl From<[u8; 32]> for $name {

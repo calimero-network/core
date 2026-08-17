@@ -293,14 +293,22 @@ pub fn account_for_context(store: &Store, context_id: &ContextId) -> EyreResult<
 /// Propagates the namespace resolution or account-root generation failure.
 pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<AccountId> {
     let namespace = NamespaceRepository::new(store).resolve(group)?;
-    // The key this node signs with in that namespace. Its binding — if this node
-    // has enrolled — names the real account; otherwise the key writes as its own
-    // stand-in, which is the only value a PEER can derive for it.
-    let (_, sign_pk, ..) = NamespaceRepository::new(store).participate_in(&namespace)?;
-    let binding = crate::AccountBindingRepository::new(store)
-        .binding_for_sign_pk(&namespace, &sign_pk)?
-        .map(|binding| binding.account);
-    Ok(calimero_op_adapter::writer_account(binding, &sign_pk))
+    // This node's OWN device row, not the binding table.
+    //
+    // The two answer different questions. `AccountBindingRepository` is populated
+    // by APPLIED ops, so it knows a key's account only once that key's device link
+    // has landed — which for the node that is currently creating a context has not
+    // happened yet. Reading it here left a window where a node could not name its
+    // own account and wrote as a stand-in instead, and that stand-in is not the
+    // account any row is keyed by: `init` seeded a writer set nobody could resolve.
+    //
+    // The device row is minted locally by `ensure_enrolled` from this node's own
+    // account root, so it needs no ops at all. This is the invariant
+    // `account_for_context` already documents — "there is no state in which this
+    // node has no account to name" — now actually held rather than approximated.
+    Ok(NodeDeviceRepository::new(store)
+        .ensure_enrolled(&namespace)?
+        .account)
 }
 
 /// What a revocation of one device is about, resolved from the group's own

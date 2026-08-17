@@ -12,8 +12,8 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_projection::ScopeState;
 
+use crate::payload_from_group_op;
 use crate::tests::support::{authorship_of, hlc};
-use crate::{legacy_account_id, payload_from_group_op};
 
 /// A governance `AccountDeviceLinked` must reach the projection's account
 /// plane and land as a folded device binding.
@@ -79,21 +79,21 @@ fn a_governance_device_link_reaches_the_projection() {
         "and it must know which account the device speaks for"
     );
 
-    // And the reason the binding has to be consulted at all: an account
-    // DERIVED from the device's signing key is a different account, and not a
-    // member. Resolving a signer through `legacy_account_id` alone therefore
-    // answers about somebody who does not exist, which is exactly why a second
-    // device could receive scope keys and then not author with them.
-    let device_sign_pk = PrivateKey::from([5u8; 32]).public_key();
+    // And the reason the binding has to be consulted at all: without it there is
+    // no account to name, and the value that stands for "no account" must not be
+    // a member of anything. This is what makes an unattributable op fail closed
+    // everywhere instead of needing a case at each gate — and it is why the
+    // stand-in this replaced was a hazard: it was account-SHAPED and different
+    // per key, so it read as a principal at every site that saw it.
     assert_ne!(
-        legacy_account_id(&device_sign_pk),
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         account,
-        "if the derived account happened to equal the real one, the check \
-         below would pass for the wrong reason"
+        "if the sentinel equalled a real account the check below would pass for \
+         the wrong reason"
     );
     assert!(
-        !view.is_scope_member(&legacy_account_id(&device_sign_pk)),
-        "the account derived from a device key must not be a member"
+        !view.is_scope_member(&calimero_op::Authorship::UNATTRIBUTED_ACCOUNT),
+        "an author nothing could attribute must be a member of nothing"
     );
 }
 
