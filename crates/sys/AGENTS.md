@@ -50,7 +50,7 @@ This crate defines one wire format for the boundary between a WASM guest (an app
 Grouped by concern, as declared in the `wasm_imports!` block:
 
 - **Panics**: `panic`, `panic_utf8`
-- **Registers / context**: `register_len`, `read_register`, `context_id`, `executor_id`, `xcall_origin`
+- **Registers / context**: `register_len`, `read_register`, `context_id`, `account_id`, `device_id`, `xcall_origin` (this crate declares no `executor_id`; the host keeps that name as a pre-split alias, so a guest built against this crate cannot import it)
 - **Execution I/O**: `input`, `value_return`, `emit_migration_witness`, `log_utf8`, `emit`, `emit_with_handler`
 - **Cross-context calls**: `xcall`
 - **Commit**: `commit`
