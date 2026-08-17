@@ -122,15 +122,7 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             cert,
             ..
         } => {
-            // Cryptographic admissibility only. The two cross-checks the
-            // `DeviceLinked` arm adds are deliberately absent and cannot be
-            // reinstated here: a bridged join op's `authorship` is
-            // `legacy_authorship(signer)`, whose device is DERIVED from the
-            // stand-in rather than enrolled, so both the device-key and the
-            // account comparison would fail on a perfectly honest join. And
-            // `is_scope_member(verified.account)` cannot hold either — the whole
-            // point of a join is that the account is not a member yet.
-            let _verified = admit_device_link(
+            let verified = admit_device_link(
                 &acl_at_cut.accounts,
                 &acl_at_cut.devices,
                 &acl_at_cut.revoked_devices,
@@ -138,6 +130,31 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 chain,
                 cert,
             )?;
+            // The same possession check the `DeviceLinked` arm makes, which a
+            // join could not carry while its authorship was derived from the
+            // signing key: the device it names was fiction, so comparing against
+            // it refused every honest join. The op now names the device its
+            // certificate grants, so requiring the join to be signed BY that
+            // device is decidable — and without it, anyone who observed a
+            // certificate could replay it and join on the real device's behalf.
+            if op.authorship.device_key != verified.sign_pk
+                || op.authorship.device != verified.device
+            {
+                return Err(Rejected::DeviceKeyStale {
+                    device: verified.device,
+                });
+            }
+            // And that the account it joins as is the one the certificate
+            // grants to, rather than any account the payload cared to name.
+            if op.author() != verified.account {
+                return Err(Rejected::DeviceAccountMismatch {
+                    device: verified.device,
+                    bound: verified.account,
+                    claimed: op.author(),
+                });
+            }
+            // `is_scope_member(verified.account)` still cannot be required — the
+            // whole point of a join is that the account is not a member yet.
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())
             } else {
