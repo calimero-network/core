@@ -162,9 +162,9 @@ steps:
 
   # ── One account, taking part in both ───────────────────────────────
 
-  # `account create` is an ensure, not a create: one root key is one account
-  # everywhere, so the second call enrolls the same account into namespace B
-  # rather than minting a second one. Both are asserted below to be equal,
+  # Enrolment is an ensure, not a create: one root key is one account
+  # everywhere, so taking part in namespace B enrolls the same account rather
+  # than minting a second one. Both are asserted below to be equal,
   # because that equality is the premise the rest of the scenario rests on.
   - name: Node-2 enrolls its account in namespace A
     type: node_identity

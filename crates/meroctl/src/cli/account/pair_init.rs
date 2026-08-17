@@ -18,12 +18,13 @@ use crate::cli::Environment;
 /// running `pair-complete`: if it does not match theirs, the payload was altered
 /// in transit and the device must not be certified.
 ///
-/// The root key comes from that device — `account create` prints it. It is not a
+/// The root key comes from that device — `meroctl account show` reports it. It is not a
 /// secret: a genesis is public data, and naming an account you do not hold gains
 /// you nothing, because the device stays inert until the account root signs its
 /// certificate.
 ///
-/// Unlike `account create`, this needs no scope key and no membership. That is
+/// Unlike the enrolment a join performs, this needs no scope key and no
+/// membership. That is
 /// the point — a paired device is a device of somebody else's account and a
 /// member of nothing.
 #[derive(Clone, Debug, Parser)]

@@ -169,8 +169,8 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             }
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node has enrolled no device in {namespace_id:?}; enroll one with \
-                     `account create` before pairing a second"
+                    "this node has enrolled no device in {namespace_id:?}; joining a namespace \
+                     enrols one, and it has to happen before pairing a second"
                 )));
             }
             Err(err) => return ActorResponse::reply(Err(err)),

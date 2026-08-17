@@ -67,8 +67,8 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         // repository, not here: an unlinked one is replaced (it holds no replica
         // state, and the row is minted before anyone certifies it, so refusing
         // would let one mistyped nonce claim this namespace's only device slot
-        // for good), a linked one is refused. `account create` reaches the same
-        // rule through the same place, which is why it lives there.
+        // for good), a linked one is refused. The join path reaches the same rule
+        // through the same place, which is why it lives there.
         let enrolled =
             match NodeDeviceRepository::new(&store).ensure_enrolled_into(&namespace_id, genesis) {
                 Ok(enrolled) => enrolled,

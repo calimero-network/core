@@ -1749,32 +1749,6 @@ pub struct PairDeviceInitApiResponse {
     pub data: PairDeviceInitApiResponseData,
 }
 
-/// Which account this node speaks for in a namespace.
-///
-/// The read that was missing: an account id is derived from this node's root and
-/// the namespace, so nothing on the wire ever carries it and a caller had no way
-/// to learn it except by keeping the output of `account create`. Everything that
-/// names an account — granting a writer, revoking a device — needs this first.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceAccountApiResponseData {
-    /// Hex-encoded `AccountId` this node executes as in the namespace.
-    pub account_id: String,
-    /// Hex-encoded namespace the account is scoped to. Accounts are
-    /// per-namespace on purpose, so the same node is uncorrelatable across two.
-    pub namespace_id: String,
-    /// Hex-encoded `DeviceId` this node holds there, when it has enrolled one.
-    /// `None` before `account create` — the account id is still derivable, but no
-    /// device speaks for it yet.
-    pub device_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceAccountApiResponse {
-    pub data: NamespaceAccountApiResponseData,
-}
-
 /// Certify a device another node minted, link it, and deliver the scope key.
 ///
 /// Every field is what that node's pair-init returned. None is a secret: the
