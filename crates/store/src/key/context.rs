@@ -312,6 +312,52 @@ impl Debug for ContextActivatedBlob {
     }
 }
 
+/// Per-context activated state-version key: the ABI state version the blob in
+/// [`ContextActivatedBlob`] declares. One key per context, in its own column.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextActivatedStateVersion(Key<ContextId>);
+
+impl ContextActivatedStateVersion {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextActivatedStateVersion {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        Column::ContextActivatedStateVersion
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextActivatedStateVersion {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextActivatedStateVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextActivatedStateVersion")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextConfig(Key<ContextId>);

@@ -276,7 +276,12 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         None,
                         &envelope,
                     )?;
-                    GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
+                    crate::group_key_pull::adopt_pulled_group_key(
+                        &datastore,
+                        namespace_id.into(),
+                        group_id,
+                        &group_key,
+                    )?;
                     info!("received group key via direct join response");
                 }
 

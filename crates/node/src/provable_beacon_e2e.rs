@@ -7,6 +7,11 @@
 //! nothing, and that a beacon accepted on this path never enters the readiness
 //! cache. The emit-path case runs a real `ReadinessManager` over the same
 //! harness and decodes what it actually published.
+//!
+//! Every case is `#[serial(boot_test_node)]` for the reason the sibling
+//! `boot_test_node` modules are: booting a node rebinds process-global
+//! singletons (the `op_events` bridges, the TEE-admit subscriber), so a
+//! concurrent boot steals another module's event stream mid-assertion.
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +30,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use libp2p::PeerId;
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
@@ -33,7 +39,6 @@ use crate::readiness::{
     ReadinessState, ReadinessTier,
 };
 use crate::test_node_harness::{boot_test_node, TestNode};
-use serial_test::serial;
 
 const NS: [u8; 32] = [42u8; 32];
 

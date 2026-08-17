@@ -1,7 +1,7 @@
-name: 28 — get_migration_status rollup substrate (PR-6c, node-log validated)
+name: 28 - get_migration_status rollup
 description: >
-  Migration-status visibility across a 2-node namespace, validated against
-  node logs (PR-6c tasks 6c.7/6c.8/6c.9/6c.10 + 6c.11).
+  Migration-status visibility across a 2-node namespace, validated against the
+  admin rollup itself.
 
   Completion visibility is ephemeral signed TTL gossip, NOT replicated
   governance state: each node periodically publishes a signed
@@ -9,39 +9,30 @@ description: >
   and local residue counts; peers verify the Ed25519 signature AND cohort
   membership, then upsert it into a 60s-TTL cache. The admin route
   `GET /groups/:namespace_id/migration-status` rolls the freshest heartbeat
-  per pinned-cohort member into `all_migrated` — which flips true ONLY when
+  per pinned-cohort member into `all_migrated` - which flips true ONLY when
   EVERY member reports `schema_version >= target && residue == 0`. A member
   with no fresh heartbeat is `unknown` and keeps `all_migrated = false` (no
-  false green). Observability only — never a gate.
+  false green). Observability only - never a gate.
 
-  This scenario drives a migration across the 2-node namespace and node-log
-  validates the heartbeat substrate the rollup reads (the rollup arithmetic
-  itself — pinning, unknown-safety, all_migrated — is unit-covered in task
-  6c.9: unknown_member_blocks_all_migrated / cohort_pinned_ignores_post_expand_joiner
-  / all_migrated_true_only_when_every_pinned_member_v2_residue0):
+  This scenario drives a migration across the 2-node namespace and reads the
+  rollup the heartbeats feed, at both of its edges:
 
-    - While both members are online and converged at v2, each node EMITS its
-      own signed heartbeat and CACHES the peer's — proving both cohort rows
-      populate, the precondition for `all_migrated = true`.
-    - A signature/membership-failing heartbeat is dropped on ingest (the gate
-      that keeps an unsigned/non-member peer out of any rollup).
+    - While both members are online and converged at v2, every cohort row is
+      populated from a fresh heartbeat. Node 2's row can only be non-unknown if
+      node 2 EMITTED and node 1 INGESTED past the signature/membership gate, so
+      emit, cache and the drop path are asserted through their state
+      consequence rather than through log lines.
     - When node 2 goes offline its heartbeats stop arriving at node 1; with no
       fresh heartbeat its cohort row ages out of the TTL window and the rollup
-      reports it `unknown`, keeping `all_migrated = false` — the no-false-green
-      contract.
+      reports it `unknown`, keeping `all_migrated = false` - the no-false-green
+      contract. `fleetCompletedAt` is durable and must NOT follow it back down.
 
-  Because migration_v2 defaults ON (PR-6b task 6b.8), the heartbeat emit +
-  ingest run natively — no merobox feature flag is needed.
+  The rollup's own arithmetic is additionally unit-covered by
+  unknown_member_blocks_all_migrated / cohort_pinned_ignores_post_expand_joiner
+  / all_migrated_true_only_when_every_pinned_member_v2_residue0.
 
-  Scope note: the `get_migration_status` rollup is reachable over the admin
-  route GET /groups/:namespace_id/migration-status (task 6c.10) and its
-  arithmetic is unit-covered in task 6c.9. There is no merobox step that polls
-  that route yet (cf. the get_cascade_status step shipped for #2524), so this
-  e2e node-log-validates the heartbeat gossip substrate the rollup consumes —
-  emit, signed+membership-gated ingest, and the offline → unknown transition —
-  rather than asserting JSON from a merobox step that does not exist. When a
-  migration-status poll step lands this scenario gains the direct rollup
-  assertions (expected_members, unknown==1, allMigrated==false).
+  Because migration_v2 defaults ON, the heartbeat emit + ingest run natively -
+  no merobox feature flag is needed.
 
 no_docker: false
 nuke_on_start: true
@@ -161,7 +152,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
@@ -207,38 +198,50 @@ steps:
     type: wait
     seconds: 40
 
-  # Phase 6: NODE-LOG VALIDATION — the explicit requirement for scenario 28.
+  # Phase 6: THE ROLLUP - the route this scenario is named after.
   #
-  # (a) Each node EMITS its own signed migration heartbeat (the publish twin
-  #     of the cache). Asserted on both nodes independently.
-  - name: Assert node 1 emitted a migration heartbeat
-    type: assert_log_present
-    nodes:
-      - app-migration-mstatus-1
-    patterns:
-      - "migration heartbeat emitted"
-    min_matches: 1
+  # (a) Node 2's row can only be non-unknown if node 2 emitted and node 1
+  #     ingested past the signature + cohort-membership gate, so emit, cache
+  #     and the drop gate are asserted through their state consequence.
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-mstatus-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ms_target: target_version
+      ms_expected: expected_members
+      ms_total: total
+      ms_migrated: migrated
+      ms_unknown: unknown
+      ms_failed: failed
+      ms_all_migrated: all_migrated
+      ms_below_target: reported_below_target
+      ms_missing: reported_missing
+      ms_residue: residue_total
 
-  - name: Assert node 2 emitted a migration heartbeat
-    type: assert_log_present
-    nodes:
-      - app-migration-mstatus-2
-    patterns:
-      - "migration heartbeat emitted"
-    min_matches: 1
+  - name: Assert both cohort rows converged at the target ABI state version
+    type: json_assert
+    statements:
+      - "equal({{ms_expected}}, 2)"
+      - "equal({{ms_total}}, 2)"
+      - "equal({{ms_migrated}}, 2)"
+      # A heartbeat refused at the sig/membership gate leaves its member
+      # unknown, so this is the falsifiable direction of the drop path.
+      - "equal({{ms_unknown}}, 0)"
+      - "equal({{ms_failed}}, 0)"
+      - "equal({{ms_residue}}, 0)"
+      # The target is a u32 ABI state version, not a bundle semver.
+      - "equal({{ms_target}}, 2)"
+      # Recomputed from each member's raw report, so a rollup that claims
+      # everyone migrated on the wrong comparison still fails here.
+      - "equal({{ms_below_target}}, 0)"
+      - "equal({{ms_missing}}, 0)"
+      - "equal({{ms_all_migrated}}, true)"
 
-  # (b) Each node CACHED the peer's signed heartbeat — both cohort rows
-  #     populate, the precondition for all_migrated. The ingest path only logs
-  #     this AFTER passing the sig + cohort-membership gate, so a cached
-  #     heartbeat is a verified one.
-  - name: Assert node 1 cached the peer's verified heartbeat
-    type: assert_log_present
-    nodes:
-      - app-migration-mstatus-1
-    patterns:
-      - "migration heartbeat cached"
-    min_matches: 1
-
+  # (b) Node 2's own half of the cache stays a log assertion: the rollup route
+  #     is admin-gated and node 2 is a plain inherited member, so it cannot read
+  #     it, and the one member-visible surface (MigrationProgress) is edge-
+  #     triggered behind every edge this scenario has.
   - name: Assert node 2 cached the peer's verified heartbeat
     type: assert_log_present
     nodes:
@@ -246,18 +249,6 @@ steps:
     patterns:
       - "migration heartbeat cached"
     min_matches: 1
-
-  # (c) No heartbeat that failed signature/membership verification was ever
-  #     admitted to a cache — the gate that keeps an unsigned/non-member peer
-  #     out of any rollup. With both peers legitimate members, the drop path
-  #     must NEVER fire.
-  - name: Assert no heartbeat was admitted past a failed sig/membership check
-    type: assert_log_absent
-    nodes:
-      - app-migration-mstatus-1
-      - app-migration-mstatus-2
-    patterns:
-      - "MigrationHeartbeat failed verification (sig/membership); dropping"
 
   # Phase 7: NODE 2 GOES OFFLINE → it becomes `unknown` in node 1's rollup.
   # Once node 2 stops publishing, its cohort row at node 1 ages past the 60s
@@ -270,16 +261,47 @@ steps:
     type: wait
     seconds: 75
 
-  # node 1 keeps emitting its own heartbeat while node 2 is dark — proving the
-  # emitter is alive and that the ONLY reason node 2 is unknown is its silence,
-  # not an emitter stall.
-  - name: Assert node 1 is still emitting heartbeats while node 2 is offline
-    type: assert_log_present
-    nodes:
-      - app-migration-mstatus-1
-    patterns:
-      - "migration heartbeat emitted"
-    min_matches: 2
+  # The no-false-green contract, read off the rollup rather than an emitter log
+  # line: node 1 folds its OWN row in locally, so it stays migrated while the
+  # silent peer ages past the TTL. A stalled emitter shows node 1 unknown too.
+  - name: Read the rollup on node 1 after node 2 goes dark
+    type: get_migration_status
+    node: app-migration-mstatus-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      dark_total: total
+      dark_migrated: migrated
+      dark_unknown: unknown
+      dark_all_migrated: all_migrated
+      dark_missing: reported_missing
+
+  - name: Assert node 2 aged out to unknown and took all_migrated with it
+    type: json_assert
+    statements:
+      - "equal({{dark_total}}, 2)"
+      - "equal({{dark_migrated}}, 1)"
+      - "equal({{dark_unknown}}, 1)"
+      # A member with no report at all is a different failure from one
+      # reporting the wrong version; collapsing them loses this phase.
+      - "equal({{dark_missing}}, 1)"
+      - "equal({{dark_all_migrated}}, false)"
+
+  - name: Assert the convergence stamp did NOT follow all_migrated back down
+    # Raw HTTP, not a capture: client-py 0.6.24 deserializes this response into
+    # a struct with no fleetCompletedAt, so the key never survives the client.
+    # Paths carry no `data.` prefix - this route serializes at the top level.
+    # `present` is the non-null assertion: the field is skip_serializing_if
+    # none, so core omits it until this node has watched the cohort converge.
+    # all_migrated has just lapsed above; this stamp is durable.
+    type: assert_api_response
+    node: app-migration-mstatus-1
+    path: /admin-api/groups/{{namespace_id}}/migration-status
+    present:
+      - fleetCompletedAt
+    match:
+      rollup.allMigrated: false
+      rollup.unknown: 1
+      expectedMembers: 2
 
   # The departed node's stale-schema fence must never have silently dropped a
   # delta during the migration window either.

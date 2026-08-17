@@ -9,6 +9,8 @@ use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::events::GroupMigrationPayload;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_wasm_abi::downgrade::identity_downgrades;
@@ -397,7 +399,7 @@ struct EmitRung {
 
 /// Max `state_version` across the blob's services, from its embedded ABIs.
 /// `None` when no service exposes an ABI — single-hop rules own that case.
-async fn blob_max_state_version(
+pub(crate) async fn blob_max_state_version(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
 ) -> Option<u32> {
@@ -1025,8 +1027,33 @@ pub(crate) async fn resolve_resumed_migration(
     Ok(resolved.flatten().map(|method| MigrationParams { method }))
 }
 
+/// Announce how far this node's own contexts have got through the cascade.
+///
+/// One reader for the `subgroup_id` derivation: the propagator reports progress
+/// from three places, and a payload keyed on anything but the group being walked
+/// would name the wrong subgroup to an admin.
+fn emit_cascade_progress(
+    node_client: &calimero_node_primitives::client::NodeClient,
+    datastore: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    local_contexts_swapped: u32,
+    local_contexts_total: u32,
+) {
+    crate::migration_events::emit(
+        node_client,
+        datastore,
+        group_id,
+        GroupMigrationPayload::CascadeProgress {
+            subgroup_id: Hash::from(group_id.to_bytes()),
+            local_contexts_swapped,
+            local_contexts_total,
+        },
+    );
+}
+
 pub(crate) async fn propagate_upgrade(
     context_client: calimero_context_client::client::ContextClient,
+    node_client: calimero_node_primitives::client::NodeClient,
     datastore: calimero_store::Store,
     group_id: ContextGroupId,
     target_application_id: ApplicationId,
@@ -1083,6 +1110,13 @@ pub(crate) async fn propagate_upgrade(
                     if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
                         error!(?group_id, ?err, "failed to persist upgrade progress");
                     }
+                    emit_cascade_progress(
+                        &node_client,
+                        &datastore,
+                        &group_id,
+                        completed,
+                        total_contexts as u32,
+                    );
                     continue;
                 }
                 _ => {}
@@ -1159,6 +1193,13 @@ pub(crate) async fn propagate_upgrade(
             if let Err(err) = update_upgrade_status(&datastore, &group_id, status) {
                 error!(?group_id, ?err, "failed to persist upgrade progress");
             }
+            emit_cascade_progress(
+                &node_client,
+                &datastore,
+                &group_id,
+                completed,
+                total_contexts as u32,
+            );
         }
 
         // All succeeded — no retry needed
@@ -1201,6 +1242,8 @@ pub(crate) async fn propagate_upgrade(
         .as_secs();
 
     let final_status = if failed == 0 {
+        // Local swap only. The fleet stamp is the rollup's to write, and a
+        // re-completion after a retry re-arms it.
         GroupUpgradeStatus::Completed {
             completed_at: Some(now),
         }
@@ -1216,6 +1259,13 @@ pub(crate) async fn propagate_upgrade(
     if let Err(err) = update_upgrade_status(&datastore, &group_id, final_status) {
         error!(?group_id, ?err, "failed to persist final upgrade status");
     }
+    emit_cascade_progress(
+        &node_client,
+        &datastore,
+        &group_id,
+        completed,
+        total_contexts as u32,
+    );
 
     info!(
         ?group_id,
@@ -1551,6 +1601,7 @@ fn dispatch_cascade(
                 target_application_id,
                 migration.clone(),
                 context_client.clone(),
+                node_client.clone(),
                 datastore.clone(),
             );
         }
@@ -1619,6 +1670,7 @@ fn dispatch_cascade(
 /// Insert into `active_propagators`, spawn `propagate_upgrade` for the
 /// given group, and arrange the post-completion removal — used by the
 /// cascade dispatch loop.
+#[allow(clippy::too_many_arguments, reason = "plumbing for propagate_upgrade")]
 fn spawn_propagator_for(
     actor: &mut ContextManager,
     ctx: &mut <ContextManager as actix::Actor>::Context,
@@ -1626,11 +1678,13 @@ fn spawn_propagator_for(
     target_application_id: ApplicationId,
     migration: Option<MigrationParams>,
     context_client: calimero_context_client::client::ContextClient,
+    node_client: calimero_node_primitives::client::NodeClient,
     datastore: calimero_store::Store,
 ) {
     actor.active_propagators.insert(group_id);
     let propagator = propagate_upgrade(
         context_client,
+        node_client,
         datastore,
         group_id,
         target_application_id,

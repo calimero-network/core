@@ -28,9 +28,10 @@ pub use blobs::BlobMeta;
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextActivatedBlob, ContextAuthoredRemaining, ContextConfig, ContextDagDelta,
-    ContextExecutingBlob, ContextIdentity, ContextLeftMarker, ContextMeta, ContextMigrationFailed,
-    ContextPrivateState, ContextResyncRequested, ContextState, ScopeUnifiedOp,
+    ContextActivatedBlob, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextConfig,
+    ContextDagDelta, ContextExecutingBlob, ContextIdentity, ContextLeftMarker, ContextMeta,
+    ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
+    ScopeUnifiedOp,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{
@@ -38,14 +39,14 @@ pub use group::{
     GroupAccountEndorser, GroupAccountKey, GroupAccountKeyValue, GroupChildIndex,
     GroupConsumedInvitation, GroupContextIndex, GroupContextMemberCap, GroupContextMetadata,
     GroupDefaultCaps, GroupDefaultCapsValue, GroupDeniedMember, GroupDeviceBinding,
-    GroupDeviceBindingValue, GroupExitReason, GroupInheritedDeniedMember, GroupKeyEntry,
-    GroupKeyValue, GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMember,
-    GroupMemberCapability, GroupMemberCapabilityValue, GroupMemberContext, GroupMemberMetadata,
-    GroupMemberValue, GroupMeta, GroupMetaValue, GroupMetadata, GroupOpHead, GroupOpHeadValue,
-    GroupOpLog, GroupParentRef, GroupPendingDeviceRotation, GroupPendingKeyRotation,
-    GroupReentryBlock, GroupReentryBlockValue, GroupRevokedDevice, GroupSubgroupVis,
-    GroupSubgroupVisValue, GroupUpgradeKey, GroupUpgradeLadder, GroupUpgradeStatus,
-    GroupUpgradeValue, LadderRung, NamespaceBootstrapInviter, NamespaceGovHead,
+    GroupDeviceBindingValue, GroupExitReason, GroupFleetCompletion, GroupInheritedDeniedMember,
+    GroupKeyEntry, GroupKeyValue, GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue,
+    GroupMember, GroupMemberCapability, GroupMemberCapabilityValue, GroupMemberContext,
+    GroupMemberMetadata, GroupMemberValue, GroupMeta, GroupMetaValue, GroupMetadata, GroupOpHead,
+    GroupOpHeadValue, GroupOpLog, GroupParentRef, GroupPendingDeviceRotation,
+    GroupPendingKeyRotation, GroupReentryBlock, GroupReentryBlockValue, GroupRevokedDevice,
+    GroupSubgroupVis, GroupSubgroupVisValue, GroupUpgradeKey, GroupUpgradeLadder,
+    GroupUpgradeStatus, GroupUpgradeValue, LadderRung, NamespaceBootstrapInviter, NamespaceGovHead,
     NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue, NamespaceParticipation,
     NamespaceParticipationValue, NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity,
     NodeDeviceIdentityValue, NodeIdentity, NodeIdentityValue, PendingSelfPurge, UpgradeLadderValue,

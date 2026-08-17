@@ -1553,17 +1553,25 @@ impl ContextManager {
             // true) rather than wedge this lazy member. force only relaxes the
             // absent-evidence arm: a rung whose ABI declares a migration still
             // resolves and runs it.
-            crate::handlers::upgrade_group::resolve_upgrade_from_abis(
+            let migration = crate::handlers::upgrade_group::resolve_upgrade_from_abis(
                 &node_client,
                 bound,
                 rung_app_key,
                 true,
             )
-            .await
+            .await?;
+            // The rung's declared state version, recorded with the activation
+            // marker below: the upgrade record that carries `to_state_version`
+            // never leaves the node that ran `upgrade_group`, so this is the
+            // only version signal a member has for state it has migrated.
+            let state_version =
+                crate::handlers::upgrade_group::blob_max_state_version(&node_client, rung_app_key)
+                    .await;
+            Ok::<_, eyre::Report>((migration, state_version))
         }
         .into_actor(self)
         .then(move |resolved, act, _ctx| {
-            let migration = match resolved {
+            let (migration, activated_state_version) = match resolved {
                 Ok(m) => m,
                 Err(err) => {
                     // Rung blob unobtainable or its ABI unreadable: the context
@@ -1616,6 +1624,13 @@ impl ContextManager {
                                 &context_id,
                                 rung_app_key,
                             );
+                            if let Some(state_version) = activated_state_version {
+                                crate::activation::record_activated_state_version(
+                                    &datastore,
+                                    &context_id,
+                                    state_version,
+                                );
+                            }
                             Ok(())
                         }
                         .into_actor(act)
@@ -1661,6 +1676,13 @@ impl ContextManager {
                     )
                     .await?;
                     crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    if let Some(state_version) = activated_state_version {
+                        crate::activation::record_activated_state_version(
+                            &datastore,
+                            &context_id,
+                            state_version,
+                        );
+                    }
                     clear_migration_failed(&datastore, context_id);
                     Ok(())
                 }

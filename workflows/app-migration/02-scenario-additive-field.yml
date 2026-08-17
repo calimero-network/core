@@ -1,11 +1,11 @@
-name: 02 — Scenario "additive field" (v1 → v2-add-field, 2-node)
+name: 02 - Scenario "additive field" (v1 → v2-add-field, 2-node)
 description: >
   2-node per-context migration for the additive-field scenario.
   v1 → v2-add-field adds a `notes: LwwRegister<String>` to the state
   struct; `migrate_v1_to_v2` preserves every v1 field and seeds the
   new `notes` field. Topology: namespace + one Open subgroup + one
   context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
-  target=v2)` — per-context (cascade=false), not namespace-cascade
+  target=v2)` - per-context (cascade=false), not namespace-cascade
   (that's `01`); the node resolves `migrate_v1_to_v2` from the target
   bundle's embedded ABI. Acts as the additive row of the per-scenario
   matrix.
@@ -30,12 +30,12 @@ steps:
   # Phase 1: Install v1 + v2 binaries on the ADMIN node only.
   #
   # Realistic distribution: only the admin (node 1) is given the
-  # bytecode. Node 2 never runs install_application — it must obtain
+  # bytecode. Node 2 never runs install_application - it must obtain
   # both versions automatically:
   #   - v1 when it joins the context (the app blob is announced for the
   #     context and fetched over BlobShare on first execution), and
   #   - v2 when node 1 upgrades the group (upgrade_group announces the
-  #     target blob; node 2 pulls it during its lazy migration — the
+  #     target blob; node 2 pulls it during its lazy migration - the
   #     sync-gate intentionally leaves BlobShare open for this).
   # App ids are content-addressed (blob_id of the bytecode), so node 1's
   # captured app_v1/app_v2 ids are exactly the ids node 2 resolves.
@@ -165,7 +165,7 @@ steps:
       - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "additive-scenario", "counter": "2"}})'
 
   # Negative: v2-only setter not yet callable under v1.
-  - name: Negative — set_notes is not exported by v1
+  - name: Negative - set_notes is not exported by v1
     type: call
     node: app-migration-additive-1
     context_id: "{{ctx_id}}"
@@ -176,7 +176,7 @@ steps:
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   # The upgrade sets the target + migration method on the subgroup meta
-  # and returns without running a propagator — each node self-migrates on
+  # and returns without running a propagator - each node self-migrates on
   # its next access below.
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
@@ -189,7 +189,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
@@ -226,27 +226,47 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  # Both nodes self-migrated via the lazy path — assert the migration
-  # logs on EACH after its triggering read above.
-  - name: Assert lazy migration ran on node 1
-    type: assert_log_present
-    nodes:
-      - app-migration-additive-1
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # schema_info cannot prove a migration ran: the version string it returns is a
+  # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
+  # v1 bytes too. The rollup carries each member's ABI STATE version instead.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-additive-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
-    type: assert_log_present
-    nodes:
-      - app-migration-additive-2
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-additive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
 
   - name: Assert v2 schema on node 1 (additive field seeded, v1 data preserved)
     type: json_assert

@@ -23,10 +23,15 @@ use super::config::SESSION_EXPIRY_SECS;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSessionData {
     pub subscriptions: HashSet<ContextId>,
-    /// Group ids observed for `GroupMembership` events. `#[serde(default)]` so
+    /// Group ids observed for group-keyed events. `#[serde(default)]` so
     /// records persisted before group subscriptions existed still deserialize.
     #[serde(default)]
     pub group_subscriptions: HashSet<Hash>,
+    /// The admin-authorized subset of `group_subscriptions`. `#[serde(default)]`
+    /// makes a record persisted before this existed resume empty, which
+    /// fail-closes admin-only payloads until the client resubscribes.
+    #[serde(default)]
+    pub admin_group_subscriptions: HashSet<Hash>,
     pub event_counter: u64,
     pub last_activity: u64, // Unix timestamp
     /// Principal that owns this session (the authenticated caller that created
@@ -43,6 +48,8 @@ pub struct PersistedSessionData {
 pub struct SessionStateInner {
     pub subscriptions: HashSet<ContextId>,
     pub group_subscriptions: HashSet<Hash>,
+    /// See [`PersistedSessionData::admin_group_subscriptions`].
+    pub admin_group_subscriptions: HashSet<Hash>,
     pub event_counter: AtomicU64,
     pub last_activity: AtomicU64,
     /// See [`PersistedSessionData::owner`]. Set once at session creation and
@@ -56,6 +63,7 @@ impl Default for SessionStateInner {
         Self {
             subscriptions: HashSet::new(),
             group_subscriptions: HashSet::new(),
+            admin_group_subscriptions: HashSet::new(),
             // Event IDs start at 1. The connection's initial "connect" event is
             // emitted with the reserved id `{session_id}-0`, so the first real
             // event must not also be `-0` (`fetch_add` returns the pre-increment
@@ -84,6 +92,7 @@ impl SessionStateInner {
         Self {
             subscriptions: data.subscriptions,
             group_subscriptions: data.group_subscriptions,
+            admin_group_subscriptions: data.admin_group_subscriptions,
             event_counter: AtomicU64::new(data.event_counter),
             last_activity: AtomicU64::new(data.last_activity),
             owner: data.owner,
@@ -96,6 +105,7 @@ impl SessionStateInner {
         PersistedSessionData {
             subscriptions: self.subscriptions.clone(),
             group_subscriptions: self.group_subscriptions.clone(),
+            admin_group_subscriptions: self.admin_group_subscriptions.clone(),
             event_counter: self.event_counter.load(Ordering::SeqCst),
             last_activity: self.last_activity.load(Ordering::SeqCst),
             owner: self.owner.clone(),

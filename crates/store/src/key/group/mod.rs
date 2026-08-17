@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x49` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4A`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4A` is taken
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4B`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -32,6 +32,8 @@ pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
+/// Node-local fleet-convergence stamp for the group at `GROUP_UPGRADE_PREFIX`.
+pub const GROUP_FLEET_COMPLETION_PREFIX: u8 = 0x4A;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
@@ -393,6 +395,60 @@ impl FromKeyParts for GroupUpgradeKey {
 impl Debug for GroupUpgradeKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupUpgradeKey")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
+/// Unix timestamp when this node watched the whole cohort converge on the
+/// group's [`GroupUpgradeValue::to_state_version`].
+/// Key: `prefix(1) + group_id(32)` -> `u64`.
+///
+/// Node-local, and kept out of [`GroupUpgradeValue`] so that recording it can
+/// never change that record's stored layout: this observation is written on an
+/// observability path, long after the governance ops that write the record.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupFleetCompletion(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupFleetCompletion {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_FLEET_COMPLETION_PREFIX])
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupFleetCompletion {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupFleetCompletion {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupFleetCompletion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupFleetCompletion")
             .field("group_id", &self.group_id())
             .finish()
     }
@@ -1267,6 +1323,8 @@ pub enum GroupUpgradeStatus {
     Completed {
         /// Unix timestamp when the last context was upgraded, or `None` when
         /// each context self-migrates independently without coordination.
+        /// NODE-LOCAL: it says nothing about the rest of the cohort, which
+        /// [`GroupFleetCompletion`] answers.
         completed_at: Option<u64>,
     },
 }
@@ -3199,6 +3257,18 @@ mod tests {
     }
 
     #[test]
+    fn group_fleet_completion_key_roundtrip() {
+        let gid = [0x44; 32];
+        let key = GroupFleetCompletion::new(gid);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_FLEET_COMPLETION_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+        // Same width and the same id bytes as the upgrade row it stamps, so the
+        // prefix is the only thing keeping a prefix-bounded scan off it.
+        assert_ne!(GROUP_FLEET_COMPLETION_PREFIX, GROUP_UPGRADE_PREFIX);
+    }
+
+    #[test]
     fn group_upgrade_ladder_key_roundtrip() {
         let gid = [0x47; 32];
         let key = GroupUpgradeLadder::new(gid);
@@ -3207,42 +3277,76 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 33);
     }
 
+    /// Every prefix in this column, not a subset: the families are keyed only by
+    /// this byte and several are byte-identical in length, so a partial list
+    /// leaves real collisions uncaught. Re-derive with `grep 'u8 = 0x'` on this
+    /// file when adding one.
     #[test]
     fn distinct_prefixes() {
         let prefixes = [
-            GROUP_META_PREFIX,
-            GROUP_MEMBER_PREFIX,
-            GROUP_CONTEXT_INDEX_PREFIX,
-            CONTEXT_GROUP_REF_PREFIX,
-            GROUP_UPGRADE_PREFIX,
-            GROUP_MEMBER_CAPABILITY_PREFIX,
-            GROUP_DEFAULT_CAPS_PREFIX,
-            GROUP_SUBGROUP_VIS_PREFIX,
-            GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
-            GROUP_UPGRADE_LADDER_PREFIX,
-            GROUP_MEMBER_METADATA_PREFIX,
-            GROUP_METADATA_PREFIX,
-            GROUP_CONTEXT_METADATA_PREFIX,
-            GROUP_OP_LOG_PREFIX,
-            GROUP_OP_HEAD_PREFIX,
-            GROUP_MEMBER_CONTEXT_PREFIX,
-            GROUP_CONTEXT_MEMBER_CAP_PREFIX,
-            GROUP_PARENT_REF_PREFIX,
-            GROUP_CHILD_INDEX_PREFIX,
-            NAMESPACE_PARTICIPATION_PREFIX,
-            NAMESPACE_GOV_OP_PREFIX,
-            NAMESPACE_GOV_HEAD_PREFIX,
-            GROUP_KEY_PREFIX,
-            GROUP_DENIED_MEMBER_PREFIX,
-            GROUP_PENDING_KEY_ROTATION_PREFIX,
-            PENDING_SELF_PURGE_PREFIX,
+            ("GROUP_META", GROUP_META_PREFIX),
+            ("GROUP_MEMBER", GROUP_MEMBER_PREFIX),
+            ("GROUP_CONTEXT_INDEX", GROUP_CONTEXT_INDEX_PREFIX),
+            ("CONTEXT_GROUP_REF", CONTEXT_GROUP_REF_PREFIX),
+            ("GROUP_UPGRADE", GROUP_UPGRADE_PREFIX),
+            ("GROUP_MEMBER_CAPABILITY", GROUP_MEMBER_CAPABILITY_PREFIX),
+            ("GROUP_REENTRY_BLOCK", GROUP_REENTRY_BLOCK_PREFIX),
+            (
+                "GROUP_CONSUMED_INVITATION",
+                GROUP_CONSUMED_INVITATION_PREFIX,
+            ),
+            ("GROUP_DEFAULT_CAPS", GROUP_DEFAULT_CAPS_PREFIX),
+            ("GROUP_SUBGROUP_VIS", GROUP_SUBGROUP_VIS_PREFIX),
+            ("GROUP_MEMBER_METADATA", GROUP_MEMBER_METADATA_PREFIX),
+            ("GROUP_METADATA", GROUP_METADATA_PREFIX),
+            ("GROUP_CONTEXT_METADATA", GROUP_CONTEXT_METADATA_PREFIX),
+            ("GROUP_OP_LOG", GROUP_OP_LOG_PREFIX),
+            ("GROUP_OP_HEAD", GROUP_OP_HEAD_PREFIX),
+            ("GROUP_MEMBER_CONTEXT", GROUP_MEMBER_CONTEXT_PREFIX),
+            ("GROUP_CONTEXT_MEMBER_CAP", GROUP_CONTEXT_MEMBER_CAP_PREFIX),
+            ("GROUP_PARENT_REF", GROUP_PARENT_REF_PREFIX),
+            ("GROUP_CHILD_INDEX", GROUP_CHILD_INDEX_PREFIX),
+            ("NAMESPACE_PARTICIPATION", NAMESPACE_PARTICIPATION_PREFIX),
+            ("CONTEXT_SERVICE_NAME", CONTEXT_SERVICE_NAME_PREFIX),
+            ("NAMESPACE_GOV_OP", NAMESPACE_GOV_OP_PREFIX),
+            ("NAMESPACE_GOV_HEAD", NAMESPACE_GOV_HEAD_PREFIX),
+            ("GROUP_KEY", GROUP_KEY_PREFIX),
+            ("GROUP_DENIED_MEMBER", GROUP_DENIED_MEMBER_PREFIX),
+            (
+                "GROUP_LOCAL_GOV_NONCE_WINDOW",
+                GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
+            ),
+            ("PENDING_SELF_PURGE", PENDING_SELF_PURGE_PREFIX),
+            ("GROUP_UPGRADE_LADDER", GROUP_UPGRADE_LADDER_PREFIX),
+            (
+                "GROUP_PENDING_KEY_ROTATION",
+                GROUP_PENDING_KEY_ROTATION_PREFIX,
+            ),
+            (
+                "GROUP_INHERITED_DENIED_MEMBER",
+                GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+            ),
+            ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
+            ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
+            ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
+            ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
+            ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
+            ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
+            (
+                "NAMESPACE_BOOTSTRAP_INVITER",
+                NAMESPACE_BOOTSTRAP_INVITER_PREFIX,
+            ),
+            ("GROUP_FLEET_COMPLETION", GROUP_FLEET_COMPLETION_PREFIX),
+            ("NODE_IDENTITY", NODE_IDENTITY_PREFIX),
+            (
+                "GROUP_PENDING_DEVICE_ROTATION",
+                GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+            ),
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
-                assert_ne!(
-                    prefixes[i], prefixes[j],
-                    "prefix collision at indices {i} and {j}"
-                );
+                let ((a, x), (b, y)) = (prefixes[i], prefixes[j]);
+                assert_ne!(x, y, "{a} and {b} share prefix {x:#04X}");
             }
         }
     }
@@ -3599,5 +3703,47 @@ mod cascade_hlc_borsh_tests {
         let err = GroupUpgradeValue::try_from_slice(&bytes)
             .expect_err("expected Err for truncated to_state_version");
         assert_eq!(err.kind(), borsh::io::ErrorKind::InvalidData);
+    }
+
+    /// The `Completed` layout a shipped binary writes, byte for byte, decoded by
+    /// this one. `status` is not the last field, so a field added inside the
+    /// variant shifts `cascade_hlc`, `cascade_seq` and `to_state_version` and
+    /// every stored record on every already-migrated namespace stops decoding.
+    /// Node-local additions go in their own key ([`GroupFleetCompletion`]) so
+    /// this stays true.
+    #[test]
+    fn the_completed_layout_a_shipped_binary_writes_still_decodes() {
+        let mut bytes = Vec::new();
+        "1.0.0".to_owned().serialize(&mut bytes).unwrap();
+        "2.0.0".to_owned().serialize(&mut bytes).unwrap();
+        None::<Vec<u8>>.serialize(&mut bytes).unwrap();
+        1_700_000_000u64.serialize(&mut bytes).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut bytes)
+            .unwrap();
+        // `Completed`: variant tag, then `completed_at` and nothing else.
+        bytes.push(1u8);
+        Some(1_700_001_000u64).serialize(&mut bytes).unwrap();
+        None::<HybridTimestamp>.serialize(&mut bytes).unwrap();
+        None::<u64>.serialize(&mut bytes).unwrap();
+        2u32.serialize(&mut bytes).unwrap();
+
+        let decoded = GroupUpgradeValue::try_from_slice(&bytes)
+            .expect("a stored Completed record must decode");
+        match decoded.status {
+            GroupUpgradeStatus::Completed { completed_at } => {
+                assert_eq!(completed_at, Some(1_700_001_000));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        // The trailing fields read their own bytes, not shifted ones.
+        assert_eq!(decoded.cascade_hlc, None);
+        assert_eq!(decoded.cascade_seq, None);
+        assert_eq!(decoded.to_state_version, 2);
+        assert_eq!(
+            to_vec(&decoded).unwrap(),
+            bytes,
+            "this binary must write back the same bytes it read"
+        );
     }
 }

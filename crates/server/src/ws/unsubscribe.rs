@@ -19,6 +19,7 @@ async fn handle(
     });
     request.group_ids.iter().for_each(|id| {
         let _ = inner.group_subscriptions.remove(id);
+        let _ = inner.admin_group_subscriptions.remove(id);
     });
 
     Ok(UnsubscribeResponse {

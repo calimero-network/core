@@ -375,3 +375,21 @@ impl PredefinedEntry for key::ContextActivatedBlob {
     type Codec = Borsh;
     type DataType<'a> = ContextActivatedBlob;
 }
+
+/// Value for [`key::ContextActivatedStateVersion`]: the ABI state version the
+/// activated bytecode declares, recorded beside the activation marker because
+/// the install row is per-`ApplicationId` and a same-id bundle upgrade never
+/// moves it. Node-local; a missing row means the version was unresolvable.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "single marker value; additions would need a migration"
+)]
+pub struct ContextActivatedStateVersion {
+    pub state_version: u32,
+}
+
+impl PredefinedEntry for key::ContextActivatedStateVersion {
+    type Codec = Borsh;
+    type DataType<'a> = ContextActivatedStateVersion;
+}

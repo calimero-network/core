@@ -34,8 +34,8 @@ pub struct ContextIds {
     /// Default so a group-only subscribe (no `contextIds`) still parses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,
-    /// Groups to observe for `GroupMembership` events. Hex-encoded, matching the
-    /// group/namespace admin API's id representation.
+    /// Groups to observe for group-keyed events (membership, migration).
+    /// Hex-encoded, matching the group/namespace admin API's id representation.
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
@@ -128,7 +128,8 @@ mod tests {
     #[test]
     fn admin_emit_subscribe_and_event_share_one_hex_representation() {
         use calimero_primitives::events::{
-            GroupMembershipEvent, MembershipChange, MembershipChangePayload,
+            GroupMembershipEvent, GroupMigrationEvent, GroupMigrationPayload, MembershipChange,
+            MembershipChangePayload,
         };
 
         let id = Hash::from([0x2bu8; 32]);
@@ -158,6 +159,21 @@ mod tests {
         };
         let v = serde_json::to_value(&event).expect("event serializes");
         assert_eq!(v["groupId"], emitted, "the event must carry the same hex");
+
+        // Every event keyed on `groupId` is pinned to that one representation,
+        // not just the first one that was.
+        let migration = GroupMigrationEvent {
+            group_id: id,
+            payload: GroupMigrationPayload::MigrationCompleted {
+                to_version: "10.2.0".to_owned(),
+                completed_at: 1_700_000_000,
+            },
+        };
+        let v = serde_json::to_value(&migration).expect("event serializes");
+        assert_eq!(
+            v["groupId"], emitted,
+            "the migration event must carry the same hex"
+        );
     }
 
     // A context-only subscribe (no `groupIds`) still parses.

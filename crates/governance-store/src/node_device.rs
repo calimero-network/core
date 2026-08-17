@@ -1405,11 +1405,12 @@ mod tests {
 
     #[test]
     fn a_corrupted_backup_fails_the_checksum_instead_of_recovering_a_stranger() {
-        let store = test_store();
-        let root = NodeDeviceRepository::new(&store)
-            .ensure_account_root()
-            .expect("generate");
-        let backup = root.to_mnemonic().expect("export");
+        // Fixed entropy, not a generated root: a 24-word phrase carries an 8-bit
+        // checksum, so a single wrong word survives it 1 time in 256 and the
+        // assertion below would fail at that rate on a random backup.
+        let backup = bip39::Mnemonic::from_entropy(&[0u8; 32])
+            .expect("fixed entropy is a valid mnemonic")
+            .to_string();
 
         let mut words: Vec<&str> = backup.split_whitespace().collect();
         // Swap the first word for another valid BIP-39 word: still a real word, so
@@ -1420,7 +1421,7 @@ mod tests {
 
         assert!(
             AccountRoot::from_mnemonic(&corrupted).is_err(),
-            "a single wrong word must fail the checksum — recovering a different \
+            "a single wrong word must fail the checksum - recovering a different \
              root here would be indistinguishable from a successful recovery until \
              far too late"
         );
