@@ -239,37 +239,31 @@ steps:
     type: delete_context
     node: app-migration-coexist-1
     context_id: "{{ctx_a}}"
-    requester: "{{admin_key_a}}"
 
   - name: Delete subgroup A
     type: delete_group
     node: app-migration-coexist-1
     group_id: "{{group_a}}"
-    requester: "{{admin_key_a}}"
 
   - name: Delete namespace A
     type: delete_namespace
     node: app-migration-coexist-1
     namespace_id: "{{namespace_a}}"
-    requester: "{{admin_key_a}}"
 
   - name: Delete context B
     type: delete_context
     node: app-migration-coexist-1
     context_id: "{{ctx_b}}"
-    requester: "{{admin_key_b}}"
 
   - name: Delete subgroup B
     type: delete_group
     node: app-migration-coexist-1
     group_id: "{{group_b}}"
-    requester: "{{admin_key_b}}"
 
   - name: Delete namespace B
     type: delete_namespace
     node: app-migration-coexist-1
     namespace_id: "{{namespace_b}}"
-    requester: "{{admin_key_b}}"
 
   - name: Uninstall application
     type: uninstall_application

@@ -38,7 +38,7 @@ use crate::group::{
     LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
     LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, MigrationStatus, NamespaceIdentity, NamespaceSummary,
+    ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
     PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
     ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
     RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
@@ -367,7 +367,7 @@ mod borsh_layout_round_trip {
 /// an out-of-order removal could delete it). Namespace-backed contexts now store
 /// only a **keyless marker row** per membership; this resolver derives the actual
 /// key live from the namespace identity. Standalone / `new_identity` contexts
-/// have no `NamespaceIdentity` and keep their own stored key — callers must
+/// have no `NamespaceParticipation` and keep their own stored key — callers must
 /// prefer a stored key and only fall back here.
 ///
 /// This does **not** check membership: whether the node is a member here is
@@ -1851,7 +1851,6 @@ impl ContextClient {
     pub async fn delete_context(
         &self,
         context_id: &ContextId,
-        requester: Option<PublicKey>,
     ) -> eyre::Result<DeleteContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
@@ -1859,7 +1858,6 @@ impl ContextClient {
             .send(ContextMessage::DeleteContext {
                 request: DeleteContextRequest {
                     context_id: *context_id,
-                    requester,
                 },
                 outcome: sender,
             })
@@ -2188,7 +2186,7 @@ impl ContextClient {
         get_namespace_identity,
         GetNamespaceIdentity,
         GetNamespaceIdentityRequest,
-        eyre::Result<Option<NamespaceIdentity>>
+        eyre::Result<Option<NamespaceParticipation>>
     );
     forward_to_actor!(
         list_namespaces_for_application,

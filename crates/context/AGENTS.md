@@ -128,7 +128,7 @@ impl Handler<CreateContextRequest> for ContextManager {
 }
 ```
 
-The `Request`/`Response` pair and the `impl Message for Request { type Result = eyre::Result<Response>; }` live in the `primitives` sub-crate (`messages.rs` for context-scoped requests, `group.rs` for group-scoped ones); `src/handlers.rs`'s `ContextMessage` match forwards each variant to `Self::forward_handler`, which is what actually invokes the per-type `Handler` impl. Mutation handlers that touch group governance typically start with `ContextManager::governance_preflight` (resolve requester -> load group meta -> check admin -> resolve signing key) and end with `sign_and_publish_group_op` or the raw `calimero_governance_store::sign_apply_and_publish` call.
+The `Request`/`Response` pair and the `impl Message for Request { type Result = eyre::Result<Response>; }` live in the `primitives` sub-crate (`messages.rs` for context-scoped requests, `group.rs` for group-scoped ones); `src/handlers.rs`'s `ContextMessage` match forwards each variant to `Self::forward_handler`, which is what actually invokes the per-type `Handler` impl. Mutation handlers that touch group governance typically start with `ContextManager::governance_preflight` (resolve signer -> load group meta -> check admin -> resolve signing key) and end with `sign_and_publish_group_op` or the raw `calimero_governance_store::sign_apply_and_publish` call.
 
 ## JIT Index
 

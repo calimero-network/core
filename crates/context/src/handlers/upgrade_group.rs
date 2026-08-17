@@ -28,13 +28,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         UpgradeGroupRequest {
             group_id,
             target_application_id,
-            requester,
             cascade,
             force_code_only,
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let (requester, node_sk) = match self.resolve_signer(&group_id, requester) {
+        let (signer, node_sk) = match self.resolve_signer(&group_id) {
             Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -51,22 +50,18 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 self,
                 group_id,
                 target_application_id,
-                requester,
+                signer,
                 node_sk,
                 force_code_only,
             );
         }
 
         // --- Synchronous validation ---
-        let preamble = match validate_upgrade(
-            &self.datastore,
-            &group_id,
-            &target_application_id,
-            &requester,
-        ) {
-            Ok(p) => p,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+        let preamble =
+            match validate_upgrade(&self.datastore, &group_id, &target_application_id, &signer) {
+                Ok(p) => p,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
 
         let UpgradePreamble {
             total_contexts,
@@ -111,7 +106,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             to_version: to_version.clone(),
             migration: None,
             initiated_at: now,
-            initiated_by: requester,
+            initiated_by: signer,
             status: GroupUpgradeStatus::InProgress {
                 total: total_contexts as u32,
                 completed: 0,
@@ -234,7 +229,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     to_version,
                     migration: migration_bytes,
                     initiated_at: now,
-                    initiated_by: requester,
+                    initiated_by: signer,
                     status: completed_status.clone(),
                     cascade_hlc: None,
                     cascade_seq: None,
@@ -880,7 +875,7 @@ fn validate_upgrade(
     datastore: &calimero_store::Store,
     group_id: &ContextGroupId,
     target_application_id: &ApplicationId,
-    requester: &PublicKey,
+    signer: &PublicKey,
 ) -> eyre::Result<UpgradePreamble> {
     // 1. Group must exist
     let meta = MetaRepository::new(datastore)
@@ -888,8 +883,8 @@ fn validate_upgrade(
         .ok_or_else(|| eyre::eyre!("group not found"))?;
 
     // 2. Requester must be admin
-    let requester_account = crate::member_account::require(datastore, group_id, requester)?;
-    MembershipRepository::new(datastore).require_admin(group_id, &requester_account)?;
+    let signer_account = crate::member_account::require(datastore, group_id, signer)?;
+    MembershipRepository::new(datastore).require_admin(group_id, &signer_account)?;
 
     // 4. No active upgrade in progress
     if let Some(existing) = UpgradesRepository::new(datastore).load(group_id)? {
@@ -1246,7 +1241,7 @@ pub(crate) fn update_upgrade_status(
 
 /// Cascade variant of the upgrade-group flow.
 ///
-/// Emits a single [`GroupOp::CascadeUpgrade`] signed by the requester,
+/// Emits a single [`GroupOp::CascadeUpgrade`] signed by the signer,
 /// then spawns one [`propagate_upgrade`] per descendant subgroup whose
 /// current `app_key` matches the signed group's current `app_key`.
 /// The atomic op carries `target_application_id`, `app_key`, `migration`,
@@ -1269,7 +1264,7 @@ fn dispatch_cascade(
     actor: &mut ContextManager,
     group_id: ContextGroupId,
     target_application_id: ApplicationId,
-    requester: PublicKey,
+    signer: PublicKey,
     node_sk: [u8; 32],
     force_code_only: bool,
 ) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
@@ -1279,7 +1274,7 @@ fn dispatch_cascade(
     // used as cascade entry-points often
     // hold no contexts of their own, only descendant subgroups. We
     // re-implement the subset of checks that do apply: group exists,
-    // requester is admin, signing key is available, no concurrent
+    // signer is admin, signing key is available, no concurrent
     // upgrade in progress on the signed group, and target differs.
     let meta = match MetaRepository::new(&actor.datastore).load(&group_id) {
         Ok(Some(m)) => m,
@@ -1289,13 +1284,13 @@ fn dispatch_cascade(
         Err(err) => return ActorResponse::reply(Err(err)),
     };
 
-    let requester_account =
-        match crate::member_account::require(&actor.datastore, &group_id, &requester) {
-            Ok(account) => account,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+    let signer_account = match crate::member_account::require(&actor.datastore, &group_id, &signer)
+    {
+        Ok(account) => account,
+        Err(err) => return ActorResponse::reply(Err(err)),
+    };
     if let Err(err) =
-        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester_account)
+        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &signer_account)
     {
         return ActorResponse::reply(Err(err));
     }
@@ -1518,7 +1513,7 @@ fn dispatch_cascade(
                 to_version: to_version.clone(),
                 migration: migration_bytes.clone(),
                 initiated_at: now,
-                initiated_by: requester,
+                initiated_by: signer,
                 status: GroupUpgradeStatus::InProgress {
                     total: *total,
                     completed: 0,
@@ -1832,7 +1827,7 @@ mod tests {
 
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group_id = gid(0xA0);
-        let requester = PublicKey::from([0x33; 32]);
+        let signer = PublicKey::from([0x33; 32]);
         let current_app = ApplicationId::from([0x01; 32]);
         let target_app = ApplicationId::from([0x02; 32]);
 
@@ -1843,8 +1838,8 @@ mod tests {
                     app_key: [0x11; 32],
                     target_application_id: current_app,
                     created_at: 1_700_000_000,
-                    admin_identity: crate::test_support::account_for(&requester),
-                    owner_identity: crate::test_support::account_for(&requester),
+                    admin_identity: crate::test_support::account_for(&signer),
+                    owner_identity: crate::test_support::account_for(&signer),
                     migration: None,
                     auto_join: true,
                 },
@@ -1853,7 +1848,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(
                 &group_id,
-                &crate::test_support::enrol(&store, &group_id, &requester),
+                &crate::test_support::enrol(&store, &group_id, &signer),
                 GroupMemberRole::Admin,
             )
             .expect("add admin");
@@ -1865,7 +1860,7 @@ mod tests {
                     to_version: "0.2.0".to_owned(),
                     migration: None,
                     initiated_at: 1_700_000_000,
-                    initiated_by: requester,
+                    initiated_by: signer,
                     status: GroupUpgradeStatus::InProgress {
                         total: 1,
                         completed: 0,
@@ -1881,7 +1876,7 @@ mod tests {
         // The InProgress guard fires before the target-differs / has-contexts
         // checks.
         // (`UpgradePreamble` is not `Debug`, so match rather than `expect_err`.)
-        match super::validate_upgrade(&store, &group_id, &target_app, &requester) {
+        match super::validate_upgrade(&store, &group_id, &target_app, &signer) {
             Ok(_) => panic!("a pending upgrade must block a second one"),
             Err(err) => assert!(
                 err.to_string().contains("already in progress"),

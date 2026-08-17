@@ -2138,7 +2138,7 @@ pub fn namespace_groups_with_held_key_buffered_ops(
 /// iterates this to re-drive stranded buffered ops across all of them.
 pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
     Ok(NamespaceRepository::new(store)
-        .iter_identities()?
+        .participating_namespaces()?
         .into_iter()
         .map(|gid| gid.to_bytes())
         .collect())

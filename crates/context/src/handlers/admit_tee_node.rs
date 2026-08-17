@@ -96,7 +96,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         }: AdmitTeeNodeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let (_requester, node_sk) = match self.resolve_signer(&group_id, None) {
+        let (_signer, node_sk) = match self.resolve_signer(&group_id) {
             Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

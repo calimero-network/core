@@ -38,10 +38,7 @@ pub(super) fn handle_subscribed(
 
                     let group_id = ContextGroupId::from(bytes);
                     if let Err(err) = context_client
-                        .sync_group(SyncGroupRequest {
-                            group_id,
-                            requester: None,
-                        })
+                        .sync_group(SyncGroupRequest { group_id })
                         .await
                     {
                         warn!(?err, "Failed to auto-sync group after peer subscription");

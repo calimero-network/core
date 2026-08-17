@@ -51,12 +51,6 @@ pub struct SetOpts {
         help = "Replace the entire data map with the --set pairs instead of merging"
     )]
     pub replace_data: bool,
-
-    #[clap(
-        long,
-        help = "Requester public key (auto-resolved from node identity if omitted)"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl SetOpts {
@@ -100,11 +94,7 @@ impl SetOpts {
             let _ = data.remove(k);
         }
 
-        SetMetadataApiRequest {
-            name,
-            data,
-            requester: self.requester,
-        }
+        SetMetadataApiRequest { name, data }
     }
 }
 

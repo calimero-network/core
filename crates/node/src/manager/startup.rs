@@ -91,7 +91,7 @@ impl NodeManager {
                 let namespaces = match calimero_governance_store::NamespaceRepository::new(
                     &datastore,
                 )
-                .iter_identities()
+                .participating_namespaces()
                 {
                     Ok(namespaces) => namespaces,
                     Err(err) => {

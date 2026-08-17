@@ -190,7 +190,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
                 // Publication stays per-DAG. Wider validity is not wider reach: the
                 // op takes effect in a namespace when it is published there, which
                 // is what this loop does, one namespace at a time.
-                let namespaces = NamespaceRepository::new(&store).iter_identities()?;
+                let namespaces = NamespaceRepository::new(&store).participating_namespaces()?;
                 let mut revoked_in = Vec::new();
 
                 for ns in namespaces {

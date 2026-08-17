@@ -14,7 +14,6 @@ impl Handler<SetMemberMetadataRequest> for ContextManager {
             member,
             name,
             data,
-            requester,
         }: SetMemberMetadataRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -22,7 +21,6 @@ impl Handler<SetMemberMetadataRequest> for ContextManager {
         // metadata; otherwise the signer needs CAN_MANAGE_METADATA / admin.
         self.sign_and_publish_group_op(
             &group_id,
-            requester,
             false,
             GroupOp::MemberMetadataSet { member, name, data },
         )

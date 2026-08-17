@@ -381,7 +381,7 @@ pub(crate) fn decide_purge_action(
 ///
 /// The sweep enumerates the durable **pending-self-purge markers**
 /// ([`PendingSelfPurgeRepository::iter_pending`]), NOT every stored
-/// `NamespaceIdentity`. A marker is written ONLY when the listener confirmed
+/// `NamespaceParticipation`. A marker is written ONLY when the listener confirmed
 /// (via [`decide_purge_action`]) a `TeeMemberRemoved` targeting THIS node's
 /// identity at the namespace root — so the marker is the role/intent gate
 /// the post-eviction store state can no longer reconstruct (the role row is
@@ -391,7 +391,7 @@ pub(crate) fn decide_purge_action(
 /// residue but MUST NOT be purged; both are excluded by construction because
 /// neither ever gets a marker:
 ///
-///   1. **Pending join** — the join path writes `NamespaceIdentity` BEFORE
+///   1. **Pending join** — the join path writes `NamespaceParticipation` BEFORE
 ///      the joiner's `GroupMember` row materializes (the row appears only
 ///      when this node's `MemberJoined` op applies). A restart mid-join is
 ///      identity-present / membership-absent. No `TeeMemberRemoved` fired, so
@@ -417,7 +417,7 @@ pub(crate) fn decide_purge_action(
 ///     WITHOUT purging.
 ///
 /// For each marked `ns_id` the sweep:
-///   * looks up THIS node's current `NamespaceIdentity`; if it's gone
+///   * looks up THIS node's current `NamespaceParticipation`; if it's gone
 ///     (already purged) ⇒ clear the stale marker, skip;
 ///   * re-checks [`namespace_needs_reconcile`]; if false (live member again)
 ///     ⇒ clear the stale marker, skip;
@@ -753,7 +753,7 @@ pub(crate) enum ReconcileDecision {
 ///     window; the function is otherwise still single-task (the startup sweep
 ///     enumerates and decides in one task, so the marker cannot vanish under
 ///     it today).
-///   * No current `NamespaceIdentity` ⇒ already purged ⇒
+///   * No current `NamespaceParticipation` ⇒ already purged ⇒
 ///     `ClearStaleMarker` (nothing left to do).
 ///   * Identity present AND [`namespace_needs_reconcile`] true (still
 ///     evicted) ⇒ `Purge`. This is the ONLY path that purges, and it
@@ -893,7 +893,7 @@ fn clear_marker(store: &Store, ns_id: &ContextGroupId) -> bool {
 /// A surviving DESCENDANT `GroupMember` row does NOT veto the purge. This is
 /// load-bearing — an earlier subtree walk (root OR any descendant) abandoned
 /// the purge whenever descendant residue survived, leaking the
-/// `NamespaceIdentity` + group keys forever (cursor Bugbot HIGH):
+/// `NamespaceParticipation` + group keys forever (cursor Bugbot HIGH):
 ///
 ///   * A marker is written ONLY for a namespace-ROOT eviction
 ///     (`decide_purge_action` returns `PurgeAction::Namespace` exclusively when
@@ -1174,7 +1174,7 @@ fn delete_tree_edges(
 /// classes so the async wrapper can gate namespace finalization on the
 /// security-critical class ONLY (#2692).
 ///
-/// Rationale: dropping the `NamespaceIdentity` + unsubscribing is the
+/// Rationale: dropping the `NamespaceParticipation` + unsubscribing is the
 /// purge-completion step. It must be gated on the row-purge
 /// purge, NOT on best-effort dead-pointer cleanup — a mere context-index
 /// or tree-edge orphan must not keep the namespace identity + gossipsub
@@ -1186,7 +1186,7 @@ pub(crate) struct CascadeResult {
     /// True iff a `delete_group_local_rows` call (the security-critical
     /// group-key purge) failed for at least one group, OR the subtree
     /// enumeration itself failed (so we cannot be sure all group keys
-    /// were swept). When true, the `NamespaceIdentity` anchor + gossipsub
+    /// were swept). When true, the `NamespaceParticipation` anchor + gossipsub
     /// subscription + pending-self-purge marker are deliberately KEPT so the
     /// marker-gated startup reconcile sweep (#2721, [`reconcile_sweep`])
     /// re-evaluates the marked namespace and retries on the next process
@@ -1200,7 +1200,7 @@ pub(crate) struct CascadeResult {
 }
 
 /// Pure gating decision (#2692): may the namespace-root purge finalize —
-/// i.e. drop the `NamespaceIdentity` and unsubscribe from the gossipsub
+/// i.e. drop the `NamespaceParticipation` and unsubscribe from the gossipsub
 /// topic — given the security-critical failure flag?
 ///
 /// Gated on `row_purge_failed` ONLY. If every group's rows are gone
@@ -1228,7 +1228,7 @@ pub(crate) fn should_finalize_namespace(row_purge_failed: bool) -> bool {
 ///   fails (or the subtree enumeration fails, so we can't be sure the
 ///   sweep was complete). This is the security-critical, load-bearing
 ///   step: the group's encryption keys live in those rows. When set, we
-///   KEEP the `NamespaceIdentity` anchor (and the caller keeps the gossipsub
+///   KEEP the `NamespaceParticipation` anchor (and the caller keeps the gossipsub
 ///   subscription + the pending-self-purge marker) so the marker-gated
 ///   startup reconcile sweep (#2721, [`reconcile_sweep`]) re-evaluates the
 ///   marked namespace and retries on the next process start. There is no
@@ -1239,7 +1239,7 @@ pub(crate) fn should_finalize_namespace(row_purge_failed: bool) -> bool {
 ///   tree-edge delete, or the namespace-level state delete). Non-security:
 ///   the orphaned rows point at soon-to-be / now-deleted groups. This does
 ///   NOT block namespace finalization — if every group's rows are gone the
-///   forward-secrecy objective is met, so we drop the `NamespaceIdentity`
+///   forward-secrecy objective is met, so we drop the `NamespaceParticipation`
 ///   and unsubscribe regardless. The residual dead pointers in that rare
 ///   store-error case are an accepted tradeoff, far better than leaving
 ///   the namespace identity + subscription alive on a non-security
@@ -1377,7 +1377,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
         purged_groups += 1;
     }
 
-    // Finalize the namespace (drop `NamespaceIdentity` + gov-op log) gated
+    // Finalize the namespace (drop `NamespaceParticipation` + gov-op log) gated
     // on the ROW purge ONLY (#2692). If every group's rows are gone
     // the forward-secrecy objective is met, so we complete the namespace
     // cleanup even if some best-effort context / tree-edge cleanup failed.
@@ -1425,7 +1425,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
             namespace = %ns_hex,
             purged_groups,
             "self-purge: row purge failed for at least one group — \
-             NamespaceIdentity + group-key residue + pending-self-purge marker left on \
+             NamespaceParticipation + group-key residue + pending-self-purge marker left on \
              disk with no EVENT-driven retry (FS still held by key rotation); the \
              marker-gated startup reconcile sweep (#2721) completes it on the next restart"
         );
@@ -1444,7 +1444,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
 ///
 /// Returns `true` iff the purge FULLY completed — i.e. the row purge
 /// succeeded (`should_finalize_namespace(!row_purge_failed)`), which
-/// is exactly when the `NamespaceIdentity` + subscription were dropped and
+/// is exactly when the `NamespaceParticipation` + subscription were dropped and
 /// the marker is safe to clear. Returns `false` when the row purge
 /// failed, in which case the marker is deliberately LEFT so the next restart's
 /// reconcile retries. (This return value also fixes the earlier
@@ -1453,7 +1453,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
 ///
 /// The unsubscribe is **gated on the row purge ONLY** (#2692, via
 /// [`should_finalize_namespace`]) — exactly the same gate the cascade
-/// applies to dropping `NamespaceIdentity`. If every group's rows are gone
+/// applies to dropping `NamespaceParticipation`. If every group's rows are gone
 /// the forward-secrecy objective is met, so we unsubscribe even if some
 /// best-effort context / tree-edge cleanup failed. Only when the
 /// row purge itself failed do we KEEP the subscription AND the marker.
@@ -1959,7 +1959,7 @@ mod tests {
     /// residue, NOT live membership — MUST be purged, not abandoned. The old
     /// subtree walk in `namespace_needs_reconcile` read the descendant row as
     /// "re-admitted" and returned `ClearStaleMarker`, leaking the
-    /// `NamespaceIdentity` + group keys forever. We assert `reconcile_decision`
+    /// `NamespaceParticipation` + group keys forever. We assert `reconcile_decision`
     /// returns `Purge`, then drive the cascade and assert the group keys +
     /// identity are cleared.
     #[test]
@@ -2670,7 +2670,7 @@ mod tests {
 
     // --- Namespace-finalization gating (#2692) --------------------------
     //
-    // The gating decision — "may we drop NamespaceIdentity + unsubscribe?"
+    // The gating decision — "may we drop NamespaceParticipation + unsubscribe?"
     // — is extracted into the pure `should_finalize_namespace` helper so it
     // is unit-testable without injecting a `delete_group_local_rows`
     // failure (which the InMemoryDB can't readily simulate). These cover
