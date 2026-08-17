@@ -4,14 +4,16 @@
 
 use std::collections::BTreeMap;
 
-use calimero_account::{AccountId, RootKeyHandoff};
+use calimero_account::{AccountId, DeviceId, KemPublicKey, RootKeyHandoff};
 use calimero_context_config::types::ContextGroupId;
-use calimero_op::OpPayload;
+use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
-use super::support::{bind_account, bind_test_devices, membership_view, op_with, view_with_writer};
+use super::support::{
+    bind_account, bind_test_devices, hlc0, membership_view, op_with, view_with_writer,
+};
 use crate::authorize::authorize;
 use crate::error::Rejected;
 use crate::view::AclView;
@@ -284,5 +286,83 @@ fn explicit_acl_overrides_default_write_for_restricted_objects() {
         Err(Rejected::NotPermitted {
             required: OpMask::WRITE
         })
+    );
+}
+
+/// **A join must be signed by the device its certificate grants to.**
+///
+/// This arm ran the cryptographic admissibility check and nothing else, because
+/// while an op's authorship was derived from its signing key the device it
+/// named was fiction — comparing against it refused every honest join, so the
+/// comparison was removed and a comment left in its place. Now that a projected
+/// op carries the device its certificate names, the check is decidable again.
+///
+/// What it stops: a certificate is public once observed. Without requiring
+/// possession of the granted key, anyone who saw one could replay it and join
+/// on the real device's behalf. Here the certificate is perfectly valid and the
+/// op is simply authored by somebody else's device — an admin's, no less, so
+/// the policy gate below would wave it through.
+#[test]
+fn a_join_replayed_by_another_device_is_refused() {
+    let admin = AccountId::from([1u8; 32]);
+    let group = ContextGroupId::from([9u8; 32]);
+
+    let root_sk = calimero_primitives::identity::PrivateKey::from([0x11u8; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let joiner_key = calimero_primitives::identity::PrivateKey::from([0x22u8; 32]).public_key();
+    let granted_device = DeviceId::from([0x4D; 32]);
+    let cert = calimero_account::sign_device_cert(
+        &root_sk,
+        genesis.account_id(),
+        granted_device,
+        &joiner_key,
+        &KemPublicKey::from([0x2B; 32]),
+        0,
+        0,
+    )
+    .expect("sign the device cert");
+
+    let payload = OpPayload::MemberJoinedWithDevice {
+        group,
+        member: genesis.account_id(),
+        role: GroupMemberRole::Member,
+        genesis: genesis.clone(),
+        chain: vec![],
+        cert: cert.clone(),
+    };
+
+    // Authored by the ADMIN's device rather than the granted one: the replay.
+    let replayed = op_with(admin, payload.clone());
+    let view = bind_account(
+        membership_view(group, genesis.account_id(), GroupMemberRole::Admin),
+        admin,
+    );
+    assert!(
+        matches!(
+            authorize(&replayed, &view),
+            Err(Rejected::DeviceKeyStale { .. })
+        ),
+        "a join carrying somebody else's certificate must be refused for not \
+         being signed by the device that certificate grants to"
+    );
+
+    // The same op, authored by the device the certificate actually names, is
+    // admitted — so the check above rejects the replay rather than the join.
+    let honest = Op::new(
+        ScopeId::from([0u8; 32]),
+        vec![],
+        Authorship {
+            account: genesis.account_id(),
+            device: granted_device,
+            device_key: joiner_key,
+        },
+        hlc0(),
+        payload,
+        [0u8; 32],
+        [0u8; 64],
+    );
+    assert!(
+        authorize(&honest, &view).is_ok(),
+        "the honest join must still pass, or the check above proves nothing"
     );
 }
