@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x49` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4A`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4A` is taken
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4B`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -33,7 +33,7 @@ pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 /// Node-local fleet-convergence stamp for the group at `GROUP_UPGRADE_PREFIX`.
-pub const GROUP_FLEET_COMPLETION_PREFIX: u8 = 0x48;
+pub const GROUP_FLEET_COMPLETION_PREFIX: u8 = 0x4A;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
@@ -3277,42 +3277,76 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 33);
     }
 
+    /// Every prefix in this column, not a subset: the families are keyed only by
+    /// this byte and several are byte-identical in length, so a partial list
+    /// leaves real collisions uncaught. Re-derive with `grep 'u8 = 0x'` on this
+    /// file when adding one.
     #[test]
     fn distinct_prefixes() {
         let prefixes = [
-            GROUP_META_PREFIX,
-            GROUP_MEMBER_PREFIX,
-            GROUP_CONTEXT_INDEX_PREFIX,
-            CONTEXT_GROUP_REF_PREFIX,
-            GROUP_UPGRADE_PREFIX,
-            GROUP_MEMBER_CAPABILITY_PREFIX,
-            GROUP_DEFAULT_CAPS_PREFIX,
-            GROUP_SUBGROUP_VIS_PREFIX,
-            GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
-            GROUP_UPGRADE_LADDER_PREFIX,
-            GROUP_MEMBER_METADATA_PREFIX,
-            GROUP_METADATA_PREFIX,
-            GROUP_CONTEXT_METADATA_PREFIX,
-            GROUP_OP_LOG_PREFIX,
-            GROUP_OP_HEAD_PREFIX,
-            GROUP_MEMBER_CONTEXT_PREFIX,
-            GROUP_CONTEXT_MEMBER_CAP_PREFIX,
-            GROUP_PARENT_REF_PREFIX,
-            GROUP_CHILD_INDEX_PREFIX,
-            NAMESPACE_PARTICIPATION_PREFIX,
-            NAMESPACE_GOV_OP_PREFIX,
-            NAMESPACE_GOV_HEAD_PREFIX,
-            GROUP_KEY_PREFIX,
-            GROUP_DENIED_MEMBER_PREFIX,
-            GROUP_PENDING_KEY_ROTATION_PREFIX,
-            PENDING_SELF_PURGE_PREFIX,
+            ("GROUP_META", GROUP_META_PREFIX),
+            ("GROUP_MEMBER", GROUP_MEMBER_PREFIX),
+            ("GROUP_CONTEXT_INDEX", GROUP_CONTEXT_INDEX_PREFIX),
+            ("CONTEXT_GROUP_REF", CONTEXT_GROUP_REF_PREFIX),
+            ("GROUP_UPGRADE", GROUP_UPGRADE_PREFIX),
+            ("GROUP_MEMBER_CAPABILITY", GROUP_MEMBER_CAPABILITY_PREFIX),
+            ("GROUP_REENTRY_BLOCK", GROUP_REENTRY_BLOCK_PREFIX),
+            (
+                "GROUP_CONSUMED_INVITATION",
+                GROUP_CONSUMED_INVITATION_PREFIX,
+            ),
+            ("GROUP_DEFAULT_CAPS", GROUP_DEFAULT_CAPS_PREFIX),
+            ("GROUP_SUBGROUP_VIS", GROUP_SUBGROUP_VIS_PREFIX),
+            ("GROUP_MEMBER_METADATA", GROUP_MEMBER_METADATA_PREFIX),
+            ("GROUP_METADATA", GROUP_METADATA_PREFIX),
+            ("GROUP_CONTEXT_METADATA", GROUP_CONTEXT_METADATA_PREFIX),
+            ("GROUP_OP_LOG", GROUP_OP_LOG_PREFIX),
+            ("GROUP_OP_HEAD", GROUP_OP_HEAD_PREFIX),
+            ("GROUP_MEMBER_CONTEXT", GROUP_MEMBER_CONTEXT_PREFIX),
+            ("GROUP_CONTEXT_MEMBER_CAP", GROUP_CONTEXT_MEMBER_CAP_PREFIX),
+            ("GROUP_PARENT_REF", GROUP_PARENT_REF_PREFIX),
+            ("GROUP_CHILD_INDEX", GROUP_CHILD_INDEX_PREFIX),
+            ("NAMESPACE_PARTICIPATION", NAMESPACE_PARTICIPATION_PREFIX),
+            ("CONTEXT_SERVICE_NAME", CONTEXT_SERVICE_NAME_PREFIX),
+            ("NAMESPACE_GOV_OP", NAMESPACE_GOV_OP_PREFIX),
+            ("NAMESPACE_GOV_HEAD", NAMESPACE_GOV_HEAD_PREFIX),
+            ("GROUP_KEY", GROUP_KEY_PREFIX),
+            ("GROUP_DENIED_MEMBER", GROUP_DENIED_MEMBER_PREFIX),
+            (
+                "GROUP_LOCAL_GOV_NONCE_WINDOW",
+                GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
+            ),
+            ("PENDING_SELF_PURGE", PENDING_SELF_PURGE_PREFIX),
+            ("GROUP_UPGRADE_LADDER", GROUP_UPGRADE_LADDER_PREFIX),
+            (
+                "GROUP_PENDING_KEY_ROTATION",
+                GROUP_PENDING_KEY_ROTATION_PREFIX,
+            ),
+            (
+                "GROUP_INHERITED_DENIED_MEMBER",
+                GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+            ),
+            ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
+            ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
+            ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
+            ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
+            ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
+            ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
+            (
+                "NAMESPACE_BOOTSTRAP_INVITER",
+                NAMESPACE_BOOTSTRAP_INVITER_PREFIX,
+            ),
+            ("GROUP_FLEET_COMPLETION", GROUP_FLEET_COMPLETION_PREFIX),
+            ("NODE_IDENTITY", NODE_IDENTITY_PREFIX),
+            (
+                "GROUP_PENDING_DEVICE_ROTATION",
+                GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+            ),
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
-                assert_ne!(
-                    prefixes[i], prefixes[j],
-                    "prefix collision at indices {i} and {j}"
-                );
+                let ((a, x), (b, y)) = (prefixes[i], prefixes[j]);
+                assert_ne!(x, y, "{a} and {b} share prefix {x:#04X}");
             }
         }
     }
