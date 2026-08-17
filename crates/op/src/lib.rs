@@ -70,6 +70,27 @@ impl From<[u8; 32]> for ScopeId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct Authorship {
     /// The authorizing identity — what ACLs, membership, and the app see.
+    ///
+    /// **Carried on the op, and it has to be.** The obvious simplification is to
+    /// drop this and resolve the author from the folded device bindings instead —
+    /// the membership plane already does exactly that, in
+    /// `ScopeProjections::account_for_author`. It does not work here, and the
+    /// reason is recorded in `calimero-projection`'s fold: a projection folds
+    /// **raw logs** (`from_ops` and the sync convergence path both do), so a
+    /// binding read mid-fold answers "has that device's link folded *yet*"
+    /// rather than "what does this key speak for". A revoked device once stored
+    /// either the binding's account or the payload's claim depending on which
+    /// arrived first, and that value is hashed into `governance_hash` — so it
+    /// **split the root by arrival order**.
+    ///
+    /// The membership plane escapes this because it resolves against a *fixed
+    /// cut*, where the answer is a function of the op set rather than its order.
+    /// The fold has no cut to resolve against; it is what builds one.
+    ///
+    /// So a producer establishes this before the op is folded — from a credential
+    /// the op carries, or from a binding it resolved while applying — and an op
+    /// nothing can attribute gets [`Self::UNATTRIBUTED_ACCOUNT`] rather than an
+    /// invented account or a `None` every consumer must remember to handle.
     pub account: AccountId,
     /// The CRDT replica id of the installation that authored this.
     pub device: DeviceId,
@@ -95,6 +116,8 @@ impl Authorship {
     /// handoff check all answer "no" without any of them needing a special case.
     /// That is why this is a sentinel and not an `Option` — an option would put
     /// the same decision in a dozen places and rely on each getting it right.
+    /// See [`Authorship::account`] for why the field is carried at all rather
+    /// than resolved during the fold.
     pub const UNATTRIBUTED_ACCOUNT: AccountId = AccountId::from_raw([0u8; 32]);
 
     /// The device id paired with [`Self::UNATTRIBUTED_ACCOUNT`].
