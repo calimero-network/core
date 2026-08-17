@@ -33,7 +33,7 @@ use calimero_primitives::events::{
 use calimero_primitives::sync_status::SyncState as SyncPhase;
 use dashmap::DashMap;
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::manager::{NoPeersAvailable, PeerNotMaterialized};
 use super::tracking::{SyncProtocol as TrackingSyncProtocol, SyncState};
@@ -481,7 +481,7 @@ impl SessionTracker {
             Some(s) => match result {
                 Ok(Ok(ref protocol)) => {
                     s.on_success(peer_id, TrackingSyncProtocol::from(protocol));
-                    info!(
+                    debug!(
                         %context_id,
                         ?took,
                         ?protocol,
