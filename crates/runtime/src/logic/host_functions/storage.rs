@@ -2,7 +2,7 @@ use crate::{
     errors::HostError,
     logic::{sys, VMHostFunctions, VMLogicResult},
 };
-use tracing::{debug, trace};
+use tracing::trace;
 
 impl VMHostFunctions<'_> {
     /// Reads a value from the persistent storage.
@@ -52,7 +52,7 @@ impl VMHostFunctions<'_> {
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
-            debug!(
+            trace!(
                 target: "runtime::host::storage",
                 op = "read",
                 key_len = key.len(),
@@ -64,7 +64,7 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
-        debug!(
+        trace!(
             target: "runtime::host::storage",
             op = "read",
             key_len = key.len(),
@@ -131,7 +131,7 @@ impl VMHostFunctions<'_> {
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
-            debug!(
+            trace!(
                 target: "runtime::host::storage",
                 op = "remove",
                 key_len = key.len(),
@@ -143,7 +143,7 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
-        debug!(
+        trace!(
             target: "runtime::host::storage",
             op = "remove",
             key_len = key.len(),
@@ -230,7 +230,7 @@ impl VMHostFunctions<'_> {
                 logic.registers.set(logic.limits, dest_register_id, evicted)
             })?;
 
-            debug!(
+            trace!(
                 target: "runtime::host::storage",
                 op = "write",
                 dest_register_id,
@@ -241,7 +241,7 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
-        debug!(
+        trace!(
             target: "runtime::host::storage",
             op = "write",
             dest_register_id,
@@ -297,7 +297,7 @@ impl VMHostFunctions<'_> {
         // Access private storage
         let logic = self.borrow_logic();
         let Some(ref private_storage) = logic.private_storage else {
-            debug!(
+            trace!(
                 target: "runtime::host::private_storage",
                 "private_storage_read: no private storage available"
             );
@@ -310,7 +310,7 @@ impl VMHostFunctions<'_> {
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
-            debug!(
+            trace!(
                 target: "runtime::host::private_storage",
                 op = "read",
                 key_len = key.len(),
@@ -322,7 +322,7 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
-        debug!(
+        trace!(
             target: "runtime::host::private_storage",
             op = "read",
             key_len = key.len(),
@@ -385,7 +385,7 @@ impl VMHostFunctions<'_> {
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
-            debug!(
+            trace!(
                 target: "runtime::host::private_storage",
                 op = "remove",
                 key_len = key.len(),
@@ -397,7 +397,7 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
-        debug!(
+        trace!(
             target: "runtime::host::private_storage",
             op = "remove",
             key_len = key.len(),
@@ -490,7 +490,7 @@ impl VMHostFunctions<'_> {
         })?;
 
         if written {
-            debug!(
+            trace!(
                 target: "runtime::host::private_storage",
                 op = "write",
                 key_len,
@@ -500,7 +500,7 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
-        debug!(
+        trace!(
             target: "runtime::host::private_storage",
             "private_storage_write: no private storage available"
         );
