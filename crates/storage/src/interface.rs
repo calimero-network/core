@@ -43,7 +43,7 @@ use borsh::{from_slice, to_vec};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::address::Id;
 use crate::constants;
@@ -2325,7 +2325,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 ancestors,
                 metadata,
             } => {
-                debug!(
+                trace!(
                     %id,
                     ancestor_ids = ?ancestors.iter().map(|a| a.id()).collect::<Vec<_>>(),
                     created_at = metadata.created_at,
@@ -2457,7 +2457,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // and this arm returns early). Clearing a non-sorted parent's
                 // marker is a no-op, so no "is this sorted?" check is needed.
                 if let Some(parent) = parent {
-                    tracing::debug!(
+                    tracing::trace!(
                         target: "calimero_storage::sorted_index_dbg",
                         child = %id,
                         parent = %parent.id(),
@@ -2465,7 +2465,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     );
                     let _ = S::index_meta_clear(parent.id());
                 } else {
-                    tracing::debug!(
+                    tracing::trace!(
                         target: "calimero_storage::sorted_index_dbg",
                         child = %id,
                         "APPLY_ADD parent=None, marker clear SKIPPED"
@@ -2608,8 +2608,6 @@ impl<S: StorageAdaptor> Interface<S> {
                 Self::apply_delete_ref_action(id, deleted_at)?;
             }
         };
-
-        debug!("Interface::apply_action completed");
 
         Ok(())
     }
@@ -2776,7 +2774,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // marker so a `SortedSet`/`SortedMap` rebuilds its ordered index on
             // the next read rather than serving the removed element. No-op for a
             // non-sorted parent.
-            tracing::debug!(
+            tracing::trace!(
                 target: "calimero_storage::sorted_index_dbg",
                 child = %id,
                 parent = %parent_id,
@@ -3817,7 +3815,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
             match result {
                 Ok(merged) => {
-                    debug!(
+                    trace!(
                         target: "storage::merge",
                         %id,
                         crdt_type = ?crdt_type,

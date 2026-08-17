@@ -30,10 +30,14 @@ force_pull_image: false
 # Passed verbatim to each node container as RUST_LOG (merobox manager.py sets
 # `"RUST_LOG": log_level`). Global `info` keeps the log readable while the three
 # targeted channels surface the decisive path: the storage ordered-index
-# instrumentation this branch adds (`sorted_index_dbg`), the rest of the storage
-# merge/apply layer, and the node sync (HashComparison / deferred-root-merge)
-# path #3333 localizes to.
-log_level: "info,calimero_storage::sorted_index_dbg=debug,calimero_storage=debug,calimero_node::sync=debug"
+# instrumentation (`sorted_index_dbg`), the rest of the storage merge/apply
+# layer, and the node sync (HashComparison / deferred-root-merge) path this
+# scenario localizes.
+#
+# `sorted_index_dbg=trace`, not `=debug`: the probe fires once per apply, so it
+# sits at trace and every other scenario is spared it. This scenario is the one
+# that wants it, and asks for it by name.
+log_level: "info,calimero_storage::sorted_index_dbg=trace,calimero_storage=debug,calimero_node::sync=debug"
 
 auth_mode: embedded
 

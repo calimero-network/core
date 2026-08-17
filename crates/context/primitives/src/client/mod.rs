@@ -488,7 +488,7 @@ impl ContextRegistry {
         .with_application_version(application_version)
         .with_name(name);
 
-        tracing::debug!(
+        tracing::trace!(
             %context_id,
             dag_heads_count = meta.dag_heads.len(),
             "Loaded context from database"
