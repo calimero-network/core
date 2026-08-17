@@ -181,11 +181,21 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
 
         if (msg.type === 'connect' && msg.session_id) {
           sessionId = msg.session_id;
-          await fetch(`${httpUrl}/sse/subscription`, {
+          // `fetch` does not throw on a 4xx/5xx, so an unchecked subscribe POST
+          // would leave the stream connected but subscribed to nothing —
+          // indistinguishable from "nobody is present" at `settle()`. Fail loudly
+          // instead: a failed subscribe means the run verified nothing.
+          const subRes = await fetch(`${httpUrl}/sse/subscription`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ id: sessionId, method: 'subscribe', params: { contextIds: [contextId] } }),
           });
+          if (!subRes.ok) {
+            const detail = await subRes.text().catch(() => '<unreadable body>');
+            throw new Error(
+              `SSE subscribe POST failed: ${subRes.status} ${subRes.statusText} — ${detail}`,
+            );
+          }
           continue;
         }
 
