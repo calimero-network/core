@@ -134,7 +134,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         // Otherwise mint one only on the self-service path, which is the only one
         // that needs it: an admin revokes on the group's authority and may hold no
         // account root at all, so consulting one unconditionally refused every
-        // admin that had never run `account create`.
+        // admin that had enrolled nowhere itself.
         let proof = if let Some(proof) = supplied_proof {
             Some(proof)
         } else if target.self_service {

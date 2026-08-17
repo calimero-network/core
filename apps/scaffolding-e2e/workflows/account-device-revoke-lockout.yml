@@ -18,21 +18,21 @@ description: >
        devices.
 
        One device per node, not two devices on one node: `NodeDeviceIdentity` is
-       keyed per namespace, so a node holds at most one device in a namespace.
+       a singleton row, so a node holds exactly one device across every namespace.
        That also removes any need for merobox to choose which device authors —
        the node selects it.
 
-    2. node-2 enrolls a device (`account create`). This is the first thing in the
-       whole feature that publishes an account op, so it is also the first
+    2. node-2 enrolls a device — which its join did for it. This is the first
+       thing in the whole feature that publishes an account op, so it is also the first
        evidence that `AccountDeviceLinked` survives the real wire — signature
        check, nonce window, dispatch, apply — rather than only the in-process
        apply harness.
 
-       Note the ordering constraint: enrollment CANNOT happen at join time. A
-       device link travels as an *encrypted* GroupOp, so the node must already
-       hold the scope key. If this step is ever moved before the context join, it
-       will deadlock, and the deadlock is the reason `KeyEnvelope` addresses a
-       member as well as a device.
+       This used to be a step of its own, and it could not run before the join: a
+       device link travelled as an *encrypted* GroupOp, so the node had to hold the
+       scope key first. Joins now carry the credential on a cleartext `RootOp`, so
+       the join enrols and there is no order left to get wrong. Linking a SECOND
+       device still goes the encrypted way, which is what pairing is for.
 
     3. node-2 writes from its enrolled device and node-1 reads it. Proves the
        device is a working replica, not merely a stored row.

@@ -252,13 +252,13 @@ impl NodeDevice {
 /// `env::account_id()`.
 ///
 /// **Always a real account, never a stand-in for the executing key.** The account
-/// id is derived from this node's root plus a scope id and needs no ops at all, so
-/// there is no state in which this node has no account to name: one that never ran
-/// `account create` simply owns an account no peer has heard of yet. The
-/// alternative — falling back to the identity key when nothing is enrolled — would
-/// hand apps a device-shaped value through the account door and make
-/// `Map<account_id, Vote>` silently one-vote-per-device again, which is the exact
-/// failure this split exists to end.
+/// id is derived from this node's root alone and needs no ops at all, so there is
+/// no state in which this node has no account to name: one that has enrolled
+/// nowhere simply owns an account no peer has heard of yet. The alternative —
+/// falling back to the identity key when nothing is enrolled — would hand apps a
+/// device-shaped value through the account door and make `Map<account_id, Vote>`
+/// silently one-vote-per-device again, which is the exact failure this split
+/// exists to end.
 ///
 /// Derived from this node's root only when this node holds no device of somebody
 /// else's account. A PAIRED node speaks for the account it adopted, and its device
@@ -266,11 +266,14 @@ impl NodeDevice {
 /// there would answer with an account the group has never heard of, so every row
 /// keyed by the real one misses. See [`account_for_group`].
 ///
-/// The scope is the context's **namespace**, so all of a person's contexts in one
-/// namespace agree on who they are, and their accounts in two namespaces stay
-/// uncorrelatable. A context with no owning group has no namespace to resolve, so
-/// it degenerates to being its own scope: still a real derived account, just one
-/// scoped to that context.
+/// **The account is not scoped to anything** — one root key means one account id,
+/// in every namespace and every context. A per-namespace account would only be
+/// worth its cost if the difference were unlinkable, and it is not: the genesis
+/// names the same `root_sign_pk` wherever it is published, so anyone who sees two
+/// of them links the accounts by comparing two numbers (see [`AccountGenesis`],
+/// whose version is `2` for exactly this reason). The namespace is still resolved
+/// here, because a device's revocation is per-namespace, and it decides whether
+/// the row this reads may be reused at all.
 ///
 /// # Errors
 /// Propagates the store read or the account-root generation failure.
@@ -1002,7 +1005,7 @@ mod tests {
     #[test]
     fn a_revoked_device_is_reminted_rather_than_handed_back() {
         // Revocation is terminal: the id is spent for good. So the tombstone has to
-        // release this node's device slot too, or `account create` afterwards keeps
+        // release this node's device slot too, or the next enrolment keeps
         // certifying an id every peer refuses — the node is locked out of the
         // namespace by its own revocation, with nothing in the logs to say why.
         // "Re-enrolling mints a fresh one" is only true if something mints it.
@@ -1754,7 +1757,7 @@ mod tests {
     fn an_admin_holding_no_account_root_can_still_resolve_a_revocation() {
         // Ejecting a device is an admin's job and needs no account of their own.
         // Requiring a root here refused the whole admin path on any node that had
-        // never run `account create`.
+        // enrolled nowhere itself.
         let store = test_store();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);

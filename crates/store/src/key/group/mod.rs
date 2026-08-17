@@ -2525,7 +2525,8 @@ pub struct NodeDeviceIdentityValue {
     /// adopts an account rooted at ANOTHER node's key, so the row has to name
     /// whose account it is — the reader cannot derive it.
     pub account_root_pk: [u8; 32],
-    /// The `DeviceId` this node speaks as in the namespace.
+    /// The `DeviceId` this node speaks as. One row per node, so this is the id
+    /// it speaks as in every namespace it takes part in.
     pub device_id: [u8; 32],
     /// X25519 secret matching the certificate's `kem_pk`.
     pub kem_secret: [u8; 32],

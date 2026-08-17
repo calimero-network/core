@@ -73,7 +73,7 @@ impl Report for NodeIdentityApiResponse {
             self.data
                 .device_id
                 .as_deref()
-                .unwrap_or("none - run `account create <NAMESPACE_ID>` to enroll this node"),
+                .unwrap_or("none - joining a namespace enrols one"),
         ]);
         let _ = table.add_row(vec!["Signing key", &self.data.public_key]);
         println!("{table}");

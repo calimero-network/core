@@ -89,7 +89,7 @@ type AuthCutContext = (
 ///
 /// **A key that is a member in its own right is that member — the binding is a
 /// FALLTHROUGH, never an override.** This order is load-bearing, not stylistic.
-/// `account create` records the device's `sign_pk` as the node's namespace
+/// Enrolment records the device's `sign_pk` as the node's namespace
 /// identity, which is exactly the key the group's membership row is keyed under. So
 /// preferring the binding made a member who enrolled a device resolve to the
 /// account's real `AccountId` at every cut containing its own link — while
