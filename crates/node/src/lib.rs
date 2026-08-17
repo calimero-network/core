@@ -40,7 +40,7 @@ pub use network_event_channel::{
     channel as network_event_channel, NetworkEventChannelConfig, NetworkEventSender,
 };
 pub use network_event_processor::NetworkEventBridge;
-pub use run::{start, NodeConfig, NodeMode};
+pub use run::{start, NodeConfig, NodeMode, StopCause};
 pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
 pub use sync::SyncManager;
 
