@@ -217,9 +217,14 @@ async fn provable_pull_does_not_consume_the_member_debounce_slot() {
     // A seeded member's beacon verifies, so it takes the established-member arm
     // and claims that arm's slot. Nothing releases it: the member pull is not
     // targeted, so a zero-op result says nothing about the peer that beaconed.
+    //
+    // It pulls from `member_peer` because there are no namespace-topic
+    // subscribers in this harness, and that arm now names the beacon's own signer
+    // as its fallback rather than giving up — the whole point of the fallback.
+    let member_peer = PeerId::random();
     deliver(
         &node,
-        PeerId::random(),
+        member_peer,
         signed_beacon(&admin_sk, now_millis(), None),
     )
     .await;
@@ -241,8 +246,10 @@ async fn provable_pull_does_not_consume_the_member_debounce_slot() {
     .await;
     assert_eq!(
         stream_opens(&node),
-        vec![joiner_peer],
-        "an in-window member sync must not block the provable pull"
+        vec![member_peer, joiner_peer],
+        "an in-window member sync must not block the provable pull — and the \
+         member pull itself must have reached the beacon's signer, since \
+         discovery had nobody to offer"
     );
 }
 

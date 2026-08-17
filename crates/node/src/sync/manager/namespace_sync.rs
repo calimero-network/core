@@ -377,7 +377,7 @@ impl SyncManager {
             if !should_backfill_governance(self.node_state.governance_pending_len(&context_id)) {
                 return;
             }
-            self.sync_namespace_from_peer(namespace_id, Some(peer))
+            self.sync_namespace_from_peer(namespace_id, Some(peer), None)
                 .await;
         }
 
@@ -408,7 +408,7 @@ impl SyncManager {
                 {
                     break;
                 }
-                self.sync_namespace_from_peer(namespace_id, Some(peer))
+                self.sync_namespace_from_peer(namespace_id, Some(peer), None)
                     .await;
             }
         }
@@ -1295,29 +1295,66 @@ impl SyncManager {
     /// on any best-effort failure (no peer, stream/​send/​recv error, unexpected
     /// response), so a caller correcting a divergence can tell whether the pull
     /// actually delivered anything rather than treating it as a silent no-op.
+    ///
+    /// `fallback` is a peer to use **only when discovery finds nobody**, and it is
+    /// deliberately a separate argument from `peer` rather than a second way to
+    /// spell the same thing. `peer = Some(_)` means "ask this one and no other";
+    /// `fallback` means "prefer a subscriber, but do not give up if the subscriber
+    /// table is empty".
+    ///
+    /// That distinction is load-bearing because the table can be empty while a
+    /// perfectly good peer is talking to us. Discovery reads gossipsub's record of
+    /// who subscribes to the namespace topic, and that record is not always
+    /// complete — a node that restarts with an unchanged `PeerId` may never be
+    /// told what its peers follow (see `calimero_network`'s `subscription_repair`).
+    /// Without a fallback this returns `0` while a reachable, caught-up member is
+    /// beaconing at us every few seconds, and a governance op that needs a parent
+    /// stays buffered for want of anyone to ask.
+    ///
+    /// Only pass a `fallback` that is known to hold this namespace: a peer whose
+    /// readiness beacon just verified qualifies, an arbitrary connected peer does
+    /// not — a non-member stores only the [`StoredNamespaceEntry::Opaque`]
+    /// skeleton, so pulling from one delivers nothing and burns the attempt.
     pub(crate) async fn sync_namespace_from_peer(
         &self,
         namespace_id: [u8; 32],
         peer: Option<PeerId>,
+        fallback: Option<PeerId>,
     ) -> usize {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
         let peer = match peer {
             Some(p) => p,
             None => {
-                let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
-                    "ns/{}",
-                    hex::encode(namespace_id)
-                ));
-                let peers = self.sync_network.subscribed_peers(topic).await;
-                let Some(p) = peers.first().copied() else {
-                    debug!(
-                        namespace_id = %hex::encode(namespace_id),
-                        "no mesh peers for namespace sync"
-                    );
-                    return 0;
-                };
-                p
+                match discover_namespace_pull_peer(
+                    self.sync_network.as_ref(),
+                    namespace_id,
+                    fallback,
+                )
+                .await
+                {
+                    NamespacePullPeer::Subscriber(p) => p,
+                    // Logged unconditionally, and at `info`: this is the branch
+                    // that says discovery was broken and something else carried
+                    // the pull, which is exactly what a later reader needs to
+                    // tell "the fallback rescued it" from "it never ran".
+                    NamespacePullPeer::Fallback(p) => {
+                        info!(
+                            namespace_id = %hex::encode(namespace_id),
+                            peer = %p,
+                            "no subscribers for the namespace topic; falling back to a peer \
+                             known to hold this namespace"
+                        );
+                        p
+                    }
+                    NamespacePullPeer::Nobody => {
+                        debug!(
+                            namespace_id = %hex::encode(namespace_id),
+                            "no mesh peers for namespace sync"
+                        );
+                        return 0;
+                    }
+                }
             }
         };
 
@@ -1970,6 +2007,44 @@ async fn fetch_open_subgroup_key(
 /// One walk over `peers`, asking each for the subgroup key.
 ///
 /// Returns on the first peer that yields one. The caller decides whether to walk
+/// Which peer a namespace pull should go to when the caller named none.
+///
+/// Three outcomes rather than an `Option<PeerId>`, so the *reason* survives to
+/// the caller: "a subscriber" and "the fallback" both yield a peer, but only the
+/// second one means discovery was broken, and that difference is what the log
+/// has to say out loud.
+#[derive(Debug, Eq, PartialEq)]
+enum NamespacePullPeer {
+    /// Discovery worked: a peer gossipsub records as following the namespace topic.
+    Subscriber(PeerId),
+    /// Discovery found nobody, and the caller supplied someone known to hold the
+    /// namespace. Reaching this arm means the subscriber table is wrong, not that
+    /// the node is alone.
+    Fallback(PeerId),
+    /// Nobody to ask.
+    Nobody,
+}
+
+/// Pick a peer to pull namespace governance from, preferring a real subscriber.
+///
+/// A free function over the [`SyncNetwork`](crate::sync::network::SyncNetwork)
+/// trait rather than a `SyncManager` method, so a test can drive the empty-table
+/// case against a scripted mock instead of booting a node — the same shape
+/// [`fetch_open_subgroup_key_once`] uses.
+async fn discover_namespace_pull_peer(
+    network: &dyn crate::sync::network::SyncNetwork,
+    namespace_id: [u8; 32],
+    fallback: Option<PeerId>,
+) -> NamespacePullPeer {
+    let topic = libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
+    let peers = network.subscribed_peers(topic).await;
+    match (peers.first().copied(), fallback) {
+        (Some(p), _) => NamespacePullPeer::Subscriber(p),
+        (None, Some(p)) => NamespacePullPeer::Fallback(p),
+        (None, None) => NamespacePullPeer::Nobody,
+    }
+}
+
 /// again, which is why the outcome distinguishes "everybody answered and nobody
 /// has it" from "somebody never answered" — see [`KeyFetchRound`].
 ///
@@ -2489,5 +2564,71 @@ mod joiner_credential_tests {
     fn an_absent_credential_is_refused() {
         let joiner = PublicKey::from([0x11; 32]);
         assert!(SyncManager::verified_joiner_account(&[], &joiner).is_err());
+    }
+}
+
+#[cfg(test)]
+mod namespace_pull_peer_tests {
+    //! Peer selection for a namespace pull, and specifically the case the
+    //! selection exists for: gossipsub's subscriber table can be EMPTY while a
+    //! peer that holds the namespace is reachable and talking to us.
+    //!
+    //! Driven against a scripted [`MockSyncNetwork`] rather than a booted node,
+    //! the same shape the open-subgroup key round uses.
+
+    use libp2p::gossipsub::TopicHash;
+    use libp2p::PeerId;
+
+    use super::{discover_namespace_pull_peer, NamespacePullPeer};
+    use crate::sync::network::mock::MockSyncNetwork;
+
+    const NS: [u8; 32] = [0x5c; 32];
+
+    fn ns_topic() -> TopicHash {
+        TopicHash::from_raw(format!("ns/{}", hex::encode(NS)))
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_is_preferred_over_the_fallback() {
+        let subscriber = PeerId::random();
+        let fallback = PeerId::random();
+        let mock = MockSyncNetwork::default();
+        let _ = mock.push_subscribed_peers_for(ns_topic(), vec![subscriber]);
+
+        assert_eq!(
+            discover_namespace_pull_peer(&mock, NS, Some(fallback)).await,
+            NamespacePullPeer::Subscriber(subscriber),
+            "a working subscriber table must decide it; the fallback is a last \
+             resort, not a preference",
+        );
+    }
+
+    /// The regression. Before the fallback existed this returned "nobody" and the
+    /// pull did not happen — while the peer that could serve it was beaconing at
+    /// us every few seconds.
+    #[tokio::test]
+    async fn an_empty_subscriber_table_still_reaches_the_fallback() {
+        let fallback = PeerId::random();
+        let mock = MockSyncNetwork::default();
+        let _ = mock.push_subscribed_peers_for(ns_topic(), vec![]);
+
+        assert_eq!(
+            discover_namespace_pull_peer(&mock, NS, Some(fallback)).await,
+            NamespacePullPeer::Fallback(fallback),
+            "an empty table means the table is wrong, not that the node is alone",
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_fallback_an_empty_table_is_still_nobody() {
+        let mock = MockSyncNetwork::default();
+        let _ = mock.push_subscribed_peers_for(ns_topic(), vec![]);
+
+        assert_eq!(
+            discover_namespace_pull_peer(&mock, NS, None).await,
+            NamespacePullPeer::Nobody,
+            "callers that supply no fallback keep the old behaviour exactly — \
+             this must not start guessing at a peer on its own",
+        );
     }
 }
