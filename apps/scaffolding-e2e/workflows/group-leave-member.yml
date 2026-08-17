@@ -82,12 +82,11 @@ steps:
       identity_node3: memberIdentity
       account_node3: memberAccount
 
-  - name: Get node-1 namespace identity
-    type: get_namespace_identity
+  - name: Get node-1's account
+    type: node_identity
     node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
     outputs:
-      account_node1: account
+      account_node1: accountId
 
   - name: Create subgroup with all three nodes
     type: create_group_in_namespace

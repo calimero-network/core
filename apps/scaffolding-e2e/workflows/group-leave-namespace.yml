@@ -61,12 +61,11 @@ steps:
       identity_node2: memberIdentity
       account_node2: memberAccount
 
-  - name: Get node-1 namespace identity
-    type: get_namespace_identity
+  - name: Get node-1's account
+    type: node_identity
     node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
     outputs:
-      account_node1: account
+      account_node1: accountId
 
   - name: Create subgroup A
     type: create_group_in_namespace
