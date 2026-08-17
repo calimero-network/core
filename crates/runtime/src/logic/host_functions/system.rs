@@ -588,7 +588,7 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    /// `device_id` under its former name, for WASM built before the split.
+    /// `account_id` under the pre-split name, for WASM built before the split.
     ///
     /// **A linking shim, not an API.** `calimero-sys` does not declare it, so no
     /// app compiled against the current SDK can import it and `env::executor_id()`
@@ -599,14 +599,28 @@ impl VMHostFunctions<'_> {
     /// instantiation, which is a 500 on the first context creation and looks
     /// nothing like an ABI change.
     ///
-    /// It returns the DEVICE, which is exactly what those blobs were getting.
-    /// Removable once every consumer that pins a pre-split blob has rebuilt.
+    /// **It returns the ACCOUNT.** Before the split one identity served both
+    /// roles, so a shim has to choose which of the two a stale blob meant, and
+    /// the choice is not symmetric. An app reaching for an identity is doing
+    /// ownership: `AuthoredMap`, a writer set, `Map<identity, Vote>`. Handing
+    /// those a device is the failure this split exists to end — every key of such
+    /// a map silently becomes per-installation, so one person voting from a phone
+    /// and a laptop counts twice, and nothing errors.
+    ///
+    /// The opposite mistake is real but not reachable from here: a CRDT replica
+    /// slot does need the device, and giving it an account would collapse two
+    /// installations onto one slot. Those slots are seeded inside the storage
+    /// layer from the execution's device, never through this import — so no
+    /// counter or HLC seed is resolved by calling it.
+    ///
+    /// Removable outright once every consumer that pins a pre-split blob has
+    /// rebuilt; `env::account_id()` is what they should be calling.
     ///
     /// # Errors
     ///
     /// * `HostError::InvalidMemoryAccess` if the register operation fails (e.g., exceeds limits).
     pub fn executor_id(&mut self, dest_register_id: u64) -> VMLogicResult<()> {
-        self.device_id(dest_register_id)
+        self.account_id(dest_register_id)
     }
 
     /// Writes the xcall origin (the source context id) into `dest_register_id`
@@ -1628,6 +1642,54 @@ mod tests {
                 .unwrap(),
             *account.as_bytes(),
             "the account register must carry the account, not the device"
+        );
+    }
+
+    /// **`executor_id` resolves to the ACCOUNT, not the device.**
+    ///
+    /// The pre-split name served one identity that later became two, so this shim
+    /// has to choose which a stale blob meant. An app reaching for an identity is
+    /// doing ownership — `AuthoredMap`, a writer set, `Map<identity, Vote>` — and
+    /// giving those a device makes every key per-installation, so one person on a
+    /// phone and a laptop counts twice and nothing errors.
+    ///
+    /// The device and the account are deliberately different values here. If they
+    /// were equal this would pass whichever the shim returned.
+    #[test]
+    fn executor_id_resolves_to_the_account_not_the_device() {
+        let context_id = [3u8; DIGEST_SIZE];
+        let device = [5u8; DIGEST_SIZE];
+        let account = calimero_account::AccountId::from([7u8; DIGEST_SIZE]);
+        assert_ne!(
+            &device,
+            account.as_bytes(),
+            "precondition: the two must differ, or this proves nothing"
+        );
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let context = VMContext::new(Cow::Owned(vec![]), context_id, device, account);
+        let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+        let mut store = Store::default();
+        let memory =
+            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+        let _ = logic.with_memory(memory);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        host.executor_id(1).unwrap();
+        assert_eq!(
+            host.borrow_logic().registers.get(1).unwrap(),
+            account.as_bytes(),
+            "a pre-split blob asking for an identity must get the account"
+        );
+
+        // And `device_id` still answers with the device, so the split is intact
+        // rather than both names having collapsed onto one value.
+        host.device_id(2).unwrap();
+        assert_eq!(
+            host.borrow_logic().registers.get(2).unwrap(),
+            &device,
+            "device_id must still be the device"
         );
     }
 
