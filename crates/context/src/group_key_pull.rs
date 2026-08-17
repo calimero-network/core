@@ -252,9 +252,37 @@ mod tests {
             "the wedge must be the membership-path rejection, got: {wedged:#}"
         );
 
-        adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+        // `load_scope_ops` returns the rows in any order, so compare as sets.
+        let op_ids = |store: &Store| {
+            let mut ids: Vec<[u8; 32]> = crate::unified_op_store::load_scope_ops(
+                store,
+                &calimero_op::ScopeId::from(namespace_id),
+            )
+            .expect("the op-store must read back")
+            .iter()
+            .map(calimero_op::Op::id)
+            .collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let ops_before_adopt = op_ids(&store);
+        let key_id = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
             .expect("a peer-pulled namespace key must store");
 
+        // The re-persist re-decodes the flip that froze as a `Noop` and writes it
+        // back under the same content-addressed id, so the row is overwritten in
+        // place. An id that moved with the decoded payload would leave the stale
+        // `Noop` behind and the projection would fold both.
+        assert!(
+            !ops_before_adopt.is_empty(),
+            "the namespace must hold ops for the re-persist to rewrite"
+        );
+        assert_eq!(
+            ops_before_adopt,
+            op_ids(&store),
+            "re-persisting a decoded op must overwrite its row, not add one"
+        );
         assert_eq!(
             CapabilitiesRepository::new(&store)
                 .subgroup_visibility(&sub)
@@ -263,5 +291,28 @@ mod tests {
             "the re-drive must apply the buffered flip to the live store"
         );
         apply(&store).expect("the backfilled join must apply once the flip is readable");
+
+        // Both recoveries are best-effort, so the key-delivery and startup sweeps
+        // re-run them on a key this path already adopted.
+        let ops_before_replay = op_ids(&store);
+        let replayed = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+            .expect("re-adopting an already-stored key must not fail");
+
+        assert_eq!(
+            replayed, key_id,
+            "the key id is derived from the key itself"
+        );
+        assert_eq!(
+            ops_before_replay,
+            op_ids(&store),
+            "a replayed adopt must not add or drop an op"
+        );
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .subgroup_visibility(&sub)
+                .unwrap(),
+            VisibilityMode::Open,
+            "a replayed adopt must not disturb the recovered live state"
+        );
     }
 }

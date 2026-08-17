@@ -318,6 +318,42 @@ mod tests {
         assert!(!may_observe_group(true, false, None));
     }
 
+    /// A subscribe re-authorizes every group it names, so `apply` has to be able
+    /// to take authority back, not just grant it. This matters most on SSE, whose
+    /// session outlives the connection: a stale admin entry there is not bounded
+    /// by reconnecting.
+    #[test]
+    fn apply_grants_then_revokes_on_demote_and_deny() {
+        let demoted_id = Hash::from([0x11u8; 32]);
+        let denied_id = Hash::from([0x22u8; 32]);
+        let kept_id = Hash::from([0x33u8; 32]);
+
+        // Both start fully authorized, the way an earlier subscribe left them.
+        let mut groups: HashSet<Hash> = [demoted_id, denied_id, kept_id].into_iter().collect();
+        let mut admin_groups = groups.clone();
+
+        super::GroupSubscriptions {
+            subscribed: vec![demoted_id, kept_id],
+            admin: vec![kept_id],
+            demoted: vec![demoted_id],
+            denied: vec![denied_id],
+        }
+        .apply(&mut groups, &mut admin_groups);
+
+        assert!(
+            groups.contains(&demoted_id) && !admin_groups.contains(&demoted_id),
+            "a demoted caller keeps the group and loses only the admin-only payloads"
+        );
+        assert!(
+            !groups.contains(&denied_id) && !admin_groups.contains(&denied_id),
+            "a denied caller loses both authorities"
+        );
+        assert!(
+            groups.contains(&kept_id) && admin_groups.contains(&kept_id),
+            "a still-authorized admin keeps both"
+        );
+    }
+
     /// The cascade frame names a descendant subgroup id, so a plain member of
     /// the namespace must not receive it while still receiving the counter-only
     /// progress frames. Both the WS fan-out and the SSE session task decide
