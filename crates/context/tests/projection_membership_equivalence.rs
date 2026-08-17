@@ -1202,3 +1202,70 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
          to a principal the account-keyed rows have never heard of"
     );
 }
+
+/// **A join is attributed to the account its certificate names, not to a
+/// stand-in derived from its signing key.**
+///
+/// This is the property the whole bridge deletion turns on. While
+/// `op_from_namespace_op` synthesised authorship with
+/// `legacy_authorship(signer)`, a join op's `device` was a reinterpretation of
+/// the derived account's bytes — a device that was never enrolled and holds no
+/// key. `calimero_authz::authorize` says so at its `MemberJoinedWithDevice`
+/// arm, where two cross-checks its `DeviceLinked` sibling runs are documented
+/// as impossible precisely because "both the device-key and the account
+/// comparison would fail on a perfectly honest join".
+///
+/// So this asserts the three things those checks need: the op is attributed to
+/// the certified account, to the certified device, and to the key that signed
+/// it. Assert the stand-in is a *different* account too — otherwise the first
+/// assertion could pass for the wrong reason.
+#[test]
+fn a_join_is_attributed_to_the_account_its_certificate_names() {
+    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner = joiner_sk.public_key();
+    let ns = ContextGroupId::from([0x21; 32]);
+    let group = ContextGroupId::from([0x22; 32]);
+
+    let credential = real_join_account_for(&joiner, [0x4D; 32]);
+    let certified_account = credential.cert.account;
+    let certified_device = credential.cert.device;
+
+    let join = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: certified_account,
+            group_id: group.to_bytes().into(),
+            account: credential,
+        }),
+    )
+    .expect("sign the join");
+
+    let op = op_from_namespace_op(&join, None, [0x9C; 32], hlc(1), &[]);
+
+    assert_eq!(
+        op.author(),
+        certified_account,
+        "the op must name the account the certificate grants to, since that is \
+         what `authorize` compares its verified account against"
+    );
+    assert_eq!(
+        op.device(),
+        certified_device,
+        "and the enrolled device, which is the CRDT replica slot — a fabricated \
+         one makes every account share a single slot"
+    );
+    assert_eq!(
+        *op.device_key(),
+        joiner,
+        "and the key that actually signed it, so possession can be required"
+    );
+    assert_ne!(
+        certified_account,
+        calimero_op_adapter::legacy_account_id(&joiner),
+        "the stand-in must differ from the certified account, or the assertions \
+         above would hold no matter which one was used"
+    );
+}

@@ -8,9 +8,9 @@
 //! op-store can never lag the gov-DAG). `calimero-context` re-exports these so the
 //! existing projection callers keep compiling unchanged.
 
-use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
-use calimero_op::{Op, OpPayload, ScopeId};
+use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_op_adapter::{legacy_authorship, payload_from_group_op, payload_from_root_op};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
@@ -28,7 +28,7 @@ use calimero_context_client::local_governance::GroupOp;
 fn build_op(
     id: [u8; 32],
     scope: ScopeId,
-    author: PublicKey,
+    authorship: Authorship,
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
     payload: OpPayload,
@@ -37,7 +37,7 @@ fn build_op(
         id,
         scope,
         parents.to_vec(),
-        legacy_authorship(author),
+        authorship,
         hlc,
         payload,
         [0u8; 32],
@@ -66,6 +66,52 @@ fn build_op(
 /// `GroupOp` for a `NamespaceOp::Group` (via
 /// [`crate::decrypt_group_op`]), or `None` when it couldn't be decrypted — in
 /// which case the node is still recorded as `Noop`.
+/// The authorship an op **carries**, when it carries one.
+///
+/// A join or a device link names its own account and device in a root-signed
+/// [`DeviceCert`]. Reading it here is what lets the projected op be attributed
+/// to the principal that actually authored it, instead of to a stand-in derived
+/// from the signing key — and a derived stand-in is why the
+/// `MemberJoinedWithDevice` arm of `calimero_authz::authorize` cannot currently
+/// run the two cross-checks its `DeviceLinked` sibling does.
+///
+/// The certificate is *read*, not trusted: `authorize` verifies it against the
+/// account plane at the cut before any of this is believed. Reading it here
+/// only decides who the op claims to be, which is exactly what that check then
+/// confirms.
+///
+/// `None` for every other op — those carry no credential, and their author is
+/// resolved from the folded view by `account_for_author` rather than from the
+/// op itself.
+fn carried_authorship(
+    op: &NamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
+    signer: PublicKey,
+) -> Option<Authorship> {
+    let cert = match op {
+        NamespaceOp::Root(
+            RootOp::MemberJoined { account, .. }
+            | RootOp::MemberJoinedOpen { account, .. }
+            | RootOp::MemberJoinedAt { account, .. }
+            | RootOp::NamespaceCreated { account, .. }
+            | RootOp::MemberJoinedViaTeeAttestation { account, .. },
+        ) => &account.cert,
+        // A device link rides an ENCRYPTED group op, so its certificate is only
+        // legible once the op decrypts. An undecryptable one folds to a `Noop`
+        // and keeps the stand-in — it carries no readable claim to attribute to.
+        NamespaceOp::Group { .. } => match decrypted_group_op? {
+            GroupOp::AccountDeviceLinked { cert, .. } => cert,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(Authorship {
+        account: cert.account,
+        device: cert.device,
+        device_key: signer,
+    })
+}
+
 #[must_use]
 pub fn op_from_namespace_op(
     signed: &SignedNamespaceOp,
@@ -100,10 +146,16 @@ pub fn op_from_namespace_op(
         // preserving causal structure without inventing a payload.
         _ => OpPayload::Noop,
     };
+    // The op's own certificate when it has one, and the stand-in only when it
+    // does not. That ordering is the fix: a join used to be attributed to an
+    // account derived from its signing key, so the device it named was fiction
+    // and no check downstream could compare against it.
+    let authorship = carried_authorship(&signed.op, decrypted_group_op, signed.signer)
+        .unwrap_or_else(|| legacy_authorship(signed.signer));
     build_op(
         id,
         ScopeId::from(signed.namespace_id.to_bytes()),
-        signed.signer,
+        authorship,
         hlc,
         parents,
         payload,
