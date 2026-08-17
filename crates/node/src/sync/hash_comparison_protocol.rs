@@ -228,7 +228,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     session_peer: Option<PublicKey>,
     init_pop: Option<InitProof>,
 ) -> Result<HashComparisonStats> {
-    info!(%context_id, "Starting HashComparison sync (initiator)");
+    debug!(%context_id, "Starting HashComparison sync (initiator)");
 
     let mut stats = HashComparisonStats::default();
 
@@ -811,7 +811,7 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
     }
 
-    info!(
+    debug!(
         %context_id,
         nodes_compared = stats.nodes_compared,
         entities_merged = stats.entities_merged,

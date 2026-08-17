@@ -271,7 +271,7 @@ impl SyncDriver {
                     continue;
                 }
                 Some((ctx, peer)) = self.ctx_sync_rx.recv() => {
-                    info!(?ctx, ?peer, "Received sync request");
+                    debug!(?ctx, ?peer, "Received sync request");
 
                     requested_ctx = ctx;
                     requested_peer = peer;
@@ -399,7 +399,7 @@ impl SyncDriver {
                 }
             };
 
-            info!(%context_id, "Scheduled sync");
+            debug!(%context_id, "Scheduled sync");
 
             // Phase 2: dispatch BEFORE mutating state — so a
             // `Full`/`Closed` outcome leaves the per-context tracking

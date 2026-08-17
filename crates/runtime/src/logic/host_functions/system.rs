@@ -515,13 +515,31 @@ impl VMHostFunctions<'_> {
         }
         self.with_logic_mut(|logic| logic.logs.push(message.clone()));
 
+        // Split by audience. The app's own log line is written by app code over
+        // app state, so it can hold anything the app was given — and a node
+        // operator is not supposed to see user data. It is already returned to
+        // the caller in the execution outcome, which is the audience entitled to
+        // it, so the node's log keeps the shape of the line and not its content.
+        //
+        // The content stays available at `trace`, because reading guest output
+        // in a node log is a real way to debug an app. That level is the whole
+        // point: it is off by default AND off under a blanket `RUST_LOG=debug`,
+        // which is what every e2e node runs and what gets uploaded as a CI
+        // artifact. Someone who wants it asks for it by name with
+        // `RUST_LOG=runtime::guest::log=trace`.
         let total_logs = self.borrow_logic().logs.len();
         info!(
             target: "runtime::guest::log",
             interesting = false,
             total_logs,
-            message = %message,
+            message_len = message.len(),
             "guest log (js_std_d_print)"
+        );
+        trace!(
+            target: "runtime::guest::log",
+            total_logs,
+            message = %message,
+            "guest log message (js_std_d_print)"
         );
 
         Ok(0)
@@ -852,12 +870,22 @@ impl VMHostFunctions<'_> {
         let total_logs = self.borrow_logic().logs.len();
         let interesting = message.contains("[dispatcher]") || message.contains("QuickJS");
 
+        // As in `js_std_d_print`: shape at info, content at trace. `interesting`
+        // still says whether this was a dispatcher/QuickJS line, which is what
+        // the flag was for and needs no user data to answer.
         info!(
             target: "runtime::guest::log",
             interesting,
             total_logs,
-            message = %message,
+            message_len = message.len(),
             "guest log"
+        );
+        trace!(
+            target: "runtime::guest::log",
+            interesting,
+            total_logs,
+            message = %message,
+            "guest log message"
         );
 
         Ok(())

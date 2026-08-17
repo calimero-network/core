@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::SyncContextResponse;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -17,7 +17,7 @@ pub async fn handler(
     let context_id = context_id.map(|Path(c)| c);
 
     if let Some(ref ctx_id) = context_id {
-        info!(context_id=%ctx_id, "Syncing context");
+        debug!(context_id=%ctx_id, "Syncing context");
     } else {
         info!("Syncing all contexts");
     }
@@ -27,7 +27,7 @@ pub async fn handler(
     match result {
         Ok(()) => {
             if let Some(ref ctx_id) = context_id {
-                info!(context_id=%ctx_id, "Context sync completed successfully");
+                debug!(context_id=%ctx_id, "Context sync completed successfully");
             } else {
                 info!("All contexts sync completed successfully");
             }
