@@ -101,8 +101,14 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 
 /// Payload of a [`ContextEventPayload::Ephemeral`] event. Carries a per-peer
 /// presence slice, decrypted from the context group key before delivery.
-/// `state` is present on upsert and absent on TTL/disconnect expiry
-/// (`removed = true`). `contextId` rides on the flattened [`ContextEvent`].
+/// `state` is present on upsert and absent on removal (`removed = true`).
+/// `contextId` rides on the flattened [`ContextEvent`].
+///
+/// Removal means only "this node is no longer tracking that author": it is
+/// emitted on TTL/disconnect expiry, and also when a context at its author cap
+/// evicts its stalest entry to admit a new author. A client must therefore not
+/// read `removed` as "that peer went offline" — see the membership note below,
+/// which applies equally to disappearance.
 ///
 /// # Security — `author` is identity-authenticated, not membership-checked
 ///
@@ -135,8 +141,10 @@ pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
 /// * **Freshness.** The signed payload binds the sender's `sent_at_ms` wall
 ///   clock, and the receive path drops anything outside a symmetric window
 ///   around its own clock, so a recorded envelope is replayable only inside
-///   that window rather than forever. The window is sized to close before a
-///   TTL sweep can make a replay effective (see `PRESENCE_MAX_SKEW_MS` in
+///   that window rather than forever. The window is sized to close as the
+///   TTL sweep makes a replay effective, leaving a residual bounded by
+///   sender/receiver clock skew rather than by the TTL
+///   (see `PRESENCE_MAX_SKEW_MS` in
 ///   `calimero-node`'s `handlers::ephemeral`), but it is a *clock* check, not
 ///   a per-envelope seen-cache: it bounds replay, it does not make each
 ///   envelope single-use. `sent_at_ms` is not exposed on this type — use

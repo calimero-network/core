@@ -1652,11 +1652,15 @@ mod tests {
         let resp = next_json(&mut read, Duration::from_secs(5))
             .await
             .expect("subscribe response");
+        // Note this asserts only that a DENIED subscriber is seeded with
+        // nothing, so the ack is trivially its first frame. It is not a general
+        // ack-before-events invariant: for an authorized subscribe, seed and
+        // live frames may legitimately precede the ack — see the wire-contract
+        // note in `ws::subscribe::handle`.
         assert_eq!(
             resp["id"],
             json!(1),
-            "the ack must be the first frame — a \
-             denied subscriber must not be seeded ahead of it: {resp}"
+            "a denied subscriber must receive nothing before its ack: {resp}"
         );
         assert_eq!(
             resp["result"]["contextIds"],

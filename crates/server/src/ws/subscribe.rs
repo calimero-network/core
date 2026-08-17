@@ -95,6 +95,28 @@ async fn handle(
     // Every context's snapshot read is issued concurrently, so a subscribe
     // naming N contexts is bounded by ONE snapshot timeout rather than N of
     // them stacking ahead of the client's acknowledgment.
+    //
+    // # Wire contract: events for a context may precede its subscribe ack
+    //
+    // `mount_method!` writes the `id`-tagged ack only after this function
+    // returns, while the pushes below (and any live delta) go onto the
+    // connection's command channel before that. A client can therefore see
+    // `Ephemeral` frames (`id: null`) for a context *before* the ack naming it.
+    //
+    // This is not fixable by pushing the seed after the ack, and reordering
+    // would be a false reassurance: the subscription is registered above, so a
+    // live delta can be pushed between that registration and the ack regardless
+    // of where the seed goes. The only way to make the ack strictly first is to
+    // withhold the subscription until after it — which drops exactly the deltas
+    // the live-then-snapshot ordering above exists to keep.
+    //
+    // Clients are therefore expected to correlate on the request `id`, which is
+    // unaffected, and to be able to buffer or apply `Ephemeral` frames for a
+    // context they have asked for but not yet been acked for. Presence is
+    // idempotent LWW state, so applying a frame "early" needs no special
+    // handling. A client that instead gates on the ack before listening will
+    // miss the seed and stay blank for that author until their slice next
+    // *changes* — a heartbeat re-sending identical bytes produces no diff.
     for (_context_id, events) in
         crate::ephemeral_replay::presence_replay_many(&state.node_client, &subscribed).await
     {

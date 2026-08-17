@@ -29,10 +29,18 @@ pub const PRESENCE_TTL_MS: u64 = 7_000;
 /// effect on a receiver whose entry for that author has already TTL-swept —
 /// i.e. no earlier than `PRESENCE_TTL_MS` after the author's last genuine
 /// publish. With the window set to exactly that, the envelope stops being fresh
-/// at the same instant the sweep would make it useful: the resurrection window
-/// is closed, not merely capped. At the previous 30s the two were 23s apart,
-/// which is precisely the interval in which a departed peer could be rendered
-/// present again.
+/// at essentially the same instant the sweep would make it useful. At the
+/// previous 30s the two were 23s apart, which is precisely the interval in
+/// which a departed peer could be rendered present again.
+///
+/// The residual is not quite zero, and the honest bound is worth stating: the
+/// sweep is timed from *receipt* while freshness is timed from the *sender's*
+/// stamp, so a replay stays effective for `s - d` where `s` is how far the
+/// sender's clock leads the receiver's and `d` the delivery delay — empty
+/// unless the sender's clock leads by more than the delay, and bounded by real
+/// clock skew rather than by the TTL. [`auth`] derives this on a common
+/// timeline and explains why closing it with a per-author tombstone is not
+/// worth the unbounded state it would reintroduce.
 ///
 /// The cost is skew tolerance: 7s each way instead of 30s. That is still two
 /// orders of magnitude above what an NTP-synced host exhibits (single-digit

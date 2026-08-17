@@ -47,9 +47,30 @@
 //!
 //! [`PRESENCE_MAX_SKEW_MS`] is set equal to
 //! [`PRESENCE_TTL_MS`](crate::handlers::ephemeral::PRESENCE_TTL_MS) so the
-//! window closes at exactly the moment a TTL sweep would make a recorded
-//! envelope useful, leaving no interval in which a departed peer can be
-//! resurrected. See that constant for the full trade.
+//! window closes at essentially the moment a TTL sweep would make a recorded
+//! envelope useful. Writing the two conditions out against a common timeline —
+//! `T` the sender's publish instant, `d >= 0` the delivery delay, `s` how far
+//! the sender's clock runs *ahead* of the receiver's:
+//!
+//! * the receiver stamps `last_seen` at `T + d`, so the entry sweeps at
+//!   `T + d + PRESENCE_TTL_MS`, which is when a replay could first take effect
+//!   (before that, the LWW `seq` rule makes it a no-op);
+//! * `is_fresh` accepts until `T + s + PRESENCE_MAX_SKEW_MS`.
+//!
+//! The replay is therefore effective only on `[T + d + TTL, T + s + SKEW]`,
+//! which with `SKEW == TTL` is empty unless `s > d` — the sender's clock must
+//! run ahead of the receiver's by more than the delivery delay, and the
+//! surviving window is exactly that excess, `s - d`. It is bounded by real
+//! clock skew (single-digit milliseconds between NTP-synced hosts), not by the
+//! TTL, and it is not attacker-amplifiable: `s` belongs to the honest sender,
+//! and `sent_at_ms` is inside the signature so a recorder cannot restamp it.
+//!
+//! Closing the residual entirely would take a per-author tombstone surviving
+//! the sweep (rejecting a `sent_at_ms` at or before the last swept entry's).
+//! That is deliberately not done: it reintroduces exactly the unbounded
+//! per-author growth the store is careful to avoid, needing its own cap and
+//! expiry, to buy back a few milliseconds. See [`PRESENCE_MAX_SKEW_MS`] for the
+//! skew-vs-replay trade this sits on.
 //!
 //! No I/O, no actix, no store access.
 
