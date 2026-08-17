@@ -1849,7 +1849,7 @@ impl SyncManager {
             );
             return 0;
         };
-        self.sync_namespace_from_peer(namespace_id, Some(peer))
+        self.sync_namespace_from_peer(namespace_id, Some(peer), None)
             .await
     }
 
@@ -3881,7 +3881,7 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
 #[async_trait::async_trait(?Send)]
 impl super::driver::SyncDriverDispatch for SyncManager {
     async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) -> usize {
-        SyncManager::sync_namespace_from_peer(self, namespace_id, None).await
+        SyncManager::sync_namespace_from_peer(self, namespace_id, None, None).await
     }
 
     async fn initiate_namespace_join(
