@@ -294,13 +294,101 @@ impl Behaviour {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use core::fmt::Debug;
+    use std::time::{Duration, Instant};
+
+    use libp2p::futures::FutureExt;
 
     use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
     use libp2p::{identify, Swarm};
-    use libp2p_swarm_test::{drive, SwarmExt};
+    use libp2p_swarm_test::SwarmExt;
 
     use super::*;
+
+    /// [`drive_until`] for callers that assert on full [`SwarmEvent`]s rather than
+    /// only behaviour events — connection lifecycle, address confirmation.
+    ///
+    /// Same reason for existing: a fixed count couples the outcome to the
+    /// scheduler. See [`drive_until`].
+    async fn drive_swarm_until<C, S>(
+        client: &mut Swarm<C>,
+        server: &mut Swarm<S>,
+        client_done: impl Fn(&[SwarmEvent<C::ToSwarm>]) -> bool,
+        server_done: impl Fn(&[SwarmEvent<S::ToSwarm>]) -> bool,
+    ) -> (Vec<SwarmEvent<C::ToSwarm>>, Vec<SwarmEvent<S::ToSwarm>>)
+    where
+        C: NetworkBehaviour + Send,
+        C::ToSwarm: Debug,
+        S: NetworkBehaviour + Send,
+        S::ToSwarm: Debug,
+    {
+        let mut client_events = Vec::new();
+        let mut server_events = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+
+        while !(client_done(&client_events) && server_done(&server_events)) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out before both sides produced the events under test; \
+                 client={client_events:?} server={server_events:?}"
+            );
+            libp2p::futures::select! {
+                event = client.next_swarm_event().fuse() => client_events.push(event),
+                event = server.next_swarm_event().fuse() => server_events.push(event),
+            }
+        }
+
+        (client_events, server_events)
+    }
+
+    /// Poll both swarms until each side's behaviour events satisfy its predicate.
+    ///
+    /// The condition-driven counterpart to [`drive`], which collects a FIXED number
+    /// of events and so couples a test's outcome to the scheduler: too few arrive
+    /// and it panics inside the harness, the right number arrives in the wrong mix
+    /// and the caller's own assertion fails. Both were observed under contention.
+    ///
+    /// Bounded by a deadline rather than left to hang, because a test that never
+    /// returns is worse than one that fails: the panic carries everything collected
+    /// so far, which is what a diagnosis needs.
+    async fn drive_until<C, S>(
+        client: &mut Swarm<C>,
+        server: &mut Swarm<S>,
+        client_done: impl Fn(&[C::ToSwarm]) -> bool,
+        server_done: impl Fn(&[S::ToSwarm]) -> bool,
+    ) -> (Vec<C::ToSwarm>, Vec<S::ToSwarm>)
+    where
+        C: NetworkBehaviour + Send,
+        C::ToSwarm: Debug,
+        S: NetworkBehaviour + Send,
+        S::ToSwarm: Debug,
+    {
+        let mut client_events = Vec::new();
+        let mut server_events = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+
+        while !(client_done(&client_events) && server_done(&server_events)) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out before both sides produced the events under test; \
+                 client={client_events:?} server={server_events:?}"
+            );
+            libp2p::futures::select! {
+                event = client.next_swarm_event().fuse() => {
+                    if let SwarmEvent::Behaviour(event) = event {
+                        client_events.push(event);
+                    }
+                }
+                event = server.next_swarm_event().fuse() => {
+                    if let SwarmEvent::Behaviour(event) = event {
+                        server_events.push(event);
+                    }
+                }
+            }
+        }
+
+        (client_events, server_events)
+    }
 
     #[derive(NetworkBehaviour)]
     struct Client {
@@ -470,8 +558,46 @@ mod tests {
         // relative order in which identify and autonat events interleave is timing-
         // dependent. Assert on event *presence* and the causal order of the two identify
         // exchanges rather than on an exact positional sequence, which would flake.
-        let (switchable_events, server_events): ([SwitchableNatEvent; 5], [ServerEvent; 4]) =
-            drive(&mut switchable, &mut server).await;
+        //
+        // Collected until the facts under test have appeared, NOT for a fixed count.
+        // `drive` returns fixed-size arrays: it panics outright when it cannot fill
+        // them, and when it does fill them the caller is asserting on the composition
+        // of whatever happened to land in that window. Under CPU contention the
+        // interleaving shifts, so a run collects the right NUMBER of events and the
+        // wrong MIX — which is both failure modes seen in #3488, from one cause.
+        // Waiting on the events themselves makes the outcome a function of what the
+        // swarms do rather than of how the scheduler interleaved them.
+        let (switchable_events, server_events) = drive_until(
+            &mut switchable,
+            &mut server,
+            |sw: &[SwitchableNatEvent]| {
+                sw.iter()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            SwitchableNatEvent::Identify(identify::Event::Received { .. })
+                        )
+                    })
+                    .count()
+                    >= 2
+                    && sw.iter().any(|e| {
+                        matches!(
+                            e,
+                            SwitchableNatEvent::Autonat(Event::PeerHasServerSupport { .. })
+                        )
+                    })
+            },
+            |srv: &[ServerEvent]| {
+                srv.iter()
+                    .filter(|e| {
+                        matches!(e, ServerEvent::Identify(identify::Event::Received { .. }))
+                    })
+                    .count()
+                    >= 2
+            },
+        )
+        .await;
+        let (switchable_events, server_events) = (&switchable_events[..], &server_events[..]);
 
         // Switchable must have observed the server's autonat server support at some point.
         assert!(
@@ -559,10 +685,29 @@ mod tests {
         // Wait for server to complete the AutoNAT test. The address confirmation and the
         // trailing autonat behaviour event can arrive in either order, so locate the
         // confirmation by value rather than by position.
-        let (switchable_events, server_events): (
-            [SwarmEvent<SwitchableNatEvent>; 2],
-            [ServerEvent; 1],
-        ) = drive(&mut switchable, &mut server).await;
+        let (switchable_events, server_events) = drive_swarm_until(
+            &mut switchable,
+            &mut server,
+            |sw: &[SwarmEvent<SwitchableNatEvent>]| {
+                sw.iter()
+                    .any(|e| matches!(e, SwarmEvent::ExternalAddrConfirmed { .. }))
+            },
+            |srv: &[SwarmEvent<ServerEvent>]| {
+                srv.iter()
+                    .any(|e| matches!(e, SwarmEvent::Behaviour(ServerEvent::Autonat(_))))
+            },
+        )
+        .await;
+        let switchable_events = &switchable_events[..];
+        // The autonat result is located by value, as before — only the waiting
+        // changed, not what is asserted.
+        let server_events: Vec<ServerEvent> = server_events
+            .into_iter()
+            .filter_map(|e| match e {
+                SwarmEvent::Behaviour(event) => Some(event),
+                _ => None,
+            })
+            .collect();
 
         let confirmed_addr = switchable_events
             .iter()
@@ -606,21 +751,43 @@ mod tests {
         switchable.disconnect_peer_id(server_id).unwrap();
         // Wait for the disconnect to complete. Both sides observe two connection-closed
         // events; the order they're drained in is irrelevant.
-        let (switchable_events, server_events): (
-            [SwarmEvent<SwitchableNatEvent>; 2],
-            [SwarmEvent<ServerEvent>; 2],
-        ) = drive(&mut switchable, &mut server).await;
-        assert!(
-            switchable_events
+        let (switchable_events, server_events) = drive_swarm_until(
+            &mut switchable,
+            &mut server,
+            |sw: &[SwarmEvent<SwitchableNatEvent>]| {
+                sw.iter()
+                    .filter(|e| matches!(e, SwarmEvent::ConnectionClosed { .. }))
+                    .count()
+                    >= 2
+            },
+            |srv: &[SwarmEvent<ServerEvent>]| {
+                srv.iter()
+                    .filter(|e| matches!(e, SwarmEvent::ConnectionClosed { .. }))
+                    .count()
+                    >= 2
+            },
+        )
+        .await;
+        let (switchable_events, server_events) = (&switchable_events[..], &server_events[..]);
+        // Both sides saw the disconnect. The old assertion was `all(ConnectionClosed)`,
+        // which held only because a fixed 2-event window happened to contain nothing
+        // else — "no other event arrived" is not a property of a disconnect, it is a
+        // property of how long we happened to look, which is what made this flake.
+        fn closed<T>(events: &[SwarmEvent<T>]) -> usize {
+            events
                 .iter()
-                .all(|e| matches!(e, SwarmEvent::ConnectionClosed { .. })),
-            "Switchable should only see ConnectionClosed, got: {switchable_events:?}"
+                .filter(|e| matches!(e, SwarmEvent::ConnectionClosed { .. }))
+                .count()
+        }
+        assert_eq!(
+            closed(switchable_events),
+            2,
+            "switchable must observe both connections closing, got: {switchable_events:?}"
         );
-        assert!(
-            server_events
-                .iter()
-                .all(|e| matches!(e, SwarmEvent::ConnectionClosed { .. })),
-            "Server should only see ConnectionClosed, got: {server_events:?}"
+        assert_eq!(
+            closed(server_events),
+            2,
+            "server must observe both connections closing, got: {server_events:?}"
         );
 
         // NOTE: there's a bug in the code that causes the autonat behaviour to not work correctly
