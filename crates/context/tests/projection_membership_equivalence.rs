@@ -1274,3 +1274,119 @@ fn a_join_is_attributed_to_the_account_its_certificate_names() {
          above would hold no matter which one was used"
     );
 }
+
+/// **A key rotation authored by an enrolled device must actually absorb.**
+///
+/// The fold gates `AccountKeysRotated` on `handoff.account == op.authorship.account`
+/// — deliberately, because `from_ops` and the sync convergence path fold raw logs
+/// without `authorize`, and that check is what stops a stranger absorbing into a
+/// victim's epoch slot.
+///
+/// But `GroupOp::AccountKeysRotated` carries no credential, so the production
+/// converter has nothing to attribute the op to and stamps
+/// `legacy_authorship(signer)` — a stand-in derived from the signing key. A
+/// stand-in never equals the real `handoff.account`, so the comparison fails on
+/// an honest rotation and the handoff is dropped.
+///
+/// `crates/projection/tests/account_plane.rs` misses this because its fixture
+/// builds `Authorship` from a device that knows its own account, supplying the
+/// truthful value production fabricates. This drives the real converter instead.
+#[test]
+fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
+    let ns = ContextGroupId::from([0x51; 32]);
+    let group = ContextGroupId::from([0x52; 32]);
+
+    // An account with a real genesis, and a device certified by its root key.
+    let root_sk = PrivateKey::from([0x61u8; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+    let device_sk = PrivateKey::from([0x62u8; 32]);
+    let device_key = device_sk.public_key();
+    let cert = calimero_account::sign_device_cert(
+        &root_sk,
+        account,
+        calimero_account::DeviceId::from([0x63; 32]),
+        &device_key,
+        &calimero_account::KemPublicKey::from([0x64; 32]),
+        0,
+        0,
+    )
+    .expect("sign the device cert");
+
+    let mut proj = ScopeProjections::new();
+
+    // The device links, so the binding is folded and the account is known.
+    let link_env = ns_group_envelope(ns.to_bytes(), device_key, group);
+    let link = GroupOp::AccountDeviceLinked {
+        genesis,
+        chain: vec![],
+        cert,
+        endorsement: calimero_account::sign_account_endorsement(&device_sk, account)
+            .expect("endorse"),
+    };
+    let link_id = [0xC1; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &link_env,
+        Some(&link),
+        link_id,
+        hlc(1),
+        &[],
+    ));
+
+    // That device now rotates its account's root key.
+    let handoff = calimero_account::sign_root_key_handoff(
+        &root_sk,
+        account,
+        0,
+        &PrivateKey::from([0x65u8; 32]).public_key(),
+    )
+    .expect("sign handoff");
+    let rot_env = ns_group_envelope(ns.to_bytes(), device_key, group);
+    let rotation = GroupOp::AccountKeysRotated { handoff };
+    let rot_id = [0xC2; 32];
+    // The production path: the caller resolves the signer's binding and passes
+    // it, exactly as the apply handler and the backfill now do.
+    let rot_op = calimero_governance_store::op_from_namespace_op_with_binding(
+        &rot_env,
+        Some(&rotation),
+        Some((account, cert.device)),
+        rot_id,
+        hlc(2),
+        &[link_id],
+    );
+
+    // Told who signed, the converter names the real account.
+    assert_eq!(
+        rot_op.author(),
+        account,
+        "the op must be attributed to the rotating account, not to a stand-in"
+    );
+    // And the stand-in it would otherwise have used is a different account — so
+    // the assertion below cannot pass by coincidence.
+    assert_ne!(
+        calimero_op_adapter::legacy_account_id(&device_key),
+        account,
+        "precondition: the derived stand-in differs from the real account"
+    );
+    let unattributed =
+        op_from_namespace_op(&rot_env, Some(&rotation), [0xC3; 32], hlc(2), &[link_id]);
+    assert_ne!(
+        unattributed.author(),
+        account,
+        "precondition: without the binding the converter still stands in, which is \
+         what silently dropped every rotation"
+    );
+
+    proj.ingest_op(&rot_op);
+
+    let view = proj
+        .acl_view_at(&ScopeId::from(ns.to_bytes()), &[rot_id])
+        .expect("scope fed");
+    assert_eq!(
+        view.accounts.get(&account).map(|a| a.epoch),
+        Some(1),
+        "the rotation must have been absorbed: the account's epoch should have \
+         advanced to 1. If this is 0 or None, the fold compared the handoff's \
+         real account against the converter's stand-in and dropped the rotation."
+    );
+}

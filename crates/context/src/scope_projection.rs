@@ -1216,13 +1216,23 @@ impl ScopeProjections {
                 // nothing to decrypt and folds as `Noop`.
                 _ => None,
             };
-            ops.push(op_from_namespace_op(
-                &signed,
-                decrypted.as_ref(),
-                delta.id,
-                delta.hlc,
-                &delta.parents,
-            ));
+            // Same resolution the apply path uses, so a backfilled op and a
+            // live-folded one are attributed identically.
+            let signer_binding = calimero_governance_store::signer_binding_for(
+                store,
+                &ContextGroupId::from(namespace_id),
+                &signed.signer,
+            );
+            ops.push(
+                calimero_governance_store::op_from_namespace_op_with_binding(
+                    &signed,
+                    decrypted.as_ref(),
+                    signer_binding,
+                    delta.id,
+                    delta.hlc,
+                    &delta.parents,
+                ),
+            );
         }
         Some(ops)
     }
