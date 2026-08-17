@@ -154,7 +154,7 @@ async fn delete_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .delete_group(GID, DeleteGroupApiRequest { requester: None })
+        .delete_group(GID, DeleteGroupApiRequest {})
         .await
         .unwrap();
 
@@ -245,7 +245,6 @@ async fn add_group_members() {
                     identity: PublicKey::from([0u8; 32]),
                     role: GroupMemberRole::Member,
                 }],
-                requester: None,
             },
         )
         .await
@@ -268,7 +267,6 @@ async fn remove_group_members() {
             GID,
             RemoveGroupMembersApiRequest {
                 members: vec![calimero_primitives::identity::AccountId::from([0u8; 32])],
-                requester: None,
             },
         )
         .await
@@ -294,7 +292,6 @@ async fn update_member_role() {
             IDENT,
             UpdateMemberRoleApiRequest {
                 role: GroupMemberRole::Admin,
-                requester: None,
             },
         )
         .await
@@ -333,11 +330,7 @@ async fn detach_context_from_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     client
-        .detach_context_from_group(
-            GID,
-            CID,
-            DetachContextFromGroupApiRequest { requester: None },
-        )
+        .detach_context_from_group(GID, CID, DetachContextFromGroupApiRequest {})
         .await
         .unwrap();
 }
@@ -383,7 +376,6 @@ async fn reparent_group() {
             GID,
             ReparentGroupApiRequest {
                 new_parent_id: "new-parent-id".to_owned(),
-                requester: None,
             },
         )
         .await
@@ -488,7 +480,7 @@ async fn delete_namespace() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .delete_namespace(GID, DeleteNamespaceApiRequest { requester: None })
+        .delete_namespace(GID, DeleteNamespaceApiRequest {})
         .await
         .unwrap();
     assert!(resp.data.is_deleted);
@@ -522,7 +514,6 @@ async fn create_namespace_invitation() {
         .create_namespace_invitation(
             GID,
             CreateGroupInvitationApiRequest {
-                requester: None,
                 expiration_timestamp: None,
                 recursive: None,
             },
@@ -653,7 +644,6 @@ async fn upgrade_group() {
             GID,
             UpgradeGroupApiRequest {
                 target_application_id: ApplicationId::from([0u8; 32]),
-                requester: None,
                 cascade: false,
                 force_code_only: false,
             },
@@ -746,7 +736,7 @@ async fn retry_group_upgrade() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .retry_group_upgrade(GID, RetryGroupUpgradeApiRequest { requester: None })
+        .retry_group_upgrade(GID, RetryGroupUpgradeApiRequest {})
         .await
         .unwrap();
 
@@ -903,7 +893,7 @@ async fn sync_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .sync_group(GID, SyncGroupApiRequest { requester: None })
+        .sync_group(GID, SyncGroupApiRequest {})
         .await
         .unwrap();
 
@@ -929,10 +919,7 @@ async fn set_member_capabilities() {
         .set_member_capabilities(
             GID,
             IDENT,
-            SetMemberCapabilitiesApiRequest {
-                capabilities: 0,
-                requester: None,
-            },
+            SetMemberCapabilitiesApiRequest { capabilities: 0 },
         )
         .await
         .unwrap();
@@ -978,7 +965,6 @@ async fn set_default_capabilities() {
             GID,
             SetDefaultCapabilitiesApiRequest {
                 default_capabilities: 0,
-                requester: None,
             },
         )
         .await
@@ -1003,7 +989,6 @@ async fn set_subgroup_visibility() {
             GID,
             SetSubgroupVisibilityApiRequest {
                 subgroup_visibility: "open".to_string(),
-                requester: None,
             },
         )
         .await

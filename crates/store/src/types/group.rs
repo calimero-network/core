@@ -179,9 +179,9 @@ impl PredefinedEntry for key::NamespaceBootstrapInviter {
     type DataType<'a> = [u8; 32];
 }
 
-impl PredefinedEntry for key::NamespaceIdentity {
+impl PredefinedEntry for key::NamespaceParticipation {
     type Codec = Borsh;
-    type DataType<'a> = key::NamespaceIdentityValue;
+    type DataType<'a> = key::NamespaceParticipationValue;
 }
 
 impl PredefinedEntry for key::PendingSelfPurge {

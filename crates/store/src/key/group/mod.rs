@@ -18,7 +18,7 @@ use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
 // Group-key prefix allocation ledger. Every byte in `0x20..=0x49` is taken
-// except `0x2B` (retired, below); **the next free byte is `0x4A`**.
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4A`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -34,10 +34,11 @@ const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 /// Node-local fleet-convergence stamp for the group at `GROUP_UPGRADE_PREFIX`.
 pub const GROUP_FLEET_COMPLETION_PREFIX: u8 = 0x48;
-pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
+// 0x25 retired (was GROUP_SIGNING_KEY, a per-group cache of the node's one
+// signing key; the subsystem was deleted, so nothing writes the row).
 // 0x2B retired (was GROUP_CONTEXT_LAST_MIGRATION, pre-v2 migration markers).
 // 0x2C retired (was GROUP_LOCAL_GOV_NONCE, the pre-window single-`u64`
 // applied-nonce high-water mark).
@@ -944,7 +945,7 @@ pub const GROUP_CONTEXT_MEMBER_CAP_PREFIX: u8 = 0x33;
 pub const GROUP_PARENT_REF_PREFIX: u8 = 0x34;
 pub const GROUP_CHILD_INDEX_PREFIX: u8 = 0x35;
 /// Per-namespace (root group) node identity keypair.
-pub const NAMESPACE_IDENTITY_PREFIX: u8 = 0x36;
+pub const NAMESPACE_PARTICIPATION_PREFIX: u8 = 0x36;
 /// Which service from a multi-service bundle a context runs.
 /// Key: `prefix(1) + context_id(32)` → `ContextServiceNameValue`.
 pub const CONTEXT_SERVICE_NAME_PREFIX: u8 = 0x37;
@@ -1440,7 +1441,7 @@ impl Debug for GroupChildIndex {
 // ---------------------------------------------------------------------------
 
 /// Store key marking that this node participates in a namespace (root group).
-/// Key layout: `NAMESPACE_IDENTITY_PREFIX (1 byte) + namespace_id (32 bytes)`.
+/// Key layout: `NAMESPACE_PARTICIPATION_PREFIX (1 byte) + namespace_id (32 bytes)`.
 /// The namespace_id is the root group's ContextGroupId.
 ///
 /// This row used to hold a per-namespace keypair, and enumerating it answered two
@@ -1451,12 +1452,12 @@ impl Debug for GroupChildIndex {
 /// the index it always also was, carrying no key material.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct NamespaceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+pub struct NamespaceParticipation(Key<(GroupPrefix, GroupIdComponent)>);
 
-impl NamespaceIdentity {
+impl NamespaceParticipation {
     #[must_use]
     pub fn new(namespace_id: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from([NAMESPACE_IDENTITY_PREFIX])
+        Self(Key(GenericArray::from([NAMESPACE_PARTICIPATION_PREFIX])
             .concat(GenericArray::from(namespace_id))))
     }
 
@@ -1526,7 +1527,7 @@ impl FromKeyParts for NamespaceBootstrapInviter {
     }
 }
 
-impl AsKeyParts for NamespaceIdentity {
+impl AsKeyParts for NamespaceParticipation {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
@@ -1538,7 +1539,7 @@ impl AsKeyParts for NamespaceIdentity {
     }
 }
 
-impl FromKeyParts for NamespaceIdentity {
+impl FromKeyParts for NamespaceParticipation {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -1546,15 +1547,15 @@ impl FromKeyParts for NamespaceIdentity {
     }
 }
 
-impl Debug for NamespaceIdentity {
+impl Debug for NamespaceParticipation {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NamespaceIdentity")
+        f.debug_struct("NamespaceParticipation")
             .field("namespace_id", &self.namespace_id())
             .finish()
     }
 }
 
-/// Value for [`NamespaceIdentity`]. The Ed25519 keypair this node uses as its
+/// Value for [`NamespaceParticipation`]. The Ed25519 keypair this node uses as its
 /// member identity within the namespace, plus a sender key for encrypted sync.
 ///
 /// Zeroized on drop, for the same reason the two node-local account secrets in
@@ -1564,7 +1565,7 @@ impl Debug for NamespaceIdentity {
 /// secret implicitly on every read, and the wipe only ever reaches the original.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct NamespaceIdentityValue {
+pub struct NamespaceParticipationValue {
     /// Reserved. The row is a set membership marker — its presence is the whole
     /// meaning — but borsh needs a field, and a `u8` leaves room to record
     /// *when* or *how* the node joined without a second key family later.
@@ -2995,7 +2996,7 @@ pub struct GroupKeyValue {
 /// group's ContextGroupId).
 ///
 /// Key layout: `PENDING_SELF_PURGE_PREFIX (1 byte) + namespace_id (32 bytes)`
-/// = 33 bytes — the same shape as [`NamespaceIdentity`]. A `(prefix,
+/// = 33 bytes — the same shape as [`NamespaceParticipation`]. A `(prefix,
 /// namespace_id)` range scan over this column family enumerates every marked
 /// namespace in `namespace_id` order. The value is `()` — presence of the
 /// key IS the marker (like [`GroupDeniedMember`] / [`GroupChildIndex`]).
@@ -3284,7 +3285,6 @@ mod tests {
             GROUP_CONTEXT_INDEX_PREFIX,
             CONTEXT_GROUP_REF_PREFIX,
             GROUP_UPGRADE_PREFIX,
-            GROUP_SIGNING_KEY_PREFIX,
             GROUP_MEMBER_CAPABILITY_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
             GROUP_SUBGROUP_VIS_PREFIX,
@@ -3299,7 +3299,7 @@ mod tests {
             GROUP_CONTEXT_MEMBER_CAP_PREFIX,
             GROUP_PARENT_REF_PREFIX,
             GROUP_CHILD_INDEX_PREFIX,
-            NAMESPACE_IDENTITY_PREFIX,
+            NAMESPACE_PARTICIPATION_PREFIX,
             NAMESPACE_GOV_OP_PREFIX,
             NAMESPACE_GOV_HEAD_PREFIX,
             GROUP_KEY_PREFIX,

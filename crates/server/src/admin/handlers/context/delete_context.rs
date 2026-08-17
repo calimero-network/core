@@ -12,17 +12,14 @@ use reqwest::StatusCode;
 use tower_sessions::Session;
 use tracing::{error, info};
 
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
-    body: Option<Json<DeleteContextApiRequest>>,
+    _body: Option<Json<DeleteContextApiRequest>>,
 ) -> impl IntoResponse {
     let context_id_result = match ContextId::from_str(&context_id) {
         Ok(id) => id,
@@ -36,18 +33,12 @@ pub async fn handler(
         }
     };
 
-    let body_requester = body.and_then(|Json(req)| req.requester);
-    let requester = match resolve_requester(auth_key, body_requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
-
     info!(context_id=%context_id_result, "Deleting context");
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_client
-        .delete_context(&context_id_result, requester)
+        .delete_context(&context_id_result)
         .await
         .map_err(parse_api_error);
 

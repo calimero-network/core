@@ -18,12 +18,11 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         &mut self,
         CreateGroupInvitationRequest {
             group_id,
-            requester,
             expiration_timestamp,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let (requester, node_sk) = match self.resolve_signer(&group_id, requester) {
+        let (signer, node_sk) = match self.resolve_signer(&group_id) {
             Ok(pair) => pair,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -35,11 +34,10 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .load(&group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
-            let requester_account =
-                crate::member_account::require(&datastore, &group_id, &requester)?;
+            let signer_account = crate::member_account::require(&datastore, &group_id, &signer)?;
             MembershipRepository::new(&datastore).require_admin_or_capability(
                 &group_id,
-                &requester_account,
+                &signer_account,
                 MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
                 "create group invitation",
             )?;
@@ -56,7 +54,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let expiration_timestamp: u64 =
                 now_secs + expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
-            let inviter_signer_id = SignerId::from(*requester);
+            let inviter_signer_id = SignerId::from(*signer);
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
@@ -80,7 +78,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             Ok((
                 SignedGroupOpenInvitation {
-                    inviter_account: Some(requester_account),
+                    inviter_account: Some(signer_account),
                     invitation,
                     inviter_signature,
                     // Carry the real application_id so the joiner can

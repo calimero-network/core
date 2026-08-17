@@ -18,14 +18,13 @@ impl Handler<SetMemberAutoFollowRequest> for ContextManager {
             target,
             auto_follow_contexts,
             auto_follow_subgroups,
-            requester,
         }: SetMemberAutoFollowRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Admin-or-self is enforced inside the apply path
         // (`GroupOp::MemberSetAutoFollow`), so don't require admin here —
         // a non-admin self-setter must be allowed through preflight.
-        let preflight = match self.governance_preflight(&group_id, requester, false) {
+        let preflight = match self.governance_preflight(&group_id, false) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

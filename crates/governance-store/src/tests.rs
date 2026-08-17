@@ -4167,12 +4167,8 @@ fn the_device_survives_leaving_one_namespace_and_goes_with_the_last() {
         ContextGroupId::from([0xA1u8; 32]),
         ContextGroupId::from([0xB1u8; 32]),
     );
-    let _ = namespaces
-        .get_or_create_identity_bundle(&a)
-        .expect("provision a");
-    let _ = namespaces
-        .get_or_create_identity_bundle(&b)
-        .expect("provision b");
+    let _ = namespaces.participate_in_bundle(&a).expect("provision a");
+    let _ = namespaces.participate_in_bundle(&b).expect("provision b");
     let device = repo.ensure_enrolled(&a).expect("mint").device();
 
     delete_namespace_local_state(&store, &a).expect("leave the first");
@@ -4194,7 +4190,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::{
         NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue,
-        NamespaceIdentity,
+        NamespaceParticipation,
     };
 
     let store = test_store();
@@ -4257,7 +4253,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     let handle = store.handle();
     assert!(
         handle
-            .get::<NamespaceIdentity>(&NamespaceIdentity::new(ns_bytes))
+            .get::<NamespaceParticipation>(&NamespaceParticipation::new(ns_bytes))
             .unwrap()
             .is_none(),
         "namespace identity should be cleared"
@@ -4284,7 +4280,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     // Other namespace untouched.
     assert!(
         handle
-            .get::<NamespaceIdentity>(&NamespaceIdentity::new(other_ns_bytes))
+            .get::<NamespaceParticipation>(&NamespaceParticipation::new(other_ns_bytes))
             .unwrap()
             .is_some(),
         "other namespace identity must survive"
@@ -4309,7 +4305,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::{
         GroupChildIndex, GroupParentRef, NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp,
-        NamespaceGovOpValue, NamespaceIdentity,
+        NamespaceGovOpValue, NamespaceParticipation,
     };
 
     let store = test_store();
@@ -4440,7 +4436,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     // Namespace-level rows must be gone.
     let handle = store.handle();
     assert!(handle
-        .get::<NamespaceIdentity>(&NamespaceIdentity::new(ns_bytes))
+        .get::<NamespaceParticipation>(&NamespaceParticipation::new(ns_bytes))
         .unwrap()
         .is_none());
     assert!(handle

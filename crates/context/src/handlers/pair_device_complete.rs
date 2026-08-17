@@ -274,7 +274,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 // Closing it needs the device to learn its account's namespace
                 // set — it cannot subscribe to a namespace it has not been told
                 // about, and at pair-init time it has been told about one.
-                let namespaces = NamespaceRepository::new(&store).iter_identities()?;
+                let namespaces = NamespaceRepository::new(&store).participating_namespaces()?;
                 let mut linked_in = Vec::new();
                 let mut key_delivered_everywhere = true;
 

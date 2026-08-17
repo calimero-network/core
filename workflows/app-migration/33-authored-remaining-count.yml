@@ -223,19 +223,16 @@ steps:
     type: delete_context
     node: app-migration-authored-count-1
     context_id: "{{ctx_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete subgroup
     type: delete_group
     node: app-migration-authored-count-1
     group_id: "{{group_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete namespace
     type: delete_namespace
     node: app-migration-authored-count-1
     namespace_id: "{{namespace_id}}"
-    requester: "{{admin_key}}"
 
   - name: Uninstall v1
     type: uninstall_application

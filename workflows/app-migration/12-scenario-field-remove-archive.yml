@@ -334,19 +334,16 @@ steps:
     type: delete_context
     node: app-migration-archive-1
     context_id: "{{ctx_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete subgroup
     type: delete_group
     node: app-migration-archive-1
     group_id: "{{group_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete namespace
     type: delete_namespace
     node: app-migration-archive-1
     namespace_id: "{{namespace_id}}"
-    requester: "{{admin_key}}"
 
   - name: Uninstall v1 on node 1
     type: uninstall_application

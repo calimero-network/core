@@ -24,7 +24,6 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             allowed_rtmr3,
             allowed_tcb_statuses,
             accept_mock,
-            requester,
         }: SetTeeAdmissionPolicyRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -46,7 +45,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         }
 
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
+        let preflight = match self.governance_preflight(&group_id, true) {
             Ok(preflight) => preflight,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

@@ -1,6 +1,5 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use clap::Parser;
 use eyre::{OptionExt, Result};
 
@@ -13,12 +12,6 @@ use crate::output::InfoLine;
 pub struct DeleteCommand {
     #[clap(name = "CONTEXT", help = "The context to delete")]
     pub context: Alias<ContextId>,
-
-    #[clap(
-        long,
-        help = "Identity (public key) of the requester. Required when deleting a group context; must be a group admin."
-    )]
-    pub requester: Option<PublicKey>,
 
     #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
     pub yes: bool,
@@ -43,7 +36,7 @@ impl DeleteCommand {
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let response = client.delete_context(&context_id, self.requester).await?;
+        let response = client.delete_context(&context_id).await?;
 
         environment.output.write(&response);
 

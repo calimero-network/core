@@ -178,7 +178,6 @@ async fn the_admin_announces_once_and_streams_its_own_context_swaps() {
         .upgrade_group(UpgradeGroupRequest {
             group_id: ns,
             target_application_id: app_id_v2(),
-            requester: Some(admin_pk),
             cascade: true,
             force_code_only: false,
         })

@@ -12,13 +12,11 @@ impl Handler<SetDefaultCapabilitiesRequest> for ContextManager {
         SetDefaultCapabilitiesRequest {
             group_id,
             default_capabilities,
-            requester,
         }: SetDefaultCapabilitiesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         self.sign_and_publish_group_op(
             &group_id,
-            requester,
             true,
             GroupOp::DefaultCapabilitiesSet {
                 capabilities: calimero_context_config::MemberCapabilities::from_bits_truncate(

@@ -17,7 +17,6 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
         SetSubgroupVisibilityRequest {
             group_id,
             subgroup_visibility,
-            requester,
         }: SetSubgroupVisibilityRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -40,17 +39,17 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
             }
         }
 
-        // Preflight without the admin gate (resolves the requester + signing
+        // Preflight without the admin gate (resolves the signer + signing
         // key, checks the group exists), then require admin **or**
         // `CAN_MANAGE_VISIBILITY` — re-checked on every peer in
         // `GroupSettingsService::set_subgroup_visibility`.
-        let preflight = match self.governance_preflight(&group_id, requester, false) {
+        let preflight = match self.governance_preflight(&group_id, false) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
         if let Err(err) =
             calimero_governance_store::PermissionChecker::new(&self.datastore, group_id)
-                .require_can_manage_visibility(&preflight.requester)
+                .require_can_manage_visibility(&preflight.signer)
         {
             return ActorResponse::reply(Err(err));
         }

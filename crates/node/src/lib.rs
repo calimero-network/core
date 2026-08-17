@@ -54,6 +54,8 @@ mod crash_recovery_test;
 mod delta_store_batch_test;
 #[cfg(test)]
 mod delta_store_head_hashes_test;
+#[cfg(test)]
+mod delta_store_lock_inversion_test;
 #[cfg(all(test, feature = "mock-attestation"))]
 mod local_governance_node_e2e;
 #[cfg(test)]

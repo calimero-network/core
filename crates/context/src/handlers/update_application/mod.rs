@@ -55,13 +55,13 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             "Handling UpdateApplicationRequest"
         );
 
-        // Authorize the *requester* before touching any state. `update_application`
+        // Authorize the *signer* before touching any state. `update_application`
         // swaps the context's bytecode and can drive a whole-context state
         // migration, so it must be gated to this context's own provisioned
         // identities — the same bar `execute` enforces. Previously the caller
         // `public_key` was threaded straight through to the migration/finalize
         // path and only the new application's signer *continuity* was checked,
-        // never the requester, so any key could drive a migration.
+        // never the signer, so any key could drive a migration.
         if let Err(err) = authorize_update_application(&self.datastore, &context_id, &public_key) {
             // `%public_key` is logged deliberately: this is an operator-facing
             // audit line for a rejected privileged operation (never returned to

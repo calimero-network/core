@@ -79,7 +79,7 @@ pub(crate) struct GovernanceHandlerDeliveryLabels {
 /// `class` is the failure class:
 ///   - `"group_rows"`: the security-critical `delete_group_local_rows`
 ///     step failed, so the group's encryption keys may linger on disk.
-///     This is the load-bearing failure — it keeps the `NamespaceIdentity`
+///     This is the load-bearing failure — it keeps the `NamespaceParticipation`
 ///     anchor + gossipsub subscription alive for the planned reconcile
 ///     sweep (#2721).
 ///   - `"context_cleanup"`: a best-effort dead-pointer cleanup step

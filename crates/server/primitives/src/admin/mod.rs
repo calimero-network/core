@@ -300,11 +300,7 @@ impl CreateContextResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteContextApiRequest {
-    /// Identity of the caller. Required when deleting a group-attached context;
-    /// the caller must be a group admin.
-    pub requester: Option<PublicKey>,
-}
+pub struct DeleteContextApiRequest {}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1235,10 +1231,7 @@ pub struct CreateNamespaceApiResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteNamespaceApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
+pub struct DeleteNamespaceApiRequest {}
 
 impl Validate for DeleteNamespaceApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
@@ -1260,10 +1253,7 @@ pub struct DeleteNamespaceApiResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteGroupApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
+pub struct DeleteGroupApiRequest {}
 
 impl Validate for DeleteGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
@@ -1321,8 +1311,6 @@ pub struct GroupInfoApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct AddGroupMembersApiRequest {
     pub members: Vec<GroupMemberApiInput>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for AddGroupMembersApiRequest {
@@ -1374,8 +1362,6 @@ pub struct RemoveGroupMembersApiRequest {
     /// The members to remove, named by ACCOUNT — the principal the membership
     /// rows are keyed by. `GET .../members` returns these same ids.
     pub members: Vec<AccountId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for RemoveGroupMembersApiRequest {
@@ -1437,8 +1423,6 @@ pub struct ListGroupContextsQuery {
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeGroupApiRequest {
     pub target_application_id: ApplicationId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
     /// When `true`, emit one atomic `GroupOp::CascadeUpgrade` fanning out to
     /// every descendant subgroup whose `app_key` matches the signed group's;
     /// when `false` (default), stay on the single-group path.
@@ -1660,10 +1644,7 @@ pub struct GroupUpgradeStatusApiData {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RetryGroupUpgradeApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
+pub struct RetryGroupUpgradeApiRequest {}
 
 impl Validate for RetryGroupUpgradeApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
@@ -2002,8 +1983,6 @@ pub struct RevokeDeviceApiResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
     /// Duration in seconds for the invitation validity.
     /// Defaults to 1 year when not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2059,8 +2038,6 @@ pub struct CreateRecursiveInvitationApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ReparentGroupApiRequest {
     pub new_parent_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for ReparentGroupApiRequest {
@@ -2169,8 +2146,6 @@ pub struct RemoveGroupMembersApiResponse {}
 #[serde(rename_all = "camelCase")]
 pub struct UpdateMemberRoleApiRequest {
     pub role: GroupMemberRole,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for UpdateMemberRoleApiRequest {
@@ -2193,10 +2168,7 @@ pub struct DetachContextFromGroupApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DetachContextFromGroupApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
+pub struct DetachContextFromGroupApiRequest {}
 
 impl Validate for DetachContextFromGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
@@ -2208,10 +2180,7 @@ impl Validate for DetachContextFromGroupApiRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SyncGroupApiRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
-}
+pub struct SyncGroupApiRequest {}
 
 impl Validate for SyncGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
@@ -2478,8 +2447,6 @@ pub struct GetContextGroupApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SetMemberCapabilitiesApiRequest {
     pub capabilities: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for SetMemberCapabilitiesApiRequest {
@@ -2498,8 +2465,6 @@ pub struct SetMemberAutoFollowApiRequest {
     pub auto_follow_contexts: bool,
     /// When true, the target self-admits into subgroups nested under this group.
     pub auto_follow_subgroups: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for SetMemberAutoFollowApiRequest {
@@ -2522,8 +2487,6 @@ pub struct SetMetadataApiRequest {
     /// Replacement opaque `data` map; stored verbatim by core.
     #[serde(default)]
     pub data: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for SetMetadataApiRequest {
@@ -2576,8 +2539,6 @@ pub struct GetMemberCapabilitiesApiData {
 #[serde(rename_all = "camelCase")]
 pub struct SetDefaultCapabilitiesApiRequest {
     pub default_capabilities: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for SetDefaultCapabilitiesApiRequest {
@@ -2606,8 +2567,6 @@ pub struct SetTeeAdmissionPolicyApiRequest {
     pub allowed_tcb_statuses: Vec<String>,
     #[serde(default)]
     pub accept_mock: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for SetTeeAdmissionPolicyApiRequest {
@@ -2658,8 +2617,6 @@ impl GetTeeAdmissionPolicyApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SetSubgroupVisibilityApiRequest {
     pub subgroup_visibility: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
 }
 
 impl Validate for SetSubgroupVisibilityApiRequest {

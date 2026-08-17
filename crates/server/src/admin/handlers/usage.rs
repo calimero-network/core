@@ -14,7 +14,7 @@ use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceR
 use calimero_server_primitives::admin::{NamespaceUsage, NamespaceUsageBytes, UsageResponse};
 use calimero_store::db::Column;
 use calimero_store::key::{
-    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX,
+    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_PARTICIPATION_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -174,14 +174,14 @@ fn probe(store: &Store, col: Column, start: &[u8], end: &[u8]) -> u64 {
 }
 
 /// Sum Group-column bytes belonging to a namespace. Three key families
-/// already use `namespace_id` as their prefix (`NamespaceIdentity` 0x36,
+/// already use `namespace_id` as their prefix (`NamespaceParticipation` 0x36,
 /// `NamespaceGovOp` 0x38, `NamespaceGovHead` 0x39), so one range probe per
 /// prefix is enough. Other Group-column keys are per-group (not
 /// per-namespace); attributing them would require iterating child groups
 /// and is out of scope for the estimate.
 fn governance_bytes(store: &Store, namespace_id: &[u8; 32]) -> u64 {
     let prefixes = [
-        NAMESPACE_IDENTITY_PREFIX,
+        NAMESPACE_PARTICIPATION_PREFIX,
         NAMESPACE_GOV_OP_PREFIX,
         NAMESPACE_GOV_HEAD_PREFIX,
     ];
