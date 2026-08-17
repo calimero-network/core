@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x47` is taken
-// except `0x2B` (retired, below); **the next free byte is `0x48`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4A` is taken
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4B`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -32,10 +32,13 @@ pub const GROUP_MEMBER_PREFIX: u8 = 0x21;
 pub const GROUP_CONTEXT_INDEX_PREFIX: u8 = 0x22;
 const CONTEXT_GROUP_REF_PREFIX: u8 = 0x23;
 pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
-pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
+/// Node-local fleet-convergence stamp for the group at `GROUP_UPGRADE_PREFIX`.
+pub const GROUP_FLEET_COMPLETION_PREFIX: u8 = 0x4A;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
+// 0x25 retired (was GROUP_SIGNING_KEY, a per-group cache of the node's one
+// signing key; the subsystem was deleted, so nothing writes the row).
 // 0x2B retired (was GROUP_CONTEXT_LAST_MIGRATION, pre-v2 migration markers).
 // 0x2C retired (was GROUP_LOCAL_GOV_NONCE, the pre-window single-`u64`
 // applied-nonce high-water mark).
@@ -397,6 +400,60 @@ impl Debug for GroupUpgradeKey {
     }
 }
 
+/// Unix timestamp when this node watched the whole cohort converge on the
+/// group's [`GroupUpgradeValue::to_state_version`].
+/// Key: `prefix(1) + group_id(32)` -> `u64`.
+///
+/// Node-local, and kept out of [`GroupUpgradeValue`] so that recording it can
+/// never change that record's stored layout: this observation is written on an
+/// observability path, long after the governance ops that write the record.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupFleetCompletion(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl GroupFleetCompletion {
+    #[must_use]
+    pub fn new(group_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_FLEET_COMPLETION_PREFIX])
+            .concat(GenericArray::from(group_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupFleetCompletion {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupFleetCompletion {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupFleetCompletion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupFleetCompletion")
+            .field("group_id", &self.group_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupUpgradeLadder(Key<(GroupPrefix, GroupIdComponent)>);
@@ -443,69 +500,6 @@ impl Debug for GroupUpgradeLadder {
             .field("group_id", &self.group_id())
             .finish()
     }
-}
-
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupSigningKey(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
-
-impl GroupSigningKey {
-    #[must_use]
-    pub fn new(group_id: [u8; 32], public_key: PrimitivePublicKey) -> Self {
-        Self(Key(GenericArray::from([GROUP_SIGNING_KEY_PREFIX])
-            .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(*public_key))))
-    }
-
-    #[must_use]
-    pub fn group_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
-        id
-    }
-
-    #[must_use]
-    pub fn public_key(&self) -> PrimitivePublicKey {
-        let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
-        pk.into()
-    }
-}
-
-impl AsKeyParts for GroupSigningKey {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
-
-    fn column() -> Column {
-        Column::Group
-    }
-
-    fn as_key(&self) -> &Key<Self::Components> {
-        &self.0
-    }
-}
-
-impl FromKeyParts for GroupSigningKey {
-    type Error = Infallible;
-
-    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
-        Ok(Self(parts))
-    }
-}
-
-impl Debug for GroupSigningKey {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupSigningKey")
-            .field("group_id", &self.group_id())
-            .field("public_key", &self.public_key())
-            .finish()
-    }
-}
-
-/// Stored against [`GroupSigningKey`]. Holds the private key for a group member.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupSigningKeyValue {
-    pub private_key: [u8; 32],
 }
 
 // ---------------------------------------------------------------------------
@@ -951,7 +945,7 @@ pub const GROUP_CONTEXT_MEMBER_CAP_PREFIX: u8 = 0x33;
 pub const GROUP_PARENT_REF_PREFIX: u8 = 0x34;
 pub const GROUP_CHILD_INDEX_PREFIX: u8 = 0x35;
 /// Per-namespace (root group) node identity keypair.
-pub const NAMESPACE_IDENTITY_PREFIX: u8 = 0x36;
+pub const NAMESPACE_PARTICIPATION_PREFIX: u8 = 0x36;
 /// Which service from a multi-service bundle a context runs.
 /// Key: `prefix(1) + context_id(32)` → `ContextServiceNameValue`.
 pub const CONTEXT_SERVICE_NAME_PREFIX: u8 = 0x37;
@@ -1329,6 +1323,8 @@ pub enum GroupUpgradeStatus {
     Completed {
         /// Unix timestamp when the last context was upgraded, or `None` when
         /// each context self-migrates independently without coordination.
+        /// NODE-LOCAL: it says nothing about the rest of the cohort, which
+        /// [`GroupFleetCompletion`] answers.
         completed_at: Option<u64>,
     },
 }
@@ -1441,20 +1437,27 @@ impl Debug for GroupChildIndex {
 }
 
 // ---------------------------------------------------------------------------
-// Namespace identity: per-root-group keypair for this node
+// Namespace participation: which namespaces this node takes part in
 // ---------------------------------------------------------------------------
 
-/// Store key for the node's identity within a namespace (root group).
-/// Key layout: `NAMESPACE_IDENTITY_PREFIX (1 byte) + namespace_id (32 bytes)`.
+/// Store key marking that this node participates in a namespace (root group).
+/// Key layout: `NAMESPACE_PARTICIPATION_PREFIX (1 byte) + namespace_id (32 bytes)`.
 /// The namespace_id is the root group's ContextGroupId.
+///
+/// This row used to hold a per-namespace keypair, and enumerating it answered two
+/// questions at once: what do I sign with here, and which namespaces am I in. The
+/// signing key is now node-level ([`NodeIdentity`]), but the second question is
+/// still real — `join_context` syncs exactly the namespaces this node takes part
+/// in, and the startup buffered-op sweep walks the same set — so the row stays as
+/// the index it always also was, carrying no key material.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct NamespaceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+pub struct NamespaceParticipation(Key<(GroupPrefix, GroupIdComponent)>);
 
-impl NamespaceIdentity {
+impl NamespaceParticipation {
     #[must_use]
     pub fn new(namespace_id: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from([NAMESPACE_IDENTITY_PREFIX])
+        Self(Key(GenericArray::from([NAMESPACE_PARTICIPATION_PREFIX])
             .concat(GenericArray::from(namespace_id))))
     }
 
@@ -1524,7 +1527,7 @@ impl FromKeyParts for NamespaceBootstrapInviter {
     }
 }
 
-impl AsKeyParts for NamespaceIdentity {
+impl AsKeyParts for NamespaceParticipation {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
@@ -1536,7 +1539,7 @@ impl AsKeyParts for NamespaceIdentity {
     }
 }
 
-impl FromKeyParts for NamespaceIdentity {
+impl FromKeyParts for NamespaceParticipation {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -1544,15 +1547,15 @@ impl FromKeyParts for NamespaceIdentity {
     }
 }
 
-impl Debug for NamespaceIdentity {
+impl Debug for NamespaceParticipation {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NamespaceIdentity")
+        f.debug_struct("NamespaceParticipation")
             .field("namespace_id", &self.namespace_id())
             .finish()
     }
 }
 
-/// Value for [`NamespaceIdentity`]. The Ed25519 keypair this node uses as its
+/// Value for [`NamespaceParticipation`]. The Ed25519 keypair this node uses as its
 /// member identity within the namespace, plus a sender key for encrypted sync.
 ///
 /// Zeroized on drop, for the same reason the two node-local account secrets in
@@ -1560,26 +1563,13 @@ impl Debug for NamespaceIdentity {
 /// freed heap for whatever reads that page next — a core dump, a swap file, or the
 /// next allocation. `Copy` is therefore also off the table: it would duplicate the
 /// secret implicitly on every read, and the wipe only ever reaches the original.
-#[derive(Clone, ZeroizeOnDrop)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct NamespaceIdentityValue {
-    pub public_key: [u8; 32],
-    pub private_key: [u8; 32],
-    pub sender_key: [u8; 32],
-}
-
-/// Redacted by hand, never derived. `private_key` is this node's namespace
-/// member identity — the key it signs every governance op and state delta with.
-/// A derived `Debug` puts it one `tracing` field or one error context away from a
-/// log file.
-impl Debug for NamespaceIdentityValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NamespaceIdentityValue")
-            .field("public_key", &self.public_key)
-            .field("private_key", &"[redacted]")
-            .field("sender_key", &"[redacted]")
-            .finish()
-    }
+pub struct NamespaceParticipationValue {
+    /// Reserved. The row is a set membership marker — its presence is the whole
+    /// meaning — but borsh needs a field, and a `u8` leaves room to record
+    /// *when* or *how* the node joined without a second key family later.
+    pub reserved: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,12 +1824,87 @@ pub const GROUP_REVOKED_DEVICE_PREFIX: u8 = 0x42;
 /// Per-account current root key (see [`GroupAccountKey`]).
 pub const GROUP_ACCOUNT_KEY_PREFIX: u8 = 0x43;
 
-/// This node's own device identity for a namespace (see
-/// [`NodeDeviceIdentity`]).
+/// This node's own device identity (see [`NodeDeviceIdentity`]) — one per node,
+/// not one per namespace.
 pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
+
+/// This node's signing identity (see [`NodeIdentity`]).
+pub const NODE_IDENTITY_PREFIX: u8 = 0x48;
+
+/// This node's signing identity — a **singleton**, keyed by nothing but its own
+/// prefix (see [`NODE_IDENTITY_PREFIX`]).
+///
+/// Node-level rather than per-namespace. The key a node signs with is recorded as
+/// its device's `sign_pk`, and a device is one installation, not one installation
+/// per scope — so a key that varied by namespace would be a certificate claiming a
+/// key that only sometimes signs. It also bought nothing: a per-namespace key is
+/// published in every namespace's device binding, so it correlates a person across
+/// namespaces exactly as a shared one does.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeIdentity(Key<(GroupPrefix,)>);
+
+impl NodeIdentity {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_IDENTITY_PREFIX])))
+    }
+}
+
+impl Default for NodeIdentity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeIdentity {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeIdentity {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NodeIdentity").finish()
+    }
+}
+
+/// The keypair behind [`NodeIdentity`].
+#[derive(Clone, ZeroizeOnDrop)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeIdentityValue {
+    pub public_key: [u8; 32],
+    pub private_key: [u8; 32],
+}
+
+/// Redacted by hand, never derived. `private_key` is what this node signs every
+/// governance op and state delta with; a derived `Debug` puts it one `tracing`
+/// field or one error context away from a log file.
+impl Debug for NodeIdentityValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeIdentityValue")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[redacted]")
+            .finish()
+    }
+}
 
 /// A member key that has endorsed an account into a group (see
 /// [`GroupAccountEndorser`]).
@@ -2368,39 +2433,33 @@ impl FromKeyParts for GroupAccountEndorser {
     }
 }
 
-/// This node's own device identity within one namespace (see
-/// [`NODE_DEVICE_IDENTITY_PREFIX`]). Key layout `prefix(1) + namespace_id(32)`
-/// = 33 bytes; one row per namespace, because a node is a distinct replica in
-/// each namespace it participates in and must not reuse one KEM secret across
-/// them.
+/// This node's device — a **singleton**, keyed by nothing but its own prefix
+/// (see [`NODE_DEVICE_IDENTITY_PREFIX`]).
 ///
-/// Deliberately a row family of its own rather than two more fields on
-/// `ContextIdentity`. That struct is `#[expect(clippy::exhaustive_structs)]`
-/// with construction sites all over the node, so widening it would touch every
-/// one of them — and a device secret has a different lifetime anyway: it is
-/// minted once when the device enrolls, never rotated in place, and deleted
-/// when the namespace is purged.
+/// Node-level rather than per-namespace, because a device is one installation.
+/// A row per namespace made one laptop into five devices, each with its own
+/// replica id and agreement key, for a distinction nothing downstream wanted:
+/// the certificate binds one device to one signing key, and that key is
+/// node-level too.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct NodeDeviceIdentity(Key<(GroupPrefix, GroupIdComponent)>);
+pub struct NodeDeviceIdentity(Key<(GroupPrefix,)>);
 
 impl NodeDeviceIdentity {
     #[must_use]
-    pub fn new(namespace_id: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from([NODE_DEVICE_IDENTITY_PREFIX])
-            .concat(GenericArray::from(namespace_id))))
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_IDENTITY_PREFIX])))
     }
+}
 
-    #[must_use]
-    pub fn namespace_id(&self) -> [u8; 32] {
-        let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
-        id
+impl Default for NodeDeviceIdentity {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl AsKeyParts for NodeDeviceIdentity {
-    type Components = (GroupPrefix, GroupIdComponent);
+    type Components = (GroupPrefix,);
 
     fn column() -> Column {
         Column::Group
@@ -2421,20 +2480,16 @@ impl FromKeyParts for NodeDeviceIdentity {
 
 impl Debug for NodeDeviceIdentity {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NodeDeviceIdentity")
-            .field("namespace_id", &self.namespace_id())
-            .finish()
+        f.debug_tuple("NodeDeviceIdentity").finish()
     }
 }
 
 /// This node's account root secret — a **singleton**, keyed by nothing but its
 /// own prefix (see [`NODE_ACCOUNT_ROOT_PREFIX`]).
 ///
-/// Node-level rather than per-namespace, which is the whole point: it is the one
-/// key that survives losing every device, so it is what certifies a replacement.
-/// Per-namespace account ids are still distinct, because the nonce is derived per
-/// namespace from this secret rather than shared — see
-/// `calimero_account::derive_account_nonce`.
+/// Node-level, which is the whole point: it is the one key that survives losing
+/// every device, so it is what certifies a replacement. It is also what the
+/// account id is derived from, so one root means one account wherever it speaks.
 ///
 /// A one-byte key rather than a sentinel id, so the singleton-ness is in the type
 /// and there is no "which id means the real one" question for a later reader.
@@ -2524,19 +2579,10 @@ impl Debug for NodeAccountRootValue {
 pub struct NodeDeviceIdentityValue {
     /// Epoch-0 root key of the account this node's device belongs to.
     ///
-    /// Stored rather than assumed to be this node's own namespace identity: a
-    /// paired device adopts an account rooted at ANOTHER node's key, so a row that
-    /// only held the nonce could not reconstruct the genesis without being told
-    /// whose account it was — which the reader does not know.
+    /// Stored rather than assumed to be this node's own root: a paired device
+    /// adopts an account rooted at ANOTHER node's key, so the row has to name
+    /// whose account it is — the reader cannot derive it.
     pub account_root_pk: [u8; 32],
-    /// Nonce of the `AccountGenesis` this node's device belongs to.
-    ///
-    /// The nonce rather than the `AccountId`, because the id is a one-way hash
-    /// and the *genesis* is what a device link has to put on the wire. Pairing a
-    /// second device means publishing another link naming the same account, so
-    /// the genesis must be reconstructible — and it is, from this nonce plus the
-    /// account root key above.
-    pub account_nonce: [u8; 16],
     /// The `DeviceId` this node speaks as in the namespace.
     pub device_id: [u8; 32],
     /// X25519 secret matching the certificate's `kem_pk`.
@@ -2852,6 +2898,84 @@ impl Debug for GroupPendingKeyRotation {
     }
 }
 
+pub const GROUP_PENDING_DEVICE_ROTATION_PREFIX: u8 = 0x49;
+
+/// A rotation this group owes because a DEVICE was revoked without one.
+///
+/// The sibling of [`GroupPendingKeyRotation`], and deliberately a separate row
+/// rather than a reuse of it, because the two discharge differently. A departure
+/// rotates *excluding the departed account*; a device revocation rotates
+/// **excluding nobody by name** — the revoked device is already gone from the
+/// recipient list, since that list is built from live bindings, and the account
+/// it belonged to keeps every other device it holds. Keying both by
+/// `(group_id, 32 bytes)` and telling them apart by prefix is what stops a
+/// discharge for one being mistaken for the other and cutting off a member who
+/// never left.
+///
+/// The value is `()` — presence of the key IS the marker.
+///
+/// Key layout: `prefix(1) + group_id(32) + device(32)` = 65 bytes, matching
+/// [`GroupPendingKeyRotation`], so a `(group_id, *)` prefix scan enumerates what
+/// one group owes and a full-prefix scan drains the node's whole backlog at
+/// startup.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupPendingDeviceRotation(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupPendingDeviceRotation {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], device: DeviceId) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*device.as_bytes()))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn device(&self) -> DeviceId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        DeviceId::from(id)
+    }
+}
+
+impl AsKeyParts for GroupPendingDeviceRotation {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupPendingDeviceRotation {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupPendingDeviceRotation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupPendingDeviceRotation")
+            .field("group_id", &self.group_id())
+            .field("device", &self.device())
+            .finish()
+    }
+}
+
 /// Value for [`GroupKeyEntry`]. The raw 32-byte AES-256 group key plus its
 /// ordering metadata.
 ///
@@ -2947,7 +3071,7 @@ impl BorshDeserialize for GroupKeyValue {
 /// group's ContextGroupId).
 ///
 /// Key layout: `PENDING_SELF_PURGE_PREFIX (1 byte) + namespace_id (32 bytes)`
-/// = 33 bytes — the same shape as [`NamespaceIdentity`]. A `(prefix,
+/// = 33 bytes — the same shape as [`NamespaceParticipation`]. A `(prefix,
 /// namespace_id)` range scan over this column family enumerates every marked
 /// namespace in `namespace_id` order. The value is `()` — presence of the
 /// key IS the marker (like [`GroupDeniedMember`] / [`GroupChildIndex`]).
@@ -2955,7 +3079,7 @@ impl BorshDeserialize for GroupKeyValue {
 /// Presence means: this node was confirmed TEE-self-evicted from the
 /// namespace and its local-state cascade purge has not yet fully completed.
 /// Written before the cascade runs (so a crash mid-cascade is covered) and
-/// cleared only once the signing-key purge fully succeeds. The startup
+/// cleared only once the row purge fully succeeds. The startup
 /// reconcile sweep enumerates these markers and completes ONLY the
 /// namespaces still flagged AND still-evicted — see the `self_purge` module
 /// in `calimero-context` (#2721).
@@ -3208,6 +3332,18 @@ mod tests {
     }
 
     #[test]
+    fn group_fleet_completion_key_roundtrip() {
+        let gid = [0x44; 32];
+        let key = GroupFleetCompletion::new(gid);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_FLEET_COMPLETION_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+        // Same width and the same id bytes as the upgrade row it stamps, so the
+        // prefix is the only thing keeping a prefix-bounded scan off it.
+        assert_ne!(GROUP_FLEET_COMPLETION_PREFIX, GROUP_UPGRADE_PREFIX);
+    }
+
+    #[test]
     fn group_upgrade_ladder_key_roundtrip() {
         let gid = [0x47; 32];
         let key = GroupUpgradeLadder::new(gid);
@@ -3216,54 +3352,76 @@ mod tests {
         assert_eq!(key.as_key().as_bytes().len(), 33);
     }
 
-    #[test]
-    fn group_signing_key_roundtrip() {
-        let gid = [0x55; 32];
-        let pk = PrimitivePublicKey::from([0x66; 32]);
-        let key = GroupSigningKey::new(gid, pk);
-        assert_eq!(key.group_id(), gid);
-        assert_eq!(key.public_key(), pk);
-        assert_eq!(key.as_key().as_bytes()[0], GROUP_SIGNING_KEY_PREFIX);
-        assert_eq!(key.as_key().as_bytes().len(), 65);
-    }
-
+    /// Every prefix in this column, not a subset: the families are keyed only by
+    /// this byte and several are byte-identical in length, so a partial list
+    /// leaves real collisions uncaught. Re-derive with `grep 'u8 = 0x'` on this
+    /// file when adding one.
     #[test]
     fn distinct_prefixes() {
         let prefixes = [
-            GROUP_META_PREFIX,
-            GROUP_MEMBER_PREFIX,
-            GROUP_CONTEXT_INDEX_PREFIX,
-            CONTEXT_GROUP_REF_PREFIX,
-            GROUP_UPGRADE_PREFIX,
-            GROUP_SIGNING_KEY_PREFIX,
-            GROUP_MEMBER_CAPABILITY_PREFIX,
-            GROUP_DEFAULT_CAPS_PREFIX,
-            GROUP_SUBGROUP_VIS_PREFIX,
-            GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
-            GROUP_UPGRADE_LADDER_PREFIX,
-            GROUP_MEMBER_METADATA_PREFIX,
-            GROUP_METADATA_PREFIX,
-            GROUP_CONTEXT_METADATA_PREFIX,
-            GROUP_OP_LOG_PREFIX,
-            GROUP_OP_HEAD_PREFIX,
-            GROUP_MEMBER_CONTEXT_PREFIX,
-            GROUP_CONTEXT_MEMBER_CAP_PREFIX,
-            GROUP_PARENT_REF_PREFIX,
-            GROUP_CHILD_INDEX_PREFIX,
-            NAMESPACE_IDENTITY_PREFIX,
-            NAMESPACE_GOV_OP_PREFIX,
-            NAMESPACE_GOV_HEAD_PREFIX,
-            GROUP_KEY_PREFIX,
-            GROUP_DENIED_MEMBER_PREFIX,
-            GROUP_PENDING_KEY_ROTATION_PREFIX,
-            PENDING_SELF_PURGE_PREFIX,
+            ("GROUP_META", GROUP_META_PREFIX),
+            ("GROUP_MEMBER", GROUP_MEMBER_PREFIX),
+            ("GROUP_CONTEXT_INDEX", GROUP_CONTEXT_INDEX_PREFIX),
+            ("CONTEXT_GROUP_REF", CONTEXT_GROUP_REF_PREFIX),
+            ("GROUP_UPGRADE", GROUP_UPGRADE_PREFIX),
+            ("GROUP_MEMBER_CAPABILITY", GROUP_MEMBER_CAPABILITY_PREFIX),
+            ("GROUP_REENTRY_BLOCK", GROUP_REENTRY_BLOCK_PREFIX),
+            (
+                "GROUP_CONSUMED_INVITATION",
+                GROUP_CONSUMED_INVITATION_PREFIX,
+            ),
+            ("GROUP_DEFAULT_CAPS", GROUP_DEFAULT_CAPS_PREFIX),
+            ("GROUP_SUBGROUP_VIS", GROUP_SUBGROUP_VIS_PREFIX),
+            ("GROUP_MEMBER_METADATA", GROUP_MEMBER_METADATA_PREFIX),
+            ("GROUP_METADATA", GROUP_METADATA_PREFIX),
+            ("GROUP_CONTEXT_METADATA", GROUP_CONTEXT_METADATA_PREFIX),
+            ("GROUP_OP_LOG", GROUP_OP_LOG_PREFIX),
+            ("GROUP_OP_HEAD", GROUP_OP_HEAD_PREFIX),
+            ("GROUP_MEMBER_CONTEXT", GROUP_MEMBER_CONTEXT_PREFIX),
+            ("GROUP_CONTEXT_MEMBER_CAP", GROUP_CONTEXT_MEMBER_CAP_PREFIX),
+            ("GROUP_PARENT_REF", GROUP_PARENT_REF_PREFIX),
+            ("GROUP_CHILD_INDEX", GROUP_CHILD_INDEX_PREFIX),
+            ("NAMESPACE_PARTICIPATION", NAMESPACE_PARTICIPATION_PREFIX),
+            ("CONTEXT_SERVICE_NAME", CONTEXT_SERVICE_NAME_PREFIX),
+            ("NAMESPACE_GOV_OP", NAMESPACE_GOV_OP_PREFIX),
+            ("NAMESPACE_GOV_HEAD", NAMESPACE_GOV_HEAD_PREFIX),
+            ("GROUP_KEY", GROUP_KEY_PREFIX),
+            ("GROUP_DENIED_MEMBER", GROUP_DENIED_MEMBER_PREFIX),
+            (
+                "GROUP_LOCAL_GOV_NONCE_WINDOW",
+                GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
+            ),
+            ("PENDING_SELF_PURGE", PENDING_SELF_PURGE_PREFIX),
+            ("GROUP_UPGRADE_LADDER", GROUP_UPGRADE_LADDER_PREFIX),
+            (
+                "GROUP_PENDING_KEY_ROTATION",
+                GROUP_PENDING_KEY_ROTATION_PREFIX,
+            ),
+            (
+                "GROUP_INHERITED_DENIED_MEMBER",
+                GROUP_INHERITED_DENIED_MEMBER_PREFIX,
+            ),
+            ("GROUP_DEVICE_BINDING", GROUP_DEVICE_BINDING_PREFIX),
+            ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
+            ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
+            ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
+            ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
+            ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
+            (
+                "NAMESPACE_BOOTSTRAP_INVITER",
+                NAMESPACE_BOOTSTRAP_INVITER_PREFIX,
+            ),
+            ("GROUP_FLEET_COMPLETION", GROUP_FLEET_COMPLETION_PREFIX),
+            ("NODE_IDENTITY", NODE_IDENTITY_PREFIX),
+            (
+                "GROUP_PENDING_DEVICE_ROTATION",
+                GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+            ),
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
-                assert_ne!(
-                    prefixes[i], prefixes[j],
-                    "prefix collision at indices {i} and {j}"
-                );
+                let ((a, x), (b, y)) = (prefixes[i], prefixes[j]);
+                assert_ne!(x, y, "{a} and {b} share prefix {x:#04X}");
             }
         }
     }
@@ -3620,6 +3778,48 @@ mod cascade_hlc_borsh_tests {
         let err = GroupUpgradeValue::try_from_slice(&bytes)
             .expect_err("expected Err for truncated to_state_version");
         assert_eq!(err.kind(), borsh::io::ErrorKind::InvalidData);
+    }
+
+    /// The `Completed` layout a shipped binary writes, byte for byte, decoded by
+    /// this one. `status` is not the last field, so a field added inside the
+    /// variant shifts `cascade_hlc`, `cascade_seq` and `to_state_version` and
+    /// every stored record on every already-migrated namespace stops decoding.
+    /// Node-local additions go in their own key ([`GroupFleetCompletion`]) so
+    /// this stays true.
+    #[test]
+    fn the_completed_layout_a_shipped_binary_writes_still_decodes() {
+        let mut bytes = Vec::new();
+        "1.0.0".to_owned().serialize(&mut bytes).unwrap();
+        "2.0.0".to_owned().serialize(&mut bytes).unwrap();
+        None::<Vec<u8>>.serialize(&mut bytes).unwrap();
+        1_700_000_000u64.serialize(&mut bytes).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut bytes)
+            .unwrap();
+        // `Completed`: variant tag, then `completed_at` and nothing else.
+        bytes.push(1u8);
+        Some(1_700_001_000u64).serialize(&mut bytes).unwrap();
+        None::<HybridTimestamp>.serialize(&mut bytes).unwrap();
+        None::<u64>.serialize(&mut bytes).unwrap();
+        2u32.serialize(&mut bytes).unwrap();
+
+        let decoded = GroupUpgradeValue::try_from_slice(&bytes)
+            .expect("a stored Completed record must decode");
+        match decoded.status {
+            GroupUpgradeStatus::Completed { completed_at } => {
+                assert_eq!(completed_at, Some(1_700_001_000));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        // The trailing fields read their own bytes, not shifted ones.
+        assert_eq!(decoded.cascade_hlc, None);
+        assert_eq!(decoded.cascade_seq, None);
+        assert_eq!(decoded.to_state_version, 2);
+        assert_eq!(
+            to_vec(&decoded).unwrap(),
+            bytes,
+            "this binary must write back the same bytes it read"
+        );
     }
 }
 

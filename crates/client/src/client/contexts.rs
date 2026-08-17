@@ -1,13 +1,11 @@
 //! Context and identity API operations for the Calimero client.
 
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
-    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
-    GetContextStorageResponse, GetContextsResponse, ResyncContextApiRequest,
-    ResyncContextApiResponse, SyncContextResponse, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
+    GetContextsResponse, ResyncContextApiRequest, ResyncContextApiResponse, SyncContextResponse,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use eyre::Result;
 
@@ -55,16 +53,12 @@ where
         Ok(response)
     }
 
-    pub async fn delete_context(
-        &self,
-        context_id: &ContextId,
-        requester: Option<PublicKey>,
-    ) -> Result<DeleteContextResponse> {
+    pub async fn delete_context(&self, context_id: &ContextId) -> Result<DeleteContextResponse> {
         let response = self
             .connection
             .delete_with_body(
                 &format!("admin-api/contexts/{context_id}"),
-                DeleteContextApiRequest { requester },
+                DeleteContextApiRequest {},
             )
             .await?;
         Ok(response)
@@ -93,17 +87,6 @@ where
         };
 
         let response = self.connection.get(&endpoint).await?;
-        Ok(response)
-    }
-
-    pub async fn get_context_client_keys(
-        &self,
-        context_id: &ContextId,
-    ) -> Result<GetContextClientKeysResponse> {
-        let response = self
-            .connection
-            .get(&format!("admin-api/contexts/{context_id}/client-keys"))
-            .await?;
         Ok(response)
     }
 

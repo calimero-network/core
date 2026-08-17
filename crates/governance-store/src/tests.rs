@@ -1,7 +1,6 @@
 use super::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    MetadataRepository, NamespaceRepository, SigningKeysRepository, UpgradeLadderRepository,
-    UpgradesRepository,
+    MetadataRepository, NamespaceRepository, UpgradeLadderRepository, UpgradesRepository,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -1806,86 +1805,6 @@ fn cross_node_state_hash_is_order_independent() {
 // Signing key tests
 // -----------------------------------------------------------------------
 
-#[test]
-fn store_and_get_signing_key() {
-    let store = test_store();
-    let gid = test_group_id();
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xAA; 32];
-
-    assert!(SigningKeysRepository::new(&store)
-        .get_key(&gid, &pk_pk)
-        .unwrap()
-        .is_none());
-
-    SigningKeysRepository::new(&store)
-        .store_key(&gid, &pk_pk, &sk)
-        .unwrap();
-    let loaded = SigningKeysRepository::new(&store)
-        .get_key(&gid, &pk_pk)
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded, sk);
-}
-
-#[test]
-fn delete_signing_key() {
-    let store = test_store();
-    let gid = test_group_id();
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xAA; 32];
-
-    SigningKeysRepository::new(&store)
-        .store_key(&gid, &pk_pk, &sk)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .delete_key(&gid, &pk_pk)
-        .unwrap();
-    assert!(SigningKeysRepository::new(&store)
-        .get_key(&gid, &pk_pk)
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn require_signing_key_fails_when_missing() {
-    let store = test_store();
-    let gid = test_group_id();
-    let pk_pk = PublicKey::from([0x10; 32]);
-
-    assert!(SigningKeysRepository::new(&store)
-        .require_key(&gid, &pk_pk)
-        .is_err());
-}
-
-#[test]
-fn delete_all_group_signing_keys_removes_all() {
-    let store = test_store();
-    let gid = test_group_id();
-    let pk1_pk = PublicKey::from([0x10; 32]);
-    let pk2_pk = PublicKey::from([0x11; 32]);
-
-    SigningKeysRepository::new(&store)
-        .store_key(&gid, &pk1_pk, &[0xAA; 32])
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&gid, &pk2_pk, &[0xBB; 32])
-        .unwrap();
-
-    SigningKeysRepository::new(&store)
-        .delete_all_for_group(&gid)
-        .unwrap();
-
-    assert!(SigningKeysRepository::new(&store)
-        .get_key(&gid, &pk1_pk)
-        .unwrap()
-        .is_none());
-    assert!(SigningKeysRepository::new(&store)
-        .get_key(&gid, &pk2_pk)
-        .unwrap()
-        .is_none());
-}
-
 // -----------------------------------------------------------------------
 // Context-group index tests
 // -----------------------------------------------------------------------
@@ -3337,281 +3256,7 @@ fn apply_tee_policy_op_on_subgroup_rejected() {
 }
 
 // -----------------------------------------------------------------------
-// resolve_group_signing_key — ancestor hierarchy walk tests
 // -----------------------------------------------------------------------
-
-#[test]
-fn resolve_signing_key_finds_key_on_self() {
-    let store = test_store();
-    let gid = ContextGroupId::from([0xD0; 32]);
-    let pk_pk = PublicKey::from([0xD1; 32]);
-    let sk = [0xDD; 32];
-
-    SigningKeysRepository::new(&store)
-        .store_key(&gid, &pk_pk, &sk)
-        .unwrap();
-
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&gid, &pk_pk)
-        .unwrap();
-    assert_eq!(found, Some(sk));
-}
-
-#[test]
-fn resolve_signing_key_walks_to_parent() {
-    let store = test_store();
-    let root = ContextGroupId::from([0xD0; 32]);
-    let child = ContextGroupId::from([0xD1; 32]);
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xAA; 32];
-
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &pk_pk, &sk)
-        .unwrap();
-
-    // Child should find root's key via parent walk
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&child, &pk_pk)
-        .unwrap();
-    assert_eq!(found, Some(sk));
-}
-
-#[test]
-fn resolve_signing_key_walks_grandparent_chain() {
-    let store = test_store();
-    let root = ContextGroupId::from([0xD0; 32]);
-    let child = ContextGroupId::from([0xD1; 32]);
-    let grandchild = ContextGroupId::from([0xD2; 32]);
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xBB; 32];
-
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&child, &grandchild)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &pk_pk, &sk)
-        .unwrap();
-
-    // Grandchild walks upward: grandchild -> child -> root, finds root's key
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&grandchild, &pk_pk)
-        .unwrap();
-    assert_eq!(found, Some(sk));
-}
-
-#[test]
-fn resolve_signing_key_returns_nearest_ancestor() {
-    let store = test_store();
-    let root = ContextGroupId::from([0xD0; 32]);
-    let child = ContextGroupId::from([0xD1; 32]);
-    let grandchild = ContextGroupId::from([0xD2; 32]);
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let root_sk = [0xAA; 32];
-    let child_sk = [0xBB; 32];
-
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&child, &grandchild)
-        .unwrap();
-
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &pk_pk, &root_sk)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&child, &pk_pk, &child_sk)
-        .unwrap();
-
-    // Grandchild should find child's key (nearest), not root's
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&grandchild, &pk_pk)
-        .unwrap();
-    assert_eq!(found, Some(child_sk));
-
-    // Child should find its own key
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&child, &pk_pk)
-        .unwrap();
-    assert_eq!(found, Some(child_sk));
-}
-
-#[test]
-fn resolve_signing_key_none_for_orphan() {
-    let store = test_store();
-    let orphan = ContextGroupId::from([0xD0; 32]);
-    let pk_pk = PublicKey::from([0x10; 32]);
-
-    // No parent, no key stored anywhere
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&orphan, &pk_pk)
-        .unwrap();
-    assert_eq!(found, None);
-}
-
-#[test]
-fn resolve_signing_key_wrong_identity_not_found() {
-    let store = test_store();
-    let root = ContextGroupId::from([0xD0; 32]);
-    let child = ContextGroupId::from([0xD1; 32]);
-    let admin_pk = PublicKey::from([0x10; 32]);
-    let other_pk = PublicKey::from([0x20; 32]);
-    let sk = [0xCC; 32];
-
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &admin_pk, &sk)
-        .unwrap();
-
-    // Different identity should not find the key
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&child, &other_pk)
-        .unwrap();
-    assert_eq!(found, None);
-
-    // Correct identity should find it
-    let found = SigningKeysRepository::new(&store)
-        .resolve(&child, &admin_pk)
-        .unwrap();
-    assert_eq!(found, Some(sk));
-}
-
-#[test]
-fn resolve_signing_key_broken_by_unnest() {
-    let store = test_store();
-    let root = ContextGroupId::from([0xD0; 32]);
-    let child = ContextGroupId::from([0xD1; 32]);
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xAA; 32];
-
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &pk_pk, &sk)
-        .unwrap();
-
-    // Before unnest: child can find root's key
-    assert_eq!(
-        SigningKeysRepository::new(&store)
-            .resolve(&child, &pk_pk)
-            .unwrap(),
-        Some(sk)
-    );
-
-    // Unnest breaks the parent link
-    NamespaceRepository::new(&store)
-        .unnest(&root, &child)
-        .unwrap();
-
-    // After unnest: child can no longer walk to root
-    assert_eq!(
-        SigningKeysRepository::new(&store)
-            .resolve(&child, &pk_pk)
-            .unwrap(),
-        None
-    );
-}
-
-#[test]
-fn resolve_signing_key_survives_renesting() {
-    let store = test_store();
-    let root = ContextGroupId::from([0xD0; 32]);
-    let child = ContextGroupId::from([0xD1; 32]);
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xAA; 32];
-
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &pk_pk, &sk)
-        .unwrap();
-
-    // Unnest
-    NamespaceRepository::new(&store)
-        .unnest(&root, &child)
-        .unwrap();
-    assert_eq!(
-        SigningKeysRepository::new(&store)
-            .resolve(&child, &pk_pk)
-            .unwrap(),
-        None
-    );
-
-    // Re-nest: key should be reachable again
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-    assert_eq!(
-        SigningKeysRepository::new(&store)
-            .resolve(&child, &pk_pk)
-            .unwrap(),
-        Some(sk)
-    );
-}
-
-#[test]
-fn resolve_signing_key_none_when_exceeding_max_depth() {
-    use super::namespace::MAX_NAMESPACE_DEPTH;
-
-    let store = test_store();
-    let pk_pk = PublicKey::from([0x10; 32]);
-    let sk = [0xEE; 32];
-
-    // Build a chain of MAX_NAMESPACE_DEPTH + 1 groups (root + 16 children)
-    let groups: Vec<ContextGroupId> = (0..=MAX_NAMESPACE_DEPTH)
-        .map(|i| {
-            let mut bytes = [0u8; 32];
-            bytes[0] = 0xE0;
-            bytes[1] = i as u8;
-            ContextGroupId::from(bytes)
-        })
-        .collect();
-
-    // Nest each group under the previous one: groups[0] -> groups[1] -> ... -> groups[16]
-    for i in 0..MAX_NAMESPACE_DEPTH {
-        NamespaceRepository::new(&store)
-            .nest(&groups[i], &groups[i + 1])
-            .unwrap();
-    }
-
-    // Store key only on the root
-    SigningKeysRepository::new(&store)
-        .store_key(&groups[0], &pk_pk, &sk)
-        .unwrap();
-
-    // The deepest group (index MAX_NAMESPACE_DEPTH) is 16 levels below root.
-    // The loop traverses MAX_NAMESPACE_DEPTH parent edges (matching
-    // resolve_namespace), then does a final check on the reached group.
-    // This means self + 16 edges + final check = covers the full chain.
-    let at_boundary = SigningKeysRepository::new(&store)
-        .resolve(&groups[MAX_NAMESPACE_DEPTH], &pk_pk)
-        .unwrap();
-    assert_eq!(
-        at_boundary,
-        Some(sk),
-        "key at root should be reachable at exactly MAX_NAMESPACE_DEPTH"
-    );
-
-    // One level shallower should also find it
-    let within_limit = SigningKeysRepository::new(&store)
-        .resolve(&groups[MAX_NAMESPACE_DEPTH - 1], &pk_pk)
-        .unwrap();
-    assert_eq!(
-        within_limit,
-        Some(sk),
-        "key should be reachable within depth limit"
-    );
-}
 
 #[test]
 fn resolve_reaches_root_at_max_depth() {
@@ -3697,71 +3342,6 @@ fn preflight_rejects_non_admin_when_required() {
 }
 
 #[test]
-fn preflight_signing_key_resolved_through_hierarchy() {
-    // Simulates what governance_preflight does: resolve signing key for a
-    // child group where the key only exists on the root (namespace).
-    let store = test_store();
-    let root = ContextGroupId::from([0xF0; 32]);
-    let child = ContextGroupId::from([0xF1; 32]);
-    let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = enrol_member(&store, &root, &admin_pk);
-    let sk = [0xAA; 32];
-
-    // Set up root with meta + admin + signing key
-    MetaRepository::new(&store)
-        .save(&root, &test_meta())
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&root, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    SigningKeysRepository::new(&store)
-        .store_key(&root, &admin_pk, &sk)
-        .unwrap();
-
-    // Set up child nested under root, with meta + admin but NO signing key
-    MetaRepository::new(&store)
-        .save(&child, &test_meta())
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&child, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    NamespaceRepository::new(&store)
-        .nest(&root, &child)
-        .unwrap();
-
-    // Verify: group exists, admin check passes, signing key resolves via parent
-    assert!(MetaRepository::new(&store).load(&child).unwrap().is_some());
-    assert!(MembershipRepository::new(&store)
-        .require_admin(&child, &admin)
-        .is_ok());
-    let resolved = SigningKeysRepository::new(&store)
-        .resolve(&child, &admin_pk)
-        .unwrap();
-    assert_eq!(resolved, Some(sk), "signing key should resolve from root");
-}
-
-#[test]
-fn preflight_fails_when_no_signing_key_in_hierarchy() {
-    let store = test_store();
-    let gid = ContextGroupId::from([0xF0; 32]);
-    let admin_pk = PublicKey::from([0x01; 32]);
-    let admin = AccountId::from(*admin_pk);
-
-    MetaRepository::new(&store)
-        .save(&gid, &test_meta())
-        .unwrap();
-    MembershipRepository::new(&store)
-        .add_member(&gid, &admin, GroupMemberRole::Admin)
-        .unwrap();
-    // No signing key stored anywhere
-
-    let resolved = SigningKeysRepository::new(&store)
-        .resolve(&gid, &admin_pk)
-        .unwrap();
-    assert_eq!(resolved, None, "no signing key should be found");
-}
-
-#[test]
 fn preflight_fails_for_nonexistent_group() {
     let store = test_store();
     let gid = ContextGroupId::from([0xF0; 32]);
@@ -3799,7 +3379,7 @@ fn resolve_local_signing_key_covers_keyed_marker_and_absent() {
 
     // This node's namespace identity (`gid` resolves to itself — no parent).
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &ns_member_pk, &ns_sk, &[0u8; 32])
+        .store_identity(&gid, &ns_member_pk, &ns_sk)
         .unwrap();
 
     // No row at all → not a local identity here.
@@ -3877,7 +3457,7 @@ fn restore_member_context_identities_writes_missing_marker_rows() {
     // itself — no parent). Storing it for `member` makes this node the local
     // rejoiner; the function re-creates its keyless membership markers.
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &sk_bytes)
         .unwrap();
 
     restore_member_context_identities(&store, &gid, &member).unwrap();
@@ -3921,7 +3501,7 @@ fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
     // Namespace identity belongs to a different pk → still a no-op for
     // `member`.
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &someone_else_pk, &[0x55; 32], &[0u8; 32])
+        .store_identity(&gid, &someone_else_pk, &[0x55; 32])
         .unwrap();
     restore_member_context_identities(&store, &gid, &member).unwrap();
     assert!(
@@ -3943,7 +3523,7 @@ fn restore_member_context_identities_is_idempotent() {
     // This node is the local rejoiner — namespace identity stored for
     // `member`.
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &original_sk, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &original_sk)
         .unwrap();
 
     // Pre-existing keyed row from a (notional) successful prior `join_context`.
@@ -3987,7 +3567,7 @@ fn restore_member_context_identities_leaves_existing_rows_untouched() {
     let ctx = ContextId::from([0xD2; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &sk_bytes)
         .unwrap();
 
     // Pre-existing keyed row.
@@ -4053,7 +3633,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     let member = enrol_member(&store, &gid, &member_pk);
     let member_sk_bytes = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &member_pk, &member_sk_bytes)
         .unwrap();
 
     // Pre-state: member already added once + has ContextIdentity for
@@ -4183,7 +3763,7 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     let member = enrol_member(&store, &ns_gid, &member_pk);
     let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
         .unwrap();
 
     // Pre-state: member was a direct subgroup member with a context
@@ -4336,7 +3916,7 @@ fn member_joined_open_clears_deny_list_and_resolves_signer() {
     // `member_pk`. Without this gate the `restore_member_context_identities`
     // call would no-op (correctly — peers don't own the rejoiner's sk).
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
         .unwrap();
 
     // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
@@ -4512,7 +4092,7 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     // the rejoiner's pk.
     let admin_sk_bytes = *admin_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .store_identity(&gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
     let rejoiner_pk = PrivateKey::random(&mut rng).public_key();
@@ -4567,11 +4147,50 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn the_device_survives_leaving_one_namespace_and_goes_with_the_last() {
+    // The device is node-level, so a purge scoped to one namespace must not take
+    // its agreement secret — every namespace that remains opens its scope keys
+    // with the same one. Leaving the last namespace is different: an installation
+    // that takes part in nothing should not sit on key material.
+    //
+    // This is hygiene, not forward secrecy, and the distinction matters because
+    // the code this replaced claimed the latter. `delete_namespace_local_state`
+    // runs on the node's OWN store, so it is a node deleting its own secret —
+    // no defence against a node that simply declines to purge. Forward secrecy
+    // against a removed member is the rotation, which excludes the departed
+    // ACCOUNT and therefore every device it holds.
+    let store = test_store();
+    let repo = NodeDeviceRepository::new(&store);
+    let namespaces = NamespaceRepository::new(&store);
+
+    let (a, b) = (
+        ContextGroupId::from([0xA1u8; 32]),
+        ContextGroupId::from([0xB1u8; 32]),
+    );
+    let _ = namespaces.participate_in_bundle(&a).expect("provision a");
+    let _ = namespaces.participate_in_bundle(&b).expect("provision b");
+    let device = repo.ensure_enrolled(&a).expect("mint").device();
+
+    delete_namespace_local_state(&store, &a).expect("leave the first");
+    assert_eq!(
+        repo.get().expect("read").map(|d| d.device()),
+        Some(device),
+        "leaving one namespace must not take the device the others still use"
+    );
+
+    delete_namespace_local_state(&store, &b).expect("leave the last");
+    assert!(
+        repo.get().expect("read").is_none(),
+        "leaving the last namespace must take the device with it"
+    );
+}
+
+#[test]
 fn delete_namespace_local_state_clears_identity_head_and_ops() {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::{
         NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp, NamespaceGovOpValue,
-        NamespaceIdentity,
+        NamespaceParticipation,
     };
 
     let store = test_store();
@@ -4580,7 +4199,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
 
     let ns_pk = PublicKey::from([0x11; 32]);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_id, &ns_pk, &[0x22; 32], &[0x33; 32])
+        .store_identity(&ns_id, &ns_pk, &[0x22; 32])
         .unwrap();
 
     {
@@ -4611,9 +4230,11 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     // A second namespace must be left alone.
     let other_ns_id = ContextGroupId::from([0xB2; 32]);
     let other_ns_bytes = other_ns_id.to_bytes();
-    let (other_pk, _other_account) = enrolled(&store, &other_ns_id, 0x55);
+    let (_other_pk, _other_account) = enrolled(&store, &other_ns_id, 0x55);
+    // The same key: one node signs with one, so a second namespace records
+    // participation rather than minting a second identity.
     NamespaceRepository::new(&store)
-        .store_identity(&other_ns_id, &other_pk, &[0x66; 32], &[0x77; 32])
+        .store_identity(&other_ns_id, &ns_pk, &[0x22; 32])
         .unwrap();
     {
         let mut handle = store.handle();
@@ -4632,7 +4253,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     let handle = store.handle();
     assert!(
         handle
-            .get::<NamespaceIdentity>(&NamespaceIdentity::new(ns_bytes))
+            .get::<NamespaceParticipation>(&NamespaceParticipation::new(ns_bytes))
             .unwrap()
             .is_none(),
         "namespace identity should be cleared"
@@ -4659,7 +4280,7 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     // Other namespace untouched.
     assert!(
         handle
-            .get::<NamespaceIdentity>(&NamespaceIdentity::new(other_ns_bytes))
+            .get::<NamespaceParticipation>(&NamespaceParticipation::new(other_ns_bytes))
             .unwrap()
             .is_some(),
         "other namespace identity must survive"
@@ -4684,7 +4305,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::key::{
         GroupChildIndex, GroupParentRef, NamespaceGovHead, NamespaceGovHeadValue, NamespaceGovOp,
-        NamespaceGovOpValue, NamespaceIdentity,
+        NamespaceGovOpValue, NamespaceParticipation,
     };
 
     let store = test_store();
@@ -4730,7 +4351,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
 
     let ns_bytes = ns_id.to_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_id, &admin_pk, &[0x22; 32], &[0x33; 32])
+        .store_identity(&ns_id, &admin_pk, &[0x22; 32])
         .unwrap();
     {
         let mut handle = store.handle();
@@ -4815,7 +4436,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     // Namespace-level rows must be gone.
     let handle = store.handle();
     assert!(handle
-        .get::<NamespaceIdentity>(&NamespaceIdentity::new(ns_bytes))
+        .get::<NamespaceParticipation>(&NamespaceParticipation::new(ns_bytes))
         .unwrap()
         .is_none());
     assert!(handle
@@ -5271,7 +4892,7 @@ fn leave_then_admin_readd_restores_a_signable_context_identity() {
     let member = enrol_member(&store, &ns_gid, &member_pk);
     let member_sk_bytes: [u8; 32] = *member_sk.as_bytes();
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes)
         .unwrap();
     MembershipRepository::new(&store)
         .add_member(&subgroup, &member, GroupMemberRole::Member)
@@ -5741,7 +5362,7 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
     let node_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
     let node_sk = PrivateKey::from(node_sk_bytes);
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &node_sk.public_key(), &node_sk_bytes)
         .unwrap();
 
     // Signed by a stranger who is no member of the group, let alone one with
@@ -5788,7 +5409,7 @@ fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
 
     // This node IS the joiner — the op below is its own.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes, &[0u8; 32])
+        .store_identity(&ns_gid, &joiner_pk, &joiner_sk_bytes)
         .unwrap();
 
     // The same invitation the peer test refuses, from an inviter this node
@@ -7961,7 +7582,7 @@ mod auto_follow_tests {
             .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+            .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
             .unwrap();
 
         let op = SignedNamespaceOp::sign(
@@ -8827,7 +8448,7 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
     let mut rng = OsRng;
     for _ in 0..256 {
         let root = PrivateKey::random(&mut rng);
-        let genesis = calimero_account::AccountGenesis::new(root.public_key(), [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
         assert_ne!(
             genesis.account_id(),
             sentinel,
@@ -9143,6 +8764,66 @@ mod apply_auth_at_cut {
         }
     }
 
+    /// The persisted record and the announced event derive `from_version`
+    /// through this one function, because deriving it twice is how they came to
+    /// disagree: the record fell back to "unknown" on an ABSENT previous id
+    /// while the event fell back on one EQUAL to the target, so a no-op cascade
+    /// stored a real semver and announced "unknown" for the same transition.
+    #[test]
+    fn from_version_falls_back_identically_for_absent_and_equal_previous_ids() {
+        use crate::ops::group::context::migration_from_version;
+
+        let store = test_store();
+        let target = ApplicationId::from([0x5B; 32]);
+        let other = ApplicationId::from([0x5C; 32]);
+
+        assert_eq!(
+            migration_from_version(&store, None, &target),
+            "unknown",
+            "no previous id names no version"
+        );
+        // Registered with a real semver, so a short-circuit to "unknown" is
+        // distinguishable: an unregistered id reads "unknown" too, and asserting
+        // against that would pass no matter which branch ran.
+        let register = |id, version: &str| {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ApplicationMeta::new(id),
+                    &calimero_store::types::ApplicationMeta::new(
+                        calimero_store::key::BlobMeta::new([0x01; 32].into()),
+                        0,
+                        "".into(),
+                        Box::new([]),
+                        calimero_store::key::BlobMeta::new([0x02; 32].into()),
+                        calimero_store::types::PackageInfo {
+                            package: "pkg".into(),
+                            version: version.into(),
+                            signer_id: "".into(),
+                            state_version: 1,
+                        },
+                    ),
+                )
+                .unwrap();
+        };
+        // BOTH registered with real, distinct semvers. If either resolved to an
+        // unregistered id, `application_version` would answer "unknown" and the
+        // fallback assertions would pass without the predicate running at all.
+        register(other, "1.2.3");
+        register(target, "9.9.9");
+
+        assert_eq!(
+            migration_from_version(&store, Some(&target), &target),
+            "unknown",
+            "a previous id equal to the target means the row already holds the new version"
+        );
+        assert_eq!(
+            migration_from_version(&store, Some(&other), &target),
+            "1.2.3",
+            "a distinct previous id is resolved, not short-circuited"
+        );
+    }
+
     #[test]
     fn target_application_set_honors_at_cut_grant_over_live_denial() {
         // The catching-up replica: its live rows say the signer has no authority
@@ -9322,7 +9003,7 @@ mod rotation_gate_alignment {
         let sk = PrivateKey::from(sk_bytes);
         let pk = sk.public_key();
         NamespaceRepository::new(store)
-            .store_identity(ns_gid, &pk, &sk_bytes, &[0u8; 32])
+            .replace_identity(ns_gid, &pk, &sk_bytes)
             .unwrap();
         pk
     }
@@ -10269,7 +9950,7 @@ mod account_plane_apply {
 
         // The admin's own key is the member, so its derived account is what a
         // device may link to while membership is still key-keyed.
-        let account_genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let account_genesis = AccountGenesis::new(key(9).public_key());
         let account = account_genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10340,7 +10021,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         MembershipRepository::new(&store)
             .add_member(
@@ -10396,7 +10077,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(20).public_key(), [20u8; 16]);
+        let genesis = AccountGenesis::new(key(20).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [21u8; 16]);
         let cert = sign_device_cert(
@@ -10444,7 +10125,7 @@ mod account_plane_apply {
             .unwrap();
 
         // Mallory names Alice's member key as his account's root...
-        let genesis = AccountGenesis::new(key(9).public_key(), [77u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [78u8; 16]);
         // ...but must sign the certificate with his own key, which is not it.
@@ -10487,7 +10168,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
 
@@ -10522,7 +10203,7 @@ mod account_plane_apply {
 
         // An account rooted at an OFFLINE key that is nobody's member key.
         let offline_root = key(9);
-        let genesis = AccountGenesis::new(offline_root.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(offline_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10582,7 +10263,7 @@ mod account_plane_apply {
         // An endorsement of a DIFFERENT account → refused, even though it is validly
         // signed by a member. Otherwise a genuine endorsement could be paired with
         // an unrelated credential.
-        let other_account = AccountGenesis::new(key(8).public_key(), [8u8; 16]).account_id();
+        let other_account = AccountGenesis::new(key(8).public_key()).account_id();
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -10647,7 +10328,7 @@ mod account_plane_apply {
         .unwrap();
 
         let owner_root = key(9);
-        let genesis = AccountGenesis::new(owner_root.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(owner_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10743,7 +10424,7 @@ mod account_plane_apply {
 
         // The victim's device, linked and in force.
         let victim_root = key(9);
-        let genesis = AccountGenesis::new(victim_root.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(victim_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10775,7 +10456,7 @@ mod account_plane_apply {
         // The attacker's OWN account, and a proof naming it beside the victim's
         // device. Every signature here is genuine; that is the point.
         let attacker_root = key(7);
-        let attacker_genesis = AccountGenesis::new(attacker_root.public_key(), [7u8; 16]);
+        let attacker_genesis = AccountGenesis::new(attacker_root.public_key());
         let attacker_account = attacker_genesis.account_id();
         let forged = calimero_account::SignedDeviceRevocation {
             genesis: attacker_genesis,
@@ -10845,7 +10526,7 @@ mod account_plane_apply {
         .unwrap();
 
         // The victim enrolls a device, admin-signed so the link itself lands.
-        let genesis = AccountGenesis::new(victim_sk.public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(victim_sk.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
         let cert = sign_device_cert(
@@ -10924,7 +10605,7 @@ mod account_plane_apply {
         let signer = key(7);
         group_with_admin(&store, &gid, &key(1));
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
 
@@ -10963,7 +10644,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let cert = sign_device_cert(
             &key(9),
@@ -11010,7 +10691,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
 
-        let genesis = AccountGenesis::new(key(9).public_key(), [9u8; 16]);
+        let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
         let repo = AccountBindingRepository::new(&store);
         repo.absorb_genesis(&gid, &genesis).unwrap();

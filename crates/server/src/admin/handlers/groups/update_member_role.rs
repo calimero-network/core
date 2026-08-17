@@ -8,18 +8,15 @@ use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
 use tracing::{error, info};
 
 use super::{parse_account, parse_group_id};
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::parse_api_error;
 use crate::admin::service::ApiResponse;
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 use calimero_server_primitives::admin::UpdateMemberRoleApiResponse;
 
 pub async fn handler(
-    Path((group_id_str, identity_str)): Path<(String, String)>,
+    Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<UpdateMemberRoleApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -27,39 +24,33 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let identity = match parse_account(&identity_str) {
+    let account = match parse_account(&account_str) {
         Ok(account) => account,
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, identity=%identity_str, "Updating member role");
-
-    let requester = match resolve_requester(auth_key, req.requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
+    info!(group_id=%group_id_str, identity=%account_str, "Updating member role");
 
     let result = state
         .ctx_client
         .update_member_role(UpdateMemberRoleRequest {
             group_id,
-            identity,
+            identity: account,
             new_role: req.role,
-            requester,
         })
         .await
         .map_err(parse_api_error);
 
     match result {
         Ok(()) => {
-            info!(group_id=%group_id_str, identity=%identity_str, "Member role updated successfully");
+            info!(group_id=%group_id_str, identity=%account_str, "Member role updated successfully");
             ApiResponse {
                 payload: UpdateMemberRoleApiResponse {},
             }
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to update member role");
+            error!(group_id=%group_id_str, identity=%account_str, error=?err, "Failed to update member role");
             err.into_response()
         }
     }

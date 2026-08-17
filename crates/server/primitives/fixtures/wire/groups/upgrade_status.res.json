@@ -1,0 +1,13 @@
+{
+  "data": {
+    "completedAt": null,
+    "fromVersion": "1.0.0",
+    "initiatedAt": 100,
+    "initiatedBy": "11111111111111111111111111111111",
+    "localContextsFailed": 0,
+    "localContextsSwapped": 1,
+    "localContextsTotal": 3,
+    "status": "pending",
+    "toVersion": "2.0.0"
+  }
+}

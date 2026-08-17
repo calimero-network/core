@@ -190,8 +190,8 @@ actually hold:
 | `GroupOpLog` | `0x30 ‖ group_id ‖ seq(8 BE)` | `0x30 ‖ eng 0xe9… ‖ 0…07` | `Borsh(SignedGroupOp)` |
 
 A **namespace is just a root group**, so it carries the same `0x20`/`0x21`/`0x26`/`0x30`
-records — plus a couple it owns alone: its node-identity keypair under
-`NamespaceIdentity` (`0x36 ‖ namespace_id`) and its governance ops under
+records — plus a couple it owns alone: a marker that this node takes part in it
+under `NamespaceParticipation` (`0x36 ‖ namespace_id`) and its governance ops under
 `NamespaceGovOp` (`0x38 ‖ namespace_id ‖ delta_id`). The `GroupOpLog` sequence is
 a **big-endian** `u64` so the log sorts in numeric order; every other component
 is a raw 32-byte id. The point: **governance lives in the `Group` CF, keyed by

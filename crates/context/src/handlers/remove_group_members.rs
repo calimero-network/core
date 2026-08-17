@@ -18,14 +18,10 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        RemoveGroupMembersRequest {
-            group_id,
-            members,
-            requester,
-        }: RemoveGroupMembersRequest,
+        RemoveGroupMembersRequest { group_id, members }: RemoveGroupMembersRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
+        let preflight = match self.governance_preflight(&group_id, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -48,13 +44,13 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
             return ActorResponse::reply(Err(err));
         }
 
-        let self_identity = self.node_namespace_identity(&group_id).map(|(pk, _)| pk);
+        let self_identity = self.node_signing_key(&group_id).map(|(pk, _)| pk);
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
         let sk = preflight.signer_sk();
-        let requester = preflight.requester;
+        let signer = preflight.signer;
         let members = members.clone();
 
         ActorResponse::r#async(
@@ -74,7 +70,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                 info!(
                     ?group_id,
                     count = members.len(),
-                    %requester,
+                    %signer,
                     "members removed from group (local governance signed ops)"
                 );
 

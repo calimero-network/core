@@ -185,22 +185,6 @@ where
         self.connection.auth_header().await
     }
 
-    /// Create context identity alias (legacy method for backward compatibility)
-    pub async fn create_context_identity_alias(
-        &self,
-        context_id: &ContextId,
-        request: CreateAliasRequest<PublicKey>,
-    ) -> Result<CreateAliasResponse> {
-        let response = self
-            .connection
-            .post(
-                &format!("admin-api/alias/create/identity/{context_id}"),
-                request,
-            )
-            .await?;
-        Ok(response)
-    }
-
     /// Create alias generic (legacy method for backward compatibility)
     pub async fn create_alias_generic<T>(
         &self,

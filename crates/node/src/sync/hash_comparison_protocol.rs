@@ -228,7 +228,7 @@ async fn run_initiator_impl<T: SyncTransport>(
     session_peer: Option<PublicKey>,
     init_pop: Option<InitProof>,
 ) -> Result<HashComparisonStats> {
-    info!(%context_id, "Starting HashComparison sync (initiator)");
+    debug!(%context_id, "Starting HashComparison sync (initiator)");
 
     let mut stats = HashComparisonStats::default();
 
@@ -752,20 +752,57 @@ async fn run_initiator_impl<T: SyncTransport>(
         );
     }
 
-    // core#2716: re-anchor the context's persisted `root_hash` to the
-    // freshly-merged storage merkle. `context.root_hash` (the value read by
-    // the heartbeat, the sync-manager's protocol selector, and the admin RPC
-    // that e2e `wait_for_sync` polls) is only updated on the WASM execute /
-    // delta forward-apply path — NOT when a HashComparison session converges
-    // storage via CRDT merge (`entities_pushed`/`entities_merged`). That left
-    // the two roots permanently split: the storage merkle converged across
-    // nodes while each node's context root stayed at its last locally-executed
-    // delta's `expected_root_hash`, so `wait_for_sync` never observed
-    // convergence. Persisting the storage merkle here restores the invariant
+    // Re-anchor the context's persisted `root_hash` to the freshly-merged
+    // storage merkle. `context.root_hash` (the value read by the heartbeat, the
+    // sync-manager's protocol selector, and the admin RPC that e2e
+    // `wait_for_sync` polls) is only updated on the WASM execute / delta
+    // forward-apply path — NOT when a HashComparison session converges storage
+    // via CRDT merge (`entities_pushed`/`entities_merged`). That left the two
+    // roots permanently split: the storage merkle converged across nodes while
+    // each node's context root stayed at its last locally-executed delta's
+    // `expected_root_hash`, so `wait_for_sync` never observed convergence.
+    // Persisting the storage merkle here restores the invariant
     // `context.root_hash == storage merkle root` after every HC session.
-    if local_root_hash != [0u8; 32] {
-        if let Some(cc) = context_client {
-            if let Err(e) = cc.force_root_hash(&context_id, Hash::from(local_root_hash)) {
+    //
+    // The merkle root is re-read HERE, under the per-context execution lock,
+    // and published in the same critical section — deliberately NOT reusing the
+    // `local_root_hash` captured above for the convergence verdict. That capture
+    // happens before the `local_scope_root` governance DAG walk, which is a
+    // multi-millisecond RocksDB traversal; a local WASM execute that commits in
+    // that window advances both the merkle and `ContextMeta.root_hash`, and
+    // writing the captured value would roll the context root BACKWARDS onto a
+    // state the node no longer has. The observable damage is worse than a stale
+    // number: every peer-facing convergence signal (heartbeat compare, protocol
+    // selection, `contextStateHash`) then reports the pre-write root, so an
+    // e2e write-then-wait sees all nodes "agree" on the old hash and proceeds
+    // before the write has propagated. The executor holds this same lock across
+    // execution and its root-hash persist, so taking it makes read+write atomic
+    // against that path.
+    if let Some(cc) = context_client {
+        let reanchor = apply_under_context_lock(Some(cc), context_id, &runtime_env, || {
+            let live_root = get_local_root_hash_for_context(context_id)?;
+
+            if live_root == [0u8; 32] {
+                return Ok(None);
+            }
+
+            cc.force_root_hash(&context_id, Hash::from(live_root))?;
+
+            Ok::<_, eyre::Report>(Some(live_root))
+        })
+        .await;
+
+        match reanchor {
+            Ok(Some(live_root)) if live_root != local_root_hash => {
+                debug!(
+                    %context_id,
+                    session_root = %hex::encode(&local_root_hash[..8]),
+                    live_root = %hex::encode(&live_root[..8]),
+                    "storage merkle advanced during the session tail; re-anchored to the live root"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
                 warn!(
                     %context_id, %e,
                     "failed to re-anchor context root_hash to storage merkle after HC merge"
@@ -774,7 +811,7 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
     }
 
-    info!(
+    debug!(
         %context_id,
         nodes_compared = stats.nodes_compared,
         entities_merged = stats.entities_merged,

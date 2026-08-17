@@ -159,21 +159,18 @@ steps:
       - backup-node-2
     context_id: '{{context_id}}'
 
-  # `account_create` does not create a second account — the name is a bit
-  # misleading. A node has ONE account root (node-level) from which it derives one
-  # account id PER NAMESPACE, and holds at most one device in each. This step is
-  # `ensure_enrolled`: it derives the account for this namespace from the existing
-  # root, mints a device if this namespace has none, and is idempotent — call it
-  # twice and the same `accountId` comes back.
+  # A READ. Enrolment is implicit — every join path mints the device and carries
+  # the credential on the join op — so by now node-2 already has an account and a
+  # device, and this reports them.
   #
-  # It must run AFTER the context join, never before: enrolment publishes an
-  # `AccountDeviceLinked` op, that op is an *encrypted* GroupOp, and encrypting it
-  # needs the namespace scope key the node only has once it has joined. Placed
-  # earlier it deadlocks — it cannot publish the link that would get it the key.
-  - name: Node-2 enrols an account
-    type: account_create
+  # It used to be `account_create`, called here purely for these outputs, after
+  # the join had already enrolled: a mutation used as a getter, because there was
+  # no getter. The ordering constraint that came with it is gone too — nothing is
+  # published, so there is no encrypted op needing a scope key, and this can run
+  # wherever it reads best.
+  - name: What node-2 speaks for
+    type: node_identity
     node: backup-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       original_account: accountId
 
@@ -426,9 +423,8 @@ steps:
   # Enrolling now mints a NEW device — the old one died with the disk — but under
   # the RESTORED root, so the account id it derives is the one from before.
   - name: Enrol a device into the recovered account
-    type: account_create
+    type: node_identity
     node: backup-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       recovered_account: accountId
 

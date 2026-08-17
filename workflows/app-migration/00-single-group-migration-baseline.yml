@@ -1,4 +1,4 @@
-name: 00 — Single-group migration baseline (v1 → v2, 2-node)
+name: 00 - Single-group migration baseline (v1 → v2, 2-node)
 description: >
   2-node end-to-end baseline migration. Node 1 (admin) installs
   migration-suite-v1, creates a namespace + one Open subgroup + one
@@ -11,10 +11,10 @@ description: >
   on node 1 AND mirrors the post-migration schema_info on node 2 to
   prove cross-node convergence via context-sync gossip.
 
-  Acts as the regression guard for #2433: that PR changed Root<T>
-  merge semantics, breaking write_migration_state's save_raw call
-  with MergeFailure(NoMergeFunctionRegistered). Pre-fix this
-  workflow fails at the upgrade_group step; post-fix it passes.
+  Acts as the regression guard for Root<T> merge semantics: a change
+  there once broke write_migration_state's save_raw call with
+  MergeFailure(NoMergeFunctionRegistered), which this workflow catches
+  at the upgrade_group step.
 
 no_docker: false
 nuke_on_start: true
@@ -62,7 +62,7 @@ steps:
 
   - name: Create Open subgroup on node 1
     # Open visibility lets node 2 materialise its inherited membership
-    # via `join_subgroup_inheritance` (issue #2357 endpoint).
+    # via `join_subgroup_inheritance`.
     type: create_group_in_namespace
     node: app-migration-baseline-1
     namespace_id: "{{namespace_id}}"
@@ -162,7 +162,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
@@ -188,10 +188,22 @@ steps:
     type: wait
     seconds: 15
 
-  - name: Read upgrade status
+  - name: Read the subgroup's upgrade record
     type: get_group_upgrade_status
     node: app-migration-baseline-1
     group_id: "{{group_id}}"
+    outputs:
+      up_status: status
+      up_to_version: toVersion
+
+  - name: Assert the record names the v2 target
+    # Only these two fields carry a value on a per-context upgrade: contexts
+    # swap on demand, so `completedAt` and the counters stay null. Whether the
+    # state actually migrated is the rollup's question, asserted below.
+    type: json_assert
+    statements:
+      - 'equal("{{up_status}}", "completed")'
+      - 'equal("{{up_to_version}}", "2.0.0")'
 
   # These reads TRIGGER each node's lazy migration: schema_info is not
   # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
@@ -212,27 +224,47 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  # Both nodes self-migrated via the lazy path — assert the migration
-  # logs on EACH after its triggering read above.
-  - name: Assert lazy migration ran on node 1
-    type: assert_log_present
-    nodes:
-      - app-migration-baseline-1
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # schema_info cannot prove a migration ran: the version string it returns is a
+  # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
+  # v1 bytes too. The rollup carries each member's ABI STATE version instead.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
-    type: assert_log_present
-    nodes:
-      - app-migration-baseline-2
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
 
   - name: Assert v2 schema on node 1 (v1 data preserved + notes seeded)
     type: json_assert
@@ -284,19 +316,16 @@ steps:
     type: delete_context
     node: app-migration-baseline-1
     context_id: "{{ctx_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete subgroup
     type: delete_group
     node: app-migration-baseline-1
     group_id: "{{group_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete namespace
     type: delete_namespace
     node: app-migration-baseline-1
     namespace_id: "{{namespace_id}}"
-    requester: "{{admin_key}}"
 
   - name: Uninstall v1 on node 1
     type: uninstall_application

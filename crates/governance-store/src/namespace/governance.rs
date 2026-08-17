@@ -1261,7 +1261,7 @@ impl<'a> NamespaceGovernance<'a> {
         // Either addressing may arrive here. A responder that knows an account
         // for us answers our device; one that does not answers our identity, which
         // is what lets a node holding no key at all get started.
-        let node_device = crate::NodeDeviceRepository::new(self.store).device_secret(&ns_id)?;
+        let node_device = crate::NodeDeviceRepository::new(self.store).device_secret()?;
         let addressed_to_us = match envelope.recipient {
             EnvelopeRecipient::Member { identity, .. } => identity == recipient_sk.public_key(),
             EnvelopeRecipient::Device { device, .. } => {
@@ -1643,7 +1643,7 @@ impl<'a> NamespaceGovernance<'a> {
         // have enrolled a device get device envelopes, members who have not are
         // still addressed by identity. So the receiver checks for both, and a
         // node with no enrolled device simply matches none of the device ones.
-        let node_device = crate::NodeDeviceRepository::new(self.store).device_secret(&ns_id)?;
+        let node_device = crate::NodeDeviceRepository::new(self.store).device_secret()?;
 
         for envelope in &rotation.envelopes {
             let addressed_to_us = match envelope.recipient {
@@ -2138,7 +2138,7 @@ pub fn namespace_groups_with_held_key_buffered_ops(
 /// iterates this to re-drive stranded buffered ops across all of them.
 pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
     Ok(NamespaceRepository::new(store)
-        .iter_identities()?
+        .participating_namespaces()?
         .into_iter()
         .map(|gid| gid.to_bytes())
         .collect())

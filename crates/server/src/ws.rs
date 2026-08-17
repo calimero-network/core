@@ -30,7 +30,7 @@ use serde_json::{
 };
 use tokio::spawn;
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use tokio::time::interval;
+use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
@@ -38,7 +38,12 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
-pub(crate) use subscribe::{caller_may_observe_context, caller_may_observe_group};
+// `may_observe_context` is not re-exported: the SSE handler reaches the context
+// gate through `caller_may_observe_context`, which applies it internally, so the
+// two transports cannot drift on the rule.
+pub(crate) use subscribe::{
+    authorize_group_subscriptions, caller_may_observe_context, may_deliver_group_event,
+};
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
 /// server (log correlation + connection-map key); never serialized to clients,
@@ -91,9 +96,12 @@ impl WsConfig {
 #[derive(Debug)]
 pub(crate) struct ConnectionStateInner {
     subscriptions: HashSet<ContextId>,
-    /// Group ids observed for `GroupMembership` events, routed independently
-    /// from `subscriptions`.
+    /// Group ids observed for group-keyed events (membership, migration),
+    /// routed independently from `subscriptions`.
     group_subscriptions: HashSet<Hash>,
+    /// The subset of `group_subscriptions` this connection holds admin
+    /// authority over. Admin-only payloads route against this set alone.
+    admin_group_subscriptions: HashSet<Hash>,
     last_pong: AtomicU64, // Timestamp of last received pong (or connection start)
     /// The verified public key of the authenticated client that opened this
     /// connection, or `None` when the auth method does not provide a
@@ -112,6 +120,7 @@ impl ConnectionStateInner {
         Self {
             subscriptions: HashSet::default(),
             group_subscriptions: HashSet::default(),
+            admin_group_subscriptions: HashSet::default(),
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
@@ -427,7 +436,13 @@ async fn handle_socket(
 #[derive(Clone, Copy)]
 enum EventRoute {
     Context(ContextId),
-    Group(Hash),
+    /// `admin_only` payloads route against the admin subset of the group
+    /// subscriptions; resolved here because the event is consumed before the
+    /// per-connection match runs.
+    Group {
+        id: Hash,
+        admin_only: bool,
+    },
 }
 
 async fn fan_out_node_events(state: Arc<ServiceState>) {
@@ -436,12 +451,18 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
     let mut events = pin!(events);
 
     while let Some(event) = events.next().await {
-        // Route by id-space: context events by context_id, membership events by group_id.
+        // Route by id-space: context events by context_id, membership and
+        // migration events by group_id.
         let route = match &event {
             NodeEvent::Context(context_event) => EventRoute::Context(context_event.context_id),
-            NodeEvent::GroupMembership(membership_event) => {
-                EventRoute::Group(membership_event.group_id)
-            }
+            NodeEvent::GroupMembership(membership_event) => EventRoute::Group {
+                id: membership_event.group_id,
+                admin_only: false,
+            },
+            NodeEvent::GroupMigration(migration_event) => EventRoute::Group {
+                id: migration_event.group_id,
+                admin_only: migration_event.payload.requires_group_admin(),
+            },
         };
 
         debug!("Received node event: {:?}", event);
@@ -478,7 +499,12 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
                 let inner = connection.inner.read().await;
                 let matched = match route {
                     EventRoute::Context(context_id) => inner.subscriptions.contains(&context_id),
-                    EventRoute::Group(group_id) => inner.group_subscriptions.contains(&group_id),
+                    EventRoute::Group { id, admin_only } => may_deliver_group_event(
+                        admin_only,
+                        &id,
+                        &inner.group_subscriptions,
+                        &inner.admin_group_subscriptions,
+                    ),
                 };
                 if matched {
                     targets.push((*connection_id, connection.commands.clone()));
@@ -572,13 +598,57 @@ async fn handle_commands(
     }
 }
 
+/// What a health-check tick should do about the client's liveness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HealthCheck {
+    /// An outstanding ping went unanswered past its grace period.
+    Close,
+    /// Nothing is outstanding: probe the client.
+    Ping,
+    /// A ping is outstanding but still within its grace period.
+    Wait,
+}
+
+/// Decide a tick's action. The deadline applies only to a ping that is actually
+/// outstanding, so neither an unpinged client nor a late timer can close a
+/// connection; `ping_sent_at` is `None` until the first ping goes out, and a
+/// pong at or after the send answers it (timestamps are whole seconds, so a
+/// sub-second round trip lands on the same one).
+const fn health_check_action(
+    now: u64,
+    last_pong: u64,
+    ping_sent_at: Option<u64>,
+    pong_timeout_secs: u64,
+) -> HealthCheck {
+    let Some(sent_at) = ping_sent_at else {
+        return HealthCheck::Ping;
+    };
+
+    if last_pong >= sent_at {
+        return HealthCheck::Ping;
+    }
+
+    if now.saturating_sub(sent_at) > pong_timeout_secs {
+        HealthCheck::Close
+    } else {
+        HealthCheck::Wait
+    }
+}
+
 async fn handle_health_check(
     connection_id: ConnectionId,
     state: Arc<ServiceState>,
     connection_state: ConnectionState,
 ) {
     let mut ping_timer = interval(Duration::from_secs(state.config.ping_interval_secs));
+    // A starved task must not fire a burst of catch-up ticks: every tick is a
+    // heartbeat, so a late one restarts the interval instead of compounding.
+    ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let _ = ping_timer.tick().await; // First tick completes immediately
+
+    // Timestamp of the ping awaiting a pong, `None` when none is outstanding.
+    // Owned by this task alone, so it needs no synchronization of its own.
+    let mut ping_sent_at = None;
 
     loop {
         let _ = ping_timer.tick().await;
@@ -589,43 +659,96 @@ async fn handle_health_check(
             break;
         }
 
-        // Check for pong timeout
         let last_pong = connection_state
             .inner
             .read()
             .await
             .last_pong
             .load(Ordering::Relaxed);
-        let elapsed = unix_timestamp().saturating_sub(last_pong);
 
-        if elapsed > state.config.ping_interval_secs + state.config.pong_timeout_secs {
-            warn!(
-                %connection_id,
-                elapsed_secs = elapsed,
-                timeout_secs = state.config.ping_interval_secs + state.config.pong_timeout_secs,
-                "Client failed to respond to ping, closing connection"
-            );
+        match health_check_action(
+            unix_timestamp(),
+            last_pong,
+            ping_sent_at,
+            state.config.pong_timeout_secs,
+        ) {
+            HealthCheck::Wait => {}
+            HealthCheck::Close => {
+                warn!(
+                    %connection_id,
+                    timeout_secs = state.config.pong_timeout_secs,
+                    "Client failed to respond to ping, closing connection"
+                );
 
-            // Close connection due to timeout
-            if let Err(err) = connection_state
-                .commands
-                .send(Command::Close(
-                    close_code::PROTOCOL_ERROR,
-                    "Ping timeout".to_owned(),
-                ))
-                .await
-            {
-                error!(%connection_id, %err, "Failed to send close command");
+                if let Err(err) = connection_state
+                    .commands
+                    .send(Command::Close(
+                        close_code::PROTOCOL_ERROR,
+                        "Ping timeout".to_owned(),
+                    ))
+                    .await
+                {
+                    error!(%connection_id, %err, "Failed to send close command");
+                }
+                break;
             }
-            break;
+            HealthCheck::Ping => {
+                debug!(%connection_id, "Sending ping to client");
+                if let Err(err) = connection_state.commands.send(Command::Ping(vec![])).await {
+                    error!(%connection_id, %err, "Failed to send ping command");
+                    break;
+                }
+                ping_sent_at = Some(unix_timestamp());
+            }
         }
+    }
+}
 
-        // Send ping to check if client is alive
-        debug!(%connection_id, "Sending ping to client");
-        if let Err(err) = connection_state.commands.send(Command::Ping(vec![])).await {
-            error!(%connection_id, %err, "Failed to send ping command");
-            break;
-        }
+#[cfg(test)]
+mod health_check_tests {
+    use super::{health_check_action, HealthCheck};
+
+    const TIMEOUT: u64 = 10;
+
+    #[test]
+    fn never_pinged_client_survives_an_arbitrarily_late_tick() {
+        assert_eq!(
+            health_check_action(1_000_000, 1_000, None, TIMEOUT),
+            HealthCheck::Ping
+        );
+    }
+
+    #[test]
+    fn responsive_client_survives_a_late_tick() {
+        // Pong answered the outstanding ping; the tick then ran hours late.
+        assert_eq!(
+            health_check_action(1_010_000, 1_001, Some(1_000), TIMEOUT),
+            HealthCheck::Ping
+        );
+    }
+
+    #[test]
+    fn pong_in_the_ping_second_answers_it() {
+        assert_eq!(
+            health_check_action(1_100, 1_000, Some(1_000), TIMEOUT),
+            HealthCheck::Ping
+        );
+    }
+
+    #[test]
+    fn unanswered_ping_closes_once_the_grace_period_expires() {
+        assert_eq!(
+            health_check_action(1_011, 999, Some(1_000), TIMEOUT),
+            HealthCheck::Close
+        );
+    }
+
+    #[test]
+    fn unanswered_ping_is_spared_within_the_grace_period() {
+        assert_eq!(
+            health_check_action(1_010, 999, Some(1_000), TIMEOUT),
+            HealthCheck::Wait
+        );
     }
 }
 
@@ -827,6 +950,7 @@ mod tests {
     //! connection lifecycle, subscribe/unsubscribe, ping/pong, cleanup, event
     //! broadcasting, and the `execute` plumbing.
 
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -839,8 +963,9 @@ mod tests {
     use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
     use calimero_primitives::context::ContextId;
     use calimero_primitives::events::{
-        ContextEvent, ContextEventPayload, GroupMembershipEvent, MembershipChange,
-        MembershipChangePayload, NodeEvent, StateMutationPayload,
+        ContextEvent, ContextEventPayload, GroupMembershipEvent, GroupMigrationEvent,
+        GroupMigrationPayload, MembershipChange, MembershipChangePayload, NodeEvent,
+        StateMutationPayload,
     };
     use calimero_primitives::hash::Hash;
     use calimero_primitives::identity::PublicKey;
@@ -854,7 +979,8 @@ mod tests {
     use futures_util::{SinkExt, Stream, StreamExt};
     use serde_json::{json, Value};
     use tempfile::TempDir;
-    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{broadcast, mpsc, RwLock};
     use tokio::time::sleep;
     use tokio_tungstenite::connect_async;
@@ -868,6 +994,7 @@ mod tests {
     /// store's temp dir alive for the duration of the test.
     struct TestServer {
         url: String,
+        addr: SocketAddr,
         state: Arc<ServiceState>,
         event_sender: broadcast::Sender<NodeEvent>,
         _blob_dir: TempDir,
@@ -878,19 +1005,31 @@ mod tests {
     }
 
     async fn spawn_test_ws() -> TestServer {
-        spawn_test_ws_full(false, None, LazyRecipient::new()).await
+        spawn_test_ws_full(false, None, LazyRecipient::new(), WsConfig::new(true)).await
     }
 
     /// No-auth server whose node actor answers presence-snapshot reads with
     /// `entries`. Must run inside an actix System (`#[actix::test]`).
     async fn spawn_test_ws_seeded(entries: Vec<crate::test_support::SnapshotEntry>) -> TestServer {
-        spawn_test_ws_full(false, None, crate::test_support::stub_node_manager(entries)).await
+        spawn_test_ws_full(
+            false,
+            None,
+            crate::test_support::stub_node_manager(entries),
+            WsConfig::new(true),
+        )
+        .await
     }
 
     // Auth-enabled server with an authenticated (non-owner) caller, so the
     // per-request subscribe auth gates actually run.
     async fn spawn_test_ws_authed(caller: PublicKey) -> TestServer {
-        spawn_test_ws_full(true, Some(caller), LazyRecipient::new()).await
+        spawn_test_ws_full(
+            true,
+            Some(caller),
+            LazyRecipient::new(),
+            WsConfig::new(true),
+        )
+        .await
     }
 
     async fn spawn_test_ws_full(
@@ -900,11 +1039,13 @@ mod tests {
         // (uninitialized) for tests that never reach it; a stub for the ones
         // that read the presence snapshot.
         node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
+        config: WsConfig,
     ) -> TestServer {
         // Initial receiver dropped immediately so `receiver_count()` reflects
         // only the shared node-event fan-out task.
         let (event_sender, _) = broadcast::channel(256);
-        spawn_test_ws_full_with_events(auth_enabled, caller, node_manager, event_sender).await
+        spawn_test_ws_full_with_events(auth_enabled, caller, node_manager, event_sender, config)
+            .await
     }
 
     /// As [`spawn_test_ws_full`], but over a caller-supplied event sender — for
@@ -915,6 +1056,7 @@ mod tests {
         caller: Option<PublicKey>,
         node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
+        config: WsConfig,
     ) -> TestServer {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
 
@@ -951,7 +1093,7 @@ mod tests {
             node_client,
             ctx_client,
             connections: RwLock::default(),
-            config: WsConfig::new(true),
+            config,
             auth_enabled,
             events_fanout: std::sync::Once::new(),
         });
@@ -970,6 +1112,7 @@ mod tests {
 
         TestServer {
             url: format!("ws://{addr}/ws"),
+            addr,
             state,
             event_sender,
             _server: server,
@@ -1096,6 +1239,73 @@ mod tests {
         );
     }
 
+    fn group_migration_event(group: Hash) -> NodeEvent {
+        NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: group,
+            payload: GroupMigrationPayload::MigrationStarted {
+                from_version: "10.1.3".to_owned(),
+                to_version: "10.2.0".to_owned(),
+                to_state_version: 2,
+                local_contexts_total: 3,
+            },
+        })
+    }
+
+    // The migration event rides the group subscription that already existed: a
+    // subscriber to the namespace gets it, an unsubscribed connection does not.
+    #[tokio::test]
+    async fn group_migration_events_only_reach_group_subscribers() {
+        let server = spawn_test_ws().await;
+        let group = Hash::from([78u8; 32]);
+
+        let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
+        let (_write_b, mut read_b) = connect_async(&server.url).await.unwrap().0.split();
+
+        write_a.send(subscribe_group_msg(1, group)).await.unwrap();
+        let sub_resp = next_json(&mut read_a, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(sub_resp["id"], json!(1));
+        assert_eq!(
+            sub_resp["result"]["groupIds"],
+            json!([hex::encode(group.as_bytes())]),
+            "the group id should be echoed as subscribed, hex-encoded like the admin API"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(group_migration_event(group))
+            .unwrap();
+
+        let pushed = next_json(&mut read_a, Duration::from_secs(5))
+            .await
+            .expect("group subscriber should receive the event");
+        assert_eq!(
+            pushed["result"]["type"], "MigrationStarted",
+            "the frame should carry the migration-phase discriminant: {pushed}"
+        );
+        assert_eq!(
+            pushed["result"]["groupId"],
+            hex::encode(group.as_bytes()),
+            "the frame should carry the groupId the client subscribed with: {pushed}"
+        );
+
+        let leaked = next_json(&mut read_b, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a non-group-subscriber must not receive the event: {leaked:?}"
+        );
+    }
+
     // Regression for the hex/base58 id-representation bug: a real client
     // subscribes with the RAW group-only wire frame it actually sends - no
     // `contextIds`, and `groupIds` a HEX-encoded id in the exact form the
@@ -1153,6 +1363,205 @@ mod tests {
         assert_eq!(
             pushed["result"]["groupId"], group_hex,
             "the delivered groupId must equal the hex the client subscribed with: {pushed}"
+        );
+    }
+
+    fn cascade_progress_event(group: Hash, subgroup: Hash) -> NodeEvent {
+        NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: group,
+            payload: GroupMigrationPayload::CascadeProgress {
+                subgroup_id: subgroup,
+                local_contexts_swapped: 1,
+                local_contexts_total: 2,
+            },
+        })
+    }
+
+    fn migration_progress_event(group: Hash) -> NodeEvent {
+        NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: group,
+            payload: GroupMigrationPayload::MigrationProgress {
+                migrated: 1,
+                in_progress: 1,
+                unknown: 0,
+                failed: 0,
+                total: 2,
+            },
+        })
+    }
+
+    /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
+    /// returning the namespace and subgroup ids as wire hashes plus the account
+    /// `caller`'s key resolves to - the principal every row below is keyed by,
+    /// and what the subscribe gate compares against.
+    fn seed_namespace_with_restricted_subgroup(
+        store: &Store,
+        caller: PublicKey,
+        role: calimero_primitives::context::GroupMemberRole,
+    ) -> (Hash, Hash, calimero_primitives::identity::AccountId) {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::VisibilityMode;
+        use calimero_governance_store::{
+            CapabilitiesRepository, MembershipRepository, NamespaceRepository,
+        };
+
+        let ns = ContextGroupId::from([0xC0u8; 32]);
+        let subgroup = ContextGroupId::from([0xC1u8; 32]);
+
+        // Enrolled at the namespace anchor, so the caller's key resolves there
+        // and every row below names the account it resolves to.
+        let account = calimero_context::test_support::enrol(store, &ns, &caller);
+
+        MembershipRepository::new(store)
+            .add_member(&ns, &account, role)
+            .unwrap();
+        NamespaceRepository::new(store)
+            .nest(&ns, &subgroup)
+            .unwrap();
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Restricted)
+            .unwrap();
+
+        (
+            Hash::from(ns.to_bytes()),
+            Hash::from(subgroup.to_bytes()),
+            account,
+        )
+    }
+
+    // `CascadeProgress` names a descendant subgroup id, so a plain member of the
+    // namespace must not receive it while still receiving the counter-only
+    // progress frames. The cascade frame is broadcast FIRST: if the gate were
+    // missing, it would be the frame this subscriber reads.
+    #[tokio::test]
+    async fn cascade_progress_withheld_from_non_admin_group_subscriber() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let member_pk =
+            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let server = spawn_test_ws_authed(member_pk).await;
+        let store = server.state.ctx_client.datastore();
+        let (group, subgroup, member) =
+            seed_namespace_with_restricted_subgroup(store, member_pk, GroupMemberRole::Member);
+
+        let membership = MembershipRepository::new(store);
+        let ns_gid = calimero_context_config::types::ContextGroupId::from(*group.as_bytes());
+        let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
+        assert!(
+            membership
+                .effective_capabilities(&ns_gid, &member)
+                .unwrap()
+                .is_some(),
+            "precondition: the caller subscribes as a genuine namespace member"
+        );
+        assert!(
+            !membership.is_admin(&ns_gid, &member).unwrap(),
+            "precondition: the caller is not an admin of the namespace"
+        );
+        assert!(
+            membership
+                .effective_capabilities(&sub_gid, &member)
+                .unwrap()
+                .is_none(),
+            "precondition: the Restricted subgroup is invisible to it - its id is what the cascade frame would disclose"
+        );
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(
+            resp["result"]["groupIds"],
+            json!([hex::encode(group.as_bytes())]),
+            "the member must be admitted to the namespace stream: {resp}"
+        );
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(cascade_progress_event(group, subgroup))
+            .unwrap();
+        server
+            .event_sender
+            .send(migration_progress_event(group))
+            .unwrap();
+
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the member should still receive the counter-only frame");
+        assert_eq!(
+            pushed["result"]["type"], "MigrationProgress",
+            "the cascade frame must have been dropped, leaving the progress frame first: {pushed}"
+        );
+
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "no further frame should reach a non-admin member: {leaked:?}"
+        );
+    }
+
+    // The other half of the gate: an admin of the namespace root does receive
+    // the cascade frame. Re-keying the event to the Restricted subgroup would
+    // fail here - `check_path` bails on visibility before its ancestor-admin
+    // arm, so the root admin resolves to no membership on that subgroup.
+    #[tokio::test]
+    async fn cascade_progress_reaches_the_namespace_admin() {
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let admin_pk =
+            calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+        let server = spawn_test_ws_authed(admin_pk).await;
+        let store = server.state.ctx_client.datastore();
+        let (group, subgroup, admin) =
+            seed_namespace_with_restricted_subgroup(store, admin_pk, GroupMemberRole::Admin);
+
+        let sub_gid = calimero_context_config::types::ContextGroupId::from(*subgroup.as_bytes());
+        assert!(
+            MembershipRepository::new(store)
+                .effective_capabilities(&sub_gid, &admin)
+                .unwrap()
+                .is_none(),
+            "the root admin has no membership on the Restricted subgroup, so the gate must key on the root"
+        );
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_group_msg(1, group)).await.unwrap();
+        let _ = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+
+        server
+            .event_sender
+            .send(cascade_progress_event(group, subgroup))
+            .unwrap();
+
+        let pushed = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("the namespace admin should receive the cascade frame");
+        assert_eq!(
+            pushed["result"]["type"], "CascadeProgress",
+            "the admin must keep the per-subgroup detail: {pushed}"
         );
     }
 
@@ -1391,8 +1800,82 @@ mod tests {
         assert!(got_pong, "server should answer a ping with a pong");
     }
 
-    // As above: a context subscription reads the presence snapshot, so the node
-    // actor has to answer.
+    /// End-to-end cover for the health check: an idle client that answers pings
+    /// keeps getting pinged and is never closed. Reading the socket is what
+    /// sends the pongs, since tungstenite answers pings from the read path.
+    #[tokio::test]
+    async fn responsive_idle_client_keeps_being_pinged_and_is_never_closed() {
+        let mut config = WsConfig::new(true);
+        config.ping_interval_secs = 1;
+        config.pong_timeout_secs = 1;
+
+        let server = spawn_test_ws_full(false, None, LazyRecipient::new(), config).await;
+        let (_write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let mut pings = 0_u32;
+        let _ = tokio::time::timeout(Duration::from_millis(4_000), async {
+            while let Some(Ok(msg)) = read.next().await {
+                match msg {
+                    Message::Ping(_) => pings += 1,
+                    Message::Close(frame) => {
+                        panic!("server closed a responsive client: {frame:?}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+
+        assert!(pings >= 2, "expected repeated server pings, got {pings}");
+    }
+
+    /// A client that never answers is still closed. Driven over a raw socket
+    /// because a tungstenite client answers pings from its read path, which
+    /// would make "unresponsive" depend on when the test happens to poll.
+    #[tokio::test]
+    async fn unresponsive_client_is_closed() {
+        let mut config = WsConfig::new(true);
+        config.ping_interval_secs = 1;
+        config.pong_timeout_secs = 1;
+
+        let server = spawn_test_ws_full(false, None, LazyRecipient::new(), config).await;
+        let mut socket = TcpStream::connect(server.addr).await.unwrap();
+
+        socket
+            .write_all(
+                format!(
+                    "GET /ws HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+                     Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                    server.addr
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        // Server frames are unmasked and the pings it sends carry no payload,
+        // so the byte stream is `89 00` repeated until the close frame's `88`.
+        let closed = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut buf = [0_u8; 1024];
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => return false,
+                    Ok(n) => {
+                        if buf[..n].contains(&0x88) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(closed, "server should close a client that never pongs");
+    }
+
+    // A context subscription reads the presence snapshot, so the node actor has
+    // to answer.
     #[actix::test]
     async fn events_only_reach_subscribers() {
         let server = spawn_test_ws_seeded(vec![]).await;
@@ -1461,7 +1944,6 @@ mod tests {
                 ContextId::from([3u8; 32]),
                 "some_method".to_owned(),
                 json!({}),
-                vec![],
             )),
         };
         write
@@ -1559,7 +2041,7 @@ mod tests {
         let ctx = ContextId::from([0x21u8; 32]);
         let node_manager =
             crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 1_500)]);
-        let server = spawn_test_ws_full(false, None, node_manager).await;
+        let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
 
         let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
         let (mut write_b, mut read_b) = connect_async(&server.url).await.unwrap().0.split();
@@ -1604,7 +2086,7 @@ mod tests {
         let ctx = ContextId::from([0x22u8; 32]);
         let node_manager =
             crate::test_support::stub_node_manager(vec![(replay_author(), vec![7], 4_200)]);
-        let server = spawn_test_ws_full(false, None, node_manager).await;
+        let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
 
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
         write.send(subscribe_msg(1, ctx)).await.unwrap();
@@ -1644,7 +2126,8 @@ mod tests {
         let non_member = PublicKey::from([0x55u8; 32]);
         let node_manager =
             crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 10)]);
-        let server = spawn_test_ws_full(true, Some(non_member), node_manager).await;
+        let server =
+            spawn_test_ws_full(true, Some(non_member), node_manager, WsConfig::new(true)).await;
 
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
         write.send(subscribe_msg(1, ctx)).await.unwrap();
@@ -1693,7 +2176,14 @@ mod tests {
             event_sender.clone(),
             live_ephemeral_event(ctx, PublicKey::from([0xB2u8; 32]), vec![42]),
         );
-        let server = spawn_test_ws_full_with_events(false, None, node_manager, event_sender).await;
+        let server = spawn_test_ws_full_with_events(
+            false,
+            None,
+            node_manager,
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
 
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
         // The fan-out task must be draining the broadcast before the delta is

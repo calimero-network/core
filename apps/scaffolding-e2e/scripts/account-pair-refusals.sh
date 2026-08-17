@@ -6,11 +6,12 @@
 #       type: script
 #       script: scripts/account-pair-refusals.sh
 #       target: local
-#       args: [ <holder>, <new-node>, <namespace-id>, <root-key>, <nonce> ]
+#       args: [ <holder>, <new-node>, <namespace-id>, <root-key> ]
 #
-# The root key and nonce come from the `account_create` step's outputs
-# (`accountRootKey` / `accountNonce`) — passed in rather than read from a file,
-# because the step exports them and nothing writes the temp files any more.
+# The root key comes from the `node_identity` step's `accountRootPublicKey` output —
+# passed in rather than read from a file, because the step exports it and nothing
+# writes the temp files any more. There is no nonce: the account genesis carries
+# none, and `pair-init` needs only the root key.
 #
 # Run this BEFORE the `account_pair` step does the real pairing: it performs its
 # own `pair-init` on the new node and then offers the holder two deliberately
@@ -30,8 +31,8 @@
 
 set -eu
 
-if [ "$#" -ne 5 ]; then
-    echo "usage: $0 <holder> <new-node> <namespace-id> <root-key> <nonce>" >&2
+if [ "$#" -ne 4 ]; then
+    echo "usage: $0 <holder> <new-node> <namespace-id> <root-key>" >&2
     exit 1
 fi
 
@@ -41,10 +42,9 @@ holder="$1"
 newnode="$2"
 namespace="$3"
 root_key="$4"
-nonce="$5"
 
 init=$(api_post "${newnode}" "namespaces/${namespace}/account/pair-init" \
-    "{\"accountRootKey\":\"${root_key}\",\"accountNonce\":\"${nonce}\"}")
+    "{\"accountRootPublicKey\":\"${root_key}\"}")
 
 device=$(echo "${init}" | jq -r '.data.deviceId')
 kem=$(echo "${init}" | jq -r '.data.kemPublicKey')

@@ -41,9 +41,12 @@
 //! still finds the outstanding work when it comes back, and a node that crashes
 //! mid-rotation retries. The worklist drains; it does not evaporate.
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
-use calimero_store::key::{GroupPendingKeyRotation, GROUP_PENDING_KEY_ROTATION_PREFIX};
+use calimero_store::key::{
+    GroupPendingDeviceRotation, GroupPendingKeyRotation, GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+    GROUP_PENDING_KEY_ROTATION_PREFIX,
+};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -175,5 +178,181 @@ impl<'a> PendingRotationRepository<'a> {
                 .map_err(|e| eyre::eyre!("PendingRotationRepository::clear_all_for_group: {e}"))?;
         }
         Ok(())
+    }
+}
+
+/// Typed repository over the pending **device**-rotation worklist.
+///
+/// The sibling of [`PendingRotationRepository`], for the debt a device revocation
+/// leaves rather than a departure. A row means: `group_id` owes a rotation because
+/// `device` was revoked without one, and none has landed yet.
+///
+/// # Why this is not the same worklist
+///
+/// The two discharge differently, and conflating them would cut off a member who
+/// never left. A departure rotates *excluding the departed account*; a device
+/// revocation rotates **excluding nobody by name** — the recipient list is built
+/// from live bindings, so the revoked device is already absent from it while the
+/// account it belonged to keeps every other device it holds.
+///
+/// # Why the debt exists
+///
+/// Revoking a device is the account holder's authority; rotating the group key is
+/// an admin's, because peers accept a rotation only from an admin at the cut. The
+/// common case is a holder who is not an admin — you revoke your own stolen phone
+/// in a namespace you joined as an ordinary member. The revocation stops that
+/// device WRITING at once, but it keeps the key it already holds, so it can keep
+/// READING until somebody rotates. This worklist is what makes that somebody
+/// arrive.
+pub struct PendingDeviceRotationRepository<'a> {
+    store: &'a Store,
+}
+
+impl<'a> PendingDeviceRotationRepository<'a> {
+    pub fn new(store: &'a Store) -> Self {
+        Self { store }
+    }
+
+    /// Record that `group_id` owes a rotation because `device` was revoked.
+    ///
+    /// Idempotent. Called from the `AccountDeviceUnlinked` apply on every node, so
+    /// the worklist is replicated rather than gossiped — every admin that folds the
+    /// revocation learns the debt, and any one of them may discharge it.
+    pub fn mark(&self, group_id: &ContextGroupId, device: &DeviceId) -> EyreResult<()> {
+        let key = GroupPendingDeviceRotation::new(group_id.to_bytes(), *device);
+        let mut handle = self.store.handle();
+        handle
+            .put(&key, &())
+            .map_err(|e| eyre::eyre!("PendingDeviceRotationRepository::mark: {e}"))?;
+        Ok(())
+    }
+
+    /// Discharge the rotation `group_id` owed for `device`.
+    ///
+    /// Idempotent: clearing an absent row is a no-op, which is what makes two admins
+    /// rotating after the same revocation harmless.
+    pub fn clear(&self, group_id: &ContextGroupId, device: &DeviceId) -> EyreResult<()> {
+        let key = GroupPendingDeviceRotation::new(group_id.to_bytes(), *device);
+        let mut handle = self.store.handle();
+        handle
+            .delete(&key)
+            .map_err(|e| eyre::eyre!("PendingDeviceRotationRepository::clear: {e}"))?;
+        Ok(())
+    }
+
+    /// Does `group_id` still owe a rotation for `device`?
+    pub fn is_pending(&self, group_id: &ContextGroupId, device: &DeviceId) -> EyreResult<bool> {
+        let key = GroupPendingDeviceRotation::new(group_id.to_bytes(), *device);
+        let handle = self.store.handle();
+        handle
+            .has(&key)
+            .map_err(|e| eyre::eyre!("PendingDeviceRotationRepository::is_pending: {e}"))
+    }
+
+    /// Every `(group, device)` this node still owes a rotation for.
+    ///
+    /// Drained at startup, so a node that was down when the revocation applied still
+    /// discharges the debt rather than losing it.
+    pub fn all_pending(&self) -> EyreResult<Vec<(ContextGroupId, DeviceId)>> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupPendingDeviceRotation::new([0u8; 32], DeviceId::from([0u8; 32])),
+            GROUP_PENDING_DEVICE_ROTATION_PREFIX,
+            |_| true,
+        )?;
+        Ok(keys
+            .iter()
+            .map(|k| (ContextGroupId::from(k.group_id()), k.device()))
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod device_rotation_tests {
+    use calimero_account::DeviceId;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::PendingDeviceRotationRepository;
+
+    fn store() -> Store {
+        Store::new(std::sync::Arc::new(InMemoryDB::owned()))
+    }
+
+    /// The two worklists must not see each other's rows. If they shared a key
+    /// space, discharging a device revocation would clear a departure's debt (or
+    /// the reverse) and the rotation that was actually owed would be dropped —
+    /// silently, because a cleared row is indistinguishable from a paid one.
+    #[test]
+    fn a_device_debt_is_not_an_account_debt() {
+        use crate::PendingRotationRepository;
+        use calimero_account::AccountId;
+
+        let store = store();
+        let gid = ContextGroupId::from([0x11u8; 32]);
+        // Same 32 bytes on purpose: only the key prefix separates them.
+        let raw = [0x22u8; 32];
+        let device = DeviceId::from(raw);
+        let account = AccountId::from(raw);
+
+        PendingDeviceRotationRepository::new(&store)
+            .mark(&gid, &device)
+            .unwrap();
+
+        assert!(PendingDeviceRotationRepository::new(&store)
+            .is_pending(&gid, &device)
+            .unwrap());
+        assert!(
+            !PendingRotationRepository::new(&store)
+                .is_pending(&gid, &account)
+                .unwrap(),
+            "a device debt must not read as a departure debt for the same 32 bytes"
+        );
+
+        // ...and clearing one leaves the other alone.
+        PendingRotationRepository::new(&store)
+            .mark(&gid, &account)
+            .unwrap();
+        PendingDeviceRotationRepository::new(&store)
+            .clear(&gid, &device)
+            .unwrap();
+        assert!(
+            PendingRotationRepository::new(&store)
+                .is_pending(&gid, &account)
+                .unwrap(),
+            "discharging a device revocation must not discharge a departure"
+        );
+    }
+
+    /// The startup drain is the only thing that tells an admin which was offline
+    /// when the revocation applied that anything is owed — there is no replayed
+    /// event.
+    #[test]
+    fn all_pending_enumerates_the_backlog_across_groups() {
+        let store = store();
+        let g1 = ContextGroupId::from([0x11u8; 32]);
+        let g2 = ContextGroupId::from([0x33u8; 32]);
+        let d1 = DeviceId::from([0xAAu8; 32]);
+        let d2 = DeviceId::from([0xBBu8; 32]);
+
+        let repo = PendingDeviceRotationRepository::new(&store);
+        assert!(repo.all_pending().unwrap().is_empty());
+
+        repo.mark(&g1, &d1).unwrap();
+        repo.mark(&g1, &d2).unwrap();
+        repo.mark(&g2, &d1).unwrap();
+
+        let mut got = repo.all_pending().unwrap();
+        got.sort();
+        let mut want = vec![(g1, d1), (g1, d2), (g2, d1)];
+        want.sort();
+        assert_eq!(got, want, "every owed rotation must survive a restart");
+
+        repo.clear(&g1, &d1).unwrap();
+        assert_eq!(repo.all_pending().unwrap().len(), 2);
+        // Idempotent: clearing twice is how a two-admin race stays harmless.
+        repo.clear(&g1, &d1).unwrap();
+        assert_eq!(repo.all_pending().unwrap().len(), 2);
     }
 }

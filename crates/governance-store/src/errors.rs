@@ -265,7 +265,7 @@ pub enum NamespaceError {
     #[error("nesting depth exceeds MAX_NAMESPACE_DEPTH; tree would be unwalkable")]
     DepthExceeded,
 
-    /// No `NamespaceIdentity` row stored for the namespace root.
+    /// No `NamespaceParticipation` row stored for the namespace root.
     #[error("namespace identity not found for {0}")]
     NoNamespaceIdentity(String),
 
@@ -332,17 +332,6 @@ pub enum CapabilitiesError {
     /// callers can match on it for routing-level decisions.
     #[error("requester lacks permission to {operation} in group {group_id}")]
     Unauthorized { group_id: String, operation: String },
-}
-
-/// Errors raised by `SigningKeysRepository`. Distinct from the
-/// crypto-layer errors raised by `GroupKeyring` because the
-/// "no signing key" case is a *configuration* failure (caller never
-/// registered one), not a cryptographic one.
-#[derive(Debug, Error)]
-pub enum SigningKeysError {
-    /// No signing key stored for `identity` in `group_id`.
-    #[error("signing key not found for {identity} in group {group_id}")]
-    NotFound { group_id: String, identity: String },
 }
 
 /// Errors raised by `GroupKeyring` (encryption-key management) and

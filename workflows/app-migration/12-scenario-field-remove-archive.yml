@@ -1,15 +1,15 @@
-name: 12 — Scenario "field remove with archive" (v1 → v2-archive, 2-node)
+name: 12 - Scenario "field remove with archive" (v1 → v2-archive, 2-node)
 description: >
   2-node per-context migration for the field-remove-with-archive
   scenario. v1 carries a `legacy_note: LwwRegister<String>` that v2
-  drops from the active schema — but the migration ARCHIVES the v1
+  drops from the active schema - but the migration ARCHIVES the v1
   value into a new `archived_legacy: UnorderedMap<String,
   LwwRegister<String>>` keyed by "latest", so data isn't lost (it just
   moves out of the active schema into an explicit archive sibling).
   This differs from `03-scenario-remove-field`, which drops the v1
   value outright. Topology: namespace + one Open subgroup + one
   context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
-  target=v2, migrate=migrate_v1_to_v2)` — per-context (cascade=false).
+  target=v2, migrate=migrate_v1_to_v2)` - per-context (cascade=false).
 
   Bug-2 cross-node guard: node 2 reads the new `archived_legacy` map
   via `get_archived("latest")` to prove the migration's storage
@@ -174,7 +174,7 @@ steps:
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   # The upgrade sets the target + migration method on the subgroup meta
-  # and returns without running a propagator — each node self-migrates on
+  # and returns without running a propagator - each node self-migrates on
   # its next access below.
   - name: Install scenario-field-remove-archive-v2 on node 1
     type: install_application
@@ -187,7 +187,7 @@ steps:
 
   - name: Assert both versions share one application id (bundle same-id)
     # Same-package bundles derive ApplicationId = hash(package, signer),
-    # so the second install MUST dedup onto the first id — the upgrade
+    # so the second install MUST dedup onto the first id - the upgrade
     # below then exercises the same-id (blob-only) propagation path.
     type: json_assert
     statements:
@@ -225,27 +225,47 @@ steps:
     outputs:
       v2_schema_node2: result
 
-  # Both nodes self-migrated via the lazy path — assert the migration
-  # logs on EACH after its triggering read above.
-  - name: Assert lazy migration ran on node 1
-    type: assert_log_present
-    nodes:
-      - app-migration-archive-1
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  # schema_info cannot prove a migration ran: the version string it returns is a
+  # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
+  # v1 bytes too. The rollup carries each member's ABI STATE version instead.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
-  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
-    type: assert_log_present
-    nodes:
-      - app-migration-archive-2
-    patterns:
-      - "performing lazy upgrade before execution"
-      - "Executing migration"
-      - "Migrated state written successfully"
-    min_matches: 1
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
 
   - name: Assert v2 schema on node 1 (legacy archived, name + counter preserved)
     type: json_assert
@@ -254,7 +274,7 @@ steps:
       - 'json_subset({{v2_schema_node1}}, {"output": {"name": "contract-A", "counter": 3}})'
       - 'json_subset({{v2_schema_node1}}, {"output": {"archived_latest": "legacy-data-do-not-discard"}})'
 
-  - name: Assert v2 schema on node 2 (bug-2 guard — archive map reached node 2)
+  - name: Assert v2 schema on node 2 (bug-2 guard - archive map reached node 2)
     type: json_assert
     statements:
       - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
@@ -292,7 +312,7 @@ steps:
       - 'json_equal({{archived_value_node2}}, {"output": "legacy-data-do-not-discard"})'
 
   # Negative: v1-only setter no longer exported by v2.
-  - name: Negative — set_legacy_note (v1) is gone in v2
+  - name: Negative - set_legacy_note (v1) is gone in v2
     type: call
     node: app-migration-archive-1
     context_id: "{{ctx_id}}"
@@ -302,7 +322,7 @@ steps:
     expected_failure: true
 
   # Negative: v1-only getter no longer exported by v2.
-  - name: Negative — get_legacy_note (v1) is gone in v2
+  - name: Negative - get_legacy_note (v1) is gone in v2
     type: call
     node: app-migration-archive-1
     context_id: "{{ctx_id}}"
@@ -314,19 +334,16 @@ steps:
     type: delete_context
     node: app-migration-archive-1
     context_id: "{{ctx_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete subgroup
     type: delete_group
     node: app-migration-archive-1
     group_id: "{{group_id}}"
-    requester: "{{admin_key}}"
 
   - name: Delete namespace
     type: delete_namespace
     node: app-migration-archive-1
     namespace_id: "{{namespace_id}}"
-    requester: "{{admin_key}}"
 
   - name: Uninstall v1 on node 1
     type: uninstall_application

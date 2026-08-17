@@ -163,10 +163,10 @@ async fn set_member_auto_follow_handler_error_paths() {
         .add_member(&gid, &alice_account, GroupMemberRole::Member)
         .unwrap();
 
-    // Admin needs a signing key registered so preflight can resolve one
-    // when admin acts as requester.
-    calimero_governance_store::SigningKeysRepository::new(&node.store)
-        .store_key(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
+    // The node signs as its own identity, so preflight resolves the admin
+    // only if that identity IS the admin's.
+    calimero_governance_store::NamespaceRepository::new(&node.store)
+        .replace_identity(&gid, &admin_sk.public_key(), admin_sk.as_bytes())
         .unwrap();
 
     // Case 1: unknown group — preflight bails before the membership
@@ -179,7 +179,6 @@ async fn set_member_auto_follow_handler_error_paths() {
             target: alice_account,
             auto_follow_contexts: true,
             auto_follow_subgroups: false,
-            requester: Some(admin_sk.public_key()),
         })
         .await
         .expect_err("unknown group should fail preflight");
@@ -198,7 +197,6 @@ async fn set_member_auto_follow_handler_error_paths() {
             target: calimero_context::test_support::account_for(&stranger),
             auto_follow_contexts: true,
             auto_follow_subgroups: false,
-            requester: Some(admin_sk.public_key()),
         })
         .await
         .expect_err("stranger is not a member");
@@ -216,6 +214,151 @@ async fn set_member_auto_follow_handler_error_paths() {
         .expect("alice row");
     assert!(alice_row.auto_follow.contexts);
     assert!(!alice_row.auto_follow.subgroups);
+}
+
+// ---------------------------------------------------------------------------
+// A governance call must never make the node a participant as a side effect.
+//
+// These exist because the reverse shipped and CI stayed green. `delete_context`
+// resolved its signing key through `participate_in`, which notes
+// participation — so deleting a context whose group this node had never joined
+// wrote a `NamespaceParticipation` row saying it had. Nothing caught it: every gate
+// passed, including the feature-gated suite, and it was found by reading the
+// diff.
+//
+// That row is not inert. `participating_namespaces` enumerates it, and the sync layer
+// walks that set — so the residue is a node syncing against a namespace it was
+// never in. The assertion is therefore on `participates_in` specifically, not
+// just on the call failing: a handler can return the right error and still have
+// written the row on the way there.
+//
+// The delete path IS driven now. It could not be, until the stub network actor
+// answered `Unsubscribe` — `delete_context` calls it as its first act, so the
+// handler died on a dropped mailbox before reaching any logic. That is why the
+// bug below shipped: no test could reach the code that had it.
+
+/// The signer resolution refuses a group this node takes no part in, and
+/// leaves no trace of having been asked.
+#[actix::test]
+#[serial(boot_test_node)]
+async fn a_governance_call_for_an_unjoined_group_writes_no_participation_row() {
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x5Au8; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_account =
+        calimero_context::test_support::enrol(&node.store, &gid, &admin_sk.public_key());
+
+    // The group exists and has members — only this node's identity is absent,
+    // so the existence check passes and the identity read is what must refuse.
+    calimero_governance_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_account))
+        .unwrap();
+    calimero_governance_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "precondition: the node must not already participate"
+    );
+
+    let err = node
+        .context_client
+        .set_member_auto_follow(SetMemberAutoFollowRequest {
+            group_id: gid,
+            target: admin_account,
+            auto_follow_contexts: true,
+            auto_follow_subgroups: false,
+        })
+        .await
+        .expect_err("a node with no identity there cannot sign");
+    assert!(
+        err.to_string().contains("does not take part"),
+        "unexpected error: {err}"
+    );
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "the refused call still marked this node as participating"
+    );
+}
+
+/// The regression that shipped in the identity collapse, now reachable.
+///
+/// `delete_context` resolved its signing key through `participate_in`,
+/// which notes participation — so deleting a context whose group this node had
+/// never joined recorded it as a participant. A stale `ContextGroupRef` is
+/// exactly the state that reaches here.
+///
+/// The row is not inert: `participating_namespaces` enumerates it and the sync layer
+/// walks that set, so the residue is a node syncing against a namespace it was
+/// never in. Asserted on `participates_in` and not merely on the error, because
+/// the handler returned the right error while writing the row anyway.
+#[actix::test]
+#[serial(boot_test_node)]
+async fn deleting_a_context_for_an_unjoined_group_writes_no_participation_row() {
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x5Bu8; 32]);
+    let context_id = calimero_primitives::context::ContextId::from([0x5Cu8; 32]);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let admin_account = calimero_context::test_support::enrol(&node.store, &gid, &admin_pk);
+
+    calimero_governance_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_account))
+        .unwrap();
+    calimero_governance_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // The context row has to exist or the handler short-circuits on
+    // `has_context` and never reaches the signing path under test.
+    {
+        let meta = calimero_store::types::ContextMeta::new(
+            calimero_store::key::ApplicationMeta::new(ApplicationId::from([0x11u8; 32])),
+            /* root_hash = */ [0x01; 32],
+            /* dag_heads = */ Vec::new(),
+            /* service_name = */ None,
+        );
+        let mut handle = node.store.handle();
+        handle
+            .put(&calimero_store::key::ContextMeta::new(context_id), &meta)
+            .expect("put ContextMeta");
+    }
+    calimero_governance_store::register_context_in_group(&node.store, &gid, &context_id).unwrap();
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "precondition: this node takes no part in the group"
+    );
+
+    // Admin, so authorization passes and the identity read is what refuses.
+    let err = node
+        .context_client
+        .delete_context(&context_id)
+        .await
+        .expect_err("no identity for the group means no detach op can be signed");
+    assert!(
+        err.to_string().contains("no signing identity"),
+        "unexpected error: {err}"
+    );
+
+    assert!(
+        !calimero_governance_store::NamespaceRepository::new(&node.store)
+            .participates_in(&gid)
+            .unwrap(),
+        "a delete marked this node as participating in the group it was deleting from"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +462,7 @@ fn announce_network_event(
 }
 
 /// Provision an owner node so it can act as a TEE-attestation verifier for the
-/// namespace `gid`: store its namespace identity (so `node_namespace_identity`
+/// namespace `gid`: store its namespace identity (so `node_signing_key`
 /// resolves and a signing key is available), seed it as group admin, and apply
 /// a mock-accepting `TeeAdmissionPolicySet` op that allowlists the mock MRTD.
 /// Returns the owner's namespace public key (the admission op's signer).
@@ -368,7 +511,7 @@ fn provision_tee_owner_with_sk(
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(gid, &owner_pk, owner_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(gid, &owner_pk, owner_sk.as_bytes())
         .expect("store_namespace_identity");
 
     // Policy lives on the namespace governance op log; admin-signed.
@@ -491,7 +634,6 @@ async fn create_open_subgroup(
             calimero_context_client::group::SetSubgroupVisibilityRequest {
                 group_id: sub_gid,
                 subgroup_visibility: calimero_context_config::VisibilityMode::Open,
-                requester: Some(*admin_pk),
             },
         )
         .await
@@ -840,7 +982,7 @@ async fn root_admitted_tee_auto_follows_open_subgroup_context() {
     //    `auto_follow.contexts = true` (set by `add_member` at admission), which
     //    the inheritance fall-through must honor via the root anchor.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to the TEE");
 
     // 4) Bind the auto-follow handler to THIS node's store/client. Like
@@ -1125,7 +1267,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // is the inherited-only TEE (root anchor, no open_sub row) — the path Fix B
     // changed. (See `root_admitted_tee_auto_follows_open_subgroup_context`.)
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to T");
 
     // Rebind the process-global auto-follow handler to this node's store/client.
@@ -1205,7 +1347,7 @@ async fn integrated_tee_lifecycle_open_replication_and_scoped_root_cascade() {
     // doing its job; the test simply must not be the evicted party while it
     // inspects an evicted party's aftermath.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &owner_pk, owner_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &owner_pk, owner_sk.as_bytes())
         .expect("re-point namespace identity back to the owner");
 
     // Subscribe to the op-events broadcast BEFORE applying, so we can observe the
@@ -1555,7 +1697,7 @@ async fn born_open_subgroup_no_direct_tee_row_but_inherits_replication() {
     //    subgroup), bind the auto-follow handler, register a context in the
     //    born-Open subgroup, and assert the TEE auto-joins it via inheritance.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(&ns_gid, &tee_pk, tee_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to the TEE");
 
     calimero_context::auto_follow::shutdown();
@@ -1808,7 +1950,7 @@ async fn restricted_ctx_redriven_after_group_created() {
     // unwraps the `KeyDelivery` envelope with THIS key, so the envelope below
     // must be wrapped for `member_pk`.
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .expect("store receiver namespace identity");
 
     // ---- The Restricted subgroup (NOT yet created on the receiver) -----------
@@ -2047,7 +2189,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         )
         .expect("add owner as namespace-root admin");
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .expect("store receiver namespace identity");
 
     // ---- The namespace key: the receiver HOLDS it (delivered with its join) --
@@ -2405,7 +2547,7 @@ async fn tee_matrix_restricted_late_join() {
         )
         .expect("add owner as namespace-root admin");
     NamespaceRepository::new(&store)
-        .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
         .expect("store receiver namespace identity");
 
     // The Restricted subgroup: id + key minted owner-side. The receiver does
@@ -2711,7 +2853,7 @@ async fn drive_open_auto_follow_replication(
     // node's namespace identity; point it at the inherited-only TEE so the
     // inheritance fall-through (root anchor, no subgroup row) is exercised.
     calimero_governance_store::NamespaceRepository::new(&node.store)
-        .store_identity(ns_gid, tee_pk, tee_sk.as_bytes(), &[0u8; 32])
+        .replace_identity(ns_gid, tee_pk, tee_sk.as_bytes())
         .expect("re-point namespace identity to the TEE");
 
     calimero_context::auto_follow::shutdown();
@@ -3233,38 +3375,81 @@ async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
         "the leaver's membership row must be removed by the leave itself"
     );
 
-    // ...and the forward-secrecy debt is recorded, because the leaver could not have
-    // rotated for themselves.
+    // ...and the forward-secrecy debt is either still owed or already paid, because the
+    // leaver could not have rotated for themselves.
+    //
+    // Deliberately NOT `is_pending == true`. The row is transient by design: the
+    // rotation listener is concurrently racing to discharge it, which is the behaviour
+    // this test exists to prove. Asserting the row is still there asserts that the
+    // listener has NOT run yet — the opposite of what the test wants — and fails
+    // whenever it is quick. Either state is correct here; what must not happen is
+    // neither (a leave that recorded no debt and rotated nothing), which the key
+    // assertion at the end catches.
+    let debt_owed = PendingRotationRepository::new(&node.store)
+        .is_pending(
+            &sub_gid,
+            &calimero_context::test_support::account_for(&leaver_pk),
+        )
+        .expect("is_pending");
+    let already_paid = GroupKeyring::new(&node.store, sub_gid)
+        .load_current_key_record()
+        .expect("read the subgroup key")
+        .is_some_and(|k| k.key_id != key_before.key_id);
     assert!(
-        PendingRotationRepository::new(&node.store)
-            .is_pending(
-                &sub_gid,
-                &calimero_context::test_support::account_for(&leaver_pk)
-            )
-            .expect("is_pending"),
-        "the leave must record a pending rotation — nothing else will ever prompt one"
+        debt_owed || already_paid,
+        "the leave must record a pending rotation (or the listener must already have \
+         discharged it) — nothing else will ever prompt one"
     );
 
     // Now the part only this test covers: the listener fires on this node (a remaining
     // admin), publishes the rotation, and the pending row is discharged. Nothing here
     // is driven by the test — it is the production listener reacting to the op-event.
+    //
+    // The listener is a process-global singleton and every `boot_test_node` rebinds it
+    // to that node's store, so a concurrently-booting test steals it and this wait times
+    // out with the chain perfectly intact. Capture the generation to tell the two apart
+    // rather than leaving the next reader to re-derive it (as #3434 did).
+    let listener_generation = calimero_context::rotation_listener::generation();
     let store = node.store.clone();
+    let key_before_id = key_before.key_id;
     let cleared = wait_until(|| {
-        // A read error counts as "still pending" so a transient store fault cannot be
-        // mistaken for a successful rotation.
-        !PendingRotationRepository::new(&store)
+        // Wait for the OUTCOME, not the bookkeeping. The two land through different
+        // appliers: the new key rides as a sidecar on the enclosing namespace op and is
+        // stored by the namespace layer, while `GroupKeyRotated`'s own apply only clears
+        // the pending row (it "mutates no governance state" by design). Waiting on the
+        // row alone therefore returns in the window where the debt is discharged but the
+        // key has not landed yet, and the key assertion below fails on a rotation that
+        // was merely still in flight.
+        //
+        // A read error counts as "not yet" so a transient store fault cannot be mistaken
+        // for a successful rotation.
+        let discharged = !PendingRotationRepository::new(&store)
             .is_pending(
                 &sub_gid,
                 &calimero_context::test_support::account_for(&leaver_pk),
             )
-            .unwrap_or(true)
+            .unwrap_or(true);
+        let rekeyed = GroupKeyring::new(&store, sub_gid)
+            .load_current_key_record()
+            .ok()
+            .flatten()
+            .is_some_and(|k| k.key_id != key_before_id);
+        discharged && rekeyed
     })
     .await;
+    let rebound = calimero_context::rotation_listener::generation() != listener_generation;
     assert!(
         cleared,
-        "the rotation listener never discharged the pending rotation — the chain \
-         (op-event → listener → rotate_group_key handler → publisher) is broken, and the \
-         departed member would keep the subgroup key indefinitely"
+        "the rotation listener never discharged the pending rotation. {}",
+        if rebound {
+            "The listener was REBOUND to another store while this test ran (generation \
+             changed), so it was no longer watching this node — the chain is fine. Some \
+             test booted a node without #[serial(boot_test_node)]; add it there."
+        } else {
+            "The listener stayed bound to this node, so the chain (op-event → listener → \
+             rotate_group_key handler → publisher) is genuinely broken, and the departed \
+             member would keep the subgroup key indefinitely."
+        }
     );
 
     // The rotation was real: a fresh key, at a strictly higher epoch, is now current.

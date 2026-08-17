@@ -583,6 +583,34 @@ pub enum GroupOp {
         /// The handoff, signed by the outgoing key.
         handoff: RootKeyHandoff,
     },
+    /// Carrier for the rotation a **device revocation** left owed.
+    ///
+    /// The sibling of [`GroupOp::GroupKeyRotated`], and a separate variant rather
+    /// than a field on it, because the two exclude different things.
+    ///
+    /// `GroupKeyRotated` names a departed ACCOUNT and every envelope excludes it.
+    /// That is exactly wrong here: revoking a device does not remove its account,
+    /// which keeps every other device it holds. This rotation excludes nobody by
+    /// name — the recipient list is built from live bindings, and the revocation
+    /// applied before it, so the revoked device is already absent while its
+    /// account is not. Reusing the other variant would cut off a member who never
+    /// left.
+    ///
+    /// Appended at the END, like every variant before it: borsh tags by source
+    /// order, so slotting it in beside `GroupKeyRotated` would renumber every
+    /// later variant and change the content hash — and therefore the signature —
+    /// of every already-stored op that used one.
+    ///
+    /// Mutates no governance state of its own. It exists so the rotation sidecar
+    /// has something to ride on, and its apply discharges the pending row.
+    /// Applying it twice is a no-op, so two admins reacting to the same
+    /// revocation is harmless.
+    GroupKeyRotatedForDevice {
+        /// The device whose revocation this rotation is completing. Names which
+        /// pending row to discharge. Unlike `GroupKeyRotated::departed` it is NOT
+        /// an exclusion: the device is already gone from the recipient list.
+        device: DeviceId,
+    },
 }
 
 impl GroupOp {
@@ -622,6 +650,7 @@ impl GroupOp {
             GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
             GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
+            GroupOp::GroupKeyRotatedForDevice { .. } => "group_key_rotated_for_device",
         }
     }
 }

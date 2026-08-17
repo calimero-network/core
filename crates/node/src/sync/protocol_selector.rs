@@ -220,7 +220,7 @@ impl ProtocolSelector {
                 Ok(Some(result))
             }
             SyncProtocol::HashComparison { root_hash, .. } => {
-                info!(
+                debug!(
                     %context_id,
                     reason = %selection.reason,
                     "Starting HashComparison sync"
@@ -248,7 +248,7 @@ impl ProtocolSelector {
                 .await
                 {
                     Ok(stats) => {
-                        info!(
+                        debug!(
                             %context_id,
                             nodes_compared = stats.nodes_compared,
                             entities_merged = stats.entities_merged,

@@ -1,8 +1,7 @@
 use calimero_server_primitives::admin::{
     CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
-    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
-    GetContextStorageResponse, GetContextUsersResponse, GetContextsResponse, GetPeersCountResponse,
-    GrantPermissionResponse, RevokePermissionResponse, SyncContextResponse,
+    GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
+    GetContextsResponse, GetPeersCountResponse, SyncContextResponse,
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
@@ -59,46 +58,6 @@ impl Report for GetContextResponse {
         ]);
 
         println!("{table}");
-    }
-}
-
-impl Report for GetContextUsersResponse {
-    fn report(&self) {
-        if self.data.context_users.is_empty() {
-            println!("No users found in context");
-        } else {
-            let mut table = Table::new();
-            let _ = table.set_header(vec![
-                Cell::new("User ID").fg(Color::Blue),
-                Cell::new("Type").fg(Color::Blue),
-            ]);
-
-            for user in &self.data.context_users {
-                let _ = table.add_row(vec![format!("{:?}", user), "Context User".to_owned()]);
-            }
-
-            println!("{table}");
-        }
-    }
-}
-
-impl Report for GetContextClientKeysResponse {
-    fn report(&self) {
-        if self.data.client_keys.is_empty() {
-            println!("No client keys found in context");
-        } else {
-            let mut table = Table::new();
-            let _ = table.set_header(vec![
-                Cell::new("Signing Key").fg(Color::Blue),
-                Cell::new("Created At").fg(Color::Blue),
-            ]);
-
-            for key in &self.data.client_keys {
-                let _ = table.add_row(vec![key.signing_key.clone(), key.created_at.to_string()]);
-            }
-
-            println!("{table}");
-        }
     }
 }
 
@@ -166,24 +125,6 @@ impl Report for GetContextsResponse {
 
             println!("{table}");
         }
-    }
-}
-
-impl Report for GrantPermissionResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Permissions Granted").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully granted permissions"]);
-        println!("{table}");
-    }
-}
-
-impl Report for RevokePermissionResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Permissions Revoked").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Successfully revoked permissions"]);
-        println!("{table}");
     }
 }
 

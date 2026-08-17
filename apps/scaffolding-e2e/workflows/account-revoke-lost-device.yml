@@ -76,7 +76,12 @@ description: >
        Ordering matters here: node-2 has to have FOLDED the revocation before it
        enrols, or it hands back the old row and the assertion fails for a reason
        that has nothing to do with the tombstone. Hence the settle with a generous
-       timeout after it restarts.
+       timeout after it restarts, and the log gate that follows it — no sync step
+       can express "node-2 applied this governance op", so the fold is asserted on
+       the apply-path marker directly rather than assumed from a wait. It failed
+       exactly that way once: node-2 came back into a one-way gossipsub mesh,
+       received the op, could reach nobody to pull its missing parent, and kept it
+       buffered forever — and the only symptom was two identical device ids.
 
   User-visible failure mode this guards against: "I lost my laptop, I have my
   recovery phrase, and there is no way to stop that machine from writing."
@@ -196,9 +201,8 @@ steps:
   # After the context join: enrolment publishes an encrypted GroupOp, so the node
   # needs the scope key it only holds once it has joined.
   - name: Node-2 enrols the account that will lose its device
-    type: account_create
+    type: node_identity
     node: revoke-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       lost_account: accountId
       lost_device: deviceId
@@ -321,8 +325,6 @@ steps:
     args:
       - 'account'
       - 'revoke-proof'
-      - '--namespace'
-      - '{{namespace_id}}'
       - '--device'
       - '{{lost_device}}'
       - '--from'
@@ -380,10 +382,34 @@ steps:
     timeout: 120
     trigger_sync: true
 
+  # Gate on the fold itself, before asking node-2 about its device.
+  #
+  # Everything above only gets the revocation NEAR node-2; the assertion below
+  # depends on node-2 having APPLIED it, and nothing so far actually checks that.
+  # `wait_for_sync` cannot: it compares context state, and a governance tombstone
+  # does not move the context root — all three nodes hold the same root before and
+  # after, so it returns in milliseconds having verified nothing. Adding
+  # `group_id:` would not help either, because the group state hash covers the
+  # member set and group meta, not account-device bindings, and this revocation
+  # deliberately leaves the account a member.
+  #
+  # So assert on the apply-path marker directly. `account device unlinked` is
+  # logged by every node that folds the op, right after `apply_revocation` writes
+  # the tombstone the re-enrolment below reads. Without this the whole class of
+  # "node-2 never received it" failures lands on the `json_not_equal` two steps
+  # down, which reports only that two identical device ids are identical — true,
+  # unhelpful, and indistinguishable from the tombstone being ignored. This step
+  # names the actual cause instead.
+  - name: Node-2 folded the revocation, not merely received it
+    type: assert_log_present
+    nodes:
+      - revoke-node-2
+    patterns:
+      - 'account device unlinked'
+
   - name: Node-2 enrols again after losing its device
-    type: account_create
+    type: node_identity
     node: revoke-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       replacement_account: accountId
       replacement_device: deviceId

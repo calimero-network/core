@@ -1,18 +1,17 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiResponse, CreateAccountApiResponse, CreateGroupApiResponse,
-    CreateGroupInvitationApiResponse, CreateNamespaceApiResponse, DeleteGroupApiResponse,
-    DeleteNamespaceApiResponse, DetachContextFromGroupApiResponse,
-    GetGroupUpgradeStatusApiResponse, GetMemberCapabilitiesApiResponse, GetMetadataApiResponse,
-    GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse,
-    LeaveGroupApiResponse, LeaveNamespaceApiResponse, ListGroupContextsApiResponse,
-    ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
-    ListSubgroupsApiResponse, NamespaceAccountApiResponse, NamespaceApiResponse,
-    NamespaceIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
-    RegisterGroupSigningKeyApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
-    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
+    CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
+    DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
+    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
+    JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
+    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
+    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
+    NamespaceApiResponse, NamespaceIdentityApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RemoveGroupMembersApiResponse,
+    ReparentGroupApiResponse, RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse,
+    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
+    SyncGroupApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -59,45 +58,24 @@ impl Report for GroupInfoApiResponse {
     }
 }
 
-impl Report for CreateAccountApiResponse {
+impl Report for NodeIdentityApiResponse {
     fn report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
-            Cell::new("Device Enrolled").fg(Color::Green),
+            Cell::new("Node Identity").fg(Color::Green),
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
-        let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
-        let _ = table.add_row(vec!["Account root key", &self.data.account_root_key]);
-        // Shown because pairing a second device needs it: the other device
-        // computes its own id as H(account ‖ nonce), so without the nonce the
-        // account cannot be joined at all.
-        let _ = table.add_row(vec![
-            "Account nonce (for pairing)",
-            &self.data.account_nonce,
-        ]);
-        println!("{table}");
-    }
-}
-
-impl Report for NamespaceAccountApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Account").fg(Color::Green),
-            Cell::new("Value").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
-        let _ = table.add_row(vec!["Namespace", &self.data.namespace_id]);
-        // Absent until `account create` runs here. The account id above is still
-        // real — it is derived — but no device speaks for it yet.
+        // Absent until this node enrols somewhere. The account above is still
+        // real — it is derived from the root — but no device speaks for it yet.
         let _ = table.add_row(vec![
             "Device ID",
             self.data
                 .device_id
                 .as_deref()
-                .unwrap_or("none - run `account create` to enroll this node"),
+                .unwrap_or("none - run `account create <NAMESPACE_ID>` to enroll this node"),
         ]);
+        let _ = table.add_row(vec!["Signing key", &self.data.public_key]);
         println!("{table}");
     }
 }
@@ -164,17 +142,21 @@ impl Report for RevokeDeviceApiResponse {
         ]);
         let _ = table.add_row(vec!["Account ID", &self.data.account_id]);
         let _ = table.add_row(vec!["Device ID", &self.data.device_id]);
-        // Without the rotation the device stops writing but keeps the key it
-        // already holds — a silent reader. Say so rather than report a bare
-        // success.
-        let _ = table.add_row(vec![
-            "Scope key rotated",
-            if self.data.key_rotated {
-                "yes - the device can no longer read either"
-            } else {
-                "no - it can still READ until an admin rotates"
-            },
-        ]);
+        // One row per namespace, because a device belongs to an account rather
+        // than to a scope and the revocation follows it everywhere. Without the
+        // rotation the device stops writing there but keeps the key it already
+        // holds — a silent reader — so say so per namespace rather than report a
+        // bare success.
+        for outcome in &self.data.revoked_in {
+            let _ = table.add_row(vec![
+                format!("Revoked in {}", outcome.namespace_id),
+                if outcome.key_rotated {
+                    "key rotated - it can no longer read either".to_owned()
+                } else {
+                    "key NOT rotated - it can still READ until an admin rotates".to_owned()
+                },
+            ]);
+        }
         println!("{table}");
     }
 }
@@ -445,18 +427,6 @@ impl Report for JoinGroupApiResponse {
     }
 }
 
-impl Report for RegisterGroupSigningKeyApiResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Signing Key Registered").fg(Color::Green),
-            Cell::new("Value").fg(Color::Blue),
-        ]);
-        let _ = table.add_row(vec!["Public Key", &self.data.public_key.to_string()]);
-        println!("{table}");
-    }
-}
-
 impl Report for UpgradeGroupApiResponse {
     fn report(&self) {
         let d = &self.data;
@@ -467,14 +437,14 @@ impl Report for UpgradeGroupApiResponse {
         ]);
         let _ = table.add_row(vec!["Group ID", &d.group_id]);
         let _ = table.add_row(vec!["Status", &d.status]);
-        if let Some(total) = d.total {
-            let _ = table.add_row(vec!["Total", &total.to_string()]);
+        if let Some(total) = d.local_contexts_total {
+            let _ = table.add_row(vec!["Local Contexts Total", &total.to_string()]);
         }
-        if let Some(completed) = d.completed {
-            let _ = table.add_row(vec!["Completed", &completed.to_string()]);
+        if let Some(swapped) = d.local_contexts_swapped {
+            let _ = table.add_row(vec!["Local Contexts Swapped", &swapped.to_string()]);
         }
-        if let Some(failed) = d.failed {
-            let _ = table.add_row(vec!["Failed", &failed.to_string()]);
+        if let Some(failed) = d.local_contexts_failed {
+            let _ = table.add_row(vec!["Local Contexts Failed", &failed.to_string()]);
         }
         println!("{table}");
     }
@@ -495,14 +465,14 @@ impl Report for GetGroupUpgradeStatusApiResponse {
                 let _ = table.add_row(vec!["Status", &upgrade.status]);
                 let _ = table.add_row(vec!["Initiated By", &upgrade.initiated_by.to_string()]);
                 let _ = table.add_row(vec!["Initiated At", &upgrade.initiated_at.to_string()]);
-                if let Some(total) = upgrade.total {
-                    let _ = table.add_row(vec!["Total", &total.to_string()]);
+                if let Some(total) = upgrade.local_contexts_total {
+                    let _ = table.add_row(vec!["Local Contexts Total", &total.to_string()]);
                 }
-                if let Some(completed) = upgrade.completed {
-                    let _ = table.add_row(vec!["Completed", &completed.to_string()]);
+                if let Some(swapped) = upgrade.local_contexts_swapped {
+                    let _ = table.add_row(vec!["Local Contexts Swapped", &swapped.to_string()]);
                 }
-                if let Some(failed) = upgrade.failed {
-                    let _ = table.add_row(vec!["Failed", &failed.to_string()]);
+                if let Some(failed) = upgrade.local_contexts_failed {
+                    let _ = table.add_row(vec!["Local Contexts Failed", &failed.to_string()]);
                 }
                 if let Some(completed_at) = upgrade.completed_at {
                     let _ = table.add_row(vec!["Completed At", &completed_at.to_string()]);

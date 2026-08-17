@@ -67,7 +67,7 @@ impl Handler<ListNamespacesRequest> for ContextManager {
             let namespaces = collect_namespace_summaries(
                 entries,
                 None,
-                |group_id| self.node_namespace_identity(group_id),
+                |group_id| self.node_signing_key(group_id),
                 |group_id, meta, node_identity| {
                     MetadataRepository::new(&self.datastore).build_namespace_summary(
                         group_id,
@@ -199,7 +199,6 @@ mod tests {
 
         let node_identity_sk = calimero_primitives::identity::PrivateKey::from([0x33; 32]);
         let node_identity_pk = node_identity_sk.public_key();
-        let sender_key = [0x44; 32];
 
         let meta = GroupMetaValue {
             app_key: [0x55; 32],
@@ -223,7 +222,6 @@ mod tests {
                 &group_id_with_membership,
                 &node_identity_pk,
                 node_identity_sk.as_bytes(),
-                &sender_key,
             )
             .expect("store namespace identity for first namespace");
         NamespaceRepository::new(&store)
@@ -231,7 +229,6 @@ mod tests {
                 &group_id_without_membership,
                 &node_identity_pk,
                 node_identity_sk.as_bytes(),
-                &sender_key,
             )
             .expect("store namespace identity for second namespace");
 
@@ -253,7 +250,6 @@ mod tests {
                 NamespaceRepository::new(&store)
                     .resolve_identity(group_id)
                     .expect("resolve namespace identity")
-                    .map(|(pk, sk, _sender)| (pk, sk))
             },
             |group_id, meta, node_identity| {
                 MetadataRepository::new(&store).build_namespace_summary(

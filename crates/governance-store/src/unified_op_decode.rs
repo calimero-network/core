@@ -8,14 +8,34 @@
 //! op-store can never lag the gov-DAG). `calimero-context` re-exports these so the
 //! existing projection callers keep compiling unchanged.
 
-use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+use calimero_account::{AccountId, DeviceId};
+use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_dag::CausalDelta;
-use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{legacy_authorship, payload_from_group_op, payload_from_root_op};
+use calimero_op::{Authorship, Op, OpPayload, ScopeId};
+use calimero_op_adapter::{payload_from_group_op, payload_from_root_op};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::logical_clock::HybridTimestamp;
 
 use calimero_context_client::local_governance::GroupOp;
+
+/// The account and device `sign_pk` speaks for in `namespace`, as the live
+/// bindings record it.
+///
+/// The one resolution every producer of a projected op should use, so they cannot
+/// disagree about who authored it. Returns `None` for a key with no live binding —
+/// a joiner whose own join is what creates one, or pre-credential data — and the
+/// caller then gets the stand-in rather than a fabricated claim to a real account.
+pub fn signer_binding_for(
+    store: &calimero_store::Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    sign_pk: &PublicKey,
+) -> Option<(AccountId, DeviceId)> {
+    crate::AccountBindingRepository::new(store)
+        .binding_for_sign_pk(namespace, sign_pk)
+        .ok()
+        .flatten()
+        .map(|binding| (binding.account, binding.device))
+}
 
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
 /// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
@@ -28,7 +48,7 @@ use calimero_context_client::local_governance::GroupOp;
 fn build_op(
     id: [u8; 32],
     scope: ScopeId,
-    author: PublicKey,
+    authorship: Authorship,
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
     payload: OpPayload,
@@ -37,7 +57,7 @@ fn build_op(
         id,
         scope,
         parents.to_vec(),
-        legacy_authorship(author),
+        authorship,
         hlc,
         payload,
         [0u8; 32],
@@ -66,10 +86,74 @@ fn build_op(
 /// `GroupOp` for a `NamespaceOp::Group` (via
 /// [`crate::decrypt_group_op`]), or `None` when it couldn't be decrypted — in
 /// which case the node is still recorded as `Noop`.
+/// The authorship an op **carries**, when it carries one.
+///
+/// A join or a device link names its own account and device in a root-signed
+/// [`DeviceCert`]. Reading it here is what lets the projected op be attributed
+/// to the principal that actually authored it, instead of to a stand-in derived
+/// from the signing key — and a derived stand-in is why the
+/// `MemberJoinedWithDevice` arm of `calimero_authz::authorize` cannot currently
+/// run the two cross-checks its `DeviceLinked` sibling does.
+///
+/// The certificate is *read*, not trusted: `authorize` verifies it against the
+/// account plane at the cut before any of this is believed. Reading it here
+/// only decides who the op claims to be, which is exactly what that check then
+/// confirms.
+///
+/// `None` for every other op — those carry no credential, and their author is
+/// resolved from the folded view by `account_for_author` rather than from the
+/// op itself.
+fn carried_authorship(
+    op: &NamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
+    signer: PublicKey,
+) -> Option<Authorship> {
+    let cert = match op {
+        NamespaceOp::Root(
+            RootOp::MemberJoined { account, .. }
+            | RootOp::MemberJoinedOpen { account, .. }
+            | RootOp::MemberJoinedAt { account, .. }
+            | RootOp::NamespaceCreated { account, .. }
+            | RootOp::MemberJoinedViaTeeAttestation { account, .. },
+        ) => &account.cert,
+        // A device link rides an ENCRYPTED group op, so its certificate is only
+        // legible once the op decrypts. An undecryptable one folds to a `Noop`
+        // and keeps the stand-in — it carries no readable claim to attribute to.
+        NamespaceOp::Group { .. } => match decrypted_group_op? {
+            GroupOp::AccountDeviceLinked { cert, .. } => cert,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(Authorship {
+        account: cert.account,
+        device: cert.device,
+        device_key: signer,
+    })
+}
+
 #[must_use]
 pub fn op_from_namespace_op(
     signed: &SignedNamespaceOp,
     decrypted_group_op: Option<&GroupOp>,
+    id: [u8; 32],
+    hlc: HybridTimestamp,
+    parents: &[[u8; 32]],
+) -> Op {
+    op_from_namespace_op_with_binding(signed, decrypted_group_op, None, id, hlc, parents)
+}
+
+/// [`op_from_namespace_op`], told who the signer is.
+///
+/// Every production producer should use this one. The bare version attributes an
+/// op with no carried credential to a stand-in derived from its signing key, and
+/// a stand-in is not the account any row is keyed by — so a fold that compares
+/// the two (`AccountKeysRotated` does) silently drops the op.
+#[must_use]
+pub fn op_from_namespace_op_with_binding(
+    signed: &SignedNamespaceOp,
+    decrypted_group_op: Option<&GroupOp>,
+    signer_binding: Option<(AccountId, DeviceId)>,
     id: [u8; 32],
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
@@ -100,10 +184,39 @@ pub fn op_from_namespace_op(
         // preserving causal structure without inventing a payload.
         _ => OpPayload::Noop,
     };
+    // Three answers, in the only order that can work.
+    //
+    // The op's own certificate first: a joiner has no binding yet — its join is
+    // what creates one — so only the credential it carries can name it.
+    //
+    // Then the binding the CALLER resolved, which covers an established device
+    // whose op carries no credential. `AccountKeysRotated` is that case, and
+    // getting a stand-in there meant the fold compared a real `handoff.account`
+    // against a derived one and silently dropped every rotation.
+    //
+    // And last, an explicit `unattributed` for a key nothing knows — a value no
+    // genesis can produce, so every gate that compares the author against a real
+    // principal fails closed without needing a case for it.
+    //
+    // Resolving the binding in the CALLER is what makes it safe. Both producers
+    // have already APPLIED this op, and an op cannot apply unless the signer's
+    // binding is present — so every node that folds it resolves the same account.
+    // Resolving inside the fold would not be safe: the fold walks raw logs in
+    // arrival order, so reading a binding there answers "has the link folded
+    // yet" and splits the root by delivery order.
+    let authorship = carried_authorship(&signed.op, decrypted_group_op, signed.signer)
+        .or_else(|| {
+            signer_binding.map(|(account, device)| Authorship {
+                account,
+                device,
+                device_key: signed.signer,
+            })
+        })
+        .unwrap_or_else(|| Authorship::unattributed(signed.signer));
     build_op(
         id,
         ScopeId::from(signed.namespace_id.to_bytes()),
-        signed.signer,
+        authorship,
         hlc,
         parents,
         payload,

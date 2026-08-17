@@ -28,10 +28,12 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::sign_device_revocation;
-use calimero_context_client::group::{RevokeDeviceRequest, RevokeDeviceResponse};
+use calimero_context_client::group::{
+    RevocationOutcome, RevokeDeviceRequest, RevokeDeviceResponse,
+};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_governance_store::{
-    GroupGovernancePublisher, MembershipRepository, NodeDeviceRepository,
+    GroupGovernancePublisher, MembershipRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::identity::PrivateKey;
 use tracing::{info, warn};
@@ -50,7 +52,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         }: RevokeDeviceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let Some((self_pk, signer_sk_bytes)) = self.node_namespace_identity(&namespace_id) else {
+        let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&namespace_id) else {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "this node has no namespace identity for {namespace_id:?}; it cannot \
                  revoke a device there"
@@ -63,12 +65,6 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
             Ok(account) => account,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let is_admin =
-            match MembershipRepository::new(&store).is_admin(&namespace_id, &self_account) {
-                Ok(is_admin) => is_admin,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
-
         // Whose device this is, and whether this node can prove it owns the
         // account, both come from the group's own binding. Deriving the account
         // from this node's root instead answers a different question — "which
@@ -114,14 +110,21 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
             None => None,
         };
 
-        // Three ways to be authorized. The proof is checked first because it is the
-        // only one that needs no authority from this node at all — it carries its own.
-        if supplied_proof.is_none() && !is_admin && !target.self_service {
+        // Two ways to be authorized, and both are the ACCOUNT's. Revoking a device
+        // is not a group-administration act: an admin governs who is a member, not
+        // which installations another person runs. An admin who wants somebody out
+        // removes their account, which is strictly stronger and already exists.
+        //
+        // `is_admin` still matters below, but as a capability rather than an
+        // authorization — only an admin may rotate the scope key that rides along.
+        if supplied_proof.is_none() && !target.self_service {
             return ActorResponse::reply(Err(eyre::eyre!(
-                "this node is neither an admin of {namespace_id:?} nor the holder of the \
-                 account that owns {device}, and no revocation proof was supplied. Either \
-                 revoke as an admin, or mint a proof from the account root \
-                 (`merod account revoke-proof`) and pass it here"
+                "this node does not hold the account that owns {device}, and no \
+                 revocation proof was supplied. Revoking a device is the account's \
+                 authority, not an admin's: run this from a node of that account, or \
+                 mint a proof from its root (`merod account revoke-proof`) and pass it \
+                 here. To remove the person rather than one of their devices, remove \
+                 the account from the group"
             )));
         }
 
@@ -137,7 +140,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         } else if target.self_service {
             match device_repo.account_root() {
                 Ok(Some(root)) => {
-                    let genesis = root.genesis_for(&namespace_id);
+                    let genesis = root.genesis();
                     match sign_device_revocation(root.signing_key(), account, device, 0) {
                         Ok(revocation) => Some(calimero_account::SignedDeviceRevocation {
                             genesis,
@@ -178,45 +181,101 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // An admin publishes the revocation with the key rotation riding
-                // on the same op. A non-admin owner cannot: peers accept a
-                // rotation only from an admin at the cut, and minting one anyway
-                // would leave this node holding a key nobody else adopts.
-                let (report, key_rotated) = if is_admin {
-                    let report = GroupGovernancePublisher::new(&store, &node_client, namespace_id)
-                        .sign_apply_and_publish_device_revocation(&ack_router, &signer_sk, op)
-                        .await?;
-                    (report, true)
-                } else {
-                    warn!(
-                        namespace_id = ?namespace_id,
-                        %device,
-                        "revoking without a key rotation: this node is not an admin, so the \
-                         device loses the right to write immediately but keeps the key it \
-                         already holds until an admin rotates"
+                // A device belongs to an account, not to a scope, so the revocation
+                // goes everywhere the account holds this device — not only the
+                // namespace the caller named. The proof is minted once above and
+                // reused: it names `{account, device}` and nothing about it is
+                // namespace-scoped, so the same bytes verify wherever they land.
+                //
+                // Publication stays per-DAG. Wider validity is not wider reach: the
+                // op takes effect in a namespace when it is published there, which
+                // is what this loop does, one namespace at a time.
+                let namespaces = NamespaceRepository::new(&store).participating_namespaces()?;
+                let mut revoked_in = Vec::new();
+
+                for ns in namespaces {
+                    // A namespace that never linked this device has nothing to
+                    // withdraw, and publishing there would name an account its
+                    // bindings do not agree with.
+                    match NodeDeviceRepository::new(&store).revocation_target(&ns, device) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => continue,
+                        Err(err) => {
+                            warn!(namespace_id = ?ns, %device, %err,
+                                  "revocation: could not read the binding; skipping this namespace");
+                            continue;
+                        }
+                    }
+
+                    // Admin HERE, not where the caller started. The rotation is a
+                    // group act — peers accept one only from an admin at the cut —
+                    // so it rides along in the namespaces this node governs and is
+                    // left owed in the rest.
+                    let is_admin_here = MembershipRepository::new(&store)
+                        .is_admin(&ns, &self_account)
+                        .unwrap_or(false);
+
+                    let published = if is_admin_here {
+                        GroupGovernancePublisher::new(&store, &node_client, ns)
+                            .sign_apply_and_publish_device_revocation(
+                                &ack_router,
+                                &signer_sk,
+                                op.clone(),
+                            )
+                            .await
+                    } else {
+                        calimero_governance_store::sign_apply_and_publish(
+                            &store,
+                            &node_client,
+                            &ack_router,
+                            &ns,
+                            &signer_sk,
+                            op.clone(),
+                        )
+                        .await
+                    };
+
+                    match published {
+                        Ok(report) => {
+                            if !is_admin_here {
+                                warn!(
+                                    namespace_id = ?ns,
+                                    %device,
+                                    "revoked without a key rotation: this node is not an \
+                                     admin here, so the device loses the right to write \
+                                     immediately but keeps the key it already holds until \
+                                     an admin rotates"
+                                );
+                            }
+                            info!(
+                                namespace_id = ?ns,
+                                %account,
+                                %device,
+                                published = report.is_some(),
+                                key_rotated = is_admin_here,
+                                "device revoked"
+                            );
+                            revoked_in.push(RevocationOutcome::new(ns, is_admin_here));
+                        }
+                        // One namespace failing must not withhold the revocation
+                        // from the rest — a device half-withdrawn is worse than one
+                        // withdrawn everywhere it could be. The caller sees which
+                        // namespaces landed.
+                        Err(err) => warn!(
+                            namespace_id = ?ns, %device, %err,
+                            "revocation: publishing failed for this namespace; others continue"
+                        ),
+                    }
+                }
+
+                if revoked_in.is_empty() {
+                    eyre::bail!(
+                        "the revocation of {device} reached no namespace. Nothing was \
+                         published, so the device is still linked wherever it was"
                     );
-                    let report = calimero_governance_store::sign_apply_and_publish(
-                        &store,
-                        &node_client,
-                        &ack_router,
-                        &namespace_id,
-                        &signer_sk,
-                        op,
-                    )
-                    .await?;
-                    (report, false)
-                };
+                }
 
-                info!(
-                    namespace_id = ?namespace_id,
-                    %account,
-                    %device,
-                    published = report.is_some(),
-                    key_rotated,
-                    "device revoked"
-                );
-
-                Ok(RevokeDeviceResponse::new(account, device, key_rotated))
+                Ok(RevokeDeviceResponse::new(account, device, revoked_in))
             }
             .into_actor(self),
         )

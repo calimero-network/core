@@ -178,6 +178,16 @@ impl NetworkManager {
     /// redundant dials. Errors are debug-logged; a genuine failure resurfaces
     /// as `OutgoingConnectionError`, which records the dial failure and leaves
     /// the parallel rendezvous recovery to carry the peer.
+    /// Still-fresh cached addresses for `peer_id`, most-recent-first.
+    ///
+    /// The reconnect fallback for the disconnect path, whose discovery-book
+    /// lookup goes empty once `remove_peer` has run for an earlier
+    /// `ConnectionClosed` on the same peer.
+    pub(crate) fn peer_cache_addrs_for(&self, peer_id: &PeerId) -> Vec<Multiaddr> {
+        self.peer_cache
+            .addrs_for(peer_id, self.now_unix_secs(), PEER_CACHE_TTL_SECS)
+    }
+
     pub(crate) fn redial_direct(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
         if addrs.is_empty() {
             return;

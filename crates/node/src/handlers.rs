@@ -3,7 +3,6 @@
 //! **Purpose**: Handles incoming events from network layer and processes node-level requests.
 //! **Structure**: Each event type has its own focused file (SRP).
 
-use crate::migration_status::DEFAULT_HEARTBEAT_TTL;
 use actix::Handler;
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_utils_actix::adapters::ActorExt;
@@ -34,7 +33,7 @@ impl Handler<NodeMessage> for NodeManager {
             } => {
                 // Synchronous read off the lock-free `sync_status` map; reply
                 // directly on the oneshot. A dropped receiver (caller gave up)
-                // is fine to ignore — this is a pure observability query.
+                // is fine to ignore - this is a pure observability query.
                 let snapshot = self.state.sync_status_snapshot(&context_id);
                 let _ = outcome.send(snapshot);
             }
@@ -42,32 +41,15 @@ impl Handler<NodeMessage> for NodeManager {
                 namespace_id,
                 outcome,
             } => {
-                // Synchronous snapshot of the in-memory migration-heartbeat TTL
-                // cache (Task 6c.8) for the admin `get_migration_status` route
-                // (Task 6c.10). Pure observability read — a dropped receiver is
-                // fine to ignore. Stale entries are filtered by the cache's
-                // per-call TTL; a member with no fresh entry is simply absent,
-                // which the rollup resolves to `unknown`.
-                let mut reports = self
-                    .migration_status_cache
-                    .migration_status_reports(namespace_id, DEFAULT_HEARTBEAT_TTL);
-                // A node never receives its OWN gossiped heartbeat, so the cache
-                // above never holds the local node. Inject its freshly-computed
-                // facts (keyed by its namespace identity) so the local node —
-                // frequently the admin running this very rollup — is not reported
-                // as `unknown`, which would pin `all_migrated` false forever.
-                let now_millis = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                if let Some((self_pk, self_report)) = crate::migration_status::self_migration_report(
+                // Synchronous snapshot for the admin `get_migration_status`
+                // route, assembled by the same function the receive-path
+                // reaction uses so both answer from one map. Pure observability
+                // read - a dropped receiver is fine to ignore.
+                let _ = outcome.send(crate::migration_status::namespace_member_reports(
+                    &self.migration_status_cache,
                     &self.datastore,
                     namespace_id,
-                    now_millis,
-                ) {
-                    let _ = reports.insert(self_pk, self_report);
-                }
-                let _ = outcome.send(reports);
+                ));
             }
             NodeMessage::ForwardNamespaceOpApplied { namespace_id } => {
                 // Forward the publisher-side signal to the readiness FSM.
@@ -78,7 +60,7 @@ impl Handler<NodeMessage> for NodeManager {
                 // `readiness_addr` is `None` only during the brief window
                 // between `NodeManager::new` and `setup_readiness_manager`
                 // running in `Actor::started`. A signal that arrives in
-                // that window is dropped — the FSM will reconcile when
+                // that window is dropped - the FSM will reconcile when
                 // the next op or peer beacon arrives. This matches the
                 // documented "drop the message" behavior on the receive
                 // path (`crates/node/src/manager.rs:53`).
@@ -91,18 +73,18 @@ impl Handler<NodeMessage> for NodeManager {
                          dropping (FSM will reconcile via next op or peer beacon)"
                     );
                 }
-                // PR-6c Task 6c.8: the same local-progress signal drives the
-                // migration-heartbeat emitter. A governance apply may have
-                // advanced the group's target schema or drained residue, so
-                // recompute and post the node's facts — this both edge-triggers
-                // an on-change heartbeat and seeds the namespace into the
-                // emitter so its periodic keep-alive tick goes live.
+                // The same local-progress signal drives the migration-heartbeat
+                // emitter. A governance apply may have advanced the group's
+                // target schema or drained residue, so recompute and post the
+                // node's facts - this both edge-triggers an on-change heartbeat
+                // and seeds the namespace into the emitter so its periodic
+                // keep-alive tick goes live.
                 self.notify_migration_facts(namespace_id);
             }
             NodeMessage::ForwardNamespaceSubscribed { namespace_id } => {
                 // Seed the readiness FSM's `subscribed_at` at subscribe time.
                 // Same mount-window caveat as `ForwardNamespaceOpApplied`: a
-                // signal dropped before the actor is wired is harmless — the
+                // signal dropped before the actor is wired is harmless - the
                 // first applied op seeds the entry (just later).
                 if let Some(addr) = &self.readiness_addr {
                     addr.do_send(crate::readiness::NamespaceSubscribed { namespace_id });
@@ -134,7 +116,7 @@ impl Handler<NodeMessage> for NodeManager {
             NodeMessage::RefreshMigrationFacts { namespace_id } => {
                 // Edge-trigger a fact recompute + emit-on-change for this
                 // namespace (resync-heal path). Same seam the governance-apply
-                // signal uses, without the readiness side-effect — a resync
+                // signal uses, without the readiness side-effect - a resync
                 // applies no governance op.
                 self.notify_migration_facts(namespace_id);
             }

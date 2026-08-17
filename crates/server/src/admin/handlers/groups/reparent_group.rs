@@ -11,10 +11,8 @@ use calimero_server_primitives::admin::{ReparentGroupApiRequest, ReparentGroupAp
 use tracing::{error, info};
 
 use super::parse_group_id;
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 /// `POST /admin-api/groups/:group_id/reparent`
@@ -26,7 +24,6 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<ReparentGroupApiRequest>,
 ) -> impl IntoResponse {
     let child_group_id = match parse_group_id(&group_id_str) {
@@ -38,12 +35,6 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    // Prefer the authenticated identity over the caller-supplied requester.
-    let requester = match resolve_requester(auth_key, req.requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
-
     // Resolve the namespace this group belongs to. Reparent is only valid on
     // a child that has a parent — i.e. NOT the namespace root — so the walk
     // always terminates at a real namespace identity (no orphan path).
@@ -52,21 +43,11 @@ pub async fn handler(
             Ok(id) => id,
             Err(err) => return parse_api_error(err).into_response(),
         };
-    let (namespace_id, signer_pk, sk_bytes, _sender) = match NamespaceRepository::new(&state.store)
-        .get_or_create_identity(&namespace_anchor_group_id)
-    {
-        Ok(result) => result,
-        Err(err) => return parse_api_error(err).into_response(),
-    };
-
-    if let Some(requester) = requester {
-        if requester != signer_pk {
-            return parse_api_error(eyre::eyre!(
-                "requester does not match local namespace identity"
-            ))
-            .into_response();
-        }
-    }
+    let (namespace_id, _signer_pk, sk_bytes) =
+        match NamespaceRepository::new(&state.store).participate_in(&namespace_anchor_group_id) {
+            Ok(result) => result,
+            Err(err) => return parse_api_error(err).into_response(),
+        };
 
     let signer_sk = PrivateKey::from(sk_bytes);
     let op = NamespaceOp::Root(RootOp::GroupReparented {

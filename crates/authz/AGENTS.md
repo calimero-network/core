@@ -5,7 +5,7 @@ The single security boundary for the unified causal log: one fold, [`authorize`]
 ## Package Identity
 
 - **Crate**: `calimero-authz`
-- **Entry**: `src/lib.rs` (the whole crate - one file, no submodules; roughly half of it is `#[cfg(test)]`)
+- **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; the decision itself lives in the modules below)
 - **Key deps**: `calimero-op` (`Op`, `OpPayload`, `ScopeId`), `calimero-context-config` (`ContextGroupId`, `MemberCapabilities`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`), `calimero-storage` (`address::Id`, `entities::OpMask`), `thiserror`
 
 ## Commands
@@ -40,9 +40,85 @@ cargo test -p calimero-authz inherited_membership_requires_open_chain_and_cap --
 | `MemberPathAtCut` | enum | `None` / `Direct { role }` / `Inherited { anchor, via_admin }` - how `author` reaches membership |
 | `SubgroupEdge` | struct | `{ parent: ScopeId, restricted: bool }` - a live subgroup's tree position + visibility at the cut |
 | `Rejected` | enum (`ThisError`) | `NotPermitted { required: OpMask }` / `NotOwner` / `NotGroupAdmin` / `NotRootAdmin` - one rejection type for every plane |
-| `DEFAULT_MEMBER_MASK` | const | `OpMask::WRITE.union(OpMask::DELETE)` - what a plain scope member holds on a non-restricted entity |
-| `CAN_JOIN_OPEN_SUBGROUPS` | const | Mirrors `MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits()` - the cap gating inherited membership |
-| `MAX_NAMESPACE_DEPTH` | const | `16` - bound on the subgroup-inheritance walk |
+| `AccountBinding` | struct | `{ epoch, root_pk }` - an account's resolved root key at the cut |
+| `DeviceBinding` | struct | `{ account, sign_pk, kem_pk, device_epoch, key_epoch }` - a device's binding in force at the cut |
+| `admit_device_link(accounts, devices, revoked, genesis, chain, cert)` | fn | The single definition of when a `DeviceLinked` credential takes effect; shared with the projection's fold |
+| `fold_device_link(devices, revoked, genesis, chain, cert)` | fn | The order-independent half of the above - every rule more folding cannot change |
+| `admit_key_rotation(accounts, handoff)` | fn | When an `AccountKeysRotated` handoff continues the chain in force at the cut |
+
+Three constants shape the rules above but are **crate-private**, so they are pinned by name here rather than importable: `DEFAULT_MEMBER_MASK` (`WRITE|DELETE`, what a plain member holds on a non-restricted entity), `CAN_JOIN_OPEN_SUBGROUPS` (mirrors `MemberCapabilities`, gates inherited membership), `MAX_NAMESPACE_DEPTH` (bound on the inheritance walk, sourced from `calimero-context-config`).
+
+## How the pieces interact
+
+**One op, one decision.** The view arrives already resolved — this crate never
+walks the DAG — and the answer is a `Result`, never a mutation:
+
+```text
+   calimero-projection                    calimero-authz
+   ───────────────────                    ──────────────
+   ScopeState (the folded op log)
+        │ acl_view_at(op.parents)
+        ▼
+     AclView ─────────────────────────────▶ authorize(op, view)
+     Op ──────────────────────────────────▶      │
+                                                 │
+                                      stage 1 ───┤ check_device_speaks_for_author
+                                                 │   revoked? bound? same account?
+                                                 │   same key?  (DeviceLinked and
+                                                 │   MemberJoinedWithDevice skip it)
+                                                 ▼
+                                      stage 2 ───┤ match op.payload
+                                                 ├── data ────▶ may()
+                                                 ├── owner ───▶ is_owner()
+                                                 ├── group ───▶ is_group_admin()
+                                                 ├── root ────▶ is_root_admin()
+                                                 ├── account ─▶ admit_device_link()
+                                                 │              admit_key_rotation()
+                                                 │
+                                        Ok(()) ◀─┴─▶ Rejected
+```
+
+**The rule that is deliberately shared.** `admit_device_link` has two callers in
+two crates, and that is the whole point — a rule stated twice is how one node
+authorizes an op its peer folds differently, which is a `scope_root` divergence:
+
+```text
+   authorize (this crate)              projection's fold (calimero-projection)
+   decides at ONE fixed cut            walks ops ONE AT A TIME
+        │                                          │
+        ▼                                          │
+   admit_device_link                               │
+        │  = fold_device_link + the supersession   │
+        │    check, which needs a cut to mean      │
+        ▼    anything                              ▼
+   fold_device_link ◀──────────────────────────────┘
+        the order-independent half: a tombstone is never removed, a device is
+        never un-assigned, an epoch only rises — so any fold order agrees
+
+   Supersession stays out of the fold on purpose: against a partial fold it would
+   read whichever epoch happened to arrive first, making admission depend on
+   delivery order. The fold records the link and filters superseded ones when the
+   view is read, once the final epoch is known.
+```
+
+**Module map.** Dependencies run one way, and the arrows are exactly the
+`use crate::` graph:
+
+```text
+   authorize.rs ──▶ admission.rs ──┐
+        │                          ├──▶ view.rs        (AclView + flat predicates)
+        └──────────────────────────┘         ▲
+                                             │ second `impl AclView`
+                             inheritance.rs ─┘         (the subgroup-tree walk)
+
+   error.rs ◀── every fallible path in all of the above returns Rejected
+```
+
+`inheritance.rs` adds a second `impl AclView` block rather than living in
+`view.rs`: the three walking questions are ~200 lines that share one loop shape
+and differ only in what counts as success, and their differences are load-bearing
+(see the Invariants below). Nothing else in the crate depends on it — `authorize`
+never asks the inheritance questions itself; `crates/context` is what calls them.
 
 ## Mental Model: the Authorization Fold
 
@@ -76,7 +152,7 @@ cargo test -p calimero-authz inherited_membership_requires_open_chain_and_cap --
 
 ```bash
 # Find the authorization fold itself
-rg -n "pub fn authorize" src/lib.rs
+rg -n "pub fn authorize" src/authorize.rs
 
 # Find OpPayload's variants (defined in calimero-op, matched here)
 rg -n "pub enum OpPayload" -A45 ../op/src/lib.rs
@@ -93,9 +169,19 @@ rg -n "calimero_authz::" ../context/src/
 
 ## Key Files
 
+Every public item is re-exported flat from `src/lib.rs`, so `calimero_authz::AclView` works regardless of which module it lives in - the modules are private and exist for readability, not as API surface.
+
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | Everything: `AclView`, `MemberPathAtCut`, `SubgroupEdge`, `Rejected`, `authorize`, `required_mask_for`, and all tests |
+| `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
+| `src/authorize.rs` | `authorize`, `required_mask_for`, `check_data`, and the `check_device_speaks_for_author` precondition |
+| `src/view.rs` | `AclView` + `AccountBinding` / `DeviceBinding` / `SubgroupEdge`, `DEFAULT_MEMBER_MASK`, and the single-lookup predicates |
+| `src/inheritance.rs` | The subgroup-tree walk: `is_member_at_cut`, `is_authorized_admin`, `member_path_at_cut`, `MemberPathAtCut` |
+| `src/admission.rs` | `admit_device_link`, `fold_device_link`, `admit_key_rotation` - the rules shared with the projection's fold |
+| `src/error.rs` | `Rejected` |
+| `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
+| `src/tests/<module>.rs` | Tests for the module of the same name, reaching it through `crate::` paths |
+| `src/tests/support.rs` | Shared fixtures (`op_with`, `bind_account`, `bind_test_devices`, `view_with_writer`, `inheritance_view`, `membership_view`) |
 
 ## Invariants and Gotchas
 

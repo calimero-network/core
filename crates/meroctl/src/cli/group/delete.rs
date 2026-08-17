@@ -1,4 +1,3 @@
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use clap::Parser;
 use eyre::Result;
@@ -12,12 +11,6 @@ use crate::output::InfoLine;
 pub struct DeleteCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 
     #[clap(long, short = 'y', help = "Skip the confirmation prompt")]
     pub yes: bool,
@@ -36,9 +29,7 @@ impl DeleteCommand {
             return Ok(());
         }
 
-        let request = DeleteGroupApiRequest {
-            requester: self.requester,
-        };
+        let request = DeleteGroupApiRequest {};
 
         let client = environment.client()?;
         let response = client.delete_group(&self.group_id, request).await?;

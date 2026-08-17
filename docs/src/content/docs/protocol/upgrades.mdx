@@ -494,7 +494,7 @@ The cascade is driven and observed through the admin API
 | `GET /groups/:group_id/upgrade/status` | signed-group upgrade status |
 | `POST /groups/:group_id/upgrade/retry` | re-drive a stalled upgrade |
 | `GET /groups/:namespace_id/cascade-status` | per-subgroup cascade rollout rollup |
-| `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`) |
+| `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`), admin-only |
 | `POST /groups/:namespace_id/migration/abort` | admin stop of a rolling migration |
 
 `abort` flips the pending target back to the pre-migration app id and drops the pending
@@ -517,6 +517,27 @@ still have unconverted entries — `0` means the cohort is fully converted.
 The node also fires an `AppVersionChanged` context event (over SSE/WebSocket) when a
 context's application version flips, carrying `fromVersion` / `toVersion` — frontends use
 it to prompt owners to run `migrate_my_entries()` and to avoid bundle skew.
+
+### Watching a migration from a client
+
+`AppVersionChanged` is per-context and only says a version already flipped.
+The rollout itself is announced on `NodeEvent::GroupMigration`, the sibling of `NodeEvent::GroupMembership`: keyed by the same `groupId`, delivered over the same SSE/WebSocket group subscription, behind the same effective-membership gate.
+A cascade descendant is never the key, because the id a client subscribes with is the namespace root, so every phase of a subtree rollout arrives under the root.
+
+| Payload `type` | Fires when | Carries |
+| --- | --- | --- |
+| `MigrationStarted` | a node folds the upgrade op | `fromVersion`, `toVersion`, `toStateVersion`, `localContextsTotal` |
+| `CascadeProgress` | a node advances its own context swaps for one subgroup | `subgroupId`, `localContextsSwapped`, `localContextsTotal` |
+| `MigrationProgress` | a peer's heartbeat changes the cohort rollup | `migrated`, `inProgress`, `unknown`, `failed`, `total` |
+| `MigrationCompleted` | every pinned cohort member has reported the target | `toVersion`, `completedAt` |
+
+Read `localContexts*` as "on the node that emitted this" and `total` on `MigrationProgress` as the pinned cohort size; the two are unrelated numbers, which is why neither is spelled `total` on the other.
+`MigrationProgress` carries counters and nothing else. The per-member detail behind them (who is still on the old version, who failed and why) stays in
+`GET /groups/:namespace_id/migration-status`, which requires admin authority over the namespace.
+`CascadeProgress` is the one payload that names a descendant subgroup, so it is delivered only to a subscriber holding that same admin authority: enumerating a `Restricted` subgroup is not something a plain member may do. The other three reach every subscribed member.
+
+Under lazy upgrades `completedAt` on the per-group upgrade row remains node-local and says nothing about the fleet.
+The cohort answer is the separate `fleetCompletedAt` field on `migration-status`, stamped once when a node watches every pinned member report the target version, and it is the same edge that fires `MigrationCompleted`.
 
 ## The in-progress upgrade write gate
 

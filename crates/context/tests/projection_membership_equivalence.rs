@@ -22,6 +22,7 @@ use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_governance_store::{
     self, CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceRepository,
 };
+use calimero_op::ScopeId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -773,7 +774,7 @@ fn real_join_account_for(
     device: [u8; 32],
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let root_sk = PrivateKey::random(&mut OsRng);
-    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let cert = calimero_account::sign_device_cert(
         &root_sk,
         genesis.account_id(),
@@ -814,28 +815,24 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
 
     // The admin is a direct member of the ROOT ONLY — its subgroup access is
     // inherited, exactly like the namespace owner in the scenario.
-    // Keyed by the KEY-derived account throughout this test, unlike the suites
-    // above. Its whole premise is that the admin has no folded presence, so the
-    // projection can only reach it through the out-of-band root — and that path
-    // compares the ROOT's `admin_identity` against what a key resolves to with
-    // nothing folded, which is this derivation. An enrolment-derived account
-    // would be unreachable there, and the test would fail for its setup rather
-    // than for the behaviour it guards.
+    //
+    // Keyed by the admin's REAL account, and its device link folded, because
+    // that is what production looks like: `admin_identity` is a real account at
+    // every site that writes it, and a founder reaches the view through the
+    // credential its `NamespaceCreated` carries. This test used to seed BOTH
+    // sides as key-derived stand-ins, so the out-of-band root matched what a
+    // bare key resolved to — the two agreed only because they were the same
+    // derivation, which no production namespace reproduces.
+    let admin_credential = real_join_account_for(&admin, [0x6C; 32]);
+    let admin_account = admin_credential.cert.account;
     MetaRepository::new(&store)
-        .save(&ns, &meta(calimero_op_adapter::legacy_account_id(&admin)))
+        .save(&ns, &meta(admin_account))
         .unwrap();
     MetaRepository::new(&store)
-        .save(
-            &subgroup,
-            &meta(calimero_op_adapter::legacy_account_id(&admin)),
-        )
+        .save(&subgroup, &meta(admin_account))
         .unwrap();
     MembershipRepository::new(&store)
-        .add_member(
-            &ns,
-            &calimero_op_adapter::legacy_account_id(&admin),
-            GroupMemberRole::Admin,
-        )
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&ns, &subgroup)
@@ -861,45 +858,53 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         [0xBF; 32],
     );
 
-    // Baseline: before any join folds, the admin inherits into the subgroup.
-    assert_eq!(
-        proj.member_at_cut(&store, subgroup, &admin, &[s2]),
-        Some(true),
-        "baseline: the root admin reaches an Open child by inheritance"
-    );
-
-    // The ADMIN's OWN device folds — the case that matters. The genesis admin has
-    // no membership OP anywhere: it is seeded as a store row and reaches the
-    // folded view only through the out-of-band `root` parameter, keyed by
-    // `legacy_account_id`. So it is exactly the principal `account_for_author`'s
-    // own precedence guard cannot see.
-    let admin_join_open = SignedNamespaceOp::sign(
+    // The admin's credential folds at the ROOT, and nowhere near the subgroup.
+    //
+    // A key only becomes attributable once some op binds it, and the binding
+    // lives in the namespace-wide view — so an admin needs a credential folded
+    // SOMEWHERE in the namespace, not in the child. Folding it at the root is
+    // what production looks like and it keeps the case honest: the admin still
+    // has no folded presence in the subgroup, so reaching it can only be the
+    // inheritance walk. Folding an open-join into the subgroup instead would
+    // hand the admin a direct presence there and prove something easier.
+    let admin_join_root = SignedNamespaceOp::sign(
         &admin_sk,
         ns.to_bytes().into(),
         vec![],
         7,
-        NamespaceOp::Root(RootOp::MemberJoinedOpen {
-            member: calimero_op_adapter::legacy_account_id(&admin),
-            group_id: subgroup.to_bytes().into(),
-            account: real_join_account_for(&admin, [0x7A; 32]),
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: admin_account,
+            signed_invitation: sign_invitation(&admin_sk, ns, 2, [0x77; 32]),
+            account: admin_credential,
         }),
     )
-    .expect("sign admin open-join");
+    .expect("sign admin root-join");
     let id0 = [0xB7; 32];
     proj.ingest_op(&op_from_namespace_op(
-        &admin_join_open,
+        &admin_join_root,
         None,
         id0,
         hlc(1),
         &[s2],
     ));
 
+    // #3489's criterion, exactly: a namespace admin with a REAL enrolled account
+    // inherits into an Open subgroup created by another member, holding no folded
+    // presence in that subgroup at all.
     assert_eq!(
         proj.member_at_cut(&store, subgroup, &admin, &[id0]),
         Some(true),
-        "folding the admin's OWN device must not un-member it: membership on this \
-         plane is keyed by the stand-in, and the genesis admin is known only \
-         through the out-of-band root"
+        "baseline: the root admin reaches an Open child by inheritance"
+    );
+    assert!(
+        !proj
+            .acl_view_at(&ScopeId::from(ns.to_bytes()), &[id0])
+            .expect("scope fed")
+            .groups
+            .get(&subgroup)
+            .is_some_and(|m| m.contains_key(&admin_account)),
+        "and it must reach it WITHOUT a folded row in the subgroup, or the \
+         assertion above would be proving direct membership"
     );
 
     // The joiner joins the namespace carrying a credential that really folds.
@@ -916,7 +921,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     )
     .expect("sign join_ns");
     let id1 = [0xB1; 32];
-    proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[s2]));
+    proj.ingest_op(&op_from_namespace_op(&join_ns, None, id1, hlc(1), &[id0]));
 
     // ...and then into the Open subgroup by inheritance, credential and all.
     let join_sub = SignedNamespaceOp::sign(
@@ -1141,7 +1146,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     // whole reason the precedence matters.
     assert_ne!(
         founder_account,
-        calimero_op_adapter::legacy_account_id(&founder_key),
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         "the derived stand-in is not the account a credential certifies"
     );
 
@@ -1170,7 +1175,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
         &[],
     ));
 
-    // A GroupCreated folds `admin = legacy_account_id(signer)` — authority in the
+    // A GroupCreated used to fold `admin` as a stand-in for the signer — authority in the
     // view under the STAND-IN, which is exactly the condition that used to make
     // the stand-in win.
     let created = SignedNamespaceOp::sign(
@@ -1200,5 +1205,188 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
         Some(true),
         "the binding must still decide who this key is, or the founder resolves \
          to a principal the account-keyed rows have never heard of"
+    );
+}
+
+/// **A join is attributed to the account its certificate names, not to a
+/// stand-in derived from its signing key.**
+///
+/// This is the property the whole bridge deletion turns on. While
+/// `op_from_namespace_op` synthesised authorship with
+/// `calimero_op::Authorship::unattributed(signer)`, a join op's `device` was a reinterpretation of
+/// the derived account's bytes — a device that was never enrolled and holds no
+/// key. `calimero_authz::authorize` says so at its `MemberJoinedWithDevice`
+/// arm, where two cross-checks its `DeviceLinked` sibling runs are documented
+/// as impossible precisely because "both the device-key and the account
+/// comparison would fail on a perfectly honest join".
+///
+/// So this asserts the three things those checks need: the op is attributed to
+/// the certified account, to the certified device, and to the key that signed
+/// it. Assert the stand-in is a *different* account too — otherwise the first
+/// assertion could pass for the wrong reason.
+#[test]
+fn a_join_is_attributed_to_the_account_its_certificate_names() {
+    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner = joiner_sk.public_key();
+    let ns = ContextGroupId::from([0x21; 32]);
+    let group = ContextGroupId::from([0x22; 32]);
+
+    let credential = real_join_account_for(&joiner, [0x4D; 32]);
+    let certified_account = credential.cert.account;
+    let certified_device = credential.cert.device;
+
+    let join = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: certified_account,
+            group_id: group.to_bytes().into(),
+            account: credential,
+        }),
+    )
+    .expect("sign the join");
+
+    let op = op_from_namespace_op(&join, None, [0x9C; 32], hlc(1), &[]);
+
+    assert_eq!(
+        op.author(),
+        certified_account,
+        "the op must name the account the certificate grants to, since that is \
+         what `authorize` compares its verified account against"
+    );
+    assert_eq!(
+        op.device(),
+        certified_device,
+        "and the enrolled device, which is the CRDT replica slot — a fabricated \
+         one makes every account share a single slot"
+    );
+    assert_eq!(
+        *op.device_key(),
+        joiner,
+        "and the key that actually signed it, so possession can be required"
+    );
+    assert_ne!(
+        certified_account,
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
+        "the stand-in must differ from the certified account, or the assertions \
+         above would hold no matter which one was used"
+    );
+}
+
+/// **A key rotation authored by an enrolled device must actually absorb.**
+///
+/// The fold gates `AccountKeysRotated` on `handoff.account == op.authorship.account`
+/// — deliberately, because `from_ops` and the sync convergence path fold raw logs
+/// without `authorize`, and that check is what stops a stranger absorbing into a
+/// victim's epoch slot.
+///
+/// But `GroupOp::AccountKeysRotated` carries no credential, so the production
+/// converter has nothing to attribute the op to and stamps
+/// `calimero_op::Authorship::unattributed(signer)` — a stand-in derived from the signing key. A
+/// stand-in never equals the real `handoff.account`, so the comparison fails on
+/// an honest rotation and the handoff is dropped.
+///
+/// `crates/projection/tests/account_plane.rs` misses this because its fixture
+/// builds `Authorship` from a device that knows its own account, supplying the
+/// truthful value production fabricates. This drives the real converter instead.
+#[test]
+fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
+    let ns = ContextGroupId::from([0x51; 32]);
+    let group = ContextGroupId::from([0x52; 32]);
+
+    // An account with a real genesis, and a device certified by its root key.
+    let root_sk = PrivateKey::from([0x61u8; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let account = genesis.account_id();
+    let device_sk = PrivateKey::from([0x62u8; 32]);
+    let device_key = device_sk.public_key();
+    let cert = calimero_account::sign_device_cert(
+        &root_sk,
+        account,
+        calimero_account::DeviceId::from([0x63; 32]),
+        &device_key,
+        &calimero_account::KemPublicKey::from([0x64; 32]),
+        0,
+        0,
+    )
+    .expect("sign the device cert");
+
+    let mut proj = ScopeProjections::new();
+
+    // The device links, so the binding is folded and the account is known.
+    let link_env = ns_group_envelope(ns.to_bytes(), device_key, group);
+    let link = GroupOp::AccountDeviceLinked {
+        genesis,
+        chain: vec![],
+        cert,
+        endorsement: calimero_account::sign_account_endorsement(&device_sk, account)
+            .expect("endorse"),
+    };
+    let link_id = [0xC1; 32];
+    proj.ingest_op(&op_from_namespace_op(
+        &link_env,
+        Some(&link),
+        link_id,
+        hlc(1),
+        &[],
+    ));
+
+    // That device now rotates its account's root key.
+    let handoff = calimero_account::sign_root_key_handoff(
+        &root_sk,
+        account,
+        0,
+        &PrivateKey::from([0x65u8; 32]).public_key(),
+    )
+    .expect("sign handoff");
+    let rot_env = ns_group_envelope(ns.to_bytes(), device_key, group);
+    let rotation = GroupOp::AccountKeysRotated { handoff };
+    let rot_id = [0xC2; 32];
+    // The production path: the caller resolves the signer's binding and passes
+    // it, exactly as the apply handler and the backfill now do.
+    let rot_op = calimero_governance_store::op_from_namespace_op_with_binding(
+        &rot_env,
+        Some(&rotation),
+        Some((account, cert.device)),
+        rot_id,
+        hlc(2),
+        &[link_id],
+    );
+
+    // Told who signed, the converter names the real account.
+    assert_eq!(
+        rot_op.author(),
+        account,
+        "the op must be attributed to the rotating account, not to a stand-in"
+    );
+    // And the stand-in it would otherwise have used is a different account — so
+    // the assertion below cannot pass by coincidence.
+    assert_ne!(
+        calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
+        account,
+        "precondition: the derived stand-in differs from the real account"
+    );
+    let unattributed =
+        op_from_namespace_op(&rot_env, Some(&rotation), [0xC3; 32], hlc(2), &[link_id]);
+    assert_ne!(
+        unattributed.author(),
+        account,
+        "precondition: without the binding the converter still stands in, which is \
+         what silently dropped every rotation"
+    );
+
+    proj.ingest_op(&rot_op);
+
+    let view = proj
+        .acl_view_at(&ScopeId::from(ns.to_bytes()), &[rot_id])
+        .expect("scope fed");
+    assert_eq!(
+        view.accounts.get(&account).map(|a| a.epoch),
+        Some(1),
+        "the rotation must have been absorbed: the account's epoch should have \
+         advanced to 1. If this is 0 or None, the fold compared the handoff's \
+         real account against the converter's stand-in and dropped the rotation."
     );
 }

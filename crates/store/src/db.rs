@@ -92,6 +92,14 @@ pub enum Column {
     /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
     ContextExecutingBlob,
     ContextActivatedBlob,
+    /// Node-local per-context record of the ABI state version the activated
+    /// bytecode declares, resolved from its embedded schema when the context
+    /// activates it. The upgrade record that carries `to_state_version` is only
+    /// ever written by the node running `upgrade_group`, so this is the sole
+    /// local version signal a member has for state it has actually migrated.
+    /// Own column for the same `context_id`-only collision reason as above.
+    /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
+    ContextActivatedStateVersion,
     /// Node-local per-application breadcrumb of the bytecode blob an in-place
     /// (same-id) bundle install overwrote — the source for the executing-blob
     /// pin above and the L1 downgrade gate's pre-install ABI. Own column: the

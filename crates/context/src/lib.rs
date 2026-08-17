@@ -1,8 +1,6 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use calimero_governance_store::{
-    MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,12 +33,14 @@ mod cache;
 pub mod config;
 pub mod error;
 pub mod governance_dag;
+mod group_key_pull;
 pub mod handlers;
 pub mod hlc_fence;
 pub mod join_credential;
 mod lifecycle;
 pub mod member_account;
 pub mod membership_events;
+pub mod migration_events;
 pub mod migration_plan;
 pub mod rotation_listener;
 pub mod scope_projection;
@@ -542,14 +542,18 @@ impl ContextManager {
         self
     }
 
-    /// Get this node's identity for the namespace (root group) that contains `group_id`.
-    /// Returns `None` if no identity has been stored for that namespace yet.
-    pub fn node_namespace_identity(
+    /// The key this node signs with, if it takes part in the namespace containing
+    /// `group_id`.
+    ///
+    /// One key, not one per namespace — the group is what decides whether this
+    /// node has any standing there, not which key comes back. `None` means "not
+    /// my namespace", which callers throughout rely on.
+    pub fn node_signing_key(
         &self,
         group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
         match NamespaceRepository::new(&self.datastore).resolve_identity(group_id) {
-            Ok(Some((pk, sk, _sender))) => Some((pk, sk)),
+            Ok(Some((pk, sk))) => Some((pk, sk)),
             Ok(None) => None,
             Err(e) => {
                 tracing::warn!(?group_id, error=?e, "failed to resolve namespace identity");
@@ -567,17 +571,16 @@ impl ContextManager {
         ContextGroupId,
         calimero_primitives::identity::PublicKey,
         [u8; 32],
-        [u8; 32],
     )> {
-        NamespaceRepository::new(&self.datastore).get_or_create_identity(group_id)
+        NamespaceRepository::new(&self.datastore).participate_in(group_id)
     }
 }
 
 /// Result of the governance preflight check, containing everything needed
 /// to sign and publish a governance op.
 pub struct GovernancePreflight {
-    /// The resolved requester public key.
-    pub requester: calimero_primitives::identity::PublicKey,
+    /// The key this node signs with. There is one, so there is nothing to pick.
+    pub signer: calimero_primitives::identity::PublicKey,
     /// The signing private key (as raw bytes).
     pub signing_key: [u8; 32],
     /// Cloned datastore for use in async blocks.
@@ -608,51 +611,65 @@ impl ContextManager {
 
     /// Common preflight for governance mutation handlers.
     ///
-    /// Resolves the requester identity, loads group metadata, checks admin
-    /// authorization, resolves or stores the signing key, and returns
-    /// everything needed for `sign_apply_and_publish`.
+    /// Resolve the one key this node signs `group_id`'s ops with, refusing a
+    /// group that does not exist.
     ///
-    /// Returns `Err` if the group doesn't exist, the requester isn't authorized,
-    /// or no signing key is available.
-    pub fn governance_preflight(
+    /// Order matters. Both the existence check and the identity read fail for a
+    /// group that was never there, so whichever runs first decides the error the
+    /// caller sees — and "group not found" names the actual problem, where "this
+    /// node has no signing identity there" reads like a provisioning fault.
+    ///
+    /// The identity read is deliberately the non-creating one. `node_signing_key`
+    /// resolves through `resolve_identity`, a pure read; the `get_or_create`
+    /// variant would note participation as a side effect, so a governance call
+    /// naming a group this node takes no part in would leave a row behind saying
+    /// it does.
+    ///
+    pub fn resolve_signer(
         &self,
         group_id: &ContextGroupId,
-        requester: Option<calimero_primitives::identity::PublicKey>,
-        require_admin: bool,
-    ) -> eyre::Result<GovernancePreflight> {
-        let requester = match requester {
-            Some(pk) => pk,
-            None => self
-                .node_namespace_identity(group_id)
-                .map(|(pk, _)| pk)
-                .ok_or_else(|| {
-                    eyre::eyre!("requester not provided and node has no configured group identity")
-                })?,
-        };
-
+    ) -> eyre::Result<(calimero_primitives::identity::PublicKey, [u8; 32])> {
         if MetaRepository::new(&self.datastore)
             .load(group_id)?
             .is_none()
         {
             eyre::bail!("group '{group_id:?}' not found");
         }
+
+        let (node_pk, node_sk) = self.node_signing_key(group_id).ok_or_else(|| {
+            eyre::eyre!(
+                "this node has no signing identity for {group_id:?}; it does not take part there"
+            )
+        })?;
+
+        Ok((node_pk, node_sk))
+    }
+
+    /// Resolves the signing identity, loads group metadata, checks admin
+    /// authorization, resolves or stores the signing key, and returns
+    /// everything needed for `sign_apply_and_publish`.
+    ///
+    /// Returns `Err` if the group doesn't exist, the signer isn't authorized,
+    /// or no signing key is available.
+    pub fn governance_preflight(
+        &self,
+        group_id: &ContextGroupId,
+        require_admin: bool,
+    ) -> eyre::Result<GovernancePreflight> {
+        let (signer, node_sk) = self.resolve_signer(group_id)?;
+
         if require_admin {
             // The caller presents a signing key; admin authority is held by the
             // account it acts as.
-            let requester_account =
-                crate::member_account::require(&self.datastore, group_id, &requester)?;
-            MembershipRepository::new(&self.datastore)
-                .require_admin(group_id, &requester_account)?;
+            let signer_account =
+                crate::member_account::require(&self.datastore, group_id, &signer)?;
+            MembershipRepository::new(&self.datastore).require_admin(group_id, &signer_account)?;
         }
 
-        let signing_key = SigningKeysRepository::new(&self.datastore)
-            .resolve(group_id, &requester)?
-            .ok_or_else(|| {
-                eyre::eyre!("local group governance requires a signing key for the requester")
-            })?;
+        let signing_key = node_sk;
 
         Ok(GovernancePreflight {
-            requester,
+            signer,
             signing_key,
             datastore: self.datastore.clone(),
             node_client: self.node_client.clone(),
@@ -670,11 +687,10 @@ impl ContextManager {
     pub(crate) fn sign_and_publish_group_op(
         &mut self,
         group_id: &calimero_context_config::types::ContextGroupId,
-        requester: Option<calimero_primitives::identity::PublicKey>,
         require_admin: bool,
         op: calimero_context_client::local_governance::GroupOp,
     ) -> ActorResponse<Self, eyre::Result<()>> {
-        let preflight = match self.governance_preflight(group_id, requester, require_admin) {
+        let preflight = match self.governance_preflight(group_id, require_admin) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -764,10 +780,11 @@ impl Actor for ContextManager {
         // auto_follow's listener pattern. Idempotent across restarts.
         self_purge::spawn(self.datastore.clone(), self.node_client.clone());
 
-        // Forwards membership OpEvents to connected clients as `NodeEvent::GroupMembership`.
-        // `shutdown` before `spawn` rebinds to this instance's `node_client` on restart.
+        // Forwards membership + migration OpEvents to connected clients as
+        // `NodeEvent::GroupMembership` / `NodeEvent::GroupMigration`. `shutdown` before
+        // `spawn` rebinds to this instance's handles on restart.
         membership_events::shutdown();
-        membership_events::spawn(self.node_client.clone());
+        membership_events::spawn(self.node_client.clone(), self.datastore.clone());
 
         // Transparent per-subgroup TEE admission (proposal.md §12d, Phase 1).
         // Reacts to SubgroupCreated / TeeMemberAdmitted to admit entitled TEE

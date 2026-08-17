@@ -32,7 +32,6 @@ use calimero_server_primitives::admin::DeleteNamespaceApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::GroupMemberApiInput;
 use calimero_server_primitives::admin::JoinGroupApiRequest;
-use calimero_server_primitives::admin::RegisterGroupSigningKeyApiRequest;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use calimero_server_primitives::admin::ResyncContextApiRequest;
@@ -155,7 +154,7 @@ async fn delete_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .delete_group(GID, DeleteGroupApiRequest { requester: None })
+        .delete_group(GID, DeleteGroupApiRequest {})
         .await
         .unwrap();
 
@@ -180,6 +179,53 @@ async fn list_group_members() {
     assert!(resp.members.is_empty());
 }
 
+/// A caller has to be able to find itself in a member list.
+///
+/// The listing carries no self-field, so the way to do it is to ask the account
+/// endpoint who this node is and match that against `members[]`. Both sides are
+/// accounts, which is the whole point: the listing used to answer with the
+/// node's signing key, and a key never matches an account no matter how a
+/// client compares them.
+#[tokio::test]
+async fn a_caller_finds_itself_by_matching_its_account() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/admin-api/identity"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {
+                "accountId": ZERO_HEX_ACCOUNT,
+                "deviceId": null,
+                "publicKey": ZERO_BS58,
+                "accountRootPublicKey": ZERO_HEX_ACCOUNT,
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/members")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"members": [
+                {"identity": ZERO_HEX_ACCOUNT, "role": "Admin"},
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let me = client.get_node_identity().await.unwrap();
+    let members = client.list_group_members(GID).await.unwrap();
+
+    assert!(
+        members
+            .members
+            .iter()
+            .any(|m| m.identity.to_string() == me.data.account_id),
+        "a node's own account must be findable among the members it is returned",
+    );
+}
+
 #[tokio::test]
 async fn add_group_members() {
     let server = MockServer::start().await;
@@ -199,7 +245,6 @@ async fn add_group_members() {
                     identity: PublicKey::from([0u8; 32]),
                     role: GroupMemberRole::Member,
                 }],
-                requester: None,
             },
         )
         .await
@@ -222,7 +267,6 @@ async fn remove_group_members() {
             GID,
             RemoveGroupMembersApiRequest {
                 members: vec![calimero_primitives::identity::AccountId::from([0u8; 32])],
-                requester: None,
             },
         )
         .await
@@ -248,7 +292,6 @@ async fn update_member_role() {
             IDENT,
             UpdateMemberRoleApiRequest {
                 role: GroupMemberRole::Admin,
-                requester: None,
             },
         )
         .await
@@ -287,11 +330,7 @@ async fn detach_context_from_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     client
-        .detach_context_from_group(
-            GID,
-            CID,
-            DetachContextFromGroupApiRequest { requester: None },
-        )
+        .detach_context_from_group(GID, CID, DetachContextFromGroupApiRequest {})
         .await
         .unwrap();
 }
@@ -337,7 +376,6 @@ async fn reparent_group() {
             GID,
             ReparentGroupApiRequest {
                 new_parent_id: "new-parent-id".to_owned(),
-                requester: None,
             },
         )
         .await
@@ -442,7 +480,7 @@ async fn delete_namespace() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .delete_namespace(GID, DeleteNamespaceApiRequest { requester: None })
+        .delete_namespace(GID, DeleteNamespaceApiRequest {})
         .await
         .unwrap();
     assert!(resp.data.is_deleted);
@@ -476,7 +514,6 @@ async fn create_namespace_invitation() {
         .create_namespace_invitation(
             GID,
             CreateGroupInvitationApiRequest {
-                requester: None,
                 expiration_timestamp: None,
                 recursive: None,
             },
@@ -592,9 +629,9 @@ async fn upgrade_group() {
             "data": {
                 "groupId": GID,
                 "status": "pending",
-                "total": null,
-                "completed": null,
-                "failed": null
+                "localContextsTotal": 3,
+                "localContextsSwapped": 1,
+                "localContextsFailed": 0
             }
         })))
         .expect(1)
@@ -607,7 +644,6 @@ async fn upgrade_group() {
             GID,
             UpgradeGroupApiRequest {
                 target_application_id: ApplicationId::from([0u8; 32]),
-                requester: None,
                 cascade: false,
                 force_code_only: false,
             },
@@ -616,6 +652,11 @@ async fn upgrade_group() {
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
+    // Non-null counters, asserted: these are `Option`, so a fixture of nulls
+    // cannot tell a correct wire name from a drifted one.
+    assert_eq!(resp.data.local_contexts_total, Some(3));
+    assert_eq!(resp.data.local_contexts_swapped, Some(1));
+    assert_eq!(resp.data.local_contexts_failed, Some(0));
 }
 
 #[tokio::test]
@@ -650,9 +691,9 @@ async fn get_cascade_status() {
                     "initiatedAt": 100,
                     "initiatedBy": ZERO_BS58,
                     "status": "pending",
-                    "total": 3,
-                    "completed": 1,
-                    "failed": 0
+                    "localContextsTotal": 3,
+                    "localContextsSwapped": 1,
+                    "localContextsFailed": 0
                 },
                 "cascadeHlc": "hlc-abc"
             }]})),
@@ -668,6 +709,11 @@ async fn get_cascade_status() {
     assert_eq!(resp.data[0].group_id, GID);
     assert_eq!(resp.data[0].upgrade.to_version, "2.0.0");
     assert_eq!(resp.data[0].cascade_hlc.as_deref(), Some("hlc-abc"));
+    // The counters are `Option`, so a drifted wire name deserializes to `None`
+    // rather than erroring: only asserting the values makes a rename fail loudly.
+    assert_eq!(resp.data[0].upgrade.local_contexts_total, Some(3));
+    assert_eq!(resp.data[0].upgrade.local_contexts_swapped, Some(1));
+    assert_eq!(resp.data[0].upgrade.local_contexts_failed, Some(0));
 }
 
 #[tokio::test]
@@ -679,9 +725,9 @@ async fn retry_group_upgrade() {
             "data": {
                 "groupId": GID,
                 "status": "pending",
-                "total": null,
-                "completed": null,
-                "failed": null
+                "localContextsTotal": 4,
+                "localContextsSwapped": 2,
+                "localContextsFailed": 1
             }
         })))
         .expect(1)
@@ -690,11 +736,14 @@ async fn retry_group_upgrade() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .retry_group_upgrade(GID, RetryGroupUpgradeApiRequest { requester: None })
+        .retry_group_upgrade(GID, RetryGroupUpgradeApiRequest {})
         .await
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
+    assert_eq!(resp.data.local_contexts_total, Some(4));
+    assert_eq!(resp.data.local_contexts_swapped, Some(2));
+    assert_eq!(resp.data.local_contexts_failed, Some(1));
 }
 
 #[tokio::test]
@@ -844,37 +893,11 @@ async fn sync_group() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     let resp = client
-        .sync_group(GID, SyncGroupApiRequest { requester: None })
+        .sync_group(GID, SyncGroupApiRequest {})
         .await
         .unwrap();
 
     assert_eq!(resp.data.group_id, GID);
-}
-
-#[tokio::test]
-async fn register_group_signing_key() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(format!("/admin-api/groups/{GID}/signing-key")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": {"publicKey": ZERO_BS58}
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = make_client(&Url::parse(&server.uri()).unwrap());
-    let resp = client
-        .register_group_signing_key(
-            GID,
-            RegisterGroupSigningKeyApiRequest {
-                signing_key: "testkey".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.data.public_key, PublicKey::from([0u8; 32]));
 }
 
 // ---- Member Capabilities & Visibility ----
@@ -896,10 +919,7 @@ async fn set_member_capabilities() {
         .set_member_capabilities(
             GID,
             IDENT,
-            SetMemberCapabilitiesApiRequest {
-                capabilities: 0,
-                requester: None,
-            },
+            SetMemberCapabilitiesApiRequest { capabilities: 0 },
         )
         .await
         .unwrap();
@@ -945,7 +965,6 @@ async fn set_default_capabilities() {
             GID,
             SetDefaultCapabilitiesApiRequest {
                 default_capabilities: 0,
-                requester: None,
             },
         )
         .await
@@ -970,7 +989,6 @@ async fn set_subgroup_visibility() {
             GID,
             SetSubgroupVisibilityApiRequest {
                 subgroup_visibility: "open".to_string(),
-                requester: None,
             },
         )
         .await

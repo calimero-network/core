@@ -17,10 +17,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        DeleteGroupRequest {
-            group_id,
-            requester,
-        }: DeleteGroupRequest,
+        DeleteGroupRequest { group_id }: DeleteGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Strict-tree refactor: delete now cascades. The handler builds the
@@ -29,18 +26,10 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // arm in execute_group_deleted re-enumerates locally and rejects
         // payload mismatches (deterministic-application check across peers).
         // See spec docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured namespace identity"
-                    )))
-                }
-            },
+        let Some((signer, _)) = self.node_signing_key(&group_id) else {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "node has no configured namespace identity"
+            )));
         };
 
         // Resolve namespace identity for signing the RootOp. With the strict
@@ -48,7 +37,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // namespace, so this always succeeds for valid (non-root) targets.
         let namespace_identity =
             match NamespaceRepository::new(&self.datastore).resolve_identity(&group_id) {
-                Ok(Some((pk, sk, _sender))) => (pk, sk),
+                Ok(Some((pk, sk))) => (pk, sk),
                 Ok(None) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                 "no local namespace identity for group '{group_id:?}': cannot sign cascade delete"
@@ -79,14 +68,14 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 // namespace member holding CAN_DELETE_SUBGROUP. The non-owner case
                 // routes through `PermissionChecker` to stay in step with the
                 // create / set-visibility handlers.
-                let requester_account =
-                    crate::member_account::require(&self.datastore, &group_id, &requester)?;
-                if meta.owner_identity != requester_account {
+                let signer_account =
+                    crate::member_account::require(&self.datastore, &group_id, &signer)?;
+                if meta.owner_identity != signer_account {
                     calimero_governance_store::PermissionChecker::new(
                         &self.datastore,
                         namespace_id,
                     )
-                    .require_can_delete_subgroup(&requester)
+                    .require_can_delete_subgroup(&signer)
                     .map_err(|e| {
                         eyre::eyre!("deleting subgroup '{group_id:?}': {e} (or be its owner)")
                     })?;
@@ -144,7 +133,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
                 info!(
                     ?group_id,
-                    %requester,
+                    %signer,
                     total_groups,
                     total_contexts,
                     "cascade-deleted group subtree"

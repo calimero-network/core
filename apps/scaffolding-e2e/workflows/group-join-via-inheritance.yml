@@ -80,7 +80,6 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -123,6 +122,10 @@ steps:
     group_id: '{{subgroup_id}}'
     outputs:
       ctx_id: contextId
+      # The key node-1 executes context calls as. It is the context creation
+      # that mints it — namespace creation answers with a namespace id and
+      # nothing else.
+      node1_key: memberPublicKey
 
   - name: Wait for subgroup visibility + context-registered ops to propagate
     # Same rationale as group-open-self-join-key-delivery.yml: node-2
@@ -174,8 +177,7 @@ steps:
   # subgroup members on node-2's own node must still include node-2:
   # the admin-api handler unions the stored rows with
   # `enumerate_inherited_members`. Before the fix this assertion fails
-  # — node-2's identity appeared only in `selfIdentity`, never in
-  # `members[]`.
+  # — an inherited member was absent from `members[]` entirely.
 
   - name: 'Node-2 lists subgroup members (issue #2371)'
     type: list_group_members
@@ -189,9 +191,8 @@ steps:
     statements:
       # node-2 joined `subgroup` via inheritance and holds no explicit
       # `GroupMember` row. Before the #2371 fix it was absent from
-      # `members[]` (surfaced only in `selfIdentity`); the admin-api
-      # handler now unions inherited members in, so node-2 must appear
-      # in the listed members.
+      # `members[]`; the admin-api handler now unions inherited members
+      # in, so node-2 must appear in the listed members.
       #
       # Compared by ACCOUNT, not by the `memberPublicKey` the join step
       # returns: the listing names members by the principal their rows are

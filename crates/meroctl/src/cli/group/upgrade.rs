@@ -1,5 +1,4 @@
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{RetryGroupUpgradeApiRequest, UpgradeGroupApiRequest};
 use clap::{Parser, Subcommand};
 use eyre::Result;
@@ -44,12 +43,6 @@ pub struct TriggerUpgradeCommand {
 
     #[clap(
         long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
-
-    #[clap(
-        long,
         help = "Emit a cascade upgrade that fans out to every descendant subgroup whose \
                 current app_key matches the signed group's app_key. Default: false."
     )]
@@ -68,7 +61,6 @@ impl TriggerUpgradeCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = UpgradeGroupApiRequest {
             target_application_id: self.target_application_id,
-            requester: self.requester,
             cascade: self.cascade,
             force_code_only: self.force_code_only,
         };
@@ -105,19 +97,11 @@ impl UpgradeStatusCommand {
 pub struct RetryUpgradeCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
-
-    #[clap(
-        long,
-        help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
-    )]
-    pub requester: Option<PublicKey>,
 }
 
 impl RetryUpgradeCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let request = RetryGroupUpgradeApiRequest {
-            requester: self.requester,
-        };
+        let request = RetryGroupUpgradeApiRequest {};
 
         let client = environment.client()?;
         let response = client.retry_group_upgrade(&self.group_id, request).await?;

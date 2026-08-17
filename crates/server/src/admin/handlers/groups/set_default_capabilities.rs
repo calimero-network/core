@@ -10,16 +10,13 @@ use calimero_server_primitives::admin::{
 use tracing::{error, info};
 
 use super::parse_group_id;
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<SetDefaultCapabilitiesApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -29,17 +26,11 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, default_capabilities=req.default_capabilities, "Setting default capabilities");
 
-    let requester = match resolve_requester(auth_key, req.requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
-
     let result = state
         .ctx_client
         .set_default_capabilities(SetDefaultCapabilitiesRequest {
             group_id,
             default_capabilities: req.default_capabilities,
-            requester,
         })
         .await
         .map_err(parse_api_error);

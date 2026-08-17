@@ -19,7 +19,6 @@ ed25519-consensus.workspace = true
 eyre.workspace = true
 borsh.workspace = true
 hex.workspace = true
-ic-agent.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
@@ -29,9 +28,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
-starknet.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
+tokio = { workspace = true, features = ["io-std", "macros", "fs", "net"] }
 toml_edit.workspace = true
 tracing.workspace = true
 zeroize.workspace = true

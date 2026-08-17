@@ -100,6 +100,7 @@ impl ContextManager {
 
                 crate::handlers::upgrade_group::propagate_upgrade(
                     context_client,
+                    node_client,
                     datastore,
                     group_id,
                     target_application_id,

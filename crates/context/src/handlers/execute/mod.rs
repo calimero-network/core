@@ -17,7 +17,6 @@ use calimero_context_client::messages::{
 use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
 use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
@@ -44,7 +43,6 @@ use calimero_wasm_abi::schema::{MethodIntent, XCallCallers};
 use either::Either;
 use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
-use memchr::memmem;
 use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
@@ -96,7 +94,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             executor,
             method,
             payload,
-            aliases,
             atomic,
             xcall_origin,
             xcall_depth,
@@ -124,7 +121,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             %context_id,
             %executor,
             method,
-            aliases = ?aliases,
             payload_len = payload.len(),
             atomic = %match atomic {
                 None => "no",
@@ -380,7 +376,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         // Restricted (or unset) subgroups, and Open subgroups behind a
         // Restricted ancestor, continue to use their own per-subgroup
         // key.
-        let (sender_key, broadcast_key_id) =
+        let (encryption_key, broadcast_key_id) =
             match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
                     // Errors from `resolve_namespace` or
@@ -529,16 +525,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             public_key = %identity.public_key,
             "ContextManager: keys",
         );
-
-        let payload =
-            match substitute_aliases_in_payload(&self.node_client, context_id, payload, &aliases) {
-                Ok(payload) => payload,
-                Err(err) => {
-                    error!(%err, "failed to execute request");
-
-                    return ActorResponse::reply(Err(err));
-                }
-            };
 
         let guard_task = async move {
             match guard {
@@ -1042,8 +1028,23 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 continue;
                             };
                             for entry in &log.entries {
+                                // Same resolution the apply and backfill paths
+                                // use: a rotation entry names a KEY, and the
+                                // writer plane is keyed by account.
+                                let signer_binding = entry.signer.and_then(|signer| {
+                                    calimero_governance_store::signer_binding_for(
+                                        &xcall_datastore,
+                                        &calimero_context_config::types::ContextGroupId::from(
+                                            *context_id.digest(),
+                                        ),
+                                        &signer,
+                                    )
+                                });
                                 if let Some(op) = crate::scope_projection::op_from_rotation_entry(
-                                    *object, scope, entry,
+                                    *object,
+                                    scope,
+                                    entry,
+                                    signer_binding,
                                 ) {
                                     ops.push(op);
                                 }
@@ -1253,7 +1254,6 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         &target_executor,
                                         function.clone(),
                                         params.clone(),
-                                        vec![],
                                         None,
                                         Some(context_id),
                                         // Child runs one level deeper. The depth
@@ -1404,7 +1404,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 .broadcast(
                                     &context,
                                     &executor,
-                                    &sender_key,
+                                    &encryption_key,
                                     outcome.artifact.clone(),
                                     the_delta.id,
                                     the_delta.parents.clone(),
@@ -1553,17 +1553,25 @@ impl ContextManager {
             // true) rather than wedge this lazy member. force only relaxes the
             // absent-evidence arm: a rung whose ABI declares a migration still
             // resolves and runs it.
-            crate::handlers::upgrade_group::resolve_upgrade_from_abis(
+            let migration = crate::handlers::upgrade_group::resolve_upgrade_from_abis(
                 &node_client,
                 bound,
                 rung_app_key,
                 true,
             )
-            .await
+            .await?;
+            // The rung's declared state version, recorded with the activation
+            // marker below: the upgrade record that carries `to_state_version`
+            // never leaves the node that ran `upgrade_group`, so this is the
+            // only version signal a member has for state it has migrated.
+            let state_version =
+                crate::handlers::upgrade_group::blob_max_state_version(&node_client, rung_app_key)
+                    .await;
+            Ok::<_, eyre::Report>((migration, state_version))
         }
         .into_actor(self)
         .then(move |resolved, act, _ctx| {
-            let migration = match resolved {
+            let (migration, activated_state_version) = match resolved {
                 Ok(m) => m,
                 Err(err) => {
                     // Rung blob unobtainable or its ABI unreadable: the context
@@ -1616,6 +1624,13 @@ impl ContextManager {
                                 &context_id,
                                 rung_app_key,
                             );
+                            if let Some(state_version) = activated_state_version {
+                                crate::activation::record_activated_state_version(
+                                    &datastore,
+                                    &context_id,
+                                    state_version,
+                                );
+                            }
                             Ok(())
                         }
                         .into_actor(act)
@@ -1661,6 +1676,13 @@ impl ContextManager {
                     )
                     .await?;
                     crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    if let Some(state_version) = activated_state_version {
+                        crate::activation::record_activated_state_version(
+                            &datastore,
+                            &context_id,
+                            state_version,
+                        );
+                    }
                     clear_migration_failed(&datastore, context_id);
                     Ok(())
                 }
@@ -2595,56 +2617,6 @@ fn xcall_same_owning_group(
     let src = calimero_governance_store::get_group_for_context(store, source)?;
     let tgt = calimero_governance_store::get_group_for_context(store, target)?;
     Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
-}
-
-fn substitute_aliases_in_payload(
-    node_client: &NodeClient,
-    context_id: ContextId,
-    payload: Vec<u8>,
-    aliases: &[Alias<PublicKey>],
-) -> Result<Vec<u8>, ExecuteError> {
-    if aliases.is_empty() {
-        return Ok(payload);
-    }
-
-    // todo! evaluate a byte-version of calimero_server[build]::replace
-    // todo! ref: https://github.com/calimero-network/core/blob/6deb2db81a65e0b5c86af9fe2950cf9019ab61af/crates/server/build.rs#L139-L175
-
-    let mut result = Vec::with_capacity(payload.len());
-    let mut remaining = &payload[..];
-
-    for alias in aliases {
-        let needle_str = format!("{{{alias}}}");
-        let needle = needle_str.into_bytes();
-
-        while let Some(pos) = memmem::find(remaining, &needle) {
-            result.extend_from_slice(&remaining[..pos]);
-
-            let public_key = node_client
-                .resolve_alias(*alias, Some(context_id))
-                .map_err(|err| {
-                    error!(%err, ?alias, "failed to resolve alias during substitution");
-                    ExecuteError::InternalError {
-                        kind: InternalErrorKind::Context,
-                    }
-                })?
-                .ok_or(ExecuteError::AliasResolutionFailed { alias: *alias })?;
-
-            // Substitution hot path: bs58-encode the 32-byte key into a
-            // stack buffer rather than allocating a fresh String per alias.
-            let mut buf = [0u8; 45];
-            let len = bs58::encode(public_key.as_ref() as &[u8; 32])
-                .onto(&mut buf[..])
-                .expect("base58 encoding cannot fail for fixed 32-byte input");
-            result.extend_from_slice(&buf[..len]);
-
-            remaining = &remaining[pos + needle.len()..];
-        }
-    }
-
-    result.extend_from_slice(remaining);
-
-    Ok(result)
 }
 
 #[cfg(test)]

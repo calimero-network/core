@@ -24,11 +24,6 @@
 //! - Simple emission: `app::emit!(MyEvent::DataChanged { data: "hello" })`
 //! - With callback handler: `app::emit!((MyEvent::CounterUpdated { value: 42 }, "counter_handler"))`
 
-#![cfg_attr(
-    all(test, feature = "nightly"),
-    feature(non_exhaustive_omitted_patterns_lint)
-)]
-
 use macros::parse_macro_input;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;

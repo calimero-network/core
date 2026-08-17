@@ -13,14 +13,13 @@
 //! backwards compatibility, but emits a deprecation warning recommending the
 //! safe forms.
 //!
-//! Only [`resolve_required_secret`] ever prompts (and only on a TTY); an
-//! *optional* secret that is simply omitted resolves to `None` without a
+//! An optional secret that is simply omitted resolves to `None` without a
 //! prompt, so commands with optional secrets (e.g. `node add` tokens) are not
 //! interrupted.
 
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead};
 
 use eyre::{eyre, Result, WrapErr};
 
@@ -33,33 +32,6 @@ pub fn resolve_optional_secret(arg: Option<&str>) -> Result<Option<String>> {
     match arg {
         Some(spec) => resolve_spec(spec).map(Some),
         None => Ok(None),
-    }
-}
-
-/// Resolve a required secret source spec into the secret value.
-///
-/// When a spec is given it is resolved (and rejected if it resolves to empty).
-/// When nothing is supplied, a TTY is prompted without echo; a non-interactive
-/// run errors rather than hanging.
-pub fn resolve_required_secret(arg: Option<&str>, prompt: &str) -> Result<String> {
-    match arg {
-        Some(spec) => {
-            let value = resolve_spec(spec)?;
-            if value.is_empty() {
-                return Err(eyre!("{prompt}: resolved to an empty value"));
-            }
-            Ok(value)
-        }
-        None if io::stdin().is_terminal() => {
-            let value = prompt_hidden(prompt)?;
-            if value.is_empty() {
-                return Err(eyre!("{prompt}: empty value entered"));
-            }
-            Ok(value)
-        }
-        None => Err(eyre!(
-            "{prompt}: no value supplied. Provide one via `env:NAME`, `file:PATH`, `-` (stdin), or run interactively."
-        )),
     }
 }
 
@@ -97,15 +69,6 @@ fn resolve_spec(spec: &str) -> Result<String> {
          `ps`, and /proc. Prefer `env:NAME`, `file:PATH`, or `-` (stdin)."
     );
     Ok(spec.to_owned())
-}
-
-fn prompt_hidden(prompt: &str) -> Result<String> {
-    // Write the prompt to stderr so it does not pollute machine-readable stdout.
-    let mut stderr = io::stderr();
-    write!(stderr, "{prompt}: ").wrap_err("failed to write prompt")?;
-    stderr.flush().ok();
-    let value = rpassword::read_password().wrap_err("failed to read secret from prompt")?;
-    Ok(value)
 }
 
 #[cfg(test)]
@@ -149,14 +112,5 @@ mod tests {
     fn bare_value_is_returned_verbatim() {
         // (Emits a deprecation warning to stderr.)
         assert_eq!(resolve_spec("literal-secret").unwrap(), "literal-secret");
-    }
-
-    #[test]
-    fn required_secret_errors_on_empty_resolution() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("empty");
-        fs::write(&path, "").unwrap();
-        let spec = format!("file:{}", path.display());
-        assert!(resolve_required_secret(Some(&spec), "test secret").is_err());
     }
 }

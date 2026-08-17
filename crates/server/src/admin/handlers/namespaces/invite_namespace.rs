@@ -1,6 +1,4 @@
-use calimero_governance_store::{
-    MembershipRepository, MetadataRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -17,16 +15,13 @@ use reqwest::StatusCode;
 use tracing::{error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
-use crate::admin::handlers::requester::resolve_requester;
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     ValidatedJson(req): ValidatedJson<CreateGroupInvitationApiRequest>,
 ) -> impl IntoResponse {
     let namespace_id = match parse_group_id(&namespace_id_str) {
@@ -48,33 +43,26 @@ pub async fn handler(
 
     info!(namespace_id=%namespace_id_str, recursive=?req.recursive, "Creating namespace invitation");
 
-    let requester = match resolve_requester(auth_key, req.requester) {
-        Ok(r) => r,
-        Err(err) => return err.into_response(),
-    };
     let expiration_secs = req.expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
     if req.recursive.unwrap_or(false) {
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match NamespaceRepository::new(&state.store).resolve_identity(&namespace_id) {
-                Ok(Some((pk, _, _))) => pk,
+        // The node signs as itself, with the one key it holds.
+        let (node_pk, signing_key) =
+            match NamespaceRepository::new(&state.store).resolve_identity(&namespace_id) {
+                Ok(Some(pair)) => pair,
                 Ok(None) => {
                     return ApiError {
                         status_code: StatusCode::BAD_REQUEST,
-                        message: "requester not provided and no namespace identity available"
-                            .into(),
+                        message: "this node has no signing identity for this namespace".into(),
                     }
                     .into_response();
                 }
                 Err(err) => return parse_api_error(err).into_response(),
-            },
-        };
-
-        let requester_account = match calimero_governance_store::member_account_in_namespace(
+            };
+        let signer_account = match calimero_governance_store::member_account_in_namespace(
             &state.store,
             &namespace_id,
-            &requester,
+            &node_pk,
         ) {
             Ok(Some(account)) => account,
             Ok(None) => {
@@ -93,25 +81,12 @@ pub async fn handler(
         };
         if let Err(err) = MembershipRepository::new(&state.store).require_admin_or_capability(
             &namespace_id,
-            &requester_account,
+            &signer_account,
             calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
             "create namespace invitation",
         ) {
             return parse_api_error(err).into_response();
         }
-
-        let signing_key =
-            match SigningKeysRepository::new(&state.store).get_key(&namespace_id, &requester) {
-                Ok(Some(sk)) => sk,
-                Ok(None) => {
-                    return ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "signing key not found for requester".into(),
-                    }
-                    .into_response();
-                }
-                Err(err) => return parse_api_error(err).into_response(),
-            };
 
         let inviter_sk = PrivateKey::from(signing_key);
         let invitations = match NamespaceRepository::new(&state.store).create_recursive_invitations(
@@ -149,7 +124,6 @@ pub async fn handler(
         .ctx_client
         .create_group_invitation(CreateGroupInvitationRequest {
             group_id: namespace_id,
-            requester,
             expiration_timestamp: req.expiration_timestamp,
         })
         .await

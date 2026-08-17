@@ -18,12 +18,11 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
             group_id,
             identity,
             new_role,
-            requester,
         }: UpdateMemberRoleRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Admin check first — prevents non-admins from probing role status.
-        let preflight = match self.governance_preflight(&group_id, requester, true) {
+        let preflight = match self.governance_preflight(&group_id, true) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };

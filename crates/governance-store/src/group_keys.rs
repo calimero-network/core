@@ -321,10 +321,12 @@ impl<'a> GroupKeyring<'a> {
     }
 
     /// Delete every stored group encryption key (`GroupKeyEntry`) for this
-    /// group. Used by the purge/leave cascade for forward-secrecy hygiene —
-    /// mirrors `SigningKeysRepository::delete_all_for_group` (the group id is
-    /// taken from `self` rather than a parameter, since the keyring is already
-    /// scoped to one group). Idempotent.
+    /// group. Used by the purge/leave cascade for hygiene: an evicted node
+    /// has no further use for them. (Forward secrecy on the group's future
+    /// writes comes from rotation re-keying without the removed account —
+    /// a node deleting its own copy defends against nothing.) The group id
+    /// is taken from `self` rather than a parameter, since the keyring is
+    /// already scoped to one group. Idempotent.
     ///
     /// Correctness relies on `GroupKeyEntry` keys being ordered by
     /// `(group_id, key_id)`, so all of this group's keys are contiguous and the
@@ -956,17 +958,17 @@ mod recipient_tests {
     /// membership gate requires: the account's epoch-0 root key IS a member key.
     /// Link one device of `member_sk`'s account, returning it and the account.
     ///
-    /// The account's genesis nonce is fixed per member, NOT per device — two
-    /// calls with different `device_seed`s are two devices of ONE person. It
-    /// used to vary with the device, which silently made every device its own
-    /// account and could not model the case these tests are about.
+    /// The account is fixed per member, NOT per device — two calls with
+    /// different `device_seed`s are two devices of ONE person. The account used
+    /// to vary with the device, which silently made every device its own account
+    /// and could not model the case these tests are about.
     fn link_device(
         store: &Store,
         gid: ContextGroupId,
         member_sk: &PrivateKey,
         device_seed: u8,
     ) -> (DeviceId, AccountId) {
-        let genesis = AccountGenesis::new(member_sk.public_key(), [0xA0; 16]);
+        let genesis = AccountGenesis::new(member_sk.public_key());
         let account = genesis.account_id();
         let cert = sign_device_cert(
             member_sk,
@@ -1102,7 +1104,7 @@ mod recipient_tests {
         account_root_sk: &PrivateKey,
         device_seed: u8,
     ) -> (DeviceId, AccountId) {
-        let genesis = AccountGenesis::new(account_root_sk.public_key(), [device_seed; 16]);
+        let genesis = AccountGenesis::new(account_root_sk.public_key());
         let account = genesis.account_id();
         let cert = sign_device_cert(
             account_root_sk,
@@ -1228,7 +1230,7 @@ mod recipient_tests {
         );
 
         // Rotate the account root onto a key that is NOT a member of the group.
-        let genesis = AccountGenesis::new(member_sk.public_key(), [0xA0; 16]);
+        let genesis = AccountGenesis::new(member_sk.public_key());
         let offline_root = PrivateKey::from([0x77u8; 32]);
         let handoff = calimero_account::sign_root_key_handoff(
             &member_sk,
@@ -1556,11 +1558,9 @@ mod delete_tests {
     }
 
     fn device_fixture(seed: u8) -> (DeviceId, X25519SecretKey) {
-        let account = calimero_account::AccountGenesis::new(
-            PrivateKey::from([seed; 32]).public_key(),
-            [seed; 16],
-        )
-        .account_id();
+        let account =
+            calimero_account::AccountGenesis::new(PrivateKey::from([seed; 32]).public_key())
+                .account_id();
         (
             DeviceId::mint(account, [seed; 16]),
             X25519SecretKey::from([seed; 32]),

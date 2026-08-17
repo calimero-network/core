@@ -7,7 +7,7 @@
 //! it structurally cannot false-purge either of the two look-alike states
 //! that confused the previous role-blind full-scan reconcile:
 //!
-//! 1. **Pending join** — the join path writes the `NamespaceIdentity` BEFORE
+//! 1. **Pending join** — the join path writes the `NamespaceParticipation` BEFORE
 //!    the joiner's `GroupMember` row materializes. A restart mid-join leaves
 //!    identity-present / membership-absent, identical on the surface to
 //!    evicted residue. No marker is ever written for a join, so the sweep
@@ -193,10 +193,12 @@ mod tests {
     #[test]
     fn iter_pending_excludes_adjacent_column_families() {
         // The scan must stop at the PendingSelfPurge prefix boundary and not
-        // bleed into neighbouring column families (e.g. NamespaceIdentity /
+        // bleed into neighbouring column families (e.g. NamespaceParticipation /
         // GroupDeniedMember rows written under different prefixes).
 
-        use calimero_store::key::{GroupDeniedMember, NamespaceIdentity, NamespaceIdentityValue};
+        use calimero_store::key::{
+            GroupDeniedMember, NamespaceParticipation, NamespaceParticipationValue,
+        };
 
         let store = test_store();
         let repo = PendingSelfPurgeRepository::new(&store);
@@ -208,12 +210,8 @@ mod tests {
             let mut handle = store.handle();
             handle
                 .put(
-                    &NamespaceIdentity::new([0x44; 32]),
-                    &NamespaceIdentityValue {
-                        public_key: [0x01; 32],
-                        private_key: [0x02; 32],
-                        sender_key: [0x03; 32],
-                    },
+                    &NamespaceParticipation::new([0x44; 32]),
+                    &NamespaceParticipationValue { reserved: 0 },
                 )
                 .unwrap();
             handle

@@ -128,6 +128,7 @@ src/
 ├── lib.rs                    # NetworkManager actor, public exports
 ├── behaviour.rs              # Composed Behaviour (12 sub-behaviours)
 ├── discovery.rs              # Discovery coordination
+├── subscription_repair.rs    # Heals a one-way gossipsub mesh (see its module docs)
 ├── discovery/
 │   ├── state.rs              # DiscoveryState (peer tracking, reachability)
 │   └── state_tests.rs        # Discovery state tests

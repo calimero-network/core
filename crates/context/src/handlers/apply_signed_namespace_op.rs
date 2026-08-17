@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::messages::{ApplySignedNamespaceOpRequest, NamespaceApplyOutcome};
+use calimero_context_config::types::ContextGroupId;
 use calimero_dag::AddDeltaOutcome;
 
 use crate::governance_dag::{signed_namespace_op_to_delta, NamespaceGovernanceApplier};
@@ -81,9 +82,18 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // op has nothing to decrypt and folds as `Noop`.
                         _ => None,
                     };
-                    let shadow_op = crate::scope_projection::op_from_namespace_op(
+                    // Resolved from the store, not derived from the key: the op
+                    // has just applied, and it could not have unless the signer's
+                    // binding was present — so every node agrees on this value.
+                    let signer_binding = calimero_governance_store::signer_binding_for(
+                        &compare_store,
+                        &ContextGroupId::from(namespace_id.to_bytes()),
+                        &signed_op.signer,
+                    );
+                    let shadow_op = calimero_governance_store::op_from_namespace_op_with_binding(
                         &signed_op,
                         decrypted.as_ref(),
+                        signer_binding,
                         delta_id,
                         delta_hlc,
                         &delta_parents,

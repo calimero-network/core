@@ -61,7 +61,6 @@ pub struct CreateGroupResponse {
 #[derive(Clone, Debug)]
 pub struct DeleteGroupRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteGroupRequest {
@@ -84,7 +83,6 @@ pub struct DeleteGroupResponse {
 #[derive(Clone, Debug)]
 pub struct DeleteNamespaceRequest {
     pub namespace_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteNamespaceRequest {
@@ -100,7 +98,6 @@ pub struct DeleteNamespaceResponse {
 pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<(PublicKey, GroupMemberRole)>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for AddGroupMembersRequest {
@@ -111,7 +108,6 @@ impl Message for AddGroupMembersRequest {
 pub struct RemoveGroupMembersRequest {
     pub group_id: ContextGroupId,
     pub members: Vec<AccountId>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for RemoveGroupMembersRequest {
@@ -161,9 +157,6 @@ impl Message for ListGroupMembersRequest {
 #[derive(Clone, Debug)]
 pub struct ListGroupMembersResponse {
     pub members: Vec<GroupMemberEntry>,
-    /// The node's own group-level identity (SignerId) so the client knows
-    /// which member in the list represents the current node.
-    pub self_identity: PublicKey,
 }
 
 #[derive(Clone, Debug)]
@@ -216,7 +209,6 @@ impl Message for StoreContextMetadataRequest {
 pub struct UpgradeGroupRequest {
     pub group_id: ContextGroupId,
     pub target_application_id: ApplicationId,
-    pub requester: Option<PublicKey>,
     /// When `true`, emit one atomic [`GroupOp::CascadeUpgrade`] fanning out
     /// to every descendant subgroup whose `app_key` matches the signed
     /// group's; when `false` (default), stay on the single-group path.
@@ -233,15 +225,10 @@ impl UpgradeGroupRequest {
     /// historical default. Use the struct literal with `cascade: true`
     /// for the cascade variant.
     #[must_use]
-    pub fn new(
-        group_id: ContextGroupId,
-        target_application_id: ApplicationId,
-        requester: Option<PublicKey>,
-    ) -> Self {
+    pub fn new(group_id: ContextGroupId, target_application_id: ApplicationId) -> Self {
         Self {
             group_id,
             target_application_id,
-            requester,
             cascade: false,
             force_code_only: false,
         }
@@ -270,7 +257,6 @@ impl Message for GetGroupUpgradeStatusRequest {
 #[derive(Debug)]
 pub struct RetryGroupUpgradeRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for RetryGroupUpgradeRequest {
@@ -280,7 +266,6 @@ impl Message for RetryGroupUpgradeRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
     /// Duration in seconds for the invitation validity.
     /// Defaults to 1 year when not provided.
     pub expiration_timestamp: Option<u64>,
@@ -312,14 +297,17 @@ pub struct JoinGroupResponse {
     pub member_identity: PublicKey,
     /// The principal the joiner's membership row is keyed by.
     ///
-    /// Returned beside the key for the same reason [`NamespaceIdentity`] carries
+    /// Returned beside the key for the same reason [`NamespaceParticipation`] carries
     /// both: the joiner is about to be addressed by account (capabilities, role,
     /// metadata, removal), and the account is a hash of the key that no caller
     /// can compute for itself.
     pub member_account: AccountId,
-    /// Serialized `SignedGroupOp` (borsh) containing the `JoinWithInvitationClaim`.
-    /// The orchestrator must relay this to the inviting node's claim-invitation
-    /// endpoint so the member is registered on the remote side.
+    /// Always empty. This carried a serialized `SignedGroupOp` back when a join
+    /// had to be relayed to the inviting node; direct request-response join
+    /// replaced that, so the sole construction site sets `vec![]` and no reader
+    /// consumes it. It still reaches clients as `governanceOp: ""` on the group
+    /// and namespace join responses, so retiring it is an SDK-visible wire
+    /// change rather than a local cleanup.
     pub governance_op_bytes: Vec<u8>,
 }
 
@@ -347,7 +335,6 @@ pub struct UpdateMemberRoleRequest {
     pub group_id: ContextGroupId,
     pub identity: AccountId,
     pub new_role: GroupMemberRole,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for UpdateMemberRoleRequest {
@@ -358,7 +345,6 @@ impl Message for UpdateMemberRoleRequest {
 pub struct DetachContextFromGroupRequest {
     pub group_id: ContextGroupId,
     pub context_id: ContextId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DetachContextFromGroupRequest {
@@ -377,7 +363,6 @@ impl Message for GetGroupForContextRequest {
 #[derive(Debug)]
 pub struct SyncGroupRequest {
     pub group_id: ContextGroupId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SyncGroupRequest {
@@ -626,7 +611,6 @@ pub struct SetMemberCapabilitiesRequest {
     pub group_id: ContextGroupId,
     pub member: AccountId,
     pub capabilities: u32,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetMemberCapabilitiesRequest {
@@ -644,7 +628,6 @@ pub struct SetMemberAutoFollowRequest {
     pub target: AccountId,
     pub auto_follow_contexts: bool,
     pub auto_follow_subgroups: bool,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetMemberAutoFollowRequest {
@@ -670,7 +653,6 @@ pub struct GetMemberCapabilitiesResponse {
 pub struct SetDefaultCapabilitiesRequest {
     pub group_id: ContextGroupId,
     pub default_capabilities: u32,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetDefaultCapabilitiesRequest {
@@ -687,7 +669,6 @@ pub struct SetTeeAdmissionPolicyRequest {
     pub allowed_rtmr3: Vec<String>,
     pub allowed_tcb_statuses: Vec<String>,
     pub accept_mock: bool,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetTeeAdmissionPolicyRequest {
@@ -739,45 +720,6 @@ impl Message for AdmitTeeNodeRequest {
 /// Must run AFTER the node holds the namespace's scope key: the link travels as an
 /// encrypted `GroupOp`, so a node with no key cannot publish one. That is not an
 /// implementation detail to be tidied away later — it is why `KeyEnvelope` can
-/// still address a member as well as a device.
-#[derive(Debug)]
-pub struct CreateAccountRequest {
-    /// The namespace to enroll in. The account is rooted at this node's namespace
-    /// identity, which is what ties it to a granted member.
-    pub namespace_id: ContextGroupId,
-}
-
-/// What the node enrolled as.
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct CreateAccountResponse {
-    /// The account this node now speaks for in the namespace.
-    pub account: AccountId,
-    /// This node's replica id within it.
-    pub device: DeviceId,
-    /// The account's genesis, which a pairing device needs in order to mint its
-    /// own `DeviceId` — it is `H(account ‖ nonce)`, so the nonce has to travel.
-    pub genesis: AccountGenesis,
-}
-
-impl CreateAccountResponse {
-    /// Build a response. Exists because the struct is `#[non_exhaustive]` — which
-    /// is right for the readers, but the producer lives in `calimero-context` and
-    /// cannot use a struct expression across the crate boundary.
-    #[must_use]
-    pub const fn new(account: AccountId, device: DeviceId, genesis: AccountGenesis) -> Self {
-        Self {
-            account,
-            device,
-            genesis,
-        }
-    }
-}
-
-impl Message for CreateAccountRequest {
-    type Result = eyre::Result<CreateAccountResponse>;
-}
-
 /// Adopt an **existing** account on this node and mint a device for it — the
 /// first half of pairing.
 ///
@@ -786,7 +728,7 @@ impl Message for CreateAccountRequest {
 /// knows the account (`H(account ‖ nonce)`), while the account holder cannot
 /// certify that device until it knows the id and KEM key.
 ///
-/// Deliberately does **not** require a scope key, unlike `CreateAccountRequest`.
+/// Deliberately does **not** require a scope key: nothing is published here.
 /// A pairing device holds none — obtaining one is what the second half is for —
 /// and it publishes nothing here, so there is no encrypted op to gate on.
 #[derive(Debug)]
@@ -833,7 +775,7 @@ pub struct PairDeviceInitResponse {
 
 impl PairDeviceInitResponse {
     /// Build a response. Exists for the same reason as
-    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the constructor — the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
     pub const fn new(
@@ -917,7 +859,7 @@ pub struct PairDeviceCompleteResponse {
 
 impl PairDeviceCompleteResponse {
     /// Build a response. Exists for the same reason as
-    /// [`CreateAccountResponse::new`] — the struct is `#[non_exhaustive]` and
+    /// the constructor — the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
     pub const fn new(
@@ -966,7 +908,34 @@ pub struct RevokeDeviceRequest {
     pub proof: Option<SignedDeviceRevocation>,
 }
 
-/// What the revocation withdrew.
+/// Where one namespace's revocation landed.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct RevocationOutcome {
+    /// The namespace the revocation was published into.
+    pub namespace_id: ContextGroupId,
+    /// Whether the scope key was rotated in the same op.
+    ///
+    /// `false` means the device lost the right to write there immediately but
+    /// still holds the key it had — it can read until an admin rotates. Only an
+    /// admin may rotate, and the account holder revoking their own device usually
+    /// is not one, so this is commonly owed.
+    pub key_rotated: bool,
+}
+
+impl RevocationOutcome {
+    /// Build an outcome. Exists because the struct is `#[non_exhaustive]` and the
+    /// producer lives in another crate.
+    #[must_use]
+    pub const fn new(namespace_id: ContextGroupId, key_rotated: bool) -> Self {
+        Self {
+            namespace_id,
+            key_rotated,
+        }
+    }
+}
+
+/// What the revocation withdrew, and where.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RevokeDeviceResponse {
@@ -974,23 +943,30 @@ pub struct RevokeDeviceResponse {
     pub account: AccountId,
     /// The device that was withdrawn.
     pub device: DeviceId,
-    /// Whether the scope key was rotated in the same op.
+    /// Every namespace the revocation was published into.
     ///
-    /// `false` means the device lost the right to write immediately but still
-    /// holds the key it had — it can read until an admin rotates. Only an admin
-    /// may rotate, so a self-service revocation always leaves this owed.
-    pub key_rotated: bool,
+    /// A device belongs to an account, not to a scope, so revoking it withdraws it
+    /// from every namespace that holds a binding for it — not only the one the
+    /// caller happened to name. Reported per namespace because publication is
+    /// per-DAG: a namespace missing from this list did not receive the op, and a
+    /// partially propagated revocation is a state an operator has to be able to
+    /// see.
+    pub revoked_in: Vec<RevocationOutcome>,
 }
 
 impl RevokeDeviceResponse {
     /// Build a response. Exists because the struct is `#[non_exhaustive]` and
     /// the producer lives in another crate.
     #[must_use]
-    pub const fn new(account: AccountId, device: DeviceId, key_rotated: bool) -> Self {
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        revoked_in: Vec<RevocationOutcome>,
+    ) -> Self {
         Self {
             account,
             device,
-            key_rotated,
+            revoked_in,
         }
     }
 }
@@ -1014,8 +990,25 @@ impl Message for PairDeviceCompleteRequest {
 #[derive(Debug)]
 pub struct RotateGroupKeyRequest {
     pub group_id: ContextGroupId,
-    /// The member whose departure this rotation cuts off.
-    pub departed: AccountId,
+    /// What the rotation is paying off, which decides who it excludes.
+    pub debt: RotationDebt,
+}
+
+/// Why a rotation is owed — and therefore who the new key is withheld from.
+///
+/// The two cases are not interchangeable, which is the whole reason this is an
+/// enum rather than an `Option<AccountId>`: getting it wrong either leaves the
+/// party you meant to cut off holding the key, or cuts off a member who never
+/// left.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RotationDebt {
+    /// A member departed. Every envelope excludes their account by name.
+    MemberDeparted(AccountId),
+    /// A device was revoked. Excludes NOBODY by name: the recipient list is built
+    /// from live bindings and the revocation applied first, so the device is
+    /// already absent — while its account is still a member and must keep the
+    /// other devices it holds.
+    DeviceRevoked(DeviceId),
 }
 
 impl Message for RotateGroupKeyRequest {
@@ -1026,7 +1019,6 @@ impl Message for RotateGroupKeyRequest {
 pub struct SetSubgroupVisibilityRequest {
     pub group_id: ContextGroupId,
     pub subgroup_visibility: calimero_context_config::VisibilityMode,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetSubgroupVisibilityRequest {
@@ -1061,7 +1053,6 @@ pub struct SetMemberMetadataRequest {
     pub member: AccountId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetMemberMetadataRequest {
@@ -1087,7 +1078,6 @@ pub struct SetGroupMetadataRequest {
     pub group_id: ContextGroupId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetGroupMetadataRequest {
@@ -1100,7 +1090,6 @@ pub struct SetContextMetadataRequest {
     pub context_id: ContextId,
     pub name: Option<String>,
     pub data: BTreeMap<String, String>,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for SetContextMetadataRequest {
@@ -1213,7 +1202,7 @@ pub struct GetNamespaceIdentityRequest {
 /// only ever learned the key cannot name the member it just looked up. Returning
 /// both from the one call is what closes that gap.
 #[derive(Clone, Copy, Debug)]
-pub struct NamespaceIdentity {
+pub struct NamespaceParticipation {
     /// The namespace the identity belongs to (the resolved root group).
     pub namespace_id: ContextGroupId,
     /// The key this node signs namespace ops with.
@@ -1223,7 +1212,7 @@ pub struct NamespaceIdentity {
 }
 
 impl Message for GetNamespaceIdentityRequest {
-    type Result = eyre::Result<Option<NamespaceIdentity>>;
+    type Result = eyre::Result<Option<NamespaceParticipation>>;
 }
 
 #[derive(Debug)]
@@ -1394,6 +1383,19 @@ pub struct MemberMigrationReport {
     pub migration_failed: Option<MigrationFailureKind>,
 }
 
+impl From<calimero_node_primitives::messages::MigrationStatusReport> for MemberMigrationReport {
+    fn from(r: calimero_node_primitives::messages::MigrationStatusReport) -> Self {
+        Self {
+            schema_version: r.schema_version,
+            residue_auto: r.residue_auto,
+            synced_up_to_hlc: r.synced_up_to_hlc,
+            reported_at: r.reported_at,
+            authored_remaining: r.authored_remaining,
+            migration_failed: MigrationFailureKind::from_u8(r.migration_failed),
+        }
+    }
+}
+
 /// Why a member's migration did not complete. A categorized, `Copy`-safe
 /// reason (the human string is derived from this in the UI); kept narrow so
 /// the report stays `Copy` and the heartbeat carries a single discriminant.
@@ -1518,6 +1520,11 @@ pub struct MigrationStatus {
     pub expected_members: usize,
     /// The governance HLC the cohort was pinned at (migration expand-entry).
     pub cohort_pinned_at_hlc: Option<HybridTimestamp>,
+    /// When this node watched the cohort converge, read off the stored upgrade
+    /// record: the durable answer, unlike `rollup.all_migrated`, which is
+    /// recomputed from in-TTL heartbeats and lapses when a member goes quiet.
+    /// The pure rollup below has no record to read and leaves it `None`.
+    pub fleet_completed_at: Option<u64>,
     pub rollup: MigrationStatusRollup,
     pub members: Vec<MemberMigrationStatus>,
 }
@@ -1627,6 +1634,7 @@ pub fn compute_migration_status_rollup(
         target_version,
         expected_members: total,
         cohort_pinned_at_hlc,
+        fleet_completed_at: None,
         rollup: MigrationStatusRollup {
             migrated,
             in_progress,
@@ -2027,6 +2035,33 @@ mod migration_status_tests {
         assert!(
             !status.rollup.all_migrated,
             "a member still on the old binary must not count as migrated"
+        );
+    }
+
+    /// Four of the mapped fields are `u64`, so a transposition compiles
+    /// silently - swapping `synced_up_to_hlc` with `reported_at` would corrupt
+    /// the cohort pin comparison. Distinct values per field pin the mapping.
+    #[test]
+    fn heartbeat_report_maps_field_for_field() {
+        let mapped: MemberMigrationReport =
+            calimero_node_primitives::messages::MigrationStatusReport {
+                schema_version: 7,
+                residue_auto: 11,
+                synced_up_to_hlc: 22,
+                reported_at: 33,
+                authored_remaining: 44,
+                migration_failed: 2,
+            }
+            .into();
+
+        assert_eq!(mapped.schema_version, 7);
+        assert_eq!(mapped.residue_auto, 11);
+        assert_eq!(mapped.synced_up_to_hlc, 22);
+        assert_eq!(mapped.reported_at, 33);
+        assert_eq!(mapped.authored_remaining, 44);
+        assert_eq!(
+            mapped.migration_failed,
+            Some(MigrationFailureKind::ApplyFailed)
         );
     }
 }

@@ -7,6 +7,11 @@
 //! nothing, and that a beacon accepted on this path never enters the readiness
 //! cache. The emit-path case runs a real `ReadinessManager` over the same
 //! harness and decodes what it actually published.
+//!
+//! Every case is `#[serial(boot_test_node)]` for the reason the sibling
+//! `boot_test_node` modules are: booting a node rebinds process-global
+//! singletons (the `op_events` bridges, the TEE-admit subscriber), so a
+//! concurrent boot steals another module's event stream mid-assertion.
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +30,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use libp2p::PeerId;
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 
@@ -161,6 +167,7 @@ fn member_slot_claimed(node: &TestNode) -> bool {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn provable_beacon_pulls_from_its_signer_and_never_caches() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -205,6 +212,7 @@ async fn provable_beacon_pulls_from_its_signer_and_never_caches() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn provable_pull_does_not_consume_the_member_debounce_slot() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -244,6 +252,7 @@ async fn provable_pull_does_not_consume_the_member_debounce_slot() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn a_provable_pull_that_returns_nothing_gives_its_slot_back() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -272,6 +281,7 @@ async fn a_provable_pull_that_returns_nothing_gives_its_slot_back() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn unprovable_beacon_pulls_nothing() {
     let node = boot_test_node().await;
     let admin_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -306,7 +316,6 @@ fn start_readiness_manager(
             &ContextGroupId::from(NS),
             &joiner_sk.public_key(),
             joiner_sk.as_bytes(),
-            &[7u8; 32],
         )
         .expect("store namespace identity");
 
@@ -411,6 +420,7 @@ async fn emit_beacon(addr: &actix::Addr<ReadinessManager>) {
 /// tests above start their own actor and post `PendingRepublish` directly, so a
 /// break anywhere in that routing would leave every one of them green.
 #[actix::test]
+#[serial(boot_test_node)]
 async fn a_queued_join_reaches_the_wire_through_the_node_client() {
     let node = boot_test_node().await;
     let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -445,6 +455,7 @@ async fn a_queued_join_reaches_the_wire_through_the_node_client() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn queued_join_rides_the_next_beacon_as_its_admission_proof() {
     let node = boot_test_node().await;
     let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -480,6 +491,7 @@ async fn queued_join_rides_the_next_beacon_as_its_admission_proof() {
 }
 
 #[actix::test]
+#[serial(boot_test_node)]
 async fn beacon_carries_no_proof_without_a_queued_join() {
     let node = boot_test_node().await;
     let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
@@ -501,7 +513,7 @@ async fn beacon_carries_no_proof_without_a_queued_join() {
 /// well-formed — readiness and beacon tests assert on op flow, not on accounts.
 fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let root = calimero_primitives::identity::PublicKey::from([0x7A; 32]);
-    let genesis = calimero_account::AccountGenesis::new(root, [0x5A; 16]);
+    let genesis = calimero_account::AccountGenesis::new(root);
     Box::new(
         calimero_context_client::local_governance::JoinAccountCredential {
             cert: calimero_account::DeviceCert {

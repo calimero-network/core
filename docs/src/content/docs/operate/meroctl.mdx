@@ -39,26 +39,19 @@ every client talking to the same node sees the same aliases.
 | ---------------- | -------------------- | -------------------------------------------------------- |
 | `ContextId`      | Node-global          | `context alias add`, or `context create --name`          |
 | `ApplicationId`  | Node-global          | admin API `alias/create/application`                     |
-| `PublicKey` (identity) | **Per context** | `context identity alias add` (scoped to one context)     |
 
-Context and application aliases are unique across the whole node; an identity
-alias only has meaning **within the context it was created in**, so the same
-name can resolve to different keys in different contexts.
+Context and application aliases are unique across the whole node.
 
-A reserved `default` alias exists for both contexts and identities. Commands
-that take `--context` (or an executor identity) fall back to `default` when the
-flag is omitted, and `context use <CONTEXT>` / `context identity use <IDENTITY>`
-just point the `default` alias at a chosen target. The `call --substitute`
-flag is a related but distinct feature: it resolves a comma-separated list of
-**identity** aliases and templates them into the request payload wherever you
-write `{alias}` (see [`call`](#call)).
+A reserved `default` alias exists for contexts. Commands that take `--context`
+fall back to `default` when the flag is omitted, and `context use <CONTEXT>`
+just points the `default` alias at a chosen target.
 
 <Aside type="caution">
   `--node <ALIAS>` is a different kind of name entirely. It is a **meroctl
   connection name** — client-side state stored in `nodes.toml`
   (see [meroctl's own config](#meroctls-own-config-nodestoml)) that selects
   which node to talk to. It never reaches the node and has nothing to do with
-  the context/application/identity aliases above.
+  the context/application aliases above.
 </Aside>
 
 ## Command groups
@@ -107,10 +100,10 @@ meroctl --node node1 app ls
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `list` (`ls`)                      | List all contexts.                                | —                                                            |
-| `create`                           | Create a new context.                             | `--application-id`/`-a`, `--group-id` (required), `--params`/`-p`, `--watch`/`-w` `<path>`, `--seed`/`-s`, `--as` (identity alias), `--name` (context alias), `--service`, `--identity-secret`, `--group-name`, positional `metadata` (requires `--watch`) |
+| `create`                           | Create a new context.                             | `--application-id`/`-a`, `--group-id` (required), `--params`/`-p`, `--watch`/`-w` `<path>`, `--seed`/`-s`, `--name` (context alias), `--service`, `--identity-secret`, `--group-name`, positional `metadata` (requires `--watch`) |
 | `get <CONTEXT>`                    | Fetch context details: `info`, `client-keys`, or `storage`. | `CONTEXT`, subcommand                                  |
-| `delete` (`del`) `<CONTEXT>`       | Delete a context.                                 | `CONTEXT`, `--requester`                                     |
-| `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--metadata`, `--watch`/`-w`, `--as` (executor) |
+| `delete` (`del`) `<CONTEXT>`       | Delete a context.                                 | `CONTEXT`                                     |
+| `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--metadata`, `--watch`/`-w` |
 | `watch` (`ws`)                     | Stream context events, optionally run a command.  | `--context`, `-x`/`--exec`, `-n`/`--count`                  |
 | `sync`                             | Explicitly request a sync.                        | `--context`/`-c`, `--all`                                    |
 | `identity`                         | Manage context identities (see below).            | subcommand                                                    |
@@ -123,15 +116,10 @@ meroctl --node node1 app ls
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `list` (`ls`)                      | List identities in a context.                     | `--context`, `--owned`                                       |
 | `generate` (`new`)                 | Generate a new identity keypair.                  | —                                                            |
-| `use <IDENTITY>`                   | Set the default identity for a context.           | `IDENTITY`, `--context`, `--force`                          |
-| `alias`                            | Manage identity aliases.                          | subcommand                                                    |
-| `grant`                            | **Removed.** Parses but errors, pointing you to `group members set-caps`. | identity, capability, `--context`, `--as`                   |
-| `revoke`                           | **Removed.** Parses but errors, pointing you to `group members set-caps`. | identity, capability, `--context`, `--as`                   |
 
 <Aside type="note">
-  Per-context capability `grant`/`revoke` have been removed. The commands still
-  parse for compatibility but immediately error, directing you to manage
-  capabilities through the group instead (`group members set-capabilities`).
+  Per-context capability `grant`/`revoke` are gone. Manage capabilities through
+  the group instead (`group members set-capabilities`).
 </Aside>
 
 ```sh
@@ -146,17 +134,16 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `get <GROUP_ID>`                   | Get information about a group.                    | `GROUP_ID`                                                    |
-| `delete` (`del`) `<GROUP_ID>`      | Delete a group.                                   | `GROUP_ID`, `--requester`                                    |
+| `delete` (`del`) `<GROUP_ID>`      | Delete a group.                                   | `GROUP_ID`                                    |
 | `members`                          | Manage group members (see below).                 | subcommand                                                    |
 | `contexts`                         | List (`list`/`ls`) or `detach` contexts in a group. | subcommand                                                  |
 | `metadata`                         | Show / update a group's metadata record.          | subcommand                                                    |
 | `member-metadata`                  | Show / update a member's metadata record.         | subcommand                                                    |
 | `context-metadata`                 | Show / update a registered context's metadata.    | subcommand                                                    |
-| `reparent <GROUP_ID> <NEW_PARENT_ID>` | Atomically move a group to a new parent.       | `GROUP_ID`, `NEW_PARENT_ID`, `--requester`                  |
+| `reparent <GROUP_ID> <NEW_PARENT_ID>` | Atomically move a group to a new parent.       | `GROUP_ID`, `NEW_PARENT_ID`                  |
 | `subgroups <GROUP_ID>`             | List direct subgroups of a group.                 | `GROUP_ID`                                                    |
-| `signing-key`                      | Manage signing keys: `register`.                  | subcommand                                                    |
 | `upgrade`                          | `trigger`, `status`, or `retry` a group upgrade.  | subcommand                                                    |
-| `sync <GROUP_ID>`                  | Sync a group from local state.                    | `GROUP_ID`, `--requester`                                   |
+| `sync <GROUP_ID>`                  | Sync a group from local state.                    | `GROUP_ID`                                   |
 | `join-context <CONTEXT_ID>`        | Join a context via group membership.              | `CONTEXT_ID`                                                  |
 | `leave-context <CONTEXT_ID>`       | Locally opt out of a context (no DAG op).         | `CONTEXT_ID`                                                  |
 | `leave <GROUP_ID>`                 | Voluntarily leave a group (publishes MemberLeft). | `GROUP_ID`                                                    |
@@ -167,9 +154,9 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `list` (`ls`) `<GROUP_ID>`         | List all members of a group.                      | `GROUP_ID`                                                    |
-| `add <GROUP_ID> <IDENTITY>`        | Add a member to a group.                          | `--role`, `--requester`                                      |
-| `remove <GROUP_ID> <IDENTITY...>`  | Remove members from a group.                      | identities, `--requester`                                   |
-| `set-role <GROUP_ID> <IDENTITY> <ROLE>` | Update a member's role.                       | `--requester`                                                |
+| `add <GROUP_ID> <IDENTITY>`        | Add a member to a group.                          | `--role`                                      |
+| `remove <GROUP_ID> <IDENTITY...>`  | Remove members from a group.                      | identities                                   |
+| `set-role <GROUP_ID> <IDENTITY> <ROLE>` | Update a member's role.                       | —                                                |
 | `set-capabilities` (`set-caps`)    | Set capabilities for a member (admin-only).       | `GROUP_ID`, `IDENTITY`, `--can-*` flags                     |
 | `get-capabilities` (`get-caps`)    | Get a member's capabilities.                      | `GROUP_ID`, `IDENTITY`                                       |
 | `check-access`                     | Check if an identity can join a context.          | `GROUP_ID`, identity                                        |
@@ -179,13 +166,12 @@ meroctl --node node1 group members set-caps <group_id> <identity> --can-create-c
 | Subcommand (aliases)                       | Purpose                                  | Key args                                              |
 | ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------- |
 | `get <GROUP_ID>`                           | Get current default settings.            | `GROUP_ID`                                            |
-| `set-default-capabilities` (`set-default-caps`) | Set default capabilities for new members. | `GROUP_ID`, `--can-*` flags, `--requester`        |
-| `set-subgroup-visibility` (`set-subgroup-vis`) | Set subgroup visibility (open/restricted). | `GROUP_ID`, `--mode`, `--requester`               |
+| `set-default-capabilities` (`set-default-caps`) | Set default capabilities for new members. | `GROUP_ID`, `--can-*` flags        |
+| `set-subgroup-visibility` (`set-subgroup-vis`) | Set subgroup visibility (open/restricted). | `GROUP_ID`, `--mode`               |
 
 ```sh
 meroctl --node node1 group members list <group_id>
 meroctl --node node1 group reparent <group_id> <new_parent_id>
-meroctl --node node1 group signing-key register <group_id> <hex_signing_key>
 ```
 
 ---
@@ -198,8 +184,8 @@ Alias: `ns`. Namespaces are root groups (application instances).
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--app-key`                    |
 | `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
-| `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`, `--requester`                                |
-| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--requester`, `--expiration-timestamp`, `--recursive` |
+| `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`                                |
+| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive` |
 | `join <NAMESPACE_ID> <INVITATION>` | Join a namespace using an invitation.             | `NAMESPACE_ID`, invitation JSON                              |
 | `leave <NAMESPACE_ID>`             | Leave a namespace (cascades through descendants). | `NAMESPACE_ID`                                               |
 | `groups <NAMESPACE_ID>`            | List direct groups under a namespace.             | `NAMESPACE_ID`                                               |
@@ -247,7 +233,6 @@ CLI flag; the call executes under the context's default identity.
 | `<METHOD>`                | string               | —           | Method to call (omit with `--interactive`).                    |
 | `--context`/`-c <CONTEXT>` | context alias/id    | `default`   | Context to call the method on.                                  |
 | `--args <JSON>`           | JSON                 | `{}`        | JSON arguments to pass to the method.                          |
-| `--substitute <ALIAS>`    | comma-separated aliases | —        | Aliases to substitute into the payload (reference them as `{alias}`). |
 | `--id <ID>`               | string               | —           | JSON-RPC call id.                                              |
 | `--interactive`/`-i`      | bool                 | `false`     | Open a persistent WebSocket shell and run many calls.          |
 | `--timeout <SECONDS>`     | u64                  | `120`       | Per-call timeout in the interactive shell (`0` disables).      |

@@ -12,10 +12,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        DeleteNamespaceRequest {
-            namespace_id,
-            requester,
-        }: DeleteNamespaceRequest,
+        DeleteNamespaceRequest { namespace_id }: DeleteNamespaceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         // Namespace deletion is a purely local teardown — no DAG-replicated
@@ -26,16 +23,10 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         // Each node that wishes to tear down its local namespace state calls
         // this handler; peers continue to hold their own namespace state
         // until they do the same.
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match self.node_namespace_identity(&namespace_id) {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured namespace identity"
-                    )))
-                }
-            },
+        let Some((signer, _)) = self.node_signing_key(&namespace_id) else {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "node has no configured namespace identity"
+            )));
         };
 
         let result = (|| -> eyre::Result<(usize, usize)> {
@@ -56,10 +47,10 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
             }
 
             // Admin authorization against the namespace root.
-            let requester_account =
-                crate::member_account::require(&self.datastore, &namespace_id, &requester)?;
+            let signer_account =
+                crate::member_account::require(&self.datastore, &namespace_id, &signer)?;
             MembershipRepository::new(&self.datastore)
-                .require_admin(&namespace_id, &requester_account)?;
+                .require_admin(&namespace_id, &signer_account)?;
 
             // Enumerate the full subtree so we can tear down children-first.
             let payload = NamespaceRepository::new(&self.datastore)
@@ -129,7 +120,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
 
                 info!(
                     ?namespace_id,
-                    %requester,
+                    %signer,
                     total_groups,
                     total_contexts,
                     "deleted namespace and subtree"

@@ -1,6 +1,5 @@
 use actix::Message;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -11,8 +10,8 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CreateAccountRequest, CreateGroupInvitationRequest,
-    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
+    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
@@ -59,7 +58,6 @@ pub struct CreateContextResponse {
 #[derive(Copy, Clone, Debug)]
 pub struct DeleteContextRequest {
     pub context_id: ContextId,
-    pub requester: Option<PublicKey>,
 }
 
 impl Message for DeleteContextRequest {
@@ -77,7 +75,6 @@ pub struct ExecuteRequest {
     pub executor: PublicKey,
     pub method: String,
     pub payload: Vec<u8>,
-    pub aliases: Vec<Alias<PublicKey>>,
     pub atomic: Option<ContextAtomic>,
     /// Source context when this execution is dispatched via `xcall`; `None`
     /// for direct/RPC calls. Surfaced to the guest via `env::xcall_origin()`.
@@ -174,8 +171,6 @@ pub enum ExecuteError {
     ApplicationNotInstalled { application_id: ApplicationId },
     #[error("internal error ({kind:?})")]
     InternalError { kind: InternalErrorKind },
-    #[error("error resolving identity alias '{alias}'")]
-    AliasResolutionFailed { alias: Alias<PublicKey> },
     /// Group-context execute attempted before its `KeyDelivery` op
     /// arrived. The local DAG is healthy and the membership row exists,
     /// but the group key needed to encrypt the resulting state delta has
@@ -490,10 +485,6 @@ pub enum ContextMessage {
     AdmitTeeNode {
         request: AdmitTeeNodeRequest,
         outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
-    },
-    CreateAccount {
-        request: CreateAccountRequest,
-        outcome: oneshot::Sender<<CreateAccountRequest as Message>::Result>,
     },
     PairDeviceInit {
         request: PairDeviceInitRequest,

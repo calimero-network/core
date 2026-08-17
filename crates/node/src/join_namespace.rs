@@ -141,8 +141,8 @@ pub async fn join_namespace(
     // step 2: provision identity (mark_membership_pending equivalent —
     // the namespace identity row IS the local pending marker until
     // MemberJoined ack arrives).
-    let (ns_id, _pk, mut sk_bytes, mut sender_key) = NamespaceRepository::new(store)
-        .get_or_create_identity(&group_id)
+    let (ns_id, _pk, mut sk_bytes) = NamespaceRepository::new(store)
+        .participate_in(&group_id)
         .map_err(|e| JoinError::Local(e.to_string()))?;
     let namespace_id = ns_id.to_bytes();
     // Zeroize raw secret-key bytes before drop — `PrivateKey::from(...)`
@@ -152,7 +152,6 @@ pub async fn join_namespace(
     // the bytes in the J6 fast path (signing happens in
     // `await_namespace_ready`), so wipe them immediately.
     sk_bytes.zeroize();
-    sender_key.zeroize();
 
     // step 2b: trust seed for `verify_readiness_beacon`.
     //
@@ -391,15 +390,14 @@ pub async fn await_namespace_ready(
 
     // step 2: load the namespace identity for signing MemberJoined.
     let group_id = ContextGroupId::from(namespace_id);
-    let (_, my_pk, mut my_sk_bytes, mut sender_key) = NamespaceRepository::new(store)
-        .get_or_create_identity(&group_id)
+    let (_, my_pk, mut my_sk_bytes) = NamespaceRepository::new(store)
+        .participate_in(&group_id)
         .map_err(|e| ReadyError::Local(e.to_string()))?;
     // `sender_key` is unused — zeroize immediately. `my_sk_bytes` is
     // consumed by `PrivateKey::from(...)` below; because `[u8; 32]:
     // Copy` the "move" copies the bytes, so the stack copy survives
     // until we explicitly zeroize it after the call. `PrivateKey`'s
     // `Drop` impl zeroizes its own internal copy.
-    sender_key.zeroize();
     let signing_key = PrivateKey::from(my_sk_bytes);
     my_sk_bytes.zeroize();
 

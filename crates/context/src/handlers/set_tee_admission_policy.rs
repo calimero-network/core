@@ -1,13 +1,9 @@
-use calimero_governance_store::{
-    MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::NamespaceRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetTeeAdmissionPolicyRequest;
 use calimero_context_client::local_governance::GroupOp;
-use calimero_primitives::identity::PrivateKey;
-use eyre::bail;
 use tracing::info;
 
 use crate::ContextManager;
@@ -28,84 +24,38 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             allowed_rtmr3,
             allowed_tcb_statuses,
             accept_mock,
-            requester,
         }: SetTeeAdmissionPolicyRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
-                    )))
-                }
-            },
-        };
-
-        let node_sk = node_identity.map(|(_, sk)| sk);
-        let signing_key = node_sk;
-
-        if let Err(err) = (|| -> eyre::Result<()> {
-            if MetaRepository::new(&self.datastore)
-                .load(&group_id)?
-                .is_none()
-            {
-                bail!("group '{group_id:?}' not found");
-            }
-
-            // TEE admission policies are namespace-scoped. Reject attempts to
-            // set one on a subgroup — callers must target the namespace root.
-            // The policy a subgroup "inherits" is whatever is set on the root;
-            // see project_subgroup_policy_decision.md.
-            if let Some(parent) = NamespaceRepository::new(&self.datastore).parent(&group_id)? {
-                let root = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
-                bail!(
+        // TEE admission policies are namespace-scoped. Reject attempts to set one
+        // on a subgroup — callers must target the namespace root. The policy a
+        // subgroup "inherits" is whatever is set on the root.
+        match NamespaceRepository::new(&self.datastore).parent(&group_id) {
+            Ok(Some(parent)) => {
+                let root = match NamespaceRepository::new(&self.datastore).resolve(&group_id) {
+                    Ok(root) => root,
+                    Err(err) => return ActorResponse::reply(Err(err)),
+                };
+                return ActorResponse::reply(Err(eyre::eyre!(
                     "TEE admission policy is namespace-scoped; set it on the namespace root \
                      '{root:?}' instead of subgroup '{group_id:?}' (parent: '{parent:?}')"
-                );
+                )));
             }
-
-            let requester_account =
-                crate::member_account::require(&self.datastore, &group_id, &requester)?;
-            MembershipRepository::new(&self.datastore)
-                .require_admin(&group_id, &requester_account)?;
-
-            if signing_key.is_none() {
-                SigningKeysRepository::new(&self.datastore).require_key(&group_id, &requester)?;
-            }
-
-            Ok(())
-        })() {
-            return ActorResponse::reply(Err(err));
+            Ok(None) => {}
+            Err(err) => return ActorResponse::reply(Err(err)),
         }
 
-        if let Some(ref sk) = signing_key {
-            if let Err(err) =
-                SigningKeysRepository::new(&self.datastore).store_key(&group_id, &requester, sk)
-            {
-                tracing::warn!(?group_id, %requester, error = %err, "Failed to persist group signing key");
-            }
-        }
-
-        let datastore = self.datastore.clone();
-        let node_client = self.node_client.clone();
+        let preflight = match self.governance_preflight(&group_id, true) {
+            Ok(preflight) => preflight,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        let sk = preflight.signer_sk();
+        let datastore = preflight.datastore;
+        let node_client = preflight.node_client;
         let ack_router = Arc::clone(&self.ack_router);
-        let effective_signing_key = signing_key.or_else(|| {
-            SigningKeysRepository::new(&self.datastore)
-                .get_key(&group_id, &requester)
-                .ok()
-                .flatten()
-        });
 
         ActorResponse::r#async(
             async move {
-                let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-                    eyre::eyre!("local group governance requires a signing key for the requester")
-                })?);
                 let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,

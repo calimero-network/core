@@ -14,31 +14,18 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        RetryGroupUpgradeRequest {
-            group_id,
-            requester,
-        }: RetryGroupUpgradeRequest,
+        RetryGroupUpgradeRequest { group_id }: RetryGroupUpgradeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Resolve requester: use provided value or fall back to node group identity
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match self.node_namespace_identity(&group_id) {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no namespace identity"
-                    )))
-                }
-            },
+        let Some((signer, _)) = self.node_signing_key(&group_id) else {
+            return ActorResponse::reply(Err(eyre::eyre!("node has no namespace identity")));
         };
 
         // Validate
         let result = (|| {
-            let requester_account =
-                crate::member_account::require(&self.datastore, &group_id, &requester)?;
-            MembershipRepository::new(&self.datastore)
-                .require_admin(&group_id, &requester_account)?;
+            let signer_account =
+                crate::member_account::require(&self.datastore, &group_id, &signer)?;
+            MembershipRepository::new(&self.datastore).require_admin(&group_id, &signer_account)?;
 
             let upgrade = UpgradesRepository::new(&self.datastore)
                 .load(&group_id)?
@@ -100,7 +87,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
             info!(
                 ?group_id,
-                %requester,
+                %signer,
                 "retrying group upgrade for failed contexts"
             );
 
@@ -120,6 +107,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
             let propagator = super::upgrade_group::propagate_upgrade(
                 act.context_client.clone(),
+                act.node_client.clone(),
                 act.datastore.clone(),
                 group_id,
                 target_application_id,

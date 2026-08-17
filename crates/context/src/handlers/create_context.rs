@@ -48,7 +48,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let identity_secret = identity_secret.or_else(|| {
-            let (_, sk) = self.node_namespace_identity(&group_id)?;
+            let (_, sk) = self.node_signing_key(&group_id)?;
             Some(PrivateKey::from(sk))
         });
 
@@ -576,7 +576,7 @@ async fn create_context(
     // can sign as it.
     let ns_pk = calimero_governance_store::NamespaceRepository::new(&datastore)
         .resolve_identity(&group_id)?
-        .map(|(pk, _sk, _sender)| pk);
+        .map(|(pk, _sk)| pk);
     let stored_private_key = if ns_pk == Some(identity) {
         None
     } else {

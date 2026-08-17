@@ -525,7 +525,6 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             &self.our_identity,
             "__calimero_sync_next".to_owned(),
             artifact,
-            vec![],
             atomic,
         );
         tokio::pin!(execute);
@@ -2513,7 +2512,12 @@ impl DeltaStore {
         // deadlock). Releasing after the persist is correct — the heads are
         // committed by then, which is all a concurrent local write needs to
         // observe. While held, the only work is the direct-datastore head
-        // persist (no executor re-entry), so holding it cannot deadlock.
+        // persist: no executor re-entry, and — just as load-bearing — no DAG
+        // lock acquisition. An inbound delta holds `dag` write while it waits
+        // for the context lock, so reaching for `dag` while holding that lock
+        // inverts the order and deadlocks the pair. Everything this stretch
+        // needs out of the DAG (`heads`, `cascaded_deltas`, `cascaded_bodies`)
+        // is therefore read above, under the write lock we already hold.
         let apply_lock_guard = self.applier.lock_apply_slot().take();
         let result = add_outcome?;
 
@@ -2529,6 +2533,24 @@ impl DeltaStore {
         } else {
             Vec::new()
         };
+
+        // Clone the cascaded delta bodies out while we still hold THIS write
+        // lock, so the persist helper below can run its DB I/O without any DAG
+        // lock — and, critically, without re-acquiring one.
+        //
+        // Taking a fresh `dag` read further down would invert the lock order:
+        // from `apply_lock_guard` above until the commit we hold the
+        // per-context execution lock, while every inbound delta takes `dag`
+        // write first and then asks the executor for that same context lock. A
+        // second delta arriving in that window deadlocks the pair — it holds
+        // `dag` write waiting on the context lock, we hold the context lock
+        // waiting on `dag` — and the context's root hash never advances again.
+        // `add_deltas_batch` collects its cascaded bodies the same way, for the
+        // same reason.
+        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = cascaded_deltas
+            .iter()
+            .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+            .collect();
 
         let hold = lock_start.elapsed();
         drop(dag); // Release lock before calling context_client
@@ -2634,21 +2656,6 @@ impl DeltaStore {
             let mut head_hashes = self.head_root_hashes.write().await;
             head_hashes.retain(|head_id, _| heads.contains(head_id));
         }
-
-        // Clone any cascaded delta bodies out of the DAG under a short
-        // read lock, so the persist helper below can run its DB I/O
-        // without holding any DAG lock. Matches the pattern already used
-        // in `get_missing_parents` after the #2178 TOCTOU refactor.
-        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> =
-            if cascaded_deltas.is_empty() {
-                Vec::new()
-            } else {
-                let dag = self.dag.read().await;
-                cascaded_deltas
-                    .iter()
-                    .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
-                    .collect()
-            };
 
         // Persist the primary delta (if applied) + cascaded deltas +
         // `dag_heads` together via the shared helper, as one atomic batch.

@@ -39,23 +39,37 @@ const NS_BEACON_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 /// it — i.e. trigger a namespace governance sync.
 ///
 /// - `local_has_state` — this node holds a non-empty local namespace
-///   governance DAG head. When false the node is still bootstrapping or
-///   mid-join: the join flow owns the initial governance sync, and firing
-///   one here races the join handshake — it pulls governance ops before
-///   the namespace key is delivered, leaving them as undecryptable opaque
-///   skeletons that the post-key join sync then skips as duplicates. An
-///   established member (the scenario this anti-entropy targets) always
-///   has a non-empty head.
+///   governance DAG head, i.e. it is an established member. Always eligible.
+/// - `is_namespace_member` — this node holds a namespace identity but no
+///   state yet. Also eligible, and that is a change: it used to sit the
+///   round out on the grounds that "the join flow owns the initial
+///   governance sync", and that firing here would pull ops before the key
+///   arrived and leave undecryptable skeletons behind.
+///
+///   Both halves of that stopped being true. A join whose direct request
+///   found no reachable peer RETURNS — recording membership and relying on
+///   fallback, with no key and an empty head — so no join flow owns
+///   anything afterwards, and the node is excluded from the one mechanism
+///   that would have recovered it. Meanwhile `sync_namespace_from_peer`
+///   now finishes with `recover_missing_group_keys` and, when it applied
+///   anything, `drain_governance_pending_after_sync` (#2613): the key is
+///   fetched on the same round as the ops, and anything buffered
+///   undecryptable is drained once it lands. The skeleton hazard is closed
+///   by the very path this guard was blocking.
+///
+///   Cost of being wrong is one debounced sync round (~5s) against a peer
+///   that is genuinely ahead of us.
 /// - `dag_head == [0u8; 32]` — the peer has applied nothing yet; never
 ///   sync towards an empty DAG.
 /// - `head_op_present_locally` — the peer's advertised head op is already
 ///   in our DAG; we are caught up (or ahead).
 fn beacon_indicates_divergence(
     local_has_state: bool,
+    is_namespace_member: bool,
     dag_head: [u8; 32],
     head_op_present_locally: bool,
 ) -> bool {
-    local_has_state && dag_head != [0u8; 32] && !head_op_present_locally
+    (local_has_state || is_namespace_member) && dag_head != [0u8; 32] && !head_op_present_locally
 }
 
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
@@ -110,6 +124,79 @@ pub(super) fn handle_readiness_beacon(
             );
             return;
         }
+        // Last resort before the drop: this node may be the one the beacon
+        // could have rescued.
+        //
+        // A member that joined without ever reaching a mesh peer holds its
+        // membership row but no key and no governance ops. It cannot verify ANY
+        // beacon — `verify_readiness_beacon` requires the signer to be a known
+        // member, and knowing members requires the very governance state it is
+        // missing — so it drops every one and nothing it hears can move it
+        // forward. Meanwhile the beacons themselves are proof of what it needs:
+        // a namespace peer is up, reachable, and talking to us right now.
+        //
+        // Acting on that trusts nothing new. The beacon is still refused — no
+        // membership row, no cache entry, none of its claims are believed. We
+        // use only the fact of its arrival to pick a peer, then pull through
+        // the ordinary authenticated path where every governance op must still
+        // validate on apply. The alternative, relaxing the verification above,
+        // would widen what a stranger can assert about membership; this does
+        // not.
+        //
+        // Deliberately NOT routed through `spawn_beacon_divergence_sync`: its
+        // `local_has_state` guard skips a namespace with no non-zero DAG head,
+        // which is exactly this node, and that guard is load-bearing for more
+        // than its comment describes — relaxing it regressed a batch of
+        // app-migration scenarios. So this arm does its own narrow pull and
+        // leaves the guard alone.
+        let stranded_ns = beacon.namespace_id.to_bytes();
+        let stranded = matches!(
+            calimero_governance_store::namespace_groups_member_but_keyless(
+                &manager.datastore,
+                stranded_ns.into(),
+            ),
+            Ok(ref groups) if !groups.is_empty()
+        );
+        if stranded && beacon_ts_within_drift(beacon.ts_millis, now_millis()) {
+            let allowed = {
+                let mut guard = manager
+                    .ns_stranded_beacon_sync_debounce
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                debounce_allows_sync(&mut guard, stranded_ns, Instant::now())
+            };
+            if allowed {
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
+                    "stranded member: unverifiable beacon signals a reachable peer, pulling from it"
+                );
+                let sync_manager = manager.managers.sync.clone();
+                let _ignored = ctx.spawn(
+                    async move {
+                        let ops = sync_manager
+                            .sync_namespace_from_peer(stranded_ns, Some(peer_id))
+                            .await;
+                        debug!(
+                            %peer_id,
+                            namespace_id = %hex::encode(stranded_ns),
+                            ops,
+                            "stranded-member recovery: pulled governance from beacon signer"
+                        );
+                        sync_manager
+                            .recover_missing_group_keys(stranded_ns, Some(peer_id))
+                            .await;
+                        debug!(
+                            %peer_id,
+                            namespace_id = %hex::encode(stranded_ns),
+                            "stranded-member recovery: key pull complete"
+                        );
+                    }
+                    .into_actor(manager),
+                );
+                return;
+            }
+        }
         debug!(
             namespace_id = %hex::encode(beacon.namespace_id.as_bytes()),
             "ReadinessBeacon failed verification; dropping"
@@ -125,7 +212,7 @@ pub(super) fn handle_readiness_beacon(
     // (Phase 8.1). Must run AFTER `cache.insert` so a waiter that
     // re-checks the cache on wakeup sees the new entry.
     manager.readiness_notify.notify(namespace_id);
-    info!(
+    debug!(
         namespace_id = %hex::encode(namespace_id),
         peer = %peer_pubkey,
         applied_through,
@@ -222,7 +309,24 @@ fn spawn_beacon_divergence_sync(
                 }
             };
             drop(handle);
-            if !beacon_indicates_divergence(local_has_state, dag_head, head_op_present) {
+            // A namespace identity is what makes this node a member of the
+            // namespace at all — it is written by the join, before any key or
+            // governance state exists. So it is exactly the signal that
+            // separates "joined, but stranded with nothing" from "not our
+            // namespace", which must still be ignored.
+            let is_namespace_member =
+                calimero_governance_store::NamespaceRepository::new(&datastore)
+                    .identity_record(&calimero_context_config::types::ContextGroupId::from(
+                        namespace_id,
+                    ))
+                    .map(|record| record.is_some())
+                    .unwrap_or(false);
+            if !beacon_indicates_divergence(
+                local_has_state,
+                is_namespace_member,
+                dag_head,
+                head_op_present,
+            ) {
                 return;
             }
             // Divergence confirmed. Claim the debounce slot atomically;
@@ -308,27 +412,45 @@ mod tests {
     #[test]
     fn divergence_true_when_head_op_absent() {
         // Established member (has local state), peer's head op missing.
-        assert!(beacon_indicates_divergence(true, [7u8; 32], false));
+        assert!(beacon_indicates_divergence(true, false, [7u8; 32], false));
     }
 
     #[test]
     fn divergence_false_when_head_op_present() {
-        assert!(!beacon_indicates_divergence(true, [7u8; 32], true));
+        assert!(!beacon_indicates_divergence(true, true, [7u8; 32], true));
     }
 
     #[test]
     fn divergence_false_for_zero_head() {
         // A peer that has applied nothing advertises a zero head; never
         // sync towards an empty DAG even though the op is "absent".
-        assert!(!beacon_indicates_divergence(true, [0u8; 32], false));
+        assert!(!beacon_indicates_divergence(true, true, [0u8; 32], false));
     }
 
     #[test]
-    fn divergence_false_when_no_local_state() {
-        // No local namespace governance head: the node is still
-        // bootstrapping / mid-join. The join flow owns the initial sync;
-        // firing here races the join handshake. Never trigger.
-        assert!(!beacon_indicates_divergence(false, [7u8; 32], false));
+    fn divergence_false_for_a_stranger_to_this_namespace() {
+        // No local state AND not a member: someone else's namespace. Ignore it.
+        assert!(!beacon_indicates_divergence(false, false, [7u8; 32], false));
+    }
+
+    /// **A member stranded with no state still pulls.**
+    ///
+    /// This is the case that deadlocked `group-join-mesh-not-ready`. A join
+    /// whose direct request found no reachable peer returns anyway — membership
+    /// recorded, no key, empty DAG head — so nothing owns the initial
+    /// governance sync afterwards. Excluding it here left the node knowing it
+    /// was behind (`we_missing=1` on every 30s heartbeat) with no way to act on
+    /// it, while the peer that had the op would not dial back because the node
+    /// was not subscribed to a context topic it had no key to join.
+    #[test]
+    fn divergence_true_for_a_member_with_no_state_yet() {
+        assert!(beacon_indicates_divergence(false, true, [7u8; 32], false));
+    }
+
+    #[test]
+    fn divergence_false_for_a_stateless_member_when_the_peer_has_nothing() {
+        // Still never sync towards an empty DAG, member or not.
+        assert!(!beacon_indicates_divergence(false, true, [0u8; 32], false));
     }
 
     #[test]

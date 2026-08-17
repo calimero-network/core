@@ -40,7 +40,6 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // they can't inherit membership into any subgroup.
                 let (joiner_identity, sk_bytes) = NamespaceRepository::new(&datastore)
                     .resolve_identity(&group_id)?
-                    .map(|(pk, sk, _)| (pk, sk))
                     .ok_or(JoinSubgroupInheritanceError::NoNamespaceIdentity)?;
 
                 let joiner_account =
@@ -121,7 +120,12 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                         None,
                         &envelope,
                     )?;
-                    let _key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
+                    let _key_id = crate::group_key_pull::adopt_pulled_group_key(
+                        &datastore,
+                        ns_id.to_bytes().into(),
+                        group_id,
+                        &group_key,
+                    )?;
                 } else {
                     info!(
                         ?group_id,

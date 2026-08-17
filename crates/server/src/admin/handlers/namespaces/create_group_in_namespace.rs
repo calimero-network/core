@@ -1,6 +1,4 @@
-use calimero_governance_store::{
-    GroupKeyring, MetadataRepository, NamespaceRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{GroupKeyring, MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -13,7 +11,6 @@ use tracing::{error, info, warn};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
-use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
@@ -42,15 +39,12 @@ pub struct CreateGroupInNamespaceResponse {
 pub async fn handler(
     Path(namespace_id_hex): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    auth_key: Option<Extension<AuthenticatedKey>>,
     Json(body): Json<CreateGroupInNamespaceBody>,
 ) -> impl IntoResponse {
     let namespace_id = match parse_group_id(&namespace_id_hex) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
-    let requester = auth_key.map(|Extension(k)| k.0);
-
     info!(
         namespace_id = %namespace_id_hex,
         "Creating group in namespace via namespace governance"
@@ -70,23 +64,14 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     }
 
-    let (resolved_ns_id, signer_pk, sk_bytes, _sender) =
-        match NamespaceRepository::new(&state.store).get_or_create_identity(&namespace_id) {
+    let (resolved_ns_id, signer_pk, sk_bytes) =
+        match NamespaceRepository::new(&state.store).participate_in(&namespace_id) {
             Ok(r) => r,
             Err(err) => {
                 error!(?err, "Failed to resolve namespace identity");
                 return parse_api_error(err).into_response();
             }
         };
-
-    if let Some(requester) = requester {
-        if requester != signer_pk {
-            return parse_api_error(eyre::eyre!(
-                "requester does not match local namespace identity"
-            ))
-            .into_response();
-        }
-    }
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 
@@ -115,21 +100,10 @@ pub async fn handler(
     // that should admit the namespace's root TEE members. If the key were minted
     // only after the apply returns (as it used to be), the subscriber would race
     // ahead of the write, observe `None`, and wrongly skip — leaving the TEE out
-    // of every Restricted subgroup created via this REST path. Writing both keys
+    // of every Restricted subgroup created via this REST path. Writing the key
     // first mirrors the actor handler (crates/context/src/handlers/create_group.rs)
-    // and makes the key visible the instant the event fires. It also means a
-    // failed publish no longer silently skips key creation.
-    if let Err(err) =
-        SigningKeysRepository::new(&state.store).store_key(&group_id_cgid, &signer_pk, &sk_bytes)
-    {
-        error!(
-            group_id=%hex::encode(group_id_cgid.to_bytes()),
-            ?err,
-            "Failed to store admin signing key before group create"
-        );
-        return parse_api_error(eyre::eyre!("failed to store subgroup signing key"))
-            .into_response();
-    }
+    // and makes it visible the instant the event fires. It also means a failed
+    // publish no longer silently skips key creation.
     {
         let group_key: [u8; 32] = {
             use rand::Rng;

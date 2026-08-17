@@ -32,6 +32,7 @@ use calimero_account::AccountId;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
+use calimero_primitives::hash::Hash;
 use calimero_sys as sys;
 use ouroboros::self_referencing;
 use serde::Serialize;
@@ -582,9 +583,18 @@ impl<'a> VMLogic<'a> {
         limits: &'a VMLimits,
         node_client: Option<NodeClient>,
     ) -> Self {
+        // Fields are named one by one rather than Debug-printing `context`.
+        // `VMContext::input` holds the call's arguments — user data the operator
+        // is not supposed to see — so `?context` put every method's payload in
+        // the node's log. It was also unreadable and enormous: `Cow<[u8]>` Debugs
+        // as a decimal byte array, so a small JSON body arrived as
+        // `[123, 34, 107, ...]` at ~9 KB per line. The length is the part that
+        // answers a question; the bytes never were.
         debug!(
             target: "runtime::logic",
-            context = ?context,
+            context_id = %Hash::from(context.context_id),
+            executor = %Hash::from(context.executor_public_key),
+            input_len = context.input.len(),
             limits = ?limits,
             has_node_client = node_client.is_some(),
             has_private_storage = private_storage.is_some(),
@@ -1212,6 +1222,80 @@ mod tests {
 
     // Export macros to the module level, so it can be reused in other host functions' tests.
     pub(super) use setup_vm;
+
+    /// Captures everything logged while `body` runs, so a test can assert on what
+    /// a log line does *not* contain.
+    fn capture_logs(body: impl FnOnce()) -> String {
+        use std::io::{Result as IoResult, Write};
+        use std::sync::{Arc, Mutex};
+
+        use tracing_subscriber::fmt::layer;
+        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::registry;
+
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
+                self.0
+                    .lock()
+                    .expect("log buffer poisoned")
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> IoResult<()> {
+                Ok(())
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&buffer);
+        let subscriber = registry().with(
+            layer()
+                .with_ansi(false)
+                .with_writer(move || Buffer(Arc::clone(&sink))),
+        );
+
+        tracing::subscriber::with_default(subscriber, body);
+
+        let bytes = buffer.lock().expect("log buffer poisoned").clone();
+        String::from_utf8(bytes).expect("formatted output must be utf-8")
+    }
+
+    /// `VMLogic::new` used to Debug-print the whole `VMContext`, which carries
+    /// the call's arguments — so every execution wrote its payload into the
+    /// node's log, where an operator is not supposed to see user data. It also
+    /// rendered as a decimal byte array, at roughly 9 KB a line.
+    #[test]
+    fn vmlogic_new_does_not_log_the_call_payload() {
+        // Recognizable in both renderings: as text, and as the decimal bytes a
+        // `Cow<[u8]>` Debugs into.
+        let payload = br#"{"key":"topsecret"}"#.to_vec();
+        let text = String::from_utf8(payload.clone()).expect("payload is utf-8");
+        let as_debug_bytes = format!("{payload:?}");
+
+        let output = capture_logs(|| {
+            let mut storage = SimpleMockStorage::new();
+            let limits = VMLimits::default();
+            let (_logic, _store) = setup_vm!(&mut storage, &limits, payload.clone());
+        });
+
+        assert!(
+            output.contains("VMLogic::new"),
+            "the line under test must have been emitted, got: {output}"
+        );
+        assert!(
+            output.contains(&format!("input_len={}", payload.len())),
+            "the payload length is what should be logged, got: {output}"
+        );
+        assert!(
+            !output.contains(&text),
+            "the payload must not appear as text, got: {output}"
+        );
+        assert!(
+            !output.contains(&as_debug_bytes),
+            "the payload must not appear as a byte array, got: {output}"
+        );
+    }
 
     /// Helper to write a similar to `sys::Buffer` struct representation to memory.
     /// Simulates a WASM guest preparing a memory descriptor for a host call.

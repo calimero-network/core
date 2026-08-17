@@ -245,12 +245,16 @@ steps:
     type: get_group_info
     node: e2e-node-1
     group_id: '{{subgroup_id}}'
+    # A field, not the envelope: the step unwraps `data` before the capture
+    # runs, so capturing `data` binds nothing. `groupId` is the one field that
+    # must be present for the answer to be about the group we asked about — a
+    # response missing it is not a thinner answer, it is the wrong one.
     outputs:
-      group_info: data
+      group_info_id: groupId
 
-  - name: Assert group info returned
+  - name: Assert group info describes the subgroup asked about
     type: assert
     statements:
-      - "is_set({{group_info}})"
+      - "{{group_info_id}} == {{subgroup_id}}"
 
 stop_all_nodes: false

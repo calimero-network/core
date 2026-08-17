@@ -148,7 +148,7 @@ impl Handler<AbortMigrationRequest> for ContextManager {
         let result = (|| {
             // Admin-capability gate: mirror the `/groups/:id/upgrade*` routes —
             // the node's namespace identity must be an admin of the namespace.
-            let Some((node_identity, _)) = self.node_namespace_identity(&namespace_id) else {
+            let Some((node_identity, _)) = self.node_signing_key(&namespace_id) else {
                 bail!("node has no group identity configured");
             };
             let node_account =

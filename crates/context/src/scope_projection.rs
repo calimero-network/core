@@ -26,7 +26,7 @@ use calimero_governance_store::{
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::{legacy_account_id, set_writers_payload};
+use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
@@ -82,7 +82,7 @@ type AuthCutContext = (
 /// Which account does `key` speak for at this cut?
 ///
 /// A device's signing key is **not** a member key, so deriving an account from
-/// the key itself — all `legacy_account_id` can do — answers about somebody who
+/// the key itself — all a derived stand-in could do — answers about somebody who
 /// does not exist. That is why a second device could be handed scope keys and
 /// then fail to author with them: delivery resolved the device, authorization did
 /// not.
@@ -93,7 +93,7 @@ type AuthCutContext = (
 /// identity, which is exactly the key the group's membership row is keyed under. So
 /// preferring the binding made a member who enrolled a device resolve to the
 /// account's real `AccountId` at every cut containing its own link — while
-/// membership on this plane is keyed by `legacy_account_id`. The member simply
+/// membership on this plane is keyed by account. The member simply
 /// disappeared: its next device link was refused as "account is not a member", its
 /// devices' state deltas were refused at the cross-DAG check, and because a
 /// publisher decides its own op from LIVE state and accepts, receivers refused an op
@@ -101,7 +101,7 @@ type AuthCutContext = (
 ///
 /// The bindings are consulted only for a key membership does not know, which is what
 /// the fallthrough is for: a paired device signs with a namespace identity that is a
-/// member of nothing, so `legacy_account_id` would answer about somebody who does
+/// member of nothing, so a derived id would answer about somebody who does
 /// not exist. That is the case this function exists for, and it still holds.
 ///
 /// Resolved from `view` — **at the cut** — deliberately. Reading the live binding
@@ -113,78 +113,45 @@ type AuthCutContext = (
 /// precisely what `denied_members` and `accounts_by_endorsing_member` avoid: it can
 /// only be populated while observing bindings, so it comes back empty after a
 /// projection rebuild and silently reverts every device to the fallback.
-fn account_for_author(
-    view: &calimero_authz::AclView,
-    key: &PublicKey,
-    root: Option<(ContextGroupId, AccountId)>,
-) -> AccountId {
-    // An explicit binding wins over the derived id. A folded `DeviceLinked` is a
-    // signed statement about THIS key; `legacy_account_id` is a guess that names a
-    // real principal nowhere now that the live plane keys every row by account.
-    //
-    // This order is the reverse of what it was, and the reversal is the point.
-    // While membership was key-keyed, preferring the binding made a member who
-    // enrolled a device resolve to an account the rows did not know, and the
-    // member vanished — so the derived id had to win. Keying the rows by account
-    // removes that hazard and introduces the mirror one: stale key-derived ids
-    // still enter this view (`SubgroupCreated.admin` folds one), and letting them
-    // win makes the founder stop being admin of its own namespace the moment it
-    // creates a subgroup. Every peer then refuses what the founder signs while
-    // the founder accepts it — which is a `scope_root` split, not a hiccup.
-    if let Some(binding) = view
-        .devices
+fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
+    // A folded `DeviceLinked` is a signed statement that this key speaks for an
+    // account. There is no second answer any more: the stand-in that used to be
+    // returned here named a principal nowhere, since every row on this plane is
+    // account-keyed, and every caller below turned it into "not authorized" one
+    // step later. Returning `None` says that directly instead of routing it
+    // through an account nobody has heard of.
+    view.devices
         .values()
         .find(|binding| binding.sign_pk == *key)
-    {
-        return binding.account;
-    }
-    let own = legacy_account_id(key);
-    if view_knows_author(view, &own, root) {
-        return own;
-    }
-    own
-}
-
-/// Does this view carry any authority for `account` in its own name?
-///
-/// Deliberately broader than membership: an admin may appear only as a group or root
-/// admin, with no member row, and resolving such a key through a device binding
-/// would strip its admin authority exactly as it stripped membership above. Any
-/// authority at all is enough to say "this key speaks for itself".
-///
-/// `root` is the namespace's GENESIS admin, and it has to be here even though it is
-/// not folded state — it is the one authority no op carries, so it is the one
-/// principal the folded checks above structurally cannot see. A namespace founder
-/// that never appears in a membership op, never authored a `SubgroupCreated`, and
-/// never changed the admin (all three ordinary) is known to this view ONLY through
-/// this parameter. Leaving it out resolved that founder through its own device
-/// binding the moment one folded, to an `AccountId` that matches neither the
-/// membership rows nor `root` itself — both keyed by the stand-in — so the founder
-/// stopped being a member of its own namespace's open subgroups.
-fn view_knows_author(
-    view: &calimero_authz::AclView,
-    account: &AccountId,
-    root: Option<(ContextGroupId, AccountId)>,
-) -> bool {
-    view.is_scope_member(account)
-        || view.is_root_admin(account)
-        || view.group_admin.values().any(|admin| admin == account)
-        || root.is_some_and(|(_, genesis_admin)| genesis_admin == *account)
+        .map(|binding| binding.account)
 }
 
 fn build_op(
     id: [u8; 32],
     scope: ScopeId,
+    signer_binding: Option<(calimero_account::AccountId, calimero_account::DeviceId)>,
     author: PublicKey,
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
     payload: OpPayload,
 ) -> Op {
+    // A rotation-log entry names a KEY, so without the caller's resolution this
+    // op is attributed to a stand-in — and `SetWriters` is gated on
+    // `is_owner(op.author(), object)`, where the owner is a real account. Every
+    // rotation-derived writer-set op would be refused as `NotOwner`.
+    let authorship = signer_binding.map_or_else(
+        || calimero_op::Authorship::unattributed(author),
+        |(account, device)| calimero_op::Authorship {
+            account,
+            device,
+            device_key: author,
+        },
+    );
     Op::from_parts(
         id,
         scope,
         parents.to_vec(),
-        calimero_op_adapter::legacy_authorship(author),
+        authorship,
         hlc,
         payload,
         [0u8; 32],
@@ -209,12 +176,18 @@ fn build_op(
 /// layer, below the projection, so the independent feed needs storage to
 /// surface applied rotations rather than re-deriving them from the resolver.
 #[must_use]
-pub fn op_from_rotation_entry(object: Id, scope: ScopeId, entry: &RotationLogEntry) -> Option<Op> {
+pub fn op_from_rotation_entry(
+    object: Id,
+    scope: ScopeId,
+    entry: &RotationLogEntry,
+    signer_binding: Option<(calimero_account::AccountId, calimero_account::DeviceId)>,
+) -> Option<Op> {
     let author = entry.signer?;
     let payload = set_writers_payload(object, entry);
     Some(build_op(
         entry.delta_id,
         scope,
+        signer_binding,
         author,
         entry.delta_hlc,
         &[],
@@ -1262,13 +1235,23 @@ impl ScopeProjections {
                 // nothing to decrypt and folds as `Noop`.
                 _ => None,
             };
-            ops.push(op_from_namespace_op(
-                &signed,
-                decrypted.as_ref(),
-                delta.id,
-                delta.hlc,
-                &delta.parents,
-            ));
+            // Same resolution the apply path uses, so a backfilled op and a
+            // live-folded one are attributed identically.
+            let signer_binding = calimero_governance_store::signer_binding_for(
+                store,
+                &ContextGroupId::from(namespace_id),
+                &signed.signer,
+            );
+            ops.push(
+                calimero_governance_store::op_from_namespace_op_with_binding(
+                    &signed,
+                    decrypted.as_ref(),
+                    signer_binding,
+                    delta.id,
+                    delta.hlc,
+                    &delta.parents,
+                ),
+            );
         }
         Some(ops)
     }
@@ -1478,12 +1461,19 @@ impl ScopeProjections {
         // keyed that way. The writer plane is populated from `env::account_id()`,
         // which resolves binding-first, so it has to answer in the same space or a
         // node's own writes are refused by every peer. Same rule, one function.
-        let binding = view
-            .devices
+        // A folded binding or nothing. There is no stand-in to fall back to any
+        // more, and there should not be: this answers "who does somebody else's
+        // key speak for", and the honest answer for a key no op has bound is that
+        // this node cannot say. Returning a derived account instead named a
+        // principal no row is keyed by, so every check downstream turned it into
+        // "not authorized" one step later anyway — just less legibly.
+        //
+        // A node's OWN key never reaches here: `account_for_group` reads the local
+        // device row, which is minted without waiting for any op.
+        view.devices
             .values()
             .find(|binding| binding.sign_pk == *key)
-            .map(|binding| binding.account);
-        Some(calimero_op_adapter::writer_account(binding, key))
+            .map(|binding| binding.account)
     }
 
     pub fn member_at_cut(
@@ -1526,12 +1516,8 @@ impl ScopeProjections {
             .flatten()
             .unwrap_or(0);
         if view.as_ref().is_some_and(|v| {
-            v.is_member_at_cut(
-                group,
-                &account_for_author(v, author, root),
-                root,
-                default_cap_base,
-            )
+            account_for_author(v, author)
+                .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
         }) {
             return Some(true);
         }
@@ -1675,12 +1661,8 @@ impl ScopeProjections {
             .flatten()
             .unwrap_or(0);
         Some(self.acl_view_at(&scope, heads).is_some_and(|v| {
-            v.is_member_at_cut(
-                group,
-                &account_for_author(&v, author, root),
-                root,
-                default_cap_base,
-            )
+            account_for_author(&v, author)
+                .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
         }))
     }
 
@@ -1699,7 +1681,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
-        Some(view.is_authorized_admin(group, &account_for_author(&view, author, root), root))
+        Some(
+            account_for_author(&view, author)
+                .is_some_and(|account| view.is_authorized_admin(group, &account, root)),
+        )
     }
 
     /// Is `member` an admin of `group` at the cut? The account-typed sibling of
@@ -1748,10 +1733,15 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        if view.is_authorized_admin(group, &account_for_author(&view, author, root), root) {
+        // An author no binding speaks for holds no capability and is no admin:
+        // there is no account to look either up against.
+        let Some(account) = account_for_author(&view, author) else {
+            return Some(false);
+        };
+        if view.is_authorized_admin(group, &account, root) {
             return Some(true);
         }
-        let folded = view.capability(&group, &account_for_author(&view, author, root));
+        let folded = view.capability(&group, &account);
         let effective = if folded != 0 {
             folded
         } else {
@@ -1902,15 +1892,9 @@ impl ScopeProjections {
         let view = self.acl_view_at(&scope, heads);
         // Resolved exactly as the gates do, so a diagnostic can never disagree
         // with the decision it is meant to explain.
-        let root_group = ContextGroupId::from(ns_bytes);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
         let author_in_any = view
             .as_ref()
-            .is_some_and(|v| v.is_scope_member(&account_for_author(v, author, root)));
+            .is_some_and(|v| account_for_author(v, author).is_some_and(|a| v.is_scope_member(&a)));
         // Is the DECISION group folded at all, and how big? Distinguishes
         // "subgroup membership never folded" (group absent / size 0 — a
         // decrypt/sync gap) from "folded but author absent" (re-add / deny-list).
@@ -1977,7 +1961,7 @@ impl ScopeProjections {
         // key was a member and the role lookup found nobody, which is the
         // "member at cut but role unresolved" the caller then logged before
         // guessing `Member`.
-        let account = account_for_author(&view, member, root);
+        let account = account_for_author(&view, member)?;
         match view.member_path_at_cut(group, &account, root, default_cap_base) {
             calimero_authz::MemberPathAtCut::None => None,
             calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
@@ -2039,7 +2023,7 @@ mod tests {
         sign_pk: PublicKey,
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
         let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
-        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key(), [0x5A; 16]);
+        let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
         let cert = calimero_account::sign_device_cert(
             &root_sk,
             genesis.account_id(),
@@ -2072,6 +2056,27 @@ mod tests {
 
     use super::*;
 
+    /// A **real** account for `sign_pk` — minted from a genesis the way
+    /// production does, not derived from the signing key by the bridge. That
+    /// distinction is the whole point of these fixtures: a plane that only works
+    /// because the account happens to be a function of the key proves nothing
+    /// about a plane keyed by real accounts.
+    ///
+    /// Deterministic in `sign_pk`, so every mention of the same key inside a test
+    /// names the same account without threading a value through.
+    fn test_account(sign_pk: &PublicKey) -> calimero_account::AccountId {
+        calimero_account::AccountGenesis::new(test_root_sk(sign_pk).public_key()).account_id()
+    }
+
+    /// The root key behind [`test_account`]. Distinct from `sign_pk` itself — an
+    /// account whose root IS the signing key would hide exactly the confusion
+    /// these tests exist to catch.
+    fn test_root_sk(sign_pk: &PublicKey) -> calimero_primitives::identity::PrivateKey {
+        let mut seed = **sign_pk;
+        seed[0] ^= 0xA5;
+        calimero_primitives::identity::PrivateKey::from(seed)
+    }
+
     fn hlc(ns: u64) -> HybridTimestamp {
         HybridTimestamp::new(Timestamp::new(
             NTP64(ns),
@@ -2096,7 +2101,7 @@ mod tests {
     /// `MemberJoinedOpen` inheritance proof.
     fn member_joined(group: ContextGroupId, member: PublicKey) -> RootOp {
         RootOp::MemberJoined {
-            member: legacy_account_id(&member),
+            member: test_account(&member),
             signed_invitation: SignedGroupOpenInvitation {
                 inviter_account: None,
                 invitation: GroupInvitationFromAdmin {
@@ -2233,7 +2238,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::AdminChanged {
-                    new_admin: legacy_account_id(&signer),
+                    new_admin: test_account(&signer),
                 },
             ),
             None,
@@ -2245,7 +2250,7 @@ mod tests {
         assert_eq!(
             op.payload,
             OpPayload::AdminChanged {
-                new_admin: legacy_account_id(&signer),
+                new_admin: test_account(&signer),
             }
         );
     }
@@ -2296,12 +2301,33 @@ mod tests {
             writers_nonce: 1,
         };
 
-        let op = op_from_rotation_entry(object, scope, &entry).expect("signed rotation maps");
+        // Told who the signer is, the op names the real account — which matters
+        // because `SetWriters` is gated on `is_owner(op.author(), object)` against
+        // a real owner, so a stand-in author is refused as `NotOwner`.
+        let signer_account = calimero_account::AccountId::from([0xA7; 32]);
+        let signer_device = calimero_account::DeviceId::from([0xD7; 32]);
+        let op =
+            op_from_rotation_entry(object, scope, &entry, Some((signer_account, signer_device)))
+                .expect("signed rotation maps");
         assert_eq!(
             op.author(),
-            legacy_account_id(&signer),
-            "author is the rotation signer, and a rotation entry names a KEY — so \
-             the adapter derives the author rather than resolving a binding"
+            signer_account,
+            "the op must name the account the signing key speaks for"
+        );
+        assert_eq!(op.device(), signer_device, "and the device that signed it");
+        assert_ne!(
+            signer_account,
+            calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
+            "precondition: the stand-in differs, so the assertion above cannot \
+             hold whichever value was used"
+        );
+        // Without the caller's resolution it still stands in — the state that made
+        // every rotation-derived writer-set op unauthorizable.
+        assert_eq!(
+            op_from_rotation_entry(object, scope, &entry, None)
+                .expect("still maps")
+                .author(),
+            calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
         );
         assert_eq!(op.hlc, hlc(5));
         assert_eq!(
@@ -2319,7 +2345,7 @@ mod tests {
             signer: None,
             ..entry
         };
-        assert!(op_from_rotation_entry(object, scope, &unsigned).is_none());
+        assert!(op_from_rotation_entry(object, scope, &unsigned, None).is_none());
     }
 
     #[test]
@@ -2334,7 +2360,7 @@ mod tests {
             Op::new(
                 scope,
                 parents,
-                calimero_op_adapter::legacy_authorship(admin),
+                calimero_op::Authorship::unattributed(admin),
                 h,
                 payload,
                 [0u8; 32],
@@ -2347,7 +2373,7 @@ mod tests {
             vec![],
             OpPayload::MemberAdded {
                 group,
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 role: GroupMemberRole::Member,
             },
         );
@@ -2356,7 +2382,7 @@ mod tests {
             vec![add.id()],
             OpPayload::MemberRemoved {
                 group,
-                member: legacy_account_id(&member),
+                member: test_account(&member),
             },
         );
 
@@ -2370,7 +2396,7 @@ mod tests {
         assert_eq!(
             pre.groups
                 .get(&group)
-                .and_then(|m| m.get(&legacy_account_id(&member))),
+                .and_then(|m| m.get(&test_account(&member))),
             Some(&GroupMemberRole::Member),
         );
 
@@ -2379,7 +2405,7 @@ mod tests {
         assert_eq!(
             post.groups
                 .get(&group)
-                .and_then(|m| m.get(&legacy_account_id(&member))),
+                .and_then(|m| m.get(&test_account(&member))),
             None
         );
 
@@ -2404,7 +2430,7 @@ mod tests {
             Op::new(
                 scope,
                 parents,
-                calimero_op_adapter::legacy_authorship(admin),
+                calimero_op::Authorship::unattributed(admin),
                 h,
                 payload,
                 [0u8; 32],
@@ -2421,7 +2447,7 @@ mod tests {
             10,
             vec![],
             OpPayload::AdminChanged {
-                new_admin: legacy_account_id(&admin),
+                new_admin: test_account(&admin),
             },
         );
         reg.ingest_op(&admin_op);
@@ -2438,7 +2464,7 @@ mod tests {
             vec![admin_op.id()],
             OpPayload::MemberAdded {
                 group,
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 role: GroupMemberRole::Member,
             },
         ));
@@ -2470,23 +2496,16 @@ mod tests {
 
         let mut reg = ScopeProjections::new();
         // Before the join: nothing recorded.
-        assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
-            None
-        );
+        assert_eq!(reg.role_of(&ns_scope, &group, &test_account(&member)), None);
         reg.ingest_op(&join);
         // After: the member is recorded for the group, under the namespace scope.
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            reg.role_of(&ns_scope, &group, &test_account(&member)),
             Some(GroupMemberRole::Member),
         );
         // A different namespace's scope is unaffected (isolation across namespaces).
         assert_eq!(
-            reg.role_of(
-                &ScopeId::from([0xEE; 32]),
-                &group,
-                &legacy_account_id(&member)
-            ),
+            reg.role_of(&ScopeId::from([0xEE; 32]), &group, &test_account(&member)),
             None,
         );
     }
@@ -2505,7 +2524,7 @@ mod tests {
         let add = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberAdded {
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 role: GroupMemberRole::Admin,
             }),
             [0xAB; 32],
@@ -2521,7 +2540,7 @@ mod tests {
         let mut reg = ScopeProjections::new();
         reg.ingest_op(&add);
         assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
+            reg.role_of(&ns_scope, &group, &test_account(&member)),
             Some(GroupMemberRole::Admin),
         );
 
@@ -2529,7 +2548,7 @@ mod tests {
         let remove = op_from_namespace_op(
             &signed_group(ns, signer, group),
             Some(&GroupOp::MemberRemoved {
-                member: legacy_account_id(&member),
+                member: test_account(&member),
                 expected_group_state_hash: [0u8; 32],
                 expected_context_state_hashes: Vec::new(),
             }),
@@ -2538,10 +2557,7 @@ mod tests {
             &[[0xAB; 32]],
         );
         reg.ingest_op(&remove);
-        assert_eq!(
-            reg.role_of(&ns_scope, &group, &legacy_account_id(&member)),
-            None
-        );
+        assert_eq!(reg.role_of(&ns_scope, &group, &test_account(&member)), None);
 
         // A truly out-of-model group op folds as a Noop node (still recorded).
         let other = op_from_namespace_op(
@@ -2578,7 +2594,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::AdminChanged {
-                    new_admin: legacy_account_id(&signer),
+                    new_admin: test_account(&signer),
                 },
             ),
             None,
@@ -2600,7 +2616,7 @@ mod tests {
         assert!(
             view.groups
                 .get(&group)
-                .is_some_and(|m| m.contains_key(&legacy_account_id(&member))),
+                .is_some_and(|m| m.contains_key(&test_account(&member))),
             "member must be visible at the namespace-head cut"
         );
     }

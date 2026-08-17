@@ -139,14 +139,7 @@ pub(crate) async fn execute_request(
     };
 
     let outcome = ctx_client
-        .execute(
-            &request.context_id,
-            &executor,
-            request.method,
-            args,
-            request.substitute,
-            None,
-        )
+        .execute(&request.context_id, &executor, request.method, args, None)
         .await
         .map_err(ExecutionError::ExecuteError)?;
 

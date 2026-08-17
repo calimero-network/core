@@ -23,7 +23,7 @@
 //! namespace-membership state into this module, and duplicate work since the
 //! receiver gate runs first — exactly the split the readiness cache uses.
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message};
@@ -50,6 +50,13 @@ pub const DEFAULT_HEARTBEAT_TTL: Duration = Duration::from_secs(60);
 /// [`MigrationStatusCache::insert`].
 pub const MAX_HEARTBEAT_CLOCK_DRIFT_MS: u64 = 60_000;
 
+/// Serializes the fleet-stamp read-check-write. The store layer has no
+/// compare-and-swap, and two actors reach [`stamp_fleet_completion`] for the
+/// same namespace (the gossip receive path and `MigrationEmitter`), so without
+/// this both can read an absent stamp and both write - the later one landing
+/// last and replacing the timestamp its peer already announced.
+static FLEET_STAMP_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 /// Per-(namespace, peer) snapshot of the most recent fresh heartbeat we
 /// have received from that peer.
 #[derive(Debug, Clone)]
@@ -74,6 +81,21 @@ pub struct CacheEntry {
     pub ts_millis: u64,
     /// Local receive instant — the TTL freshness reference.
     pub received_at: Instant,
+}
+
+impl CacheEntry {
+    /// Project into the shape the emit side compares, so
+    /// [`should_emit_on_change`] decides "changed" identically for a received
+    /// heartbeat and a locally-computed one.
+    fn facts(&self) -> MigrationFacts {
+        MigrationFacts {
+            schema_version: self.schema_version,
+            residue_auto: self.residue_auto,
+            synced_up_to_hlc: self.synced_up_to_hlc,
+            authored_remaining: self.authored_remaining,
+            migration_failed: MigrationFailureKind::from_u8(self.migration_failed),
+        }
+    }
 }
 
 /// Project a cached heartbeat into the transport-neutral
@@ -104,6 +126,15 @@ pub fn cache_entry_to_report(entry: &CacheEntry) -> MigrationStatusReport {
 #[derive(Debug, Default)]
 pub struct MigrationStatusCache {
     entries: Mutex<BTreeMap<([u8; 32], PublicKey), CacheEntry>>,
+    /// Last `all_migrated` this PROCESS rolled up per namespace AND rolled-up
+    /// target, the on-change reference for [`on_heartbeat_facts_changed`]'s
+    /// completion announcement. Deliberately not persisted: completion is a
+    /// transition, and a node that just booted has observed none.
+    ///
+    /// Keyed on the target too, because an edge belongs to the migration it was
+    /// watched for: a green rollup whose target a stale root record cannot
+    /// describe must not spend the edge of the migration that follows it.
+    all_migrated: Mutex<HashMap<([u8; 32], u32), bool>>,
 }
 
 impl MigrationStatusCache {
@@ -148,7 +179,13 @@ impl MigrationStatusCache {
     /// accumulating entries from peers that left the namespace.
     /// Stale-but-within-eviction-window entries are still filtered out of
     /// `fresh_peers` by the per-call `ttl` check.
-    pub fn insert(&self, hb: &SignedMigrationHeartbeat) {
+    ///
+    /// Returns `true` iff the heartbeat was stored AND its reported facts
+    /// differ from the entry it replaced - the edge the receive path hangs
+    /// its rollup recompute off. A dropped heartbeat (drift, stale) and a
+    /// stored one that only advanced `synced_up_to_hlc` both report `false`,
+    /// so a re-delivery or an op-rate HLC bump costs nothing.
+    pub fn insert(&self, hb: &SignedMigrationHeartbeat) -> bool {
         // Wall-clock sanity bound — reject far-future ts_millis. Only applied
         // when the wall clock is readable: an unreadable clock (system time
         // before the epoch) must fail *open* here, otherwise treating `now` as 0
@@ -157,7 +194,7 @@ impl MigrationStatusCache {
             Ok(now) => {
                 let now_ms = now.as_millis() as u64;
                 if hb.ts_millis > now_ms.saturating_add(MAX_HEARTBEAT_CLOCK_DRIFT_MS) {
-                    return;
+                    return false;
                 }
             }
             Err(err) => {
@@ -173,14 +210,16 @@ impl MigrationStatusCache {
         let now = Instant::now();
         let mut g = self.entries_lock();
         let key = (hb.namespace_id.to_bytes(), hb.peer_pubkey);
+        let mut existing_facts = None;
         if let Some(existing) = g.get(&key) {
             // Drop the heartbeat if it's older or equal-clock-but-not-fresher.
             if hb.ts_millis < existing.ts_millis
                 || (hb.ts_millis == existing.ts_millis
                     && hb.synced_up_to_hlc <= existing.synced_up_to_hlc)
             {
-                return;
+                return false;
             }
+            existing_facts = Some(existing.facts());
         }
 
         // Opportunistic eviction for the same namespace — keep the BTreeMap
@@ -194,18 +233,18 @@ impl MigrationStatusCache {
                 || now.duration_since(entry.received_at) <= evict_window
         });
 
-        let _ = g.insert(
-            key,
-            CacheEntry {
-                schema_version: hb.schema_version,
-                residue_auto: hb.residue_auto,
-                synced_up_to_hlc: hb.synced_up_to_hlc,
-                authored_remaining: hb.authored_remaining,
-                migration_failed: hb.migration_failed,
-                ts_millis: hb.ts_millis,
-                received_at: now,
-            },
-        );
+        let entry = CacheEntry {
+            schema_version: hb.schema_version,
+            residue_auto: hb.residue_auto,
+            synced_up_to_hlc: hb.synced_up_to_hlc,
+            authored_remaining: hb.authored_remaining,
+            migration_failed: hb.migration_failed,
+            ts_millis: hb.ts_millis,
+            received_at: now,
+        };
+        let changed = should_emit_on_change(existing_facts, entry.facts());
+        let _ = g.insert(key, entry);
+        changed
     }
 
     /// All peers in `ns` whose most recent heartbeat is fresh within `ttl`.
@@ -253,6 +292,30 @@ impl MigrationStatusCache {
         g.get(&(ns, peer))
             .filter(|e| now.duration_since(e.received_at) <= ttl)
             .cloned()
+    }
+
+    /// Record the `all_migrated` just rolled up for `ns` at `target_version`,
+    /// returning the one this process recorded before it for that same target
+    /// (`None` on the first rollup after boot, or on a target it has not rolled
+    /// up before). Poison recovery matches [`entries_lock`](Self::entries_lock).
+    fn swap_all_migrated(
+        &self,
+        ns: [u8; 32],
+        target_version: u32,
+        all_migrated: bool,
+    ) -> Option<bool> {
+        let mut latches = self
+            .all_migrated
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The rolled-up target is a max across the subtree and only moves
+        // forward, so this namespace's other entries describe migrations that
+        // are over. Dropping them holds the map at one entry per namespace
+        // instead of one per upgrade the process ever saw.
+        latches.retain(|(entry_ns, entry_target), _| {
+            *entry_ns != ns || *entry_target == target_version
+        });
+        latches.insert((ns, target_version), all_migrated)
     }
 }
 
@@ -329,15 +392,23 @@ pub fn record_facts_update(
     emit
 }
 
-/// Resolve a single context's LOADED reader version: the ABI state version of
-/// the `ApplicationMeta` its `ContextMeta.application` points at. This is the
-/// schema the node can actually read right now, NOT the replicated migration
-/// target and NOT the bundle semver — a 10.1.3 to 10.2.0 release may or may
-/// not move the state version, and only the state version gates readability.
+/// Resolve a single context's MIGRATED state version: the ABI state version its
+/// state is actually at, NOT the replicated migration target and NOT the bundle
+/// semver - a 10.1.3 to 10.2.0 release may or may not move the state version.
 /// `None` when the context or application row is missing.
-fn loaded_context_version(
+///
+/// `ApplicationMeta.state_version` records what was last INSTALLED, and
+/// same-package bundles dedup onto one `ApplicationId`, so an install rewrites
+/// the row for a context whose state is untouched - never evidence of a migrate.
+///
+/// So the row alone cannot decide. A context the sync gate still owes an upgrade
+/// reports `0`, never a number that could satisfy a target; lifting to the
+/// target needs the marker to positively equal the group's bytecode, since an
+/// open gate is also what "no group meta to compare against" looks like.
+fn migrated_context_version(
     datastore: &Store,
     context_id: &calimero_primitives::context::ContextId,
+    target: u32,
 ) -> Option<u32> {
     let handle = datastore.handle();
     let ctx_meta = handle
@@ -345,6 +416,24 @@ fn loaded_context_version(
         .ok()
         .flatten()?;
     let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
+
+    if crate::sync::pending_upgrade_target_in(datastore, context_id).is_some() {
+        return Some(0);
+    }
+    if target != u32::MAX
+        && calimero_context::activation::activated_at_group_target(datastore, context_id)
+            == Some(true)
+    {
+        // `target` lifts this only on the node that ran `upgrade_group` - the
+        // upgrade record it reads is never replicated. The install row cannot
+        // stand in: it is keyed per `ApplicationId`, so a same-id bundle upgrade
+        // leaves it at the version this node first installed. The version
+        // recorded when the context activated its bytecode is what a member has.
+        let activated =
+            calimero_context::activation::activated_state_version(datastore, context_id)
+                .unwrap_or_default();
+        return Some(app_meta.state_version.max(target).max(activated));
+    }
     Some(app_meta.state_version)
 }
 
@@ -402,24 +491,26 @@ fn resolve_group_target_version(
 
 /// Compute this node's locally-advertised migration facts for `namespace_id`.
 ///
-/// `schema_version` is the node's actually-LOADED reader version — the lowest
-/// loaded `ApplicationMeta` state version across the namespace's contexts (the
-/// most-behind context governs whether this node has fully swapped its binary).
-/// This is deliberately NOT the migration TARGET (`UpgradesRepository.to_state_version`):
-/// the governance target can advance ahead of the locally-loaded binary, so
-/// reporting the target would let `all_migrated` flip green before the node could
-/// read the new schema (the cursor-bot bug this fixes). With no resolvable context
-/// we fall back to the target — the honest "no loaded state to contradict the
-/// record" path (covered by the no-record baseline `0`).
+/// `schema_version` is the node's MIGRATED state version - the lowest
+/// [`migrated_context_version`] across the namespace's contexts (the most-behind
+/// context governs whether this node has fully converged). This is deliberately
+/// NOT the migration TARGET (`UpgradesRepository.to_state_version`): the
+/// governance target can advance ahead of the local state, so reporting the
+/// target would let `all_migrated` flip green before the node had migrated (the
+/// cursor-bot bug this fixes). It is equally NOT the installed bundle's version:
+/// a node that merely installed the target must not advertise the target schema
+/// over state it has never touched. With no resolvable context we fall back to
+/// the target - the honest "no loaded state to contradict the record" path
+/// (covered by the no-record baseline `0`).
 ///
 /// `synced_up_to_hlc` is left at `0` here; the emitter overlays the live
 /// `NamespaceGovHead.sequence` ([`MigrationEmitter::refresh_hlc`]) at publish
 /// time so the periodic and on-change beats always carry the freshest position.
 ///
-/// `residue_auto` is the count of the namespace's contexts whose loaded version
-/// still trails the target — each pending whole-root (Convergent/Replayable)
-/// rebuild. A context is atomically v1-or-v2 (the PR-6a/6b whole-root path), so
-/// "loaded < target" is exactly its outstanding auto-residue.
+/// `residue_auto` is the count of the namespace's contexts still below their
+/// group's target - each pending whole-root (Convergent/Replayable) rebuild. A
+/// context is atomically v1-or-v2 on the whole-root path, so being below target
+/// is exactly its outstanding auto-residue.
 #[must_use]
 pub fn compute_namespace_migration_facts(
     datastore: &Store,
@@ -461,7 +552,7 @@ pub fn compute_namespace_migration_facts(
                 authored_remaining = authored_remaining.saturating_add(u64::from(entry.count));
             }
 
-            let loaded = loaded_context_version(datastore, &context_id);
+            let loaded = migrated_context_version(datastore, &context_id, target);
 
             // A persisted failure marker is honored while the context has NOT
             // reached its group's target. A context that has since converged is
@@ -497,7 +588,7 @@ pub fn compute_namespace_migration_facts(
                 continue;
             };
             min_loaded = Some(min_loaded.map_or(loaded, |m| m.min(loaded)));
-            if loaded < target {
+            if below_target {
                 residue_auto += 1;
             }
         }
@@ -568,6 +659,207 @@ pub fn self_migration_report(
             migration_failed: facts.migration_failed.map_or(0, |k| k.to_u8()),
         },
     ))
+}
+
+/// The freshest in-TTL report for every member of `namespace_id`, including
+/// this node's own freshly-computed facts.
+///
+/// The self-report injection is not optional: a node never receives its own
+/// gossiped heartbeat, so the receive cache never holds it, and an absent
+/// local node resolves to `unknown` - which pins `all_migrated` false forever.
+/// Stale entries are filtered by the cache's per-call TTL; a member with no
+/// fresh entry is simply absent, which the rollup also resolves to `unknown`.
+#[must_use]
+pub(crate) fn namespace_member_reports(
+    cache: &MigrationStatusCache,
+    datastore: &Store,
+    namespace_id: [u8; 32],
+) -> BTreeMap<PublicKey, MigrationStatusReport> {
+    let mut reports = cache.migration_status_reports(namespace_id, DEFAULT_HEARTBEAT_TTL);
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    if let Some((self_pk, self_report)) = self_migration_report(datastore, namespace_id, now_millis)
+    {
+        let _ = reports.insert(self_pk, self_report);
+    }
+    reports
+}
+
+/// React to a heartbeat that moved a peer's reported facts: recompute the
+/// namespace rollup, mirror its counters to subscribers, and stamp the real
+/// completion timestamp on the `all_migrated` edge this process observed.
+///
+/// The recompute walks the namespace subtree, so it is not free - it runs only
+/// on a genuine facts change (bounded by the on-change heartbeat rate plus the
+/// low-frequency periodic tick, never by op volume), and through the same
+/// `compute_namespace_rollup` the admin read uses so the event stream and the
+/// panel can never answer differently.
+pub(crate) fn on_heartbeat_facts_changed(
+    datastore: &Store,
+    node_client: &NodeClient,
+    cache: &MigrationStatusCache,
+    namespace_id: [u8; 32],
+) {
+    let ns = calimero_context_config::types::ContextGroupId::from(namespace_id);
+    let reports = namespace_member_reports(cache, datastore, namespace_id);
+    let status = match calimero_context::handlers::get_migration_status::compute_namespace_rollup(
+        datastore,
+        &ns,
+        |peer| reports.get(peer).copied().map(Into::into),
+    ) {
+        Ok(status) => status,
+        Err(err) => {
+            // Returning before `swap_all_migrated` leaves the completion edge
+            // armed, so only this counter frame is lost - the next facts change
+            // from any cohort member announces what this one could not.
+            tracing::warn!(?err, "migration rollup failed; skipping progress event");
+            return;
+        }
+    };
+
+    // Target `0` means no upgrade record anywhere in the subtree: every member
+    // is trivially at target, so the green rollup describes no migration at all
+    // and announcing it would beat forever on a namespace that never migrated.
+    if status.target_version == 0 {
+        return;
+    }
+    let previously = cache.swap_all_migrated(
+        namespace_id,
+        status.target_version,
+        status.rollup.all_migrated,
+    );
+
+    calimero_context::migration_events::emit(
+        node_client,
+        datastore,
+        &ns,
+        calimero_primitives::events::GroupMigrationPayload::MigrationProgress {
+            migrated: status.rollup.migrated,
+            in_progress: status.rollup.in_progress,
+            unknown: status.rollup.unknown,
+            failed: status.rollup.failed,
+            total: status.rollup.total,
+        },
+    );
+
+    if status.rollup.all_migrated {
+        let announce = previously == Some(false);
+        // The latch above already consumed the edge. A guard that decided keeps
+        // it consumed; a store fault or a record still mid-write decided
+        // nothing - put the edge back so the next beat announces rather than
+        // stamping silently.
+        if !stamp_fleet_completion(datastore, node_client, &ns, status.target_version, announce)
+            && announce
+        {
+            let _ = cache.swap_all_migrated(namespace_id, status.target_version, false);
+        }
+    }
+}
+
+/// Write the fleet-convergence timestamp, once.
+///
+/// Guarded on a `Completed` record: an `InProgress` one still holds this node's
+/// `validate_upgrade` rule-4 mutex and must never be released from an
+/// observability path. That guard DEFERS rather than decides: the rollup never
+/// reads the record, so spending the edge on it strands the real completion.
+/// The stamp is also the idempotence latch - once
+/// `fleet_completed_at` is set, every later heartbeat finds the guard closed and
+/// announces nothing, and that survives a restart.
+///
+/// It is deliberately NOT `completed_at`, which is the node-local "my own
+/// contexts are swapped" stamp the cascade propagator writes. Latching on that
+/// one left the node that RAN the upgrade - the admin waiting to hear it
+/// finished - as the only participant that never got a `MigrationCompleted`.
+///
+/// Guarded a second time on the root record describing the very migration
+/// `target_version` was rolled up for: the target is the max across the root AND
+/// every descendant, so a root record left behind by an older migration would
+/// otherwise announce its own stale `to_version` on someone else's convergence.
+///
+/// `announce` is the third guard, and it governs only the event: a completion
+/// is an event about a TRANSITION, so it is emitted solely on a false-to-true
+/// `all_migrated` edge this process actually watched. Every installation that
+/// ever upgraded boots holding an armed latch on a migration that finished long
+/// ago; that case still writes the stamp, silently, to disarm it.
+///
+/// Namespace-root record only: a bare `upgrade_group` on a subgroup writes no
+/// root record and so gets no completion stamp, the same asymmetry
+/// `resolve_group_target_version` already carries.
+///
+/// Returns `false` when no decision was reached - the store denied an answer,
+/// or the record has not finished being written - so the caller puts the
+/// completion edge back. A guard that DID decide returns `true` and the
+/// caller's consumed edge stays consumed.
+fn stamp_fleet_completion(
+    datastore: &Store,
+    node_client: &NodeClient,
+    ns: &calimero_context_config::types::ContextGroupId,
+    target_version: u32,
+    announce: bool,
+) -> bool {
+    let repo = calimero_governance_store::UpgradesRepository::new(datastore);
+    let record = match repo.load(ns) {
+        Ok(Some(record)) => record,
+        Ok(None) => return true,
+        Err(err) => {
+            tracing::error!(
+                ?err,
+                "failed to load the record to stamp migration completion"
+            );
+            return false;
+        }
+    };
+    if !matches!(
+        record.status,
+        calimero_store::key::GroupUpgradeStatus::Completed { .. }
+    ) {
+        return false;
+    }
+    // Held across the read and the write below: the announcing caller must be
+    // the one whose timestamp persists, and a second actor that observed the
+    // same absent stamp would otherwise overwrite it.
+    let stamp_guard = FLEET_STAMP_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match repo.fleet_completed_at(ns) {
+        Ok(None) => {}
+        Ok(Some(_)) => return true,
+        Err(err) => {
+            tracing::error!(?err, "failed to read the migration completion stamp");
+            return false;
+        }
+    }
+    if record.to_state_version != target_version {
+        return true;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if let Err(err) = repo.set_fleet_completed_at(ns, now) {
+        tracing::error!(?err, "failed to stamp migration completion");
+        return false;
+    }
+    // The stamp is durable now, so a concurrent caller reads `Some` and stops.
+    // Emitting below must not hold a process-global lock.
+    drop(stamp_guard);
+    let to_version = record.to_version;
+    if !announce {
+        return true;
+    }
+
+    calimero_context::migration_events::emit(
+        node_client,
+        datastore,
+        ns,
+        calimero_primitives::events::GroupMigrationPayload::MigrationCompleted {
+            to_version,
+            completed_at: now,
+        },
+    );
+    true
 }
 
 /// Pick the more severe of an accumulated failure and a freshly-read one:
@@ -645,6 +937,9 @@ pub const DEFAULT_EMIT_INTERVAL: Duration = Duration::from_secs(30);
 pub struct MigrationEmitter {
     pub node_client: NodeClient,
     pub datastore: Store,
+    /// Shared with the gossip receive path, which folds peers' heartbeats into
+    /// it. The rollup needs both sides: this node never receives its own.
+    pub cache: Arc<MigrationStatusCache>,
     pub interval: Duration,
     /// Last facts we emitted per namespace — the on-change reference for
     /// [`should_emit_on_change`] and the carry-forward source for the
@@ -697,6 +992,16 @@ impl Handler<MigrationFactsUpdate> for MigrationEmitter {
         if should_emit_on_change(last, facts) {
             self.last_emitted.insert(msg.namespace_id, facts);
             self.publish_heartbeat(msg.namespace_id, facts);
+            // The receive path recomputes on a PEER's facts moving, and a node
+            // never receives its own heartbeat - so without this a cohort of one,
+            // or a node that is the last to converge among quiet peers, would
+            // publish its convergence and never announce it.
+            on_heartbeat_facts_changed(
+                &self.datastore,
+                &self.node_client,
+                &self.cache,
+                msg.namespace_id,
+            );
         } else {
             // No edge — still record the carry-forward value so the next
             // periodic beat advertises the latest HLC.
@@ -735,7 +1040,7 @@ impl MigrationEmitter {
                 return;
             }
         };
-        let (peer_pubkey, mut sk_bytes, mut sender_key) = identity;
+        let (peer_pubkey, mut sk_bytes) = identity;
         // Publish only what a receiver could actually verify. Every receiver
         // gates a heartbeat on the sender resolving to a current member, and
         // this node holds a namespace identity from early in the join —
@@ -752,7 +1057,6 @@ impl MigrationEmitter {
             &peer_pubkey,
         ) {
             sk_bytes.zeroize();
-            sender_key.zeroize();
             tracing::debug!(
                 ?ns_id,
                 "MigrationHeartbeat: this node is not yet a verifiable member here; \
@@ -763,7 +1067,6 @@ impl MigrationEmitter {
         // `sender_key` is unused on this path — zeroize immediately. `sk_bytes`
         // is consumed into `PrivateKey::from(...)`; because `[u8; 32]: Copy`
         // that move leaves a stack copy we zeroize after signing.
-        sender_key.zeroize();
 
         let ts_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1010,6 +1313,39 @@ mod tests {
             "newer heartbeat must replace older"
         );
         assert_eq!(entry.residue_auto, 0);
+    }
+
+    /// `insert` reports whether the peer's REPORTED FACTS moved, not merely
+    /// whether the heartbeat was newer - `synced_up_to_hlc` advances on every
+    /// applied op and must not trigger a rollup recompute.
+    #[test]
+    fn insert_reports_a_facts_change_but_not_a_bare_hlc_advance() {
+        let cache = MigrationStatusCache::default();
+        let sk = PrivateKey::random(&mut rand::thread_rng());
+        // `signed_hb` signs `synced_up_to_hlc: 0`; overwriting it after signing
+        // is fine here because `insert` never verifies (the receiver gate does).
+        let hb = |schema_version, residue_auto, ts_millis, hlc| {
+            let mut hb = signed_hb(&sk, NS, schema_version, residue_auto, ts_millis);
+            hb.synced_up_to_hlc = hlc;
+            hb
+        };
+
+        assert!(cache.insert(&hb(1, 5, 100, 1)), "first sight is a change");
+        // Same facts, newer clock and a further-advanced sync position.
+        assert!(
+            !cache.insert(&hb(1, 5, 200, 9)),
+            "an HLC-only advance is not a facts change"
+        );
+        // Residue dropped: a real change.
+        assert!(cache.insert(&hb(1, 0, 300, 9)), "a residue change is");
+        // Gossip re-delivers the heartbeat just stored: dropped as not-fresher,
+        // so the reaction never fires twice for one beat.
+        assert!(
+            !cache.insert(&hb(1, 0, 300, 9)),
+            "an exact re-delivery is not a change"
+        );
+        // A stale re-delivery is dropped outright and reports no change.
+        assert!(!cache.insert(&hb(2, 0, 250, 9)), "a stale heartbeat is not");
     }
 
     #[test]
@@ -1431,6 +1767,234 @@ mod tests {
         );
     }
 
+    /// Meta for a BUNDLE group: `target_application_id` is the version-stable id
+    /// the context is already bound to, so the upgrade shows up only as a moved
+    /// `app_key` - the same-id shape the defect lives in.
+    fn seed_bundle_group_meta(
+        store: &Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+        ctx: [u8; 32],
+        app_key: [u8; 32],
+    ) {
+        let account = calimero_account::AccountId::from([0xACu8; 32]);
+        calimero_governance_store::MetaRepository::new(store)
+            .save(
+                group_id,
+                &calimero_store::key::GroupMetaValue {
+                    app_key,
+                    target_application_id: calimero_primitives::application::ApplicationId::from(
+                        ctx,
+                    ),
+                    created_at: 0,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: Some(b"migrate_v1_to_v2".to_vec()),
+                    auto_join: false,
+                },
+            )
+            .expect("save group meta");
+    }
+
+    /// Save a namespace-root upgrade record targeting ABI state version 2.
+    fn save_v2_upgrade_record(store: &Store, ns: [u8; 32]) {
+        calimero_governance_store::UpgradesRepository::new(store)
+            .save(
+                &calimero_context_config::types::ContextGroupId::from(ns),
+                &calimero_store::key::GroupUpgradeValue {
+                    from_version: "1".to_owned(),
+                    to_version: "2".to_owned(),
+                    migration: None,
+                    initiated_at: 0,
+                    initiated_by: PrivateKey::random(&mut rand::thread_rng()).public_key(),
+                    status: calimero_store::key::GroupUpgradeStatus::Completed {
+                        completed_at: None,
+                    },
+                    cascade_hlc: None,
+                    cascade_seq: None,
+                    to_state_version: 2,
+                },
+            )
+            .unwrap();
+    }
+
+    /// Point the application row `ctx` is bound to at `blob` / `state_version`,
+    /// as a local bundle install does: same package, so the same shared row.
+    fn install_bundle_over_context(
+        store: &Store,
+        ctx: [u8; 32],
+        blob: [u8; 32],
+        state_version: u32,
+    ) {
+        use calimero_primitives::application::ApplicationId;
+        use calimero_store::key::{ApplicationMeta as ApplicationMetaKey, BlobMeta};
+        use calimero_store::types::ApplicationMeta;
+
+        let bytecode = BlobMeta::new(calimero_primitives::blobs::BlobId::from(blob));
+        store
+            .handle()
+            .put(
+                &ApplicationMetaKey::new(ApplicationId::from(ctx)),
+                &ApplicationMeta::new(
+                    bytecode,
+                    1,
+                    "test://loaded".to_owned().into_boxed_str(),
+                    Box::new([]),
+                    bytecode,
+                    calimero_store::types::PackageInfo {
+                        package: "loaded-test-pkg".to_owned().into_boxed_str(),
+                        version: "n/a".to_owned().into_boxed_str(),
+                        signer_id: "loaded-test-signer".to_owned().into_boxed_str(),
+                        state_version,
+                    },
+                ),
+            )
+            .expect("put ApplicationMeta");
+    }
+
+    const V1_BLOB: [u8; 32] = [0xA1u8; 32];
+    const V2_BLOB: [u8; 32] = [0xA2u8; 32];
+
+    /// Installing the target bundle rewrites the `ApplicationMeta` row the
+    /// context already points at - same-package bundles dedup onto one
+    /// `ApplicationId` - so the row-derived version advances at install time,
+    /// with no cascade op and no state migration.
+    #[test]
+    fn facts_hold_below_target_when_the_bundle_is_installed_but_the_state_is_not() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB1u8; 32];
+        let ctx = [0xC5u8; 32];
+
+        save_v2_upgrade_record(&store, ns);
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        calimero_context::activation::record_activation(&store, &ctx.into(), V1_BLOB);
+        // The v2 bundle is installed locally; the context's state is untouched.
+        install_bundle_over_context(&store, ctx, V2_BLOB, 2);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert!(
+            facts.schema_version < 2,
+            "an installed-but-unmigrated context must not advertise the target \
+             schema; it reads v2 but its state is still v1, got {}",
+            facts.schema_version
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "an installed-but-unmigrated context is outstanding residue"
+        );
+    }
+
+    /// The converse: a cascade or lazy migrate loads the target bytecode by blob
+    /// key and never runs the install, so the row still records the last bundle
+    /// installed while the context already executes the target.
+    #[test]
+    fn facts_report_the_target_for_a_context_that_activated_without_installing() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB2u8; 32];
+        let ctx = [0xC6u8; 32];
+
+        save_v2_upgrade_record(&store, ns);
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        // The row never moved past the v1 bundle this node installed...
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        install_bundle_over_context(&store, ctx, V1_BLOB, 1);
+        // ...but the migration committed and bound execution to v2.
+        calimero_context::activation::record_activation(&store, &ctx.into(), V2_BLOB);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 2,
+            "a context executing the target bytecode is at the target schema, \
+             whatever the install-tracking application row still records"
+        );
+        assert_eq!(
+            facts.residue_auto, 0,
+            "a migrated context is not outstanding residue"
+        );
+    }
+
+    /// The same migrated context, on a member instead of the initiator. Only
+    /// `upgrade_group` writes the upgrade record and it runs on one node, so a
+    /// member resolves its target as `0` and the marker path's `max(target)`
+    /// lifts nothing - leaving the stale install row as the reported version.
+    /// A node that executes the group's bytecode is at that bytecode's schema
+    /// whether or not it was the one that started the upgrade.
+    #[test]
+    fn facts_report_the_target_for_a_member_that_never_received_the_upgrade_record() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB4u8; 32];
+        let ctx = [0xC8u8; 32];
+
+        // No `save_v2_upgrade_record` - that record is initiator-local.
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        install_bundle_over_context(&store, ctx, V1_BLOB, 1);
+        // What the ladder hop records when it activates the rung.
+        calimero_context::activation::record_activation(&store, &ctx.into(), V2_BLOB);
+        calimero_context::activation::record_activated_state_version(&store, &ctx.into(), 2);
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            facts.schema_version, 2,
+            "a member executing the group's bytecode must report its schema, \
+             not the install row it never moved"
+        );
+        assert_eq!(
+            facts.residue_auto, 0,
+            "a migrated context is not outstanding residue"
+        );
+    }
+
+    /// `join_context` stamps no activation marker, so a joined context has no
+    /// per-context fact of its own - once the target bundle is installed, the
+    /// shared row is the only version signal left and it reads at target. Only
+    /// the upgrade gate still refusing this context's state sync knows better.
+    #[test]
+    fn facts_hold_below_target_for_a_marker_less_context_the_gate_still_owes() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB3u8; 32];
+        let ctx = [0xC7u8; 32];
+
+        save_v2_upgrade_record(&store, ns);
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V2_BLOB);
+        // Joined at v1 (no marker), then installed the v2 bundle over the row.
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        install_bundle_over_context(&store, ctx, V2_BLOB, 2);
+        assert_eq!(
+            calimero_context::activation::activated_blob(&store, &ctx.into()),
+            None,
+            "the join path stamps no marker - that is the whole premise"
+        );
+
+        let facts = compute_namespace_migration_facts(&store, ns);
+        assert!(
+            facts.schema_version < 2,
+            "a node holding the target bytecode over un-migrated state must not \
+             advertise the target schema, got {}",
+            facts.schema_version
+        );
+        assert_eq!(
+            facts.residue_auto, 1,
+            "the gate still owes this context its migration, so it is residue"
+        );
+    }
+
     /// A realistic release pair: both semvers share major 10, but the state
     /// version moved 1 -> 2. Reading the semver major makes a node that has NOT
     /// swapped report 10 and satisfy a target of 10 — a false green over a real
@@ -1804,7 +2368,7 @@ mod tests {
 
         // This node's namespace identity (what its heartbeat would be signed by).
         NamespaceRepository::new(&store)
-            .store_identity(&ContextGroupId::from(ns), &self_pk, &[7u8; 32], &[8u8; 32])
+            .store_identity(&ContextGroupId::from(ns), &self_pk, &[7u8; 32])
             .unwrap();
 
         // Stranded subgroup context (subgroup-only upgrade record, as in #37).

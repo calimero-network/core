@@ -6,7 +6,6 @@ use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextId};
@@ -25,21 +24,21 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AbortMigrationRequest, AbortMigrationResponse, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateAccountRequest,
-    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
-    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
-    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
-    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
-    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
-    GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
-    IssueOwnershipProofResponse, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
-    JoinGroupResponse, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
-    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
-    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    BroadcastGroupLocalStateRequest, CascadeStatusEntry, CreateGroupInvitationRequest,
+    CreateGroupInvitationResponse, CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest,
+    DeleteGroupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse,
+    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
+    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
+    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
+    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
+    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
+    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, MigrationStatus, NamespaceIdentity, NamespaceSummary,
+    ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
     PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
     ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
     RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
@@ -368,7 +367,7 @@ mod borsh_layout_round_trip {
 /// an out-of-order removal could delete it). Namespace-backed contexts now store
 /// only a **keyless marker row** per membership; this resolver derives the actual
 /// key live from the namespace identity. Standalone / `new_identity` contexts
-/// have no `NamespaceIdentity` and keep their own stored key — callers must
+/// have no `NamespaceParticipation` and keep their own stored key — callers must
 /// prefer a stored key and only fall back here.
 ///
 /// This does **not** check membership: whether the node is a member here is
@@ -489,7 +488,7 @@ impl ContextRegistry {
         .with_application_version(application_version)
         .with_name(name);
 
-        tracing::debug!(
+        tracing::trace!(
             %context_id,
             dag_heads_count = meta.dag_heads.len(),
             "Loaded context from database"
@@ -1599,7 +1598,6 @@ impl ContextClient {
     ///   must be a member of the context.
     /// * `method` - The string name of the application method to call.
     /// * `payload` - The input data (e.g., serialized JSON) for the method.
-    /// * `aliases` - A list of public key aliases to use for this specific execution.
     /// * `atomic` - An optional handle for batching multiple executions into an atomic transaction.
     ///
     /// # Returns
@@ -1611,13 +1609,10 @@ impl ContextClient {
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
-        aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        self.execute_with_origin(
-            context_id, executor, method, payload, aliases, atomic, None, 0,
-        )
-        .await
+        self.execute_with_origin(context_id, executor, method, payload, atomic, None, 0)
+            .await
     }
 
     /// Like [`execute`](Self::execute), but tags the run with the source
@@ -1631,7 +1626,6 @@ impl ContextClient {
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
-        aliases: Vec<Alias<PublicKey>>,
         atomic: Option<ContextAtomic>,
         xcall_origin: Option<ContextId>,
         xcall_depth: u32,
@@ -1645,7 +1639,6 @@ impl ContextClient {
                     executor: *executor,
                     method,
                     payload,
-                    aliases,
                     atomic,
                     xcall_origin,
                     xcall_depth,
@@ -1750,7 +1743,6 @@ impl ContextClient {
                 executor,
                 "__calimero_merge_root_state".to_owned(),
                 payload,
-                vec![],
                 None,
             )
             .await?;
@@ -1859,7 +1851,6 @@ impl ContextClient {
     pub async fn delete_context(
         &self,
         context_id: &ContextId,
-        requester: Option<PublicKey>,
     ) -> eyre::Result<DeleteContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
@@ -1867,7 +1858,6 @@ impl ContextClient {
             .send(ContextMessage::DeleteContext {
                 request: DeleteContextRequest {
                     context_id: *context_id,
-                    requester,
                 },
                 outcome: sender,
             })
@@ -2157,12 +2147,6 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
-        create_account,
-        CreateAccount,
-        CreateAccountRequest,
-        eyre::Result<crate::group::CreateAccountResponse>
-    );
-    forward_to_actor!(
         pair_device_init,
         PairDeviceInit,
         PairDeviceInitRequest,
@@ -2202,7 +2186,7 @@ impl ContextClient {
         get_namespace_identity,
         GetNamespaceIdentity,
         GetNamespaceIdentityRequest,
-        eyre::Result<Option<NamespaceIdentity>>
+        eyre::Result<Option<NamespaceParticipation>>
     );
     forward_to_actor!(
         list_namespaces_for_application,

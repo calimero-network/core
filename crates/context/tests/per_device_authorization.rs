@@ -118,7 +118,7 @@ fn link_device(
     device_sign_pk: &PublicKey,
 ) -> DeviceId {
     let account_root = PrivateKey::from([0x42; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0xAB; 16]);
     let kem_secret = X25519SecretKey::from([0x33; 32]);
@@ -251,7 +251,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 
     // Fold a device link on top, exactly as the receive path does.
     let account_root = PrivateKey::from([0x42; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let device_sign_pk = PrivateKey::from([0x77; 32]).public_key();
     let cert = sign_device_cert(
@@ -321,7 +321,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 /// IDENTITY — the very key the group's membership row is keyed under. So a member
 /// who enrols a device becomes, at every cut that contains its own link, a key that
 /// `account_for_author` resolves to the account's real `AccountId` — while
-/// membership on this plane is keyed by `legacy_account_id`. The member disappears.
+/// membership on this plane is keyed by account. The member disappears.
 ///
 /// The blast radius is every at-cut authority read for that key, not just the
 /// device-link gate: the endorser check refuses their next link, and the cross-DAG
@@ -346,7 +346,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
     // `account create`: the member enrols its own device, and the certificate names
     // the member's own namespace identity as the device's signing key.
     let account_root = PrivateKey::from([0x42; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xAB; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let cert = sign_device_cert(
         &account_root,
@@ -405,8 +405,8 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
 
 /// The join's two planes must resolve a joiner's key to the SAME account.
 ///
-/// A node's writer principal comes from the materialized binding rows
-/// (`env::account_id()` → `account_for_group` → `binding_for_sign_pk`), while the
+/// A node's writer principal comes from its own device row
+/// (`env::account_id()` → `account_for_group` → `reusable_device`), while the
 /// peer verifying that node's signature resolves it from the FOLDED projection
 /// (`device_account_at_cut` → `AclView::devices`). Both are fed by a join, and
 /// they have to agree: a writer set the joiner seeds names whatever the first
@@ -414,7 +414,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
 ///
 /// Recording the binding at apply time without folding the credential broke
 /// exactly this. The joiner wrote as its real account while every peer resolved
-/// it to `legacy_account_id`, so the joiner's `Shared` writes matched no grant —
+/// it to a key-derived stand-in, so the joiner's `Shared` writes matched no grant —
 /// which surfaces far from the join, as data that silently never converges.
 #[test]
 fn a_joiners_writer_account_matches_what_its_peers_resolve() {
@@ -439,13 +439,13 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         .add_member(&ns, &admin_account, GroupMemberRole::Admin)
         .unwrap();
     NamespaceRepository::new(&store)
-        .store_identity(&ns, &admin, &[0x11; 32], &[0u8; 32])
+        .store_identity(&ns, &admin, &[0x11; 32])
         .unwrap();
 
     // A credential the joiner can actually present: certified by its own account
     // root, naming the joiner's namespace identity as the device's `sign_pk`.
     let account_root = PrivateKey::from([0x77; 32]);
-    let genesis = AccountGenesis::new(account_root.public_key(), [0xCD; 16]);
+    let genesis = AccountGenesis::new(account_root.public_key());
     let real_account = genesis.account_id();
     let kem_secret = X25519SecretKey::from([0x34; 32]);
     let cert = sign_device_cert(
@@ -514,7 +514,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         .binding_for_sign_pk(&ns, &joiner)
         .expect("read bindings")
         .map(|b| b.account);
-    let writes_as = calimero_op_adapter::writer_account(binding, &joiner);
+    let writes_as = binding.expect("the join bound the device, so a binding exists");
     assert_eq!(
         writes_as, real_account,
         "a join binds the device, so the joiner writes as its real account"

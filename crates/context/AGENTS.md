@@ -51,6 +51,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | `self_purge` | `OpEvent::TeeMemberRemoved` (self only) | Drops local signing keys / gov-op log / namespace identity after a TEE eviction; deliberately skips plain `MemberRemoved` (soft-leave keeps rejoin state) |
 | `tee_subgroup_admit` | `SubgroupCreated`, `TeeMemberAdmitted` | Admits entitled TEE members into `Restricted` subgroups this node holds keys for |
 | `rotation_listener` | `MemberLeft` (persisted worklist) | Discharges the forward-secrecy key rotation a self-leaver cannot mint themselves; every remaining admin races to publish, convergence is by highest epoch |
+| `membership_events` | `MemberAdded`/`MemberRemoved`/`MemberRoleChanged`, `MigrationStarted` | Observational bridge: turns those `OpEvent`s into `NodeEvent::GroupMembership` / `NodeEvent::GroupMigration` for connected SSE/WS clients. Migration rides the apply path so every node that folds the op announces it, not only the one whose client asked |
 
 **Spawn ordering is load-bearing** (see the comment block in `lib.rs`'s `Actor::started`): `auto_follow::spawn` must run before `self_purge::spawn` because auto-follow subscribes to `op_events` synchronously and has no startup re-scan of its own.
 
@@ -95,7 +96,8 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 | `src/activation.rs` | Per-context "last activated blob" marker (`marker == group.app_key` invariant) |
 | `src/unified_op_store.rs`, `src/unified_applier.rs`, `src/scope_projection.rs` | The additive unified causal-log substrate (not yet load-bearing) |
 | `src/apply_authorizer.rs` | `AtCutAuthorizer` impl resolving apply-time authorization against the folded projection |
-| `src/auto_follow.rs`, `src/self_purge.rs`, `src/tee_subgroup_admit.rs`, `src/rotation_listener.rs` | The four background listeners spawned in `Actor::started` |
+| `src/auto_follow.rs`, `src/self_purge.rs`, `src/tee_subgroup_admit.rs`, `src/rotation_listener.rs`, `src/membership_events.rs` | The five background listeners spawned in `Actor::started` |
+| `src/migration_events.rs` | `NodeEvent::GroupMigration` emit helper - resolves the namespace root every migration payload is keyed on |
 | `src/error.rs` | `ContextError` - typed errors (`ContextDeleted`, `StateInconsistency`, `StorageError`) |
 | `tests/*.rs` | Integration suites: cascade apply/atomicity/concurrency, HLC fencing, op-store reconstruction, projection/membership equivalence |
 
@@ -104,7 +106,7 @@ Every RPC the `ContextManager` actor serves is one `actix::Handler` module, disp
 - **Lock-gated eviction is a correctness boundary, not hygiene.** Evicting a "live" `contexts` or `namespace_dags` entry would let a new `get_or_fetch_context`/`get_or_create_namespace_dag` mint a *second* `Arc<RwLock>`/`Arc<Mutex>` for the same key, so two concurrent operations would serialize on different locks. `Evictable::is_idle` (strong-count check) is what prevents this - never bypass it for these two caches.
 - **Cache-aside fetch-before-evict.** `get_or_fetch_context` checks existence in the datastore *before* touching the cache, so a lookup for a non-existent context never wastes an eviction slot on nothing.
 - **Cached `Context` metadata is refreshed, not just inserted, on hit.** `dag_heads`, `root_hash`, and `application_id` are re-read from the DB on every cache hit because they can change out-of-band (network deltas, context upgrades, cascade target-application changes). Skipping this reload was a real bug: deltas would parent onto stale `dag_heads`, or the execute path would run the OLD WASM module against already-migrated state (a borsh "Not all bytes read" panic).
-- **`Actor::started` spawn ordering is load-bearing** - see the comment block above `auto_follow::spawn`; don't reorder the four listener spawns without re-reading it.
+- **`Actor::started` spawn ordering is load-bearing** - see the comment block above `auto_follow::spawn`; don't reorder the listener spawns without re-reading it.
 - **`tee_subgroup_admit`/`rotation_listener` call `shutdown()` before `spawn()`** because both handlers are process-global singletons and a bare `spawn` no-ops while a prior instance is still running; on actor restart with a different `Store`/`ContextClient` this is required to rebind rather than leave the old handles live.
 - **Governance symbols come from `calimero-governance-store` directly** - import `calimero_governance_store::{MembershipRepository, ...}`, not through this crate. Anything that crate keeps `pub(crate)` is intentionally unreachable.
 - **`MemberCapabilities` (in the `config` sub-crate) accepts unknown bits on the wire but truncates at the point of interpretation** - `from_bits` rejects undefined bits (use for operator/API input you want to refuse), `from_bits_truncate` drops them (use when interpreting a stored/received mask). This is forward-compat: an older peer must still be able to decode a governance op a newer peer produced with an extra capability bit.
@@ -128,7 +130,7 @@ impl Handler<CreateContextRequest> for ContextManager {
 }
 ```
 
-The `Request`/`Response` pair and the `impl Message for Request { type Result = eyre::Result<Response>; }` live in the `primitives` sub-crate (`messages.rs` for context-scoped requests, `group.rs` for group-scoped ones); `src/handlers.rs`'s `ContextMessage` match forwards each variant to `Self::forward_handler`, which is what actually invokes the per-type `Handler` impl. Mutation handlers that touch group governance typically start with `ContextManager::governance_preflight` (resolve requester -> load group meta -> check admin -> resolve signing key) and end with `sign_and_publish_group_op` or the raw `calimero_governance_store::sign_apply_and_publish` call.
+The `Request`/`Response` pair and the `impl Message for Request { type Result = eyre::Result<Response>; }` live in the `primitives` sub-crate (`messages.rs` for context-scoped requests, `group.rs` for group-scoped ones); `src/handlers.rs`'s `ContextMessage` match forwards each variant to `Self::forward_handler`, which is what actually invokes the per-type `Handler` impl. Mutation handlers that touch group governance typically start with `ContextManager::governance_preflight` (resolve signer -> load group meta -> check admin -> resolve signing key) and end with `sign_and_publish_group_op` or the raw `calimero_governance_store::sign_apply_and_publish` call.
 
 ## JIT Index
 
@@ -151,7 +153,7 @@ rg -n "enum UpgradeAction" src/migration_plan.rs
 
 ## Sub-crates
 
-- **`crates/context/config`** (`calimero-context-config`) - Wire/API request types (`Request`, `ContextRequestKind`, `GroupRequestKind`, `SystemRequest`), `VisibilityMode`, the `MemberCapabilities` bitset, the `[context.config]` node-config shape (`ClientConfig`/`ClientSigner`/`LocalConfig`), and the `Repr`/`ReprBytes` transmute machinery used to move typed ids across borsh/serde/bs58 boundaries.
+- **`crates/context/config`** (`calimero-context-config`) - The typed id newtypes (`ContextId`, `ContextGroupId`, `ContextIdentity`, `SignerId`, `AppKey`, `ApplicationId`), the invitation wire types (`InvitationFromMember`, `SignedOpenInvitation`, `GroupInvitationFromAdmin`, `SignedGroupOpenInvitation`), `GovernanceParentEdge`, `VisibilityMode`, the `MemberCapabilities` bitset, `MAX_NAMESPACE_DEPTH`, and the `Repr`/`ReprBytes` transmute machinery used to move typed ids across borsh/serde/bs58 boundaries.
 - **`crates/context/primitives`** (`calimero-context-client`) - The `ContextClient`/`ContextRegistry` facade, `ContextGuard`/`ContextAtomic` (the per-context lock guard type shared with `calimero-context`), every `*Request`/`*Response` message type and the `ContextMessage` actix envelope, group-related types (`group.rs`), and the local-governance wire types (`SignedGroupOp`, `SignedNamespaceOp`, `AckRouter`).
 
 Part of [crates/](../AGENTS.md).

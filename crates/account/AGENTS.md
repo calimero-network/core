@@ -5,7 +5,7 @@ The two stable ids that let one person hold several devices: `AccountId` (who) a
 ## Package Identity
 
 - **Crate**: `calimero-account`
-- **Entry**: `src/lib.rs` (single file, about half of it tests)
+- **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; the model lives in the modules below)
 - **Key deps**: `borsh` (wire format), `sha2` (content addressing), `thiserror`, `calimero-primitives` (`PublicKey`, with the `borsh` feature)
 
 ## Commands
@@ -36,6 +36,76 @@ This crate splits the identity half in two:
 
 **This crate decides nothing.** It verifies self-contained credentials only. The at-cut checks that make a credential *authoritative* - has this root key been superseded, has this device been revoked, is the account even a member here - belong to `calimero-projection` and `calimero-authz`, because only those see the causal cut.
 
+## How the pieces interact
+
+**What hashes to what, and who signs what.** Unlabelled arrows derive a value from the one above; labelled edges name the relation. The account root is the only key that certifies devices, and it is deliberately a member nowhere:
+
+```text
+   root_sk  (offline; survives losing every device)
+     │
+     │ names the epoch-0 key
+     ▼
+   AccountGenesis {version, root_sign_pk}
+     │
+     │ H(domain ‖ borsh)                     DeviceId::mint(account, nonce_16)
+     ▼                                                    │
+   AccountId ─────────────────────────────────────────────┴──▶ DeviceId
+     ▲            (the only authz subject)                       │
+     │                                                           └─▶ hlc_seed()  = first 16 bytes
+     │ covers                                                           (CRDT replica id + HLC seed)
+   AccountMemberEndorsement  ◀── signed by a GRANTED MEMBER key, never by the root
+
+   root-key epochs, each handoff signed by the OUTGOING key (an authorization chain, not a list):
+
+   pk_0 ──RootKeyHandoff──▶ pk_1 ──RootKeyHandoff──▶ pk_2 ─── … (capped at MAX_ROOT_KEY_HANDOFFS)
+     └── root_key_at_epoch(genesis, chain, e) walks it as far as `e` and stops ──▶ pk_e
+                                                                                   │ signs
+                                    ┌──────────────────────────────────────────────┤
+                                    ▼                                              ▼
+   DeviceCert {account, device, sign_pk, kem_pk, key_epoch=e, device_epoch}   DeviceRevocation
+                                                                             {account, device, e}
+```
+
+**Linking a device, end to end** - and where this crate stops:
+
+```text
+ new device                                account holder (root_sk offline + a granted member key)
+ ──────────                                ─────────────────────────────────────────────────────
+ mint sign_pk + kem_pk
+ DeviceId::mint(account, nonce)
+ sign_pairing_statement ──────────────────▶ verify_pairing_statement    refuses a PARTIAL key swap
+ shows confirmation code ──human reads───▶  pairing_code_matches         refuses a WHOLESALE swap
+                                                       │ both pass
+                                                       ▼
+                                             sign_device_cert(root_sk, …)
+                                             sign_account_endorsement(member_sk, account)
+                                                       │
+                                                       ▼
+                                            ONE self-contained link op ──gossip──┐
+                                                                                 │
+ every receiver, with no prior state and no ordering dependency:  ◀───────────────┘
+   verify_device_cert(op.author, genesis, chain, cert) → VerifiedDeviceCert
+   verify_account_endorsement(endorsement)
+                          │  internally valid - NOT "in force"
+ ═════════════════════════▼══════════ crate boundary ══════════════════════════════
+ calimero-projection / calimero-authz answer what only the causal cut can:
+   is key_epoch superseded?   is the device revoked?   is the endorser a member here?
+   of two devices sharing an hlc_seed, which is live?  (lower DeviceId, decided on read)
+```
+
+**Module map.** Dependencies run one way, so a change to the anchor cannot be shadowed by a change to a credential:
+
+```text
+   pairing.rs ──▶ device.rs ────┐
+                                ├──▶ root_key.rs ──▶ account.rs ──▶ domain.rs
+   revocation.rs ───────────────┘     (chain walk)    (the anchor)   (every signing domain
+                                                                      + borsh preimages)
+
+   error.rs ◀── every fallible path in all of the above returns AccountError
+```
+
+`pairing.rs` reaches into `device.rs` for `KemPublicKey` alone - it certifies nothing itself. `revocation.rs` does *not* go through `device.rs`: a revocation is verified against the key chain directly, which is why it stays valid under any epoch the chain resolves while a certificate's superseded epochs get filtered on read.
+
 ## Public API
 
 | Item | Kind | Purpose |
@@ -45,13 +115,12 @@ This crate splits the identity half in two:
 | `DeviceId::mint(account, nonce)` | fn | Mint a device id once per installation |
 | `DeviceId::hlc_seed()` | fn | First 16 bytes - the HLC instance seed for this replica |
 | `KemPublicKey` | struct (`[u8; 32]`) | X25519 scope-key delivery recipient; a distinct type from `PublicKey` |
-| `AccountGenesis` | struct | `{version, root_sign_pk, nonce}`; hashing it yields the `AccountId` |
+| `AccountGenesis` | struct | `{version, root_sign_pk}`; hashing it yields the `AccountId`. No per-scope salt — one root key is one account everywhere |
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
 | `RootKeyHandoff` | struct | Rolls the root key from `from_epoch` to `from_epoch + 1`, signed by the outgoing key |
 | `DeviceCert` | struct | Root-signed grant binding a device to an account |
 | `AccountMemberEndorsement` | struct | A granted member key's signed statement that an account is theirs |
 | `sign_account_endorsement` / `verify_account_endorsement` | fn | Mint / check an endorsement; verification says nothing about whether the endorser IS a member |
-| `derive_account_nonce(root_secret, namespace_id)` | fn | Per-namespace genesis nonce from the node's account root |
 | `VerifiedDeviceCert` | struct | A cert whose anchor, chain and signature all checked - **not** a statement that the binding is in force |
 | `root_key_at_epoch(genesis, chain, epoch)` | fn | Walk the chain as far as `epoch` and return the root key there; entries beyond it are never read |
 | `verify_device_cert(claimed, genesis, chain, cert)` | fn | Full credential check against a claimed account |
@@ -60,9 +129,22 @@ This crate splits the identity half in two:
 
 ## Key Files
 
+Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::DeviceCert` works regardless of which module it lives in — the modules are private and exist for readability, not as API surface.
+
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | Everything: ids, credentials, chain walking, verification, and all tests |
+| `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
+| `src/account.rs` | `ACCOUNT_GENESIS_VERSION`, `AccountGenesis`, `AccountMemberEndorsement` + sign/verify |
+| `src/root_key.rs` | `MAX_ROOT_KEY_HANDOFFS`, `RootKeyHandoff`, `sign_root_key_handoff`, `root_key_at_epoch` (the chain walk) |
+| `src/device.rs` | `KemPublicKey`, `DeviceCert`, `VerifiedDeviceCert`, `sign_device_cert`, `verify_device_cert` |
+| `src/revocation.rs` | `DeviceRevocation`, `SignedDeviceRevocation`, `sign_device_revocation`, `verify_device_revocation` |
+| `src/pairing.rs` | Pairing statement (sign/verify/payload) and the confirmation code |
+| `src/domain.rs` | Every signing/content-address domain in one place, plus `borsh_bytes` |
+| `src/error.rs` | `AccountError` |
+| `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
+| `src/tests/<module>.rs` | Tests for the module of the same name, reaching it through `crate::` paths |
+| `src/tests/wire.rs` | Cross-cutting: borsh round-trips for every credential and id |
+| `src/tests/support.rs` | Shared fixtures (`key`, `genesis_for`, `rotated`, `sign_handoff`, `sign_cert`, `pairing_fixture`) |
 
 ## Invariants and Gotchas
 

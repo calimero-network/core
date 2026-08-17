@@ -12,6 +12,9 @@ pub enum NodeEvent {
     /// A group's membership changed (join/add/remove/leave). Keyed by `groupId`,
     /// disjoint from `contextId`, so untagged still round-trips.
     GroupMembership(GroupMembershipEvent),
+    /// A namespace migration changed phase. Keyed by `groupId` like
+    /// [`GroupMembershipEvent`]; the payload tags are disjoint from that enum's.
+    GroupMigration(GroupMigrationEvent),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -57,6 +60,92 @@ pub struct MembershipChange {
     pub member: crate::identity::AccountId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<GroupMemberRole>,
+}
+
+/// Shaped like [`GroupMembershipEvent`] but not authorized like it: delivery
+/// runs the group-subscription filter AND the per-variant
+/// [`GroupMigrationPayload::requires_group_admin`] branch, so a new variant
+/// carrying identities must declare its own gate there.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMigrationEvent {
+    /// The namespace root the migration runs under, never a descendant
+    /// subgroup: it is the id a client subscribes with. Hex, like `groupId`
+    /// everywhere else.
+    #[serde(with = "crate::hash::hex_repr")]
+    pub group_id: Hash,
+    #[serde(flatten)]
+    pub payload: GroupMigrationPayload,
+}
+
+/// The phase a migration reached, tagged like [`MembershipChangePayload`]. The
+/// per-variant `rename_all` is load-bearing: the enum-level one renames the
+/// variants, not their fields.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "PascalCase")]
+pub enum GroupMigrationPayload {
+    /// A migration was accepted and its target ABI state version resolved.
+    /// `local_contexts_total` is the emitting node's own context count, not a
+    /// fleet number - distinct from `MigrationProgress.total`, the cohort size.
+    #[serde(rename_all = "camelCase")]
+    MigrationStarted {
+        from_version: String,
+        to_version: String,
+        to_state_version: u32,
+        local_contexts_total: u32,
+    },
+    /// Fleet rollup counters, recomputed when a peer's heartbeat facts change.
+    /// Counters only - the per-member detail behind them stays admin-only, in
+    /// the `migration-status` read a plain member cannot call.
+    #[serde(rename_all = "camelCase")]
+    MigrationProgress {
+        migrated: usize,
+        in_progress: usize,
+        unknown: usize,
+        failed: usize,
+        total: usize,
+    },
+    /// One subgroup's local context swaps advanced on the emitting node. Named
+    /// like [`Self::MigrationStarted`]'s counter and for the same reason: the
+    /// sibling `MigrationProgress.total` is the cohort size, and a subscriber
+    /// reading a bare `total` off this stream cannot tell the two apart.
+    #[serde(rename_all = "camelCase")]
+    CascadeProgress {
+        #[serde(with = "crate::hash::hex_repr")]
+        subgroup_id: Hash,
+        local_contexts_swapped: u32,
+        local_contexts_total: u32,
+    },
+    /// Every pinned-cohort member reported the target. This is the moment
+    /// `completed_at` becomes knowable under lazy upgrades.
+    #[serde(rename_all = "camelCase")]
+    MigrationCompleted {
+        to_version: String,
+        completed_at: u64,
+    },
+}
+
+impl GroupMigrationPayload {
+    /// Whether this payload may only be delivered to an admin of the namespace
+    /// root the event is keyed on.
+    ///
+    /// `CascadeProgress` names a descendant `subgroup_id`, and a Restricted
+    /// subgroup's existence is not something a plain namespace member may
+    /// enumerate - the same disclosure the `migration-status` read is
+    /// admin-gated against. The other variants carry counters only.
+    ///
+    /// Exhaustive rather than a `matches!`, because the wrong default here is
+    /// silent: a later variant carrying identities would otherwise reach every
+    /// member. This way the compiler asks.
+    #[must_use]
+    pub const fn requires_group_admin(&self) -> bool {
+        match *self {
+            Self::CascadeProgress { .. } => true,
+            Self::MigrationStarted { .. }
+            | Self::MigrationProgress { .. }
+            | Self::MigrationCompleted { .. } => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -383,9 +472,65 @@ mod tests {
         assert!(v["data"].get("role").is_none(), "None role omitted");
     }
 
-    // The untagged NodeEvent still round-trips with a second variant.
+    // groupId on the wrapper (hex, matching the id a client subscribes with),
+    // PascalCase type tag, camelCase data fields.
     #[test]
-    fn node_event_untagged_round_trips_both_variants() {
+    fn group_migration_tag_and_shape() {
+        let event = NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: Hash::from([0x21; 32]),
+            payload: GroupMigrationPayload::MigrationStarted {
+                from_version: "10.1.3".to_owned(),
+                to_version: "10.2.0".to_owned(),
+                to_state_version: 2,
+                local_contexts_total: 7,
+            },
+        });
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "MigrationStarted");
+        assert_eq!(v["groupId"], hex::encode([0x21; 32]), "groupId is hex");
+        assert!(v.get("contextId").is_none(), "no contextId leaks in");
+        assert_eq!(v["data"]["fromVersion"], "10.1.3");
+        assert_eq!(v["data"]["toStateVersion"], 2);
+        assert_eq!(v["data"]["localContextsTotal"], 7);
+    }
+
+    #[test]
+    fn cascade_progress_carries_a_hex_subgroup_id() {
+        let v = serde_json::to_value(GroupMigrationPayload::CascadeProgress {
+            subgroup_id: Hash::from([0x31; 32]),
+            local_contexts_swapped: 3,
+            local_contexts_total: 5,
+        })
+        .expect("serialize");
+        assert_eq!(v["type"], "CascadeProgress");
+        assert_eq!(v["data"]["subgroupId"], hex::encode([0x31; 32]));
+        assert_eq!(v["data"]["localContextsSwapped"], 3);
+        assert_eq!(
+            v["data"]["localContextsTotal"], 5,
+            "node-local, never the cohort total the sibling variant carries"
+        );
+        assert!(
+            v["data"].get("total").is_none(),
+            "a bare `total` here would collide with MigrationProgress's cohort size"
+        );
+    }
+
+    // The untagged NodeEvent resolves each variant by its payload tag. The two
+    // group-keyed variants are the hazard: a payload tag shared between them
+    // would let the first-declared one swallow the other's events.
+    #[test]
+    fn node_event_untagged_round_trips_every_variant() {
+        let migration = NodeEvent::GroupMigration(GroupMigrationEvent {
+            group_id: Hash::from([0x41; 32]),
+            payload: GroupMigrationPayload::MigrationCompleted {
+                to_version: "10.2.0".to_owned(),
+                completed_at: 1_700_000_000,
+            },
+        });
+        let json = serde_json::to_string(&migration).expect("to_string");
+        let back: NodeEvent = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back, NodeEvent::GroupMigration(_)), "got {back:?}");
+
         let group = NodeEvent::GroupMembership(GroupMembershipEvent {
             group_id: Hash::from([0x11; 32]),
             payload: MembershipChangePayload::MemberAdded(MembershipChange {

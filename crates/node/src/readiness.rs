@@ -708,14 +708,13 @@ impl ReadinessManager {
                 return;
             }
         };
-        let (peer_pubkey, mut sk_bytes, mut sender_key) = identity;
+        let (peer_pubkey, mut sk_bytes) = identity;
         // `sender_key` is unused on the beacon path — zeroize immediately.
         // `sk_bytes` is consumed into `PrivateKey::from(...)` below;
         // because `[u8; 32]: Copy`, that "move" actually leaves a copy
         // of the bytes on the stack here, so we explicitly zeroize the
         // local AFTER the signing block. `PrivateKey`'s `Drop` impl
         // zeroizes its own internal copy.
-        sender_key.zeroize();
 
         let strong = matches!(state.tier, ReadinessTier::PeerValidatedReady);
         let ts_millis = std::time::SystemTime::now()
@@ -802,7 +801,7 @@ impl ReadinessManager {
         let log_strong = strong;
         actix::spawn(async move {
             match net.publish(topic, bytes).await {
-                Ok(_) => tracing::info!(
+                Ok(_) => tracing::debug!(
                     namespace_id = %hex::encode(log_ns),
                     applied_through = log_applied,
                     strong = log_strong,

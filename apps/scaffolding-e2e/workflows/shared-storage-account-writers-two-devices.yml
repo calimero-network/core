@@ -162,14 +162,12 @@ steps:
   # GroupOp, so the node must already hold the scope key.
 
   - name: Node-2 enrolls a device for a fresh account
-    type: account_create
+    type: node_identity
     node: shared-account-node-2
-    namespace_id: '{{namespace_id}}'
     outputs:
       enrolled_account: accountId
       laptop_device: deviceId
-      root_key: accountRootKey
-      nonce: accountNonce
+      root_key: accountRootPublicKey
 
   - name: Settle after the link op
     type: wait_for_sync
@@ -280,7 +278,10 @@ steps:
     holder: shared-account-node-2
     namespace_id: '{{namespace_id}}'
     root_key: '{{root_key}}'
-    nonce: '{{nonce}}'
+    # merobox's step still declares `nonce` required, and core ignores whatever
+    # arrives — the genesis carries no nonce. A literal rather than a captured
+    # value, so nothing threads a dead field through the workflow.
+    nonce: '00000000000000000000000000000000'
     outputs:
       phone_device: deviceId
       key_delivered: keyDelivered

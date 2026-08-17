@@ -77,9 +77,9 @@ pub(crate) struct GovernanceHandlerDeliveryLabels {
 ///   - `"namespace"`: a namespace-root cascade (`cascade_namespace_state`).
 ///
 /// `class` is the failure class:
-///   - `"signing_key"`: the security-critical `delete_group_local_rows`
-///     step failed, so private signing-key material may linger on disk.
-///     This is the load-bearing failure — it keeps the `NamespaceIdentity`
+///   - `"group_rows"`: the security-critical `delete_group_local_rows`
+///     step failed, so the group's encryption keys may linger on disk.
+///     This is the load-bearing failure — it keeps the `NamespaceParticipation`
 ///     anchor + gossipsub subscription alive for the planned reconcile
 ///     sweep (#2721).
 ///   - `"context_cleanup"`: a best-effort dead-pointer cleanup step
@@ -107,7 +107,7 @@ pub(crate) struct SelfPurgeFailureLabels {
 ///   - `"reconciled"`: marker present + still-evicted, and the namespace
 ///     purge fully completed.
 ///   - `"retained"`: marker present + still-evicted, but the purge returned
-///     false (signing-key failure); the marker is kept for the next restart.
+///     false (row-purge failure); the marker is kept for the next restart.
 ///   - `"cleared_stale"`: the marker was stale (already purged / re-admitted)
 ///     and the clear succeeded.
 ///   - `"stale_clear_failed"`: the marker was stale but the clear itself
@@ -261,8 +261,8 @@ impl Metrics {
         );
 
         // #2686: self-purge failures on TEE self-eviction, sliced by
-        // branch (subgroup / namespace) and failure-class (signing_key /
-        // context_cleanup). The `class="signing_key"` series is the
+        // branch (subgroup / namespace) and failure-class (group_rows /
+        // context_cleanup). The `class="group_rows"` series is the
         // security-relevant one — a nonzero rate means forward-secrecy
         // residue lingered on a node's own disk pending the reconcile
         // sweep (#2721). `class="context_cleanup"` is a best-effort
@@ -272,14 +272,14 @@ impl Metrics {
             "self_purge_failures_total",
             "Self-purge (TEE self-eviction) local-state cleanup failures, \
              sliced by branch (subgroup / namespace) and failure-class \
-             (signing_key / context_cleanup)",
+             (group_rows / context_cleanup)",
             self_purge_failures.clone(),
         );
 
         // #2686: reconcile-sweep outcomes. One increment per marked
         // namespace the startup sweep processes, sliced by `outcome`. The
         // `outcome="retained"` series is the operator alerting signal — a
-        // namespace stuck `retained` across restarts means a signing-key
+        // namespace stuck `retained` across restarts means a row-purge
         // purge keeps failing and forward-secrecy residue lingers on disk.
         // `outcome="stale_clear_failed"` flags markers the sweep could not
         // clear (benign — re-evaluated next restart). The reconcile read-
@@ -457,8 +457,8 @@ impl PurgeBranch {
 #[derive(Clone, Copy, Debug)]
 pub enum PurgeFailureClass {
     /// The security-critical `delete_group_local_rows` step failed —
-    /// private signing-key material may linger. Load-bearing.
-    SigningKey,
+    /// the group's encryption keys may linger. Load-bearing.
+    GroupRows,
     /// A best-effort dead-pointer cleanup step failed (context-index
     /// unregister, parent-edge read, or tree-edge delete). Non-security.
     ContextCleanup,
@@ -467,7 +467,7 @@ pub enum PurgeFailureClass {
 impl PurgeFailureClass {
     fn as_label(self) -> &'static str {
         match self {
-            PurgeFailureClass::SigningKey => "signing_key",
+            PurgeFailureClass::GroupRows => "group_rows",
             PurgeFailureClass::ContextCleanup => "context_cleanup",
         }
     }
@@ -504,7 +504,7 @@ pub enum ReconcileOutcome {
     /// completed.
     Reconciled,
     /// Marker present + still-evicted, but the purge returned false
-    /// (signing-key failure); the marker is kept for the next restart.
+    /// (row-purge failure); the marker is kept for the next restart.
     Retained,
     /// The marker was stale (already purged / re-admitted) and the clear
     /// succeeded.
@@ -623,7 +623,7 @@ mod tests {
         );
 
         for (branch, class) in [
-            (PurgeBranch::Namespace, PurgeFailureClass::SigningKey),
+            (PurgeBranch::Namespace, PurgeFailureClass::GroupRows),
             (PurgeBranch::Subgroup, PurgeFailureClass::ContextCleanup),
         ] {
             family
@@ -638,8 +638,8 @@ mod tests {
         encode(&mut out, &registry).expect("encode registry");
 
         assert!(
-            out.contains("branch=\"namespace\"") && out.contains("class=\"signing_key\""),
-            "missing signing_key/namespace labels:\n{out}"
+            out.contains("branch=\"namespace\"") && out.contains("class=\"group_rows\""),
+            "missing group_rows/namespace labels:\n{out}"
         );
         assert!(
             out.contains("branch=\"subgroup\"") && out.contains("class=\"context_cleanup\""),
@@ -647,7 +647,7 @@ mod tests {
         );
         // And the public recorder must not panic whether or not the global
         // sink is installed.
-        record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::SigningKey);
+        record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::GroupRows);
     }
 
     /// The `self_purge_reconcile_total` family registers against a fresh

@@ -1,6 +1,6 @@
 use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, ReentryRepository, SigningKeysRepository, UpgradeLadderRepository,
+    MetadataRepository, NamespaceRepository, ReentryRepository, UpgradeLadderRepository,
     UpgradesRepository,
 };
 use calimero_account::AccountId;
@@ -10,7 +10,7 @@ use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMemberContext, GroupOpHead,
-    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceIdentity,
+    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceParticipation,
     GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
@@ -481,7 +481,6 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     MetadataRepository::new(store).delete_group(group_id)?;
     UpgradesRepository::new(store).delete(group_id)?;
     UpgradeLadderRepository::new(store).delete(group_id)?;
-    SigningKeysRepository::new(store).delete_all_for_group(group_id)?;
     // Forward secrecy: also drop the AES group *encryption* keys. Like the
     // signing-key delete above, a failure here propagates via `?`, so the
     // cascade classifies it as a per-group purge failure and keeps the
@@ -557,12 +556,29 @@ pub fn delete_namespace_local_state(
 
     let mut handle = store.handle();
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
-    handle.delete(&NamespaceIdentity::new(ns_bytes))?;
+    handle.delete(&NamespaceParticipation::new(ns_bytes))?;
     drop(handle);
 
-    // Forward secrecy, same reasoning as the group keyring delete above: this
-    // node's device agreement secret is the only thing that can open scope keys
-    // wrapped for it, so it must not outlive the node's membership.
-    crate::NodeDeviceRepository::new(store).delete(namespace_id)?;
+    // The device is node-level, so leaving ONE namespace cannot take it: every
+    // other namespace this node belongs to opens its scope keys with the same
+    // agreement secret. Leaving the LAST one can, and does.
+    //
+    // Being precise about what this is, because the comment it replaces called it
+    // forward secrecy and that was wrong. This function runs on the node's own
+    // store — `self_purge` after eviction, or `delete_namespace`. A node deleting
+    // its own secret is not a control against that node; one that wants to keep it
+    // simply does not purge. Forward secrecy against a removed member comes from
+    // the rotation, which excludes the departed ACCOUNT and therefore every device
+    // it holds. That is untouched here.
+    //
+    // What this is, is hygiene: an installation that takes part in nothing should
+    // not sit on key material. Scoped to the last departure so it cannot break the
+    // namespaces that remain.
+    if NamespaceRepository::new(store)
+        .participating_namespaces()?
+        .is_empty()
+    {
+        crate::NodeDeviceRepository::new(store).delete()?;
+    }
     Ok(())
 }

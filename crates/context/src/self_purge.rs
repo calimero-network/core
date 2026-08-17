@@ -4,7 +4,7 @@
 //! and reacts to `OpEvent::TeeMemberRemoved` events that target THIS
 //! node's identity for the affected namespace — purging local state for
 //! the group (or, for namespace-root removals, the whole subtree) so
-//! that signing-key material, gov-op log, namespace identity, and
+//! that the group's key material, gov-op log, namespace identity, and
 //! membership-side metadata do not linger after a TEE eviction.
 //!
 //! # Role-scoped: TEE removals only
@@ -24,7 +24,17 @@
 //! pathway (the only admission op for the role is
 //! `MemberJoinedViaTeeAttestation`, which re-derives identity from a
 //! fresh attestation), so leaving on-disk key material around buys
-//! nothing and risks forward-secrecy hygiene. Hard-purge.
+//! nothing. Hard-purge.
+//!
+//! What "key material" means here is the group's AES *encryption* keys,
+//! not a group key: a node signs with one node-level key it keeps
+//! across every namespace, so there is nothing namespace-scoped to
+//! delete. Forward secrecy on the namespace's future writes comes from
+//! the rotation pipeline re-keying without the removed account, not
+//! from this purge — an evicted node deleting its own copy defends
+//! against nothing, since it could equally have declined to. The purge
+//! is hygiene: it stops an honest node from carrying keys it has no
+//! further use for.
 //!
 //! # Why a separate handler (not in the apply arm)
 //!
@@ -125,7 +135,7 @@ async fn run(store: Store, node_client: NodeClient) {
 
     // Startup reconcile sweep (#2721). Runs once, BEFORE the event loop, so a
     // TEE self-eviction whose cascade was interrupted (crash mid-cascade, or a
-    // prior signing-key purge that failed and left a retry anchor) is completed
+    // prior row purge that failed and left a retry anchor) is completed
     // on the way up.
     //
     // Marker-gated, NOT a role-blind full scan: the sweep enumerates the
@@ -158,7 +168,7 @@ async fn run(store: Store, node_client: NodeClient) {
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 // Missed events: the evicted membership row is already gone
                 // from the local store (apply committed before notify) while
-                // the signing-key + gov-op rows linger. There is no incidental
+                // the group-key + gov-op rows linger. There is no incidental
                 // event-driven recovery — an already-evicted identity receives
                 // no further removal events (a re-admitted TEE node derives a
                 // fresh attestation pubkey).
@@ -210,7 +220,7 @@ async fn run(store: Store, node_client: NodeClient) {
         if let Some((group_id, member)) = dispatch_target(&event) {
             // Process each eviction on its own detached task rather than inline.
             // A namespace-root hard-purge (subtree cascade + per-group
-            // signing-key deletes + gossipsub unsubscribe) can be slow; running
+            // group-key deletes + gossipsub unsubscribe) can be slow; running
             // it inline stalls `rx.recv()`, and a slow enough purge lets the
             // bounded broadcast channel lag and DROP subsequent events. A
             // dropped `TeeMemberRemoved` leaves un-purged key residue that the
@@ -315,7 +325,7 @@ pub(crate) fn decide_purge_action(
     // would also work; using `ns_id` just removes the apparent ambiguity
     // flagged in PR review.
     let self_pk = match NamespaceRepository::new(store).resolve_identity(&ns_id) {
-        Ok(Some((pk, _sk, _sender))) => pk,
+        Ok(Some((pk, _sk))) => pk,
         Ok(None) => {
             // Not our namespace; nothing to purge. The most common case
             // for the listener.
@@ -331,7 +341,7 @@ pub(crate) fn decide_purge_action(
         }
     };
 
-    // The event names an account; `self_pk` is this node's signing key. Resolve
+    // The event names an account; `self_pk` is this node's group key. Resolve
     // before comparing — the removal is about a PERSON, and this node is one of
     // their devices.
     let self_account =
@@ -365,13 +375,13 @@ pub(crate) fn decide_purge_action(
 
 /// Startup reconcile sweep (#2721): complete any TEE self-eviction purge
 /// that was marked but left unfinished (crash mid-cascade, or a prior
-/// signing-key purge failure that kept a retry anchor).
+/// row purge failure that kept a retry anchor).
 ///
 /// # Marker-gated, role-scoped — NOT a role-blind identity scan
 ///
 /// The sweep enumerates the durable **pending-self-purge markers**
 /// ([`PendingSelfPurgeRepository::iter_pending`]), NOT every stored
-/// `NamespaceIdentity`. A marker is written ONLY when the listener confirmed
+/// `NamespaceParticipation`. A marker is written ONLY when the listener confirmed
 /// (via [`decide_purge_action`]) a `TeeMemberRemoved` targeting THIS node's
 /// identity at the namespace root — so the marker is the role/intent gate
 /// the post-eviction store state can no longer reconstruct (the role row is
@@ -381,7 +391,7 @@ pub(crate) fn decide_purge_action(
 /// residue but MUST NOT be purged; both are excluded by construction because
 /// neither ever gets a marker:
 ///
-///   1. **Pending join** — the join path writes `NamespaceIdentity` BEFORE
+///   1. **Pending join** — the join path writes `NamespaceParticipation` BEFORE
 ///      the joiner's `GroupMember` row materializes (the row appears only
 ///      when this node's `MemberJoined` op applies). A restart mid-join is
 ///      identity-present / membership-absent. No `TeeMemberRemoved` fired, so
@@ -407,13 +417,13 @@ pub(crate) fn decide_purge_action(
 ///     WITHOUT purging.
 ///
 /// For each marked `ns_id` the sweep:
-///   * looks up THIS node's current `NamespaceIdentity`; if it's gone
+///   * looks up THIS node's current `NamespaceParticipation`; if it's gone
 ///     (already purged) ⇒ clear the stale marker, skip;
 ///   * re-checks [`namespace_needs_reconcile`]; if false (live member again)
 ///     ⇒ clear the stale marker, skip;
 ///   * if true (still evicted) ⇒ run [`purge_namespace_for_self`], which
 ///     clears the marker on a fully-successful purge (and leaves it on a
-///     signing-key failure so the next restart retries).
+///     row-purge failure so the next restart retries).
 ///
 /// # Scope
 ///
@@ -454,9 +464,9 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
                      — completing the evicted purge"
                 );
                 // Idempotent namespace-root purge. Clears the marker on full
-                // success; leaves it on a signing-key failure for the next
+                // success; leaves it on a row-purge failure for the next
                 // restart. Only count it as `reconciled` when it actually
-                // completed — a silent signing-key failure must not inflate
+                // completed — a silent row-purge failure must not inflate
                 // the counter (review nit).
                 if purge_namespace_for_self(store, node_client, ns_id).await {
                     reconciled += 1;
@@ -743,7 +753,7 @@ pub(crate) enum ReconcileDecision {
 ///     window; the function is otherwise still single-task (the startup sweep
 ///     enumerates and decides in one task, so the marker cannot vanish under
 ///     it today).
-///   * No current `NamespaceIdentity` ⇒ already purged ⇒
+///   * No current `NamespaceParticipation` ⇒ already purged ⇒
 ///     `ClearStaleMarker` (nothing left to do).
 ///   * Identity present AND [`namespace_needs_reconcile`] true (still
 ///     evicted) ⇒ `Purge`. This is the ONLY path that purges, and it
@@ -883,7 +893,7 @@ fn clear_marker(store: &Store, ns_id: &ContextGroupId) -> bool {
 /// A surviving DESCENDANT `GroupMember` row does NOT veto the purge. This is
 /// load-bearing — an earlier subtree walk (root OR any descendant) abandoned
 /// the purge whenever descendant residue survived, leaking the
-/// `NamespaceIdentity` + signing keys forever (cursor Bugbot HIGH):
+/// `NamespaceParticipation` + group keys forever (cursor Bugbot HIGH):
 ///
 ///   * A marker is written ONLY for a namespace-ROOT eviction
 ///     (`decide_purge_action` returns `PurgeAction::Namespace` exclusively when
@@ -986,7 +996,7 @@ async fn handle_member_removed(
             if let Err(e) = PendingSelfPurgeRepository::new(store).mark(&ns_id) {
                 // Non-fatal: the cascade still runs and, on full success,
                 // there is nothing to reconcile. The only thing lost on a
-                // mark failure is the crash-mid-cascade / signing-key-failure
+                // mark failure is the crash-mid-cascade / row-purge-failure
                 // retry anchor. Log it; do not abort the purge.
                 warn!(
                     namespace = %hex::encode(ns_id.to_bytes()),
@@ -1005,7 +1015,7 @@ async fn handle_member_removed(
 /// Subgroup-only purge: this node was kicked from a single subgroup but
 /// may still be a member of other groups under the same namespace.
 ///
-/// Drops the subgroup's local rows (members, signing keys, caps, etc.)
+/// Drops the subgroup's local rows (members, group keys, caps, etc.)
 /// but leaves the namespace identity and the gossipsub subscription
 /// intact — the rationale is the same as
 /// `handlers/leave_group.rs:38-40`: other memberships still need them.
@@ -1027,7 +1037,7 @@ async fn handle_member_removed(
 /// 2. Capture the parent so we can drop the parent/child edges (apply
 ///    has already removed our `GroupMember` row; the tree-edge keys
 ///    `GroupParentRef` + `GroupChildIndex` are separate columns).
-/// 3. `delete_group_local_rows` (members, signing keys, caps, meta,
+/// 3. `delete_group_local_rows` (members, group keys, caps, meta,
 ///    op-log, …).
 /// 4. Drop the parent/child edge keys for this group.
 ///
@@ -1042,14 +1052,13 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
     // re-trigger this code path, per ADR 0002 — the cascade has a retry
     // path via the next MemberRemoved, the single-subgroup case does
     // not). So we treat `delete_group_local_rows` as load-bearing
-    // (32-byte private signing-key material lives in there; leaking
-    // those is the actual forward-secrecy hazard) and demote everything
-    // else to best-effort. v6 review iterated on this and v6's earlier
-    // defensive aborts were over-aggressive: aborting on a context-
-    // unregister or parent-read error left the signing keys on disk,
-    // which is strictly worse than the orphaned `GroupContextIndex` or
-    // `GroupParentRef` rows the aborts were preventing (those are dead
-    // pointers; signing keys are private material). mdma#106 v7 review
+    // (the group's AES encryption keys live in there) and demote
+    // everything else to best-effort. v6 review iterated on this and
+    // v6's earlier defensive aborts were over-aggressive: aborting on a
+    // context-unregister or parent-read error left the group keys on
+    // disk, which is strictly worse than the orphaned
+    // `GroupContextIndex` or `GroupParentRef` rows the aborts were
+    // preventing (those are dead pointers; group keys decrypt data). mdma#106 v7 review
     // (meroreviewer).
 
     if let Err(e) = unregister_all_contexts(store, &gid) {
@@ -1058,7 +1067,7 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
             error = ?e,
             "self-purge: failed to unregister contexts before subgroup row purge \
              — context-index rows may persist as orphans pointing at the soon-to-be \
-             deleted group; continuing so signing keys still get purged"
+             deleted group; continuing so group keys still get purged"
         );
         record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::ContextCleanup);
     }
@@ -1070,14 +1079,14 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
                 group_id = %group_hex,
                 error = ?e,
                 "self-purge: failed to read parent edge — tree-edge cleanup will be skipped, \
-                 but signing-key purge proceeds"
+                 but the row purge proceeds"
             );
             record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::ContextCleanup);
             None
         });
 
     if let Err(e) = calimero_governance_store::delete_group_local_rows(store, &gid) {
-        // This IS the load-bearing step (signing-key material). If it
+        // This IS the load-bearing step (group key material). If it
         // fails, the subgroup-only branch has no retry surface, so we
         // surface at error level. Tree-edge cleanup is then skipped
         // because severing the parent/child link while rows remain
@@ -1087,7 +1096,7 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
             group_id = %group_hex,
             error = ?e,
             "self-purge: failed to drop local rows for evicted subgroup — \
-             signing-key material remains on disk (no retry surface for \
+             group key material remains on disk (no retry surface for \
              subgroup-only purge; the #2721 startup reconcile sweep does NOT \
              cover this case — it only completes namespaces that carry a \
              pending-self-purge marker, and the marker is written ONLY on a \
@@ -1096,7 +1105,7 @@ pub(crate) fn purge_subgroup_for_self(store: &Store, gid: ContextGroupId) {
              subgroup-only purge-failure residue is out of scope, tracked in \
              #2726; see ADR 0002)"
         );
-        record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::SigningKey);
+        record_purge_failure(PurgeBranch::Subgroup, PurgeFailureClass::GroupRows);
         return;
     }
 
@@ -1165,8 +1174,8 @@ fn delete_tree_edges(
 /// classes so the async wrapper can gate namespace finalization on the
 /// security-critical class ONLY (#2692).
 ///
-/// Rationale: dropping the `NamespaceIdentity` + unsubscribing is the
-/// forward-secrecy-completion step. It must be gated on the signing-key
+/// Rationale: dropping the `NamespaceParticipation` + unsubscribing is the
+/// purge-completion step. It must be gated on the row-purge
 /// purge, NOT on best-effort dead-pointer cleanup — a mere context-index
 /// or tree-edge orphan must not keep the namespace identity + gossipsub
 /// subscription alive forever (see [`should_finalize_namespace`]).
@@ -1175,14 +1184,14 @@ pub(crate) struct CascadeResult {
     /// Number of groups whose `delete_group_local_rows` call returned Ok.
     pub purged_groups: usize,
     /// True iff a `delete_group_local_rows` call (the security-critical
-    /// signing-key purge) failed for at least one group, OR the subtree
-    /// enumeration itself failed (so we cannot be sure all signing keys
-    /// were swept). When true, the `NamespaceIdentity` anchor + gossipsub
+    /// group-key purge) failed for at least one group, OR the subtree
+    /// enumeration itself failed (so we cannot be sure all group keys
+    /// were swept). When true, the `NamespaceParticipation` anchor + gossipsub
     /// subscription + pending-self-purge marker are deliberately KEPT so the
     /// marker-gated startup reconcile sweep (#2721, [`reconcile_sweep`])
     /// re-evaluates the marked namespace and retries on the next process
     /// start.
-    pub signing_key_purge_failed: bool,
+    pub row_purge_failed: bool,
     /// True iff a best-effort dead-pointer cleanup step failed
     /// (context-index unregister, parent-edge read, tree-edge delete, or
     /// the namespace-level state delete). Non-security: recorded for
@@ -1191,35 +1200,35 @@ pub(crate) struct CascadeResult {
 }
 
 /// Pure gating decision (#2692): may the namespace-root purge finalize —
-/// i.e. drop the `NamespaceIdentity` and unsubscribe from the gossipsub
+/// i.e. drop the `NamespaceParticipation` and unsubscribe from the gossipsub
 /// topic — given the security-critical failure flag?
 ///
-/// Gated on `signing_key_purge_failed` ONLY. If all signing keys are
-/// gone (`signing_key_purge_failed == false`) the forward-secrecy
-/// objective is met, so we finalize even if some best-effort context /
+/// Gated on `row_purge_failed` ONLY. If every group's rows are gone
+/// (`row_purge_failed == false`) the purge has done its job, so we
+/// finalize even if some best-effort context /
 /// tree-edge cleanup failed — those orphans are non-security dead
 /// pointers, and leaving the namespace identity + subscription alive on
-/// such a failure is strictly worse. When the signing-key purge itself
+/// such a failure is strictly worse. When the row purge itself
 /// failed, we KEEP the identity + subscription + pending-self-purge marker as
 /// a retry anchor for the marker-gated startup reconcile sweep (#2721). There
 /// is no EVENT-driven retry (an evicted identity never gets a follow-up
 /// event); recovery comes from the sweep re-running this path on the next
 /// process start for the still-marked, still-evicted namespace.
-pub(crate) fn should_finalize_namespace(signing_key_purge_failed: bool) -> bool {
-    !signing_key_purge_failed
+pub(crate) fn should_finalize_namespace(row_purge_failed: bool) -> bool {
+    !row_purge_failed
 }
 
 /// Store-side cascade for a namespace-root purge: walk the subtree
 /// children-first, drop each group's local rows, then (gated on the
-/// signing-key purge) drop namespace-level state.
+/// row purge) drop namespace-level state.
 ///
 /// Two-class failure tracking (#2692):
 ///
-/// * `signing_key_purge_failed` — set ONLY when `delete_group_local_rows`
+/// * `row_purge_failed` — set ONLY when `delete_group_local_rows`
 ///   fails (or the subtree enumeration fails, so we can't be sure the
 ///   sweep was complete). This is the security-critical, load-bearing
-///   step: private signing-key material lives in those rows. When set, we
-///   KEEP the `NamespaceIdentity` anchor (and the caller keeps the gossipsub
+///   step: the group's encryption keys live in those rows. When set, we
+///   KEEP the `NamespaceParticipation` anchor (and the caller keeps the gossipsub
 ///   subscription + the pending-self-purge marker) so the marker-gated
 ///   startup reconcile sweep (#2721, [`reconcile_sweep`]) re-evaluates the
 ///   marked namespace and retries on the next process start. There is no
@@ -1229,8 +1238,8 @@ pub(crate) fn should_finalize_namespace(signing_key_purge_failed: bool) -> bool 
 ///   cleanup step fails (context-index unregister, parent-edge read,
 ///   tree-edge delete, or the namespace-level state delete). Non-security:
 ///   the orphaned rows point at soon-to-be / now-deleted groups. This does
-///   NOT block namespace finalization — if all signing keys are gone the
-///   forward-secrecy objective is met, so we drop the `NamespaceIdentity`
+///   NOT block namespace finalization — if every group's rows are gone the
+///   forward-secrecy objective is met, so we drop the `NamespaceParticipation`
 ///   and unsubscribe regardless. The residual dead pointers in that rare
 ///   store-error case are an accepted tradeoff, far better than leaving
 ///   the namespace identity + subscription alive on a non-security
@@ -1242,7 +1251,7 @@ pub(crate) fn should_finalize_namespace(signing_key_purge_failed: bool) -> bool 
 /// Sync: store operations only. Split out so tests can drive the
 /// cascade without standing up a `NodeClient` mock; the async wrapper
 /// [`purge_namespace_for_self`] adds the gossipsub unsubscribe on top,
-/// gated via [`should_finalize_namespace`] on `signing_key_purge_failed`
+/// gated via [`should_finalize_namespace`] on `row_purge_failed`
 /// ONLY.
 ///
 /// Mirrors the orchestration in `handlers/delete_namespace.rs:68-93`
@@ -1262,20 +1271,20 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
                 error = ?e,
                 "self-purge: failed to enumerate subtree — local state may persist"
             );
-            // Can't enumerate the subtree → can't be sure all signing keys
-            // were swept. Treat as a signing-key failure: keep the identity
+            // Can't enumerate the subtree → can't be sure every group's
+            // rows were swept. Treat as a row failure: keep the identity
             // anchor + subscription for the reconcile sweep (#2721).
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::SigningKey);
+            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::GroupRows);
             return CascadeResult {
                 purged_groups: 0,
-                signing_key_purge_failed: true,
+                row_purge_failed: true,
                 context_cleanup_failed: false,
             };
         }
     };
 
     let mut purged_groups = 0usize;
-    let mut signing_key_purge_failed = false;
+    let mut row_purge_failed = false;
     let mut context_cleanup_failed = false;
     let all_groups = payload
         .descendant_groups
@@ -1286,7 +1295,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
     // Per-group cleanup sequence mirrors `handlers/delete_namespace.rs:74-90`:
     //   1. unregister contexts (`GroupContextIndex` + `ContextGroupRef`),
     //   2. capture parent edge,
-    //   3. delete_group_local_rows (members, signing keys, caps, meta, …),
+    //   3. delete_group_local_rows (members, group keys, caps, meta, …),
     //   4. drop the parent/child tree-edge keys.
     // Steps 1, 2 and 4 were missing in v1; mdma#106-review surfaced that
     // context-index + tree-edge rows persisted after eviction.
@@ -1294,9 +1303,9 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
         let group_hex = hex::encode(gid.to_bytes());
 
         // Same priority order as the subgroup path: `delete_group_local_rows`
-        // is load-bearing (signing keys); everything else is best-effort.
+        // is load-bearing (group keys); everything else is best-effort.
         // Earlier defensive `continue`s on context-unregister or
-        // parent-read failure traded a signing-key leak for an
+        // parent-read failure traded a group-key leak for an
         // orphaned-pointer leak; v7 review flipped this back. Tree-edge
         // cleanup still gates on row-delete success because severing
         // the parent link while rows remain produces an unreachable-
@@ -1322,7 +1331,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
                     group_id = %group_hex,
                     error = ?e,
                     "self-purge: failed to read parent edge in cascade — \
-                     tree-edge cleanup will be skipped, signing-key purge proceeds"
+                     tree-edge cleanup will be skipped, the row purge proceeds"
                 );
                 context_cleanup_failed = true;
                 record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
@@ -1330,8 +1339,8 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
             });
 
         if let Err(e) = calimero_governance_store::delete_group_local_rows(store, &gid) {
-            // Security-critical failure: private signing-key material
-            // remains on disk. Set `signing_key_purge_failed` so the
+            // Security-critical failure: the group's encryption keys
+            // remain on disk. Set `row_purge_failed` so the
             // namespace identity + gossipsub subscription + pending-self-purge
             // marker are KEPT as a retry anchor for the marker-gated startup
             // reconcile sweep (#2721, `reconcile_sweep`), which re-evaluates
@@ -1343,12 +1352,12 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
                 group_id = %group_hex,
                 error = ?e,
                 "self-purge: failed to drop local rows for one group — \
-                 signing-key material remains; skipping tree-edge cleanup; \
+                 group key material remains; skipping tree-edge cleanup; \
                  keeping namespace identity + pending-self-purge marker for the \
                  startup reconcile sweep (#2721)"
             );
-            signing_key_purge_failed = true;
-            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::SigningKey);
+            row_purge_failed = true;
+            record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::GroupRows);
             continue;
         }
 
@@ -1368,15 +1377,15 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
         purged_groups += 1;
     }
 
-    // Finalize the namespace (drop `NamespaceIdentity` + gov-op log) gated
-    // on the SIGNING-KEY purge ONLY (#2692). If all signing keys are gone
+    // Finalize the namespace (drop `NamespaceParticipation` + gov-op log) gated
+    // on the ROW purge ONLY (#2692). If every group's rows are gone
     // the forward-secrecy objective is met, so we complete the namespace
     // cleanup even if some best-effort context / tree-edge cleanup failed.
-    // Only a signing-key purge failure keeps the identity row (and the
+    // Only a row purge failure keeps the identity row (and the
     // pending-self-purge marker) in place — as a retry anchor for the
     // marker-gated startup reconcile sweep (#2721).
     //
-    // IMPORTANT — there is no EVENT-driven retry of a signing-key failure.
+    // IMPORTANT — there is no EVENT-driven retry of a row-purge failure.
     // The listener dispatches only on `TeeMemberRemoved` (not
     // `MemberRemoved`), and an already-evicted identity receives no further
     // removal events anyway (a re-admitted TEE node derives a fresh
@@ -1395,9 +1404,9 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
     // already-orphaned key material on this node's own disk, and only
     // arises on a store-level error during a per-group delete. mdma#106
     // review (cursor); #2721.
-    if should_finalize_namespace(signing_key_purge_failed) {
+    if should_finalize_namespace(row_purge_failed) {
         if let Err(e) = calimero_governance_store::delete_namespace_local_state(store, &ns_id) {
-            // Best-effort: the security-critical signing keys are already
+            // Best-effort: the security-critical group keys are already
             // gone, so this is a non-security dead-pointer residue. Record
             // it as a context-cleanup failure and still finalize (the
             // caller unsubscribes) — leaving the identity + subscription
@@ -1406,7 +1415,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
                 namespace = %ns_hex,
                 error = ?e,
                 "self-purge: failed to drop namespace-level state — non-security \
-                 residue (signing keys already purged); finalizing anyway"
+                 residue (group keys already purged); finalizing anyway"
             );
             context_cleanup_failed = true;
             record_purge_failure(PurgeBranch::Namespace, PurgeFailureClass::ContextCleanup);
@@ -1415,8 +1424,8 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
         warn!(
             namespace = %ns_hex,
             purged_groups,
-            "self-purge: signing-key purge failed for at least one group — \
-             NamespaceIdentity + signing-key residue + pending-self-purge marker left on \
+            "self-purge: row purge failed for at least one group — \
+             NamespaceParticipation + group-key residue + pending-self-purge marker left on \
              disk with no EVENT-driven retry (FS still held by key rotation); the \
              marker-gated startup reconcile sweep (#2721) completes it on the next restart"
         );
@@ -1424,7 +1433,7 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
 
     CascadeResult {
         purged_groups,
-        signing_key_purge_failed,
+        row_purge_failed,
         context_cleanup_failed,
     }
 }
@@ -1433,25 +1442,25 @@ pub(crate) fn cascade_namespace_state(store: &Store, ns_id: ContextGroupId) -> C
 /// then (on full success) unsubscribes from the namespace gossipsub topic
 /// and clears the pending-self-purge marker.
 ///
-/// Returns `true` iff the purge FULLY completed — i.e. the signing-key purge
-/// succeeded (`should_finalize_namespace(!signing_key_purge_failed)`), which
-/// is exactly when the `NamespaceIdentity` + subscription were dropped and
-/// the marker is safe to clear. Returns `false` when the signing-key purge
+/// Returns `true` iff the purge FULLY completed — i.e. the row purge
+/// succeeded (`should_finalize_namespace(!row_purge_failed)`), which
+/// is exactly when the `NamespaceParticipation` + subscription were dropped and
+/// the marker is safe to clear. Returns `false` when the row purge
 /// failed, in which case the marker is deliberately LEFT so the next restart's
 /// reconcile retries. (This return value also fixes the earlier
 /// "reconciled counter increments on silent failure" review nit — callers can
 /// now distinguish a completed purge from a retained-residue one.)
 ///
-/// The unsubscribe is **gated on the signing-key purge ONLY** (#2692, via
+/// The unsubscribe is **gated on the row purge ONLY** (#2692, via
 /// [`should_finalize_namespace`]) — exactly the same gate the cascade
-/// applies to dropping `NamespaceIdentity`. If all signing keys are gone
+/// applies to dropping `NamespaceParticipation`. If every group's rows are gone
 /// the forward-secrecy objective is met, so we unsubscribe even if some
 /// best-effort context / tree-edge cleanup failed. Only when the
-/// signing-key purge itself failed do we KEEP the subscription AND the marker.
+/// row purge itself failed do we KEEP the subscription AND the marker.
 ///
 /// NOTE on what now drives completion: the marker-gated startup reconcile
 /// sweep (`reconcile_sweep`, #2721) re-runs this purge on the next process
-/// start for any namespace whose marker survives a signing-key failure — it
+/// start for any namespace whose marker survives a row-purge failure — it
 /// does NOT depend on the gossipsub subscription (it reads on-disk markers +
 /// rows, not the wire). So the retained subscription is no longer load-bearing
 /// for retry. We keep it anyway as a deliberately-narrow choice: dropping it
@@ -1468,7 +1477,7 @@ async fn purge_namespace_for_self(
     let ns_hex = hex::encode(ns_id.to_bytes());
     let result = cascade_namespace_state(store, ns_id);
 
-    if should_finalize_namespace(result.signing_key_purge_failed) {
+    if should_finalize_namespace(result.row_purge_failed) {
         // Drop the gossipsub subscription. Best-effort; networking
         // failure here doesn't leave inconsistent on-disk state.
         if let Err(e) = node_client.unsubscribe_namespace(ns_id.to_bytes()).await {
@@ -1487,7 +1496,7 @@ async fn purge_namespace_for_self(
             namespace = %ns_hex,
             purged_groups = result.purged_groups,
             context_cleanup_failed = result.context_cleanup_failed,
-            "self-purge: completed namespace cascade after eviction (signing keys purged); \
+            "self-purge: completed namespace cascade after eviction (group keys purged); \
              unsubscribed and cleared pending-self-purge marker even if best-effort context \
              cleanup had failures"
         );
@@ -1499,7 +1508,7 @@ async fn purge_namespace_for_self(
         info!(
             namespace = %ns_hex,
             purged_groups = result.purged_groups,
-            "self-purge: signing-key purge failed — keeping namespace identity + gossipsub \
+            "self-purge: row purge failed — keeping namespace identity + gossipsub \
              subscription + pending-self-purge marker; the startup reconcile sweep (#2721) \
              retries on the next restart"
         );
@@ -1533,7 +1542,6 @@ mod tests {
 
     use calimero_governance_store::{
         GroupKeyring, MembershipRepository, MetaRepository, PendingSelfPurgeRepository,
-        SigningKeysRepository,
     };
 
     use super::*;
@@ -1555,7 +1563,7 @@ mod tests {
     }
 
     /// Set up a namespace root that this node is a member of, with a
-    /// stored namespace identity + per-group signing-key material.
+    /// stored namespace identity + per-group group-key material.
     /// Returns `(store, ns_id, self_pk)`.
     fn seed_namespace_self_member() -> (Store, ContextGroupId, PublicKey) {
         let mut rng = OsRng;
@@ -1576,17 +1584,16 @@ mod tests {
                 Some([0xBB; 32]),
             )
             .unwrap();
-        // `add_member_with_keys` writes the per-member private/sender
-        // pair into `GroupMember.{private_key, sender_key}`; the
-        // `GroupSigningKey` row is a separate column written by
-        // `SigningKeysRepository::store_key`. The forward-secrecy hygiene
-        // we test for is on `GroupSigningKey` (where
-        // `delete_all_for_group` sweeps it), so seed that row explicitly.
-        SigningKeysRepository::new(&store)
-            .store_key(&ns_id, &self_pk, &[0xEE; 32])
+        // `add_member_with_keys` writes the per-member private/sender pair
+        // into `GroupMember.{private_key, sender_key}`. What the purge is
+        // for is the group's AES *encryption* key, which lives in its own
+        // `GroupKeyring` row and is what `delete_group_local_rows` sweeps —
+        // so seed that row explicitly.
+        GroupKeyring::new(&store, ns_id)
+            .store_key(&[0xEE; 32])
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .store_identity(&ns_id, &self_pk, &[0x11; 32])
             .unwrap();
 
         // Sanity: pre-condition state landed.
@@ -1595,11 +1602,11 @@ mod tests {
             "ns meta should exist after seed"
         );
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_some(),
-            "ns signing key should exist after seed"
+            "ns group key should exist after seed"
         );
         assert!(
             NamespaceRepository::new(&store)
@@ -1640,7 +1647,7 @@ mod tests {
             )
             .unwrap();
         NamespaceRepository::new(&store)
-            .store_identity(&ns_id, &self_pk, &[0xAA; 32], &[0xBB; 32])
+            .store_identity(&ns_id, &self_pk, &[0x11; 32])
             .unwrap();
 
         // Nested subgroup under the namespace root.
@@ -1660,16 +1667,16 @@ mod tests {
             .nest(&ns_id, &sub_id)
             .unwrap();
 
-        // Seed a signing key on BOTH groups so `delete_group_local_rows`
+        // Seed a group key on BOTH groups so `delete_group_local_rows`
         // exercises the signing-key delete (not just the AES-key delete) for
         // each, symmetric with the multi-group cascade test's seeding. (The
         // `purged_groups == 2` count itself comes from both groups having rows
         // to drop; these seeds make the per-group signing-key delete path real.)
-        SigningKeysRepository::new(&store)
-            .store_key(&ns_id, &self_pk, &[0xEEu8; 32])
+        GroupKeyring::new(&store, ns_id)
+            .store_key(&[0xEE; 32])
             .unwrap();
-        SigningKeysRepository::new(&store)
-            .store_key(&sub_id, &self_pk, &[0xFFu8; 32])
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0xFF; 32])
             .unwrap();
 
         // Seed an AES group encryption key on BOTH groups.
@@ -1710,18 +1717,18 @@ mod tests {
             "subgroup AES group encryption key MUST be purged"
         );
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
-            "root signing key MUST be purged"
+            "root group key MUST be purged"
         );
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&sub_id, &self_pk)
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
-            "subgroup signing key MUST be purged"
+            "subgroup group key MUST be purged"
         );
     }
 
@@ -1775,7 +1782,7 @@ mod tests {
         // un-cascaded RESIDUE, not live membership. It MUST NOT block the
         // reconcile — the predicate is `true` (still evicted) so the cascade
         // sweeps the residue. The old subtree walk wrongly returned `false`
-        // here, abandoning the purge and leaking identity + signing keys.
+        // here, abandoning the purge and leaking identity + group keys.
         let (store, ns_id, self_pk) = seed_namespace_self_member();
         // Remove the root membership the seed added (the root eviction).
         MembershipRepository::new(&store)
@@ -1819,7 +1826,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_cascade_clears_signing_keys_and_identity_for_residue() {
+    fn reconcile_cascade_clears_group_keys_and_identity_for_residue() {
         // End-to-end store proof: for evicted residue, running the purge path
         // the sweep invokes (`cascade_namespace_state`) clears the signing
         // keys AND the namespace identity — completing the abandoned purge.
@@ -1828,33 +1835,32 @@ mod tests {
             .remove_member(&ns_id, &crate::test_support::account_for(&self_pk))
             .unwrap();
 
-        // Precondition: the residue (identity + signing key) is present and
+        // Precondition: the residue (identity + group key) is present and
         // the predicate flags it.
         assert!(namespace_needs_reconcile(&store, ns_id, self_pk).unwrap());
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&ns_id, &self_pk)
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
             .unwrap()
             .is_some());
 
         let result = cascade_namespace_state(&store, ns_id);
         assert!(
-            !result.signing_key_purge_failed,
-            "reconcile cascade on a clean store must fully purge signing keys"
+            !result.row_purge_failed,
+            "reconcile cascade on a clean store must fully purge group keys"
         );
 
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
-            "signing-key material MUST be cleared by the reconcile cascade"
+            "group-key material MUST be cleared by the reconcile cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be cleared by the reconcile cascade"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be cleared by the reconcile cascade"
         );
     }
 
@@ -1869,13 +1875,13 @@ mod tests {
             !namespace_needs_reconcile(&store, ns_id, self_pk).unwrap(),
             "healthy member must be gated out before any cascade runs"
         );
-        // Identity + signing key untouched (no purge happened).
+        // Identity + group key untouched (no purge happened).
         assert!(NamespaceRepository::new(&store)
             .identity_record(&ns_id)
             .unwrap()
             .is_some());
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&ns_id, &self_pk)
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
             .unwrap()
             .is_some());
     }
@@ -1953,8 +1959,8 @@ mod tests {
     /// residue, NOT live membership — MUST be purged, not abandoned. The old
     /// subtree walk in `namespace_needs_reconcile` read the descendant row as
     /// "re-admitted" and returned `ClearStaleMarker`, leaking the
-    /// `NamespaceIdentity` + signing keys forever. We assert `reconcile_decision`
-    /// returns `Purge`, then drive the cascade and assert the signing keys +
+    /// `NamespaceParticipation` + group keys forever. We assert `reconcile_decision`
+    /// returns `Purge`, then drive the cascade and assert the group keys +
     /// identity are cleared.
     #[test]
     fn reconcile_purges_namespace_root_eviction_despite_surviving_descendant_residue() {
@@ -1989,8 +1995,8 @@ mod tests {
             .unwrap();
 
         // Precondition: the residue (identity + ns-root signing key) is present.
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&ns_id, &self_pk)
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
             .unwrap()
             .is_some());
         assert!(NamespaceRepository::new(&store)
@@ -2011,22 +2017,21 @@ mod tests {
         // Drive the cascade the sweep would run and prove the leak is closed.
         let result = cascade_namespace_state(&store, ns_id);
         assert!(
-            !result.signing_key_purge_failed,
-            "cascade on a clean store must fully purge signing keys"
+            !result.row_purge_failed,
+            "cascade on a clean store must fully purge group keys"
         );
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
-            "ns-root signing-key material MUST be cleared by the reconcile cascade"
+            "ns-root group-key material MUST be cleared by the reconcile cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be cleared by the reconcile cascade"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be cleared by the reconcile cascade"
         );
     }
 
@@ -2057,8 +2062,8 @@ mod tests {
             "no marker at decision time MUST ClearStaleMarker (TOCTOU guard), never purge"
         );
         // And nothing was purged.
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&ns_id, &self_pk)
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
             .unwrap()
             .is_some());
         assert!(NamespaceRepository::new(&store)
@@ -2076,7 +2081,7 @@ mod tests {
     /// that tells them apart. The full sweep visits markers only, so an
     /// unmarked namespace is never even handed to `reconcile_decision`. We
     /// prove the gate holds at both layers: (a) the namespace is absent from
-    /// `iter_pending`, so the sweep never visits it; and (b) the signing keys
+    /// `iter_pending`, so the sweep never visits it; and (b) the group keys
     /// + identity remain intact (no purge happened).
     #[test]
     fn reconcile_does_not_purge_unmarked_identity_residue() {
@@ -2104,15 +2109,15 @@ mod tests {
             "an unmarked namespace MUST NOT appear in the reconcile's pending set"
         );
 
-        // Gate (b): signing keys + identity are untouched — the soft-leave /
+        // Gate (b): group keys + identity are untouched — the soft-leave /
         // pending-join invariant is preserved. (No reconcile path ran; we
         // assert the residue the sweep would have wrongly purged is intact.)
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_some(),
-            "signing keys MUST remain for an unmarked identity (soft-leave / pending-join)"
+            "group keys MUST remain for an unmarked identity (soft-leave / pending-join)"
         );
         assert!(
             NamespaceRepository::new(&store)
@@ -2145,7 +2150,7 @@ mod tests {
 
         let result = cascade_namespace_state(&store, ns_id);
         assert!(
-            should_finalize_namespace(result.signing_key_purge_failed),
+            should_finalize_namespace(result.row_purge_failed),
             "clean cascade must finalize so the marker is cleared"
         );
         // This is the clear the async wrapper performs on full success.
@@ -2158,14 +2163,13 @@ mod tests {
             "marker MUST be cleared after a fully-successful dispatch-path purge"
         );
         // And the residue is gone.
-        assert!(SigningKeysRepository::new(&store)
-            .get_key(&ns_id, &self_pk)
+        assert!(GroupKeyring::new(&store, ns_id)
+            .load_current_key()
             .unwrap()
             .is_none());
-        assert!(NamespaceRepository::new(&store)
-            .identity_record(&ns_id)
-            .unwrap()
-            .is_none());
+        assert!(!NamespaceRepository::new(&store)
+            .participates_in(&ns_id)
+            .unwrap());
     }
 
     #[test]
@@ -2209,7 +2213,7 @@ mod tests {
     }
 
     #[test]
-    fn purge_subgroup_drops_signing_key_but_leaves_namespace_identity() {
+    fn purge_subgroup_drops_group_key_but_leaves_namespace_identity() {
         // Subgroup-only purge: only the kicked-from group's rows should
         // go. Namespace identity + any other groups under the same
         // namespace stay (rationale: we may still be in them — same as
@@ -2228,8 +2232,8 @@ mod tests {
                 Some([0xDD; 32]),
             )
             .unwrap();
-        SigningKeysRepository::new(&store)
-            .store_key(&sub_id, &self_pk, &[0xFF; 32])
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0xFF; 32])
             .unwrap();
         // Seed the parent edge so the purge path exercises the
         // `delete_tree_edges` branch. Without this, `parent` resolves
@@ -2250,11 +2254,11 @@ mod tests {
                 .unwrap();
         }
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&sub_id, &self_pk)
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
                 .unwrap()
                 .is_some(),
-            "subgroup signing key should exist before purge"
+            "subgroup group key should exist before purge"
         );
         // Seed an AES group encryption key on the subgroup so we can assert
         // the subgroup-ONLY leave path deletes it (forward-secrecy).
@@ -2288,11 +2292,11 @@ mod tests {
             );
         }
 
-        // Post: subgroup signing key gone, subgroup meta gone, but
+        // Post: subgroup group key gone, subgroup meta gone, but
         // namespace identity + the ns-root signing key intact.
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&sub_id, &self_pk)
+            GroupKeyring::new(&store, sub_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
             "subgroup signing key MUST be purged"
@@ -2316,19 +2320,19 @@ mod tests {
             "namespace identity MUST NOT be touched by a subgroup-only purge"
         );
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_some(),
-            "namespace-root signing key MUST NOT be touched by a subgroup-only purge"
+            "namespace-root group key MUST NOT be touched by a subgroup-only purge"
         );
     }
 
     #[test]
-    fn cascade_namespace_state_drops_everything_including_signing_keys() {
+    fn cascade_namespace_state_drops_everything_including_group_keys() {
         // Namespace-root purge: cascade through every group's rows then
         // drop namespace-level state (identity, gov ops, head).
-        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        let (store, ns_id, _self_pk) = seed_namespace_self_member();
 
         let result = cascade_namespace_state(&store, ns_id);
 
@@ -2342,8 +2346,8 @@ mod tests {
             result.purged_groups
         );
         assert!(
-            !result.signing_key_purge_failed,
-            "happy-path cascade on a clean fixture must not report a signing-key failure"
+            !result.row_purge_failed,
+            "happy-path cascade on a clean fixture must not report a row-purge failure"
         );
         assert!(
             !result.context_cleanup_failed,
@@ -2351,22 +2355,35 @@ mod tests {
         );
 
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
-            "namespace-root signing key MUST be purged (forward-secrecy hygiene)"
+            "namespace-root group key MUST be purged (forward-secrecy hygiene)"
         );
         assert!(
             MetaRepository::new(&store).load(&ns_id).unwrap().is_none(),
             "namespace-root meta MUST be purged"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be purged on a namespace-root cascade"
+        );
+        // Read the singleton directly, not through `identity_record` — that one is
+        // gated on participation and now correctly answers `None` here. The point
+        // being asserted is about the KEY, which is node-level: every other
+        // namespace this node belongs to signs with it, so a purge scoped to one
+        // namespace must not take it. Forward secrecy comes from dropping the
+        // keyring and the device's agreement secret; a group key decrypts nothing.
+        assert!(
+            store
+                .handle()
+                .get(&calimero_store::key::NodeIdentity::new())
                 .unwrap()
-                .is_none(),
-            "namespace identity MUST be purged on a namespace-root cascade"
+                .is_some(),
+            "the node's signing key MUST survive a single namespace's purge"
         );
     }
 
@@ -2398,8 +2415,8 @@ mod tests {
                     Some([0xDD; 32]),
                 )
                 .unwrap();
-            SigningKeysRepository::new(&store)
-                .store_key(&sub, &self_pk, &[0xFF; 32])
+            GroupKeyring::new(&store, sub)
+                .store_key(&[0xFF; 32])
                 .unwrap();
         }
         // Wire the tree edges the way the apply path does. `nest` writes
@@ -2436,8 +2453,8 @@ mod tests {
             result.purged_groups
         );
         assert!(
-            !result.signing_key_purge_failed,
-            "happy-path multi-group cascade must not report a signing-key failure"
+            !result.row_purge_failed,
+            "happy-path multi-group cascade must not report a row-purge failure"
         );
         assert!(
             !result.context_cleanup_failed,
@@ -2449,11 +2466,11 @@ mod tests {
         for gid in [ns_id, mid_id, leaf_id] {
             let gid_hex = hex::encode(gid.to_bytes());
             assert!(
-                SigningKeysRepository::new(&store)
-                    .get_key(&gid, &self_pk)
+                GroupKeyring::new(&store, gid)
+                    .load_current_key()
                     .unwrap()
                     .is_none(),
-                "signing key for {gid_hex} MUST be purged across the whole subtree"
+                "group key for {gid_hex} MUST be purged across the whole subtree"
             );
             assert!(
                 MetaRepository::new(&store).load(&gid).unwrap().is_none(),
@@ -2461,11 +2478,10 @@ mod tests {
             );
         }
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be purged once the full subtree cascade succeeds"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be purged once the full subtree cascade succeeds"
         );
     }
 
@@ -2538,8 +2554,8 @@ mod tests {
                 Some([0xDD; 32]),
             )
             .unwrap();
-        SigningKeysRepository::new(&store)
-            .store_key(&sub_id, &self_pk, &[0xFF; 32])
+        GroupKeyring::new(&store, sub_id)
+            .store_key(&[0xFF; 32])
             .unwrap();
         // Make the subgroup a child of the namespace root so
         // `NamespaceRepository::resolve` finds the namespace. Mirrors
@@ -2631,31 +2647,30 @@ mod tests {
         // itself an idempotent batched delete, so it returns Ok even on
         // an already-empty group. We assert on the end state (which is
         // what the user cares about), not on the counter.
-        let (store, ns_id, self_pk) = seed_namespace_self_member();
+        let (store, ns_id, _self_pk) = seed_namespace_self_member();
 
         let _ = cascade_namespace_state(&store, ns_id);
         // Second call: must not panic; must not error per-group.
         let _ = cascade_namespace_state(&store, ns_id);
 
         assert!(
-            SigningKeysRepository::new(&store)
-                .get_key(&ns_id, &self_pk)
+            GroupKeyring::new(&store, ns_id)
+                .load_current_key()
                 .unwrap()
                 .is_none(),
-            "namespace-root signing key remains purged after second cascade"
+            "namespace-root group key remains purged after second cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity remains purged after second cascade"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation remains purged after second cascade"
         );
     }
 
     // --- Namespace-finalization gating (#2692) --------------------------
     //
-    // The gating decision — "may we drop NamespaceIdentity + unsubscribe?"
+    // The gating decision — "may we drop NamespaceParticipation + unsubscribe?"
     // — is extracted into the pure `should_finalize_namespace` helper so it
     // is unit-testable without injecting a `delete_group_local_rows`
     // failure (which the InMemoryDB can't readily simulate). These cover
@@ -2665,22 +2680,22 @@ mod tests {
     #[test]
     fn context_cleanup_failure_only_still_finalizes_namespace() {
         // (a) A best-effort context/tree-edge cleanup failure must NOT
-        // block finalization: if signing keys are gone, drop the identity
+        // block finalization: if group keys are gone, drop the identity
         // and unsubscribe.
         assert!(
             should_finalize_namespace(false),
-            "context-cleanup-only failure (signing_key_purge_failed=false) MUST finalize \
+            "context-cleanup-only failure (row_purge_failed=false) MUST finalize \
              the namespace and proceed to unsubscribe"
         );
     }
 
     #[test]
-    fn signing_key_failure_keeps_namespace_identity_and_subscription() {
-        // (b) A signing-key purge failure MUST keep the identity (retry
+    fn row_purge_failure_keeps_namespace_identity_and_subscription() {
+        // (b) A row purge failure MUST keep the identity (retry
         // anchor for #2721) and skip the unsubscribe.
         assert!(
             !should_finalize_namespace(true),
-            "signing-key purge failure (signing_key_purge_failed=true) MUST keep the \
+            "row purge failure (row_purge_failed=true) MUST keep the \
              namespace identity and skip the unsubscribe"
         );
     }
@@ -2689,33 +2704,32 @@ mod tests {
     fn cascade_with_context_cleanup_failure_drops_identity() {
         // End-to-end store proof for case (a): seed a namespace whose
         // subtree walk yields a child whose context-unregister will fail,
-        // while the signing-key purge succeeds. The namespace identity MUST
-        // still be dropped because `signing_key_purge_failed == false`.
+        // while the row purge succeeds. The namespace identity MUST
+        // still be dropped because `row_purge_failed == false`.
         //
         // We can't inject a `delete_group_local_rows` failure with the
         // InMemoryDB, but the inverse — a clean run where only best-effort
         // steps are exercised — already proves the gate finalizes when
-        // signing keys are gone (covered by the happy-path cascade tests).
+        // group keys are gone (covered by the happy-path cascade tests).
         // To exercise the `context_cleanup_failed == true` path concretely
         // we rely on the pure helper above; here we assert the structural
-        // invariant that a successful signing-key purge always reports
-        // `signing_key_purge_failed == false` so the gate opens.
+        // invariant that a successful row purge always reports
+        // `row_purge_failed == false` so the gate opens.
         let (store, ns_id, _self_pk) = seed_namespace_self_member();
         let result = cascade_namespace_state(&store, ns_id);
         assert!(
-            !result.signing_key_purge_failed,
-            "a clean cascade reports no signing-key failure, so the namespace finalizes"
+            !result.row_purge_failed,
+            "a clean cascade reports no row-purge failure, so the namespace finalizes"
         );
         assert!(
-            should_finalize_namespace(result.signing_key_purge_failed),
+            should_finalize_namespace(result.row_purge_failed),
             "gate must open for a clean cascade"
         );
         assert!(
-            NamespaceRepository::new(&store)
-                .identity_record(&ns_id)
-                .unwrap()
-                .is_none(),
-            "namespace identity MUST be dropped when the signing-key purge succeeded"
+            !NamespaceRepository::new(&store)
+                .participates_in(&ns_id)
+                .unwrap(),
+            "participation MUST be dropped when the row purge succeeded"
         );
     }
 
@@ -2889,7 +2903,7 @@ mod tests {
             )
             .expect("add owner admin");
         NamespaceRepository::new(&store)
-            .store_identity(&ns_gid, &member_pk, member_sk.as_bytes(), &[0u8; 32])
+            .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
             .expect("store our ns identity");
 
         // The stranded subgroup + its key + the context it registers.

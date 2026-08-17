@@ -13,6 +13,8 @@
 //! adding one would silently drag `cascade_dispatch_e2e` back behind the
 //! feature gate.
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -71,12 +73,27 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
         // `MessageId` is already in scope from the module-level import; only
         // `NetworkMessage` needs bringing in here for the match arms below.
         use calimero_network_primitives::messages::NetworkMessage;
-        // The admission publish path only samples mesh/peer state and
-        // best-effort-publishes. Resolve those `outcome` oneshots with a
-        // benign default so the awaiting client future completes; drop every
-        // other variant (none are reached by the paths under test, and a
-        // dropped receiver simply surfaces `MailboxError::Closed`). `let _ =`
-        // tolerates a caller that already stopped awaiting.
+        use calimero_network_primitives::network_status::{
+            AutonatEntry, NetworkStatusSnapshot, ReachabilityKind,
+        };
+        // EVERY variant is answered, and the match is deliberately exhaustive.
+        //
+        // `NetworkClient` resolves most of these with
+        // `.expect("Mailbox not to be dropped")`, so dropping a sender does not
+        // surface as a tidy `MailboxError` — it PANICS the caller. An unhandled
+        // variant therefore does not make a code path merely untested, it makes
+        // it untestable: the handler dies before reaching its own logic.
+        //
+        // That is not hypothetical. This arm list previously stopped at the
+        // paths one set of tests happened to touch, with a comment asserting
+        // none of the others were reached. `delete_context` calls `unsubscribe`
+        // as its first act, so it could not be driven by any test at all — and a
+        // real bug shipped on that handler, found by review rather than by a
+        // test, because no test could reach it.
+        //
+        // Exhaustive, so adding a `NetworkMessage` variant fails to compile here
+        // instead of quietly re-arming the trap. `let _ =` tolerates a caller
+        // that already stopped awaiting.
         match msg {
             NetworkMessage::MeshPeerCount { outcome, .. } => {
                 let _ = outcome.send(0);
@@ -120,7 +137,54 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
                     .push(request.0);
                 let _ = outcome.send(Err(eyre::eyre!("stub network: no transport")));
             }
-            _ => {}
+            // Echo the topic back, mirroring `Subscribe`. `delete_context` and
+            // the self-purge cascade both unsubscribe before doing anything
+            // else, so this is what makes those handlers reachable at all.
+            NetworkMessage::Unsubscribe { request, outcome } => {
+                let _ = outcome.send(Ok(request.0));
+            }
+            // No transport, so these are no-ops that succeed. Reporting failure
+            // would be a different lie from reporting success, and success keeps
+            // best-effort callers on their normal path rather than their error
+            // path — which is the one the tests here mean to exercise.
+            NetworkMessage::Dial { outcome, .. }
+            | NetworkMessage::ListenOn { outcome, .. }
+            | NetworkMessage::Bootstrap { outcome, .. } => {
+                let _ = outcome.send(Ok(()));
+            }
+            // Nobody is subscribed and no blob is anywhere: an empty answer, not
+            // an error. A caller that treats "no peers" as a failure is exercising
+            // its real degraded path.
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ = outcome.send(Vec::new());
+            }
+            NetworkMessage::QueryBlob { outcome, .. } => {
+                let _ = outcome.send(Ok(Vec::new()));
+            }
+            NetworkMessage::RequestBlob { outcome, .. } => {
+                let _ = outcome.send(Ok(None));
+            }
+            // Best-effort and already drop-tolerant on the client side, but
+            // answered anyway so the exhaustive match stays honest.
+            NetworkMessage::SetPeerScore { outcome, .. } => {
+                let _ = outcome.send(());
+            }
+            // A snapshot of a node with no transport: itself, reachable from
+            // nowhere.
+            NetworkMessage::NetworkStatus { outcome, .. } => {
+                let _ = outcome.send(NetworkStatusSnapshot {
+                    local_peer_id: libp2p::PeerId::random(),
+                    listen_addrs: Vec::new(),
+                    external_addrs: Vec::new(),
+                    relays: Vec::new(),
+                    rendezvous: Vec::new(),
+                    direct_upgrades: Vec::new(),
+                    autonat: AutonatEntry {
+                        reachability: ReachabilityKind::Unknown,
+                        last_test: None,
+                    },
+                });
+            }
         }
     }
 }
@@ -316,5 +380,96 @@ pub(crate) async fn boot_test_node() -> TestNode {
         ns_beacon_sync_debounce,
         stream_opens,
         publishes,
+    }
+}
+
+/// Every `boot_test_node()` call site must carry `#[serial(boot_test_node)]`.
+///
+/// A boot rebinds process-global singletons (the `op_events` bridges, the
+/// TEE-admit subscriber), so an unannotated one does not fail on itself: it
+/// silently steals a concurrently running module's event stream mid-assertion.
+/// Scanning source text rather than the compiled crate is deliberate, so the
+/// `mock-attestation`-gated modules are covered by an ungated `cargo test` too.
+/// The lint above fails CI, so a signature shape it cannot parse reports a
+/// correctly-annotated test as an offender. Every shape that reaches the
+/// enclosing `async fn` must find the same attribute block.
+#[test]
+fn attribute_block_survives_visibility_modifiers_and_indentation() {
+    for signature in [
+        "async fn t()",
+        "pub async fn t()",
+        "pub(crate) async fn t()",
+        "    async fn t()",
+        "    pub(super) async fn t()",
+    ] {
+        let head = format!(
+            "mod outer {{\n\n#[serial(boot_test_node)]\n{signature} {{\n    boot_test_node().await"
+        );
+        assert!(
+            enclosing_attribute_block(&head).contains("#[serial(boot_test_node)]"),
+            "signature {signature:?} hid its attribute block"
+        );
+    }
+}
+
+#[test]
+fn every_boot_test_node_call_site_is_serialized() {
+    let mut sources = Vec::new();
+    collect_rs_sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+    assert!(!sources.is_empty(), "found no sources to scan");
+
+    let mut offenders = Vec::new();
+    for path in sources {
+        // This file carries the pattern as a search needle, not as a call.
+        if path.ends_with(file!()) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read source");
+        for (idx, _) in text.match_indices("boot_test_node().await") {
+            let head = &text[..idx];
+            if !enclosing_attribute_block(head).contains("#[serial(boot_test_node)]") {
+                offenders.push(format!(
+                    "{}:{}",
+                    path.display(),
+                    head.matches('\n').count() + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "boot_test_node() without #[serial(boot_test_node)]: {offenders:#?}"
+    );
+}
+
+/// The doc comment and attributes above the `async fn` that encloses the end of
+/// `head` - the span between the blank line above the signature and the
+/// signature itself.
+///
+/// Anchored on the signature's own LINE, not on a newline immediately before
+/// `async fn`: a visibility modifier or an indented (nested-module) signature
+/// puts other bytes there, and a needle carrying its own `\n` silently matched
+/// nothing and reported the call site as an offender.
+fn enclosing_attribute_block(head: &str) -> &str {
+    let Some(keyword) = head.rfind("async fn ") else {
+        return "";
+    };
+    let sig = head[..keyword].rfind('\n').map_or(0, |i| i + 1);
+    let block_start = head[..sig].rfind("\n\n").map_or(0, |i| i + 1);
+    &head[block_start..sig]
+}
+
+fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read_dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_rs_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
     }
 }

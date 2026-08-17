@@ -16,7 +16,6 @@ ed25519-dalek.workspace = true
 fragile.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 ouroboros.workspace = true
-owo-colors = { workspace = true, optional = true }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
@@ -41,6 +40,7 @@ name = "demo"
 
 [dev-dependencies]
 assert-json-diff.workspace = true
+tracing-subscriber.workspace = true
 eyre.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
@@ -50,5 +50,4 @@ wasmer.workspace = true
 wat.workspace = true
 
 [features]
-host-traces = ["owo-colors"]
 profiling = ["wasmer-compiler-cranelift"]

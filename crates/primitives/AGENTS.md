@@ -33,7 +33,7 @@ There is no `default` feature (`default = []`); `borsh` is opt-in. The dev-profi
 src/
 ├── lib.rs          # `pub mod` list only - no re-exports, no prelude
 ├── hash.rs          # Hash - the 32-byte digest every ID newtype wraps
-├── identity.rs      # PrivateKey, PublicKey, Did, RootKey, ClientKey, ContextUser
+├── identity.rs      # PrivateKey, PublicKey, AccountId, DeviceId
 ├── context.rs        # ContextId, Context, ContextConfigParams, GroupMemberRole
 ├── application.rs    # ApplicationId, SignerId, AppKey, Application, ApplicationBlob, Version (semver), ApplicationSource
 ├── blobs.rs           # BlobId, BlobInfo, BlobMetadata
@@ -70,7 +70,6 @@ src/
 | `MetadataRecord` | `metadata` | Group/member/context metadata (`name`, opaque `data` map, `updated_at`, `updated_by`) | serde (`camelCase`) + borsh |
 | `SyncState` | `sync_status` | Coarse sync phase for RPC + WS event | serde, internally tagged `state`; no borsh |
 | `NodeEvent`/`ContextEvent`/... | `events` | WebSocket event envelope and payloads | serde only, tagged JSON |
-| `Did`/`RootKey`/`ClientKey`/`ContextUser` | `identity` | DID-adjacent identity records | serde only, `#[non_exhaustive]` |
 | `Context` | `context` | Snapshot of a context's id/app/root-hash/DAG-heads/version/name | serde (`camelCase`), `#[non_exhaustive]` builder methods |
 | `GroupMemberRole` | `context` | `Admin`/`Member`/`ReadOnly`/`ReadOnlyTee` | serde + borsh, deliberately NOT `#[non_exhaustive]` |
 

@@ -90,6 +90,39 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p merod -p calimero-node -p calimero-tee-attestation --features mock-attestation -- --nocapture
 
+      # calimero-store's borsh/serde impls sit behind default-OFF features, so
+      # the workspace `cargo test` above compiles none of the stored-format
+      # tests - the ones that pin what a node can still decode after an upgrade.
+      - name: Cargo test (calimero-store, all features)
+        if: ${{ !cancelled() }}
+        run: cargo test -p calimero-store --all-features
+      # merodb's `gui` feature is default-OFF, and `--all-targets` skips a
+      # feature-gated target rather than failing on it, so the workspace build
+      # above never compiles `src/gui/` or the ~20 `#[cfg(feature = "gui")]`
+      # sites in main.rs/dag.rs/export.rs. Without this step that code is free
+      # to stop compiling unnoticed, which is exactly what happened: a
+      # `CollectionType::Tuple` variant was added to the ABI schema and the
+      # gui-gated match in export.rs was never updated, so `merodb --gui` — a
+      # documented debugging tool — did not build at all.
+      #
+      # This builds rather than clippies: the gui code predates any lint gate
+      # and still carries ~60 `-D warnings` findings. Tighten this to `cargo
+      # clippy … -- -D warnings` once those are cleared.
+      # A scenario file that no matrix runs looks maintained and gates nothing.
+      # That has happened repeatedly and silently: replacing a glob with an
+      # enumeration orphaned fourteen scenarios at once while naming none of
+      # them in the diff, a later parallelisation dropped one of an app's two
+      # scenarios, and scenarios written afterwards had no way to signal that a
+      # matrix entry was also required. This reconciles the two lists so the
+      # next occurrence fails the build instead of going unnoticed.
+      - name: Check every merobox scenario runs somewhere
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-scenario-coverage.py
+
+      - name: Cargo build (merodb gui)
+        if: ${{ !cancelled() }}
+        run: cargo build -p merodb --features gui
+
       - name: Cargo check (calimero-context-config)
         if: ${{ !cancelled() }}
         run: cargo check -p calimero-context-config

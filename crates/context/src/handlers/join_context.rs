@@ -144,10 +144,9 @@ impl Handler<JoinContextRequest> for ContextManager {
                     group_id.ok_or_else(|| eyre::eyre!("context does not belong to any group"))?;
 
                 // Resolve joiner identity from node namespace identity.
-                let (joiner_identity, _) =
-                    NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
-                        .map(|(pk, sk, _sender)| (pk, sk))
-                        .ok_or_else(|| {
+                let (joiner_identity, _) = NamespaceRepository::new(&datastore)
+                    .resolve_identity(&group_id)?
+                    .ok_or_else(|| {
                             eyre::eyre!(
                             "node has no namespace identity for this group; join the group first"
                         )
@@ -223,7 +222,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
                 let ns_identity = NamespaceRepository::new(&datastore).identity(&ns_id)?
                     .ok_or_else(|| eyre::eyre!("namespace identity not found"))?;
-                let (_pk, sk_bytes, _sender) = ns_identity;
+                let (_pk, sk_bytes) = ns_identity;
 
                 let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
                 let config = if !context_client.has_context(&context_id)? {
@@ -368,17 +367,18 @@ impl Handler<JoinContextRequest> for ContextManager {
 }
 
 /// The namespaces this node should sync when resolving a context->group
-/// mapping: exactly the distinct namespace roots it holds an identity in.
+/// mapping: exactly the distinct namespace roots it takes part in.
 ///
-/// A join can only ultimately succeed in a namespace the node has an identity
-/// in (the join later requires `NamespaceRepository::resolve_identity` for the
-/// context's owning group), so this is the tightest plausibly-owning set. It
+/// A join can only ultimately succeed in a namespace the node takes part in (the
+/// join later requires `NamespaceRepository::resolve_identity` for the context's
+/// owning group, which answers `None` where it does not), so this is the tightest
+/// plausibly-owning set. It
 /// deliberately does NOT enumerate every known group and resolve each to its
 /// root — that re-synced a namespace once per subgroup and wasted fan-out and
-/// network syncs on namespaces the node can never join into. `iter_identities`
+/// network syncs on namespaces the node can never join into. `participating_namespaces`
 /// is keyed by namespace id, so the result is already distinct.
 fn namespaces_to_sync(datastore: &calimero_store::Store) -> eyre::Result<Vec<ContextGroupId>> {
-    NamespaceRepository::new(datastore).iter_identities()
+    NamespaceRepository::new(datastore).participating_namespaces()
 }
 
 async fn sync_known_namespaces(
@@ -425,7 +425,7 @@ mod tests {
     fn store_identity(store: &Store, namespace: &ContextGroupId) {
         let sk = PrivateKey::from([0x33; 32]);
         NamespaceRepository::new(store)
-            .store_identity(namespace, &sk.public_key(), sk.as_bytes(), &[0x44; 32])
+            .store_identity(namespace, &sk.public_key(), sk.as_bytes())
             .expect("store identity");
     }
 

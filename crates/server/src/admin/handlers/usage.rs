@@ -14,7 +14,7 @@ use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceR
 use calimero_server_primitives::admin::{NamespaceUsage, NamespaceUsageBytes, UsageResponse};
 use calimero_store::db::Column;
 use calimero_store::key::{
-    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_IDENTITY_PREFIX,
+    NAMESPACE_GOV_HEAD_PREFIX, NAMESPACE_GOV_OP_PREFIX, NAMESPACE_PARTICIPATION_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -54,7 +54,7 @@ pub fn collect_usage(store: &Store) -> EyreResult<Vec<NamespaceUsage>> {
         // Only include namespaces this node actually participates in. We
         // use the stored namespace identity (set on admission) rather than
         // membership alone, matching what `list_namespaces` reports.
-        let Some((node_identity, _, _)) =
+        let Some((node_identity, _)) =
             NamespaceRepository::new(store).resolve_identity(&group_id)?
         else {
             continue;
@@ -174,14 +174,14 @@ fn probe(store: &Store, col: Column, start: &[u8], end: &[u8]) -> u64 {
 }
 
 /// Sum Group-column bytes belonging to a namespace. Three key families
-/// already use `namespace_id` as their prefix (`NamespaceIdentity` 0x36,
+/// already use `namespace_id` as their prefix (`NamespaceParticipation` 0x36,
 /// `NamespaceGovOp` 0x38, `NamespaceGovHead` 0x39), so one range probe per
 /// prefix is enough. Other Group-column keys are per-group (not
 /// per-namespace); attributing them would require iterating child groups
 /// and is out of scope for the estimate.
 fn governance_bytes(store: &Store, namespace_id: &[u8; 32]) -> u64 {
     let prefixes = [
-        NAMESPACE_IDENTITY_PREFIX,
+        NAMESPACE_PARTICIPATION_PREFIX,
         NAMESPACE_GOV_OP_PREFIX,
         NAMESPACE_GOV_HEAD_PREFIX,
     ];
@@ -269,7 +269,6 @@ mod tests {
                 &namespace_id,
                 &node_identity_pk,
                 node_identity_sk.as_bytes(),
-                &[0x44; 32],
             )
             .expect("store identity");
         MembershipRepository::new(store)

@@ -331,7 +331,7 @@ pub enum CollectionCategory {
     /// Per-executor / per-position (`Counter`, `ReplicatedGrowableArray`).
     /// Converges only if the migrate body replays it deterministically.
     Replayable,
-    /// Ownership / writer-set derived from `env::executor_id()` (`AuthoredMap`,
+    /// Ownership / writer-set derived from `env::account_id()` (`AuthoredMap`,
     /// `AuthoredVector`, `SharedStorage`). A naive rebuild diverges, and a
     /// downgrade to a non-identity-gated type silently strips authorship / ACL.
     IdentityGated,
@@ -769,7 +769,7 @@ mod tests {
         assert_eq!(collection_category(&Counter), Replayable);
         assert_eq!(collection_category(&ReplicatedGrowableArray), Replayable);
 
-        // Identity-gated: ownership/writer-set is derived from env::executor_id(),
+        // Identity-gated: ownership/writer-set is derived from env::account_id(),
         // so a naive rebuild diverges and a downgrade silently strips provenance.
         assert_eq!(collection_category(&AuthoredMap), IdentityGated);
         assert_eq!(collection_category(&AuthoredVector), IdentityGated);

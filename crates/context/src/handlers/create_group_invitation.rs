@@ -4,9 +4,7 @@ use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
-use calimero_governance_store::{
-    MembershipRepository, MetaRepository, MetadataRepository, SigningKeysRepository,
-};
+use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -20,31 +18,14 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         &mut self,
         CreateGroupInvitationRequest {
             group_id,
-            requester,
             expiration_timestamp,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_identity = self.node_namespace_identity(&group_id);
-
-        let requester = match requester {
-            Some(pk) => pk,
-            None => match node_identity {
-                Some((pk, _)) => pk,
-                None => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "requester not provided and node has no configured group identity"
-                    )))
-                }
-            },
+        let (signer, node_sk) = match self.resolve_signer(&group_id) {
+            Ok(pair) => pair,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
-
-        if let Some((node_pk, node_sk)) = node_identity {
-            if requester == node_pk {
-                let _ = SigningKeysRepository::new(&self.datastore)
-                    .store_key(&group_id, &requester, &node_sk);
-            }
-        }
 
         let datastore = self.datastore.clone();
 
@@ -53,21 +34,15 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .load(&group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
-            let requester_account =
-                crate::member_account::require(&datastore, &group_id, &requester)?;
+            let signer_account = crate::member_account::require(&datastore, &group_id, &signer)?;
             MembershipRepository::new(&datastore).require_admin_or_capability(
                 &group_id,
-                &requester_account,
+                &signer_account,
                 MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
                 "create group invitation",
             )?;
 
-            SigningKeysRepository::new(&datastore).require_key(&group_id, &requester)?;
-
-            let signing_key_bytes = SigningKeysRepository::new(&datastore)
-                .get_key(&group_id, &requester)?
-                .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
-            let private_key = PrivateKey::from(signing_key_bytes);
+            let private_key = PrivateKey::from(node_sk);
 
             let mut rng = rand::thread_rng();
             let invitation_nonce: [u8; 32] = rng.gen();
@@ -79,7 +54,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             let expiration_timestamp: u64 =
                 now_secs + expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
-            let inviter_signer_id = SignerId::from(*requester);
+            let inviter_signer_id = SignerId::from(*signer);
 
             let invitation = GroupInvitationFromAdmin {
                 inviter_identity: inviter_signer_id,
@@ -103,7 +78,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
             Ok((
                 SignedGroupOpenInvitation {
-                    inviter_account: Some(requester_account),
+                    inviter_account: Some(signer_account),
                     invitation,
                     inviter_signature,
                     // Carry the real application_id so the joiner can
