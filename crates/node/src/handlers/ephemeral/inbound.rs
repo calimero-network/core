@@ -58,13 +58,51 @@ use crate::NodeManager;
 const EPHEMERAL_MAX_CIPHERTEXT_BYTES: usize = EPHEMERAL_MAX_BYTES + calimero_crypto::AEAD_TAG_LEN;
 
 // ---------------------------------------------------------------------------
+// The wire envelope
+// ---------------------------------------------------------------------------
+
+/// One inbound presence envelope, exactly as it rides on the wire.
+///
+/// The owned counterpart of [`BroadcastMessage::Ephemeral`]: same fields, with
+/// the borrowed `ciphertext` taken by value at the dispatch boundary. The
+/// receive path threads this single value instead of a nine-deep positional
+/// argument list, where `seq` and `sent_at_ms` — both `u64` — could be swapped
+/// at a call site and still compile.
+///
+/// Distinct from [`auth::SignedEnvelope`], which is the borrowed *view* of the
+/// subset of these fields the signature covers (everything except `signature`
+/// itself, with `ciphertext` hashed rather than included).
+///
+/// [`BroadcastMessage::Ephemeral`]: calimero_node_primitives::sync::BroadcastMessage::Ephemeral
+/// [`auth::SignedEnvelope`]: crate::handlers::ephemeral::auth::SignedEnvelope
+#[derive(Debug)]
+pub(crate) struct EphemeralEnvelope {
+    pub context_id: ContextId,
+    /// The claimed publisher. Rides in the clear, so it is only trustworthy
+    /// once `signature` has been verified under it.
+    pub author: PublicKey,
+    pub seq: u64,
+    /// The group key the slice was sealed under. Only the group's *current*
+    /// key is accepted on this path.
+    pub key_id: [u8; 32],
+    /// The sender's wall clock (ms since the UNIX epoch) at publish time.
+    pub sent_at_ms: u64,
+    pub nonce: Nonce,
+    /// The AEAD-sealed presence slice.
+    pub ciphertext: Vec<u8>,
+    /// ed25519 signature by `author` over the domain-separated payload built
+    /// from the remaining fields.
+    pub signature: [u8; 64],
+}
+
+// ---------------------------------------------------------------------------
 // Inner async logic (testable without actix)
 // ---------------------------------------------------------------------------
 
-/// Resolve the group key for `context_id`, decrypt `ciphertext`, and verify
-/// the envelope's freshness and signature.
+/// Resolve the group key for the envelope's context, decrypt its ciphertext,
+/// and verify the envelope's freshness and signature.
 ///
-/// Returns `None` when `context_id` has no group, when `key_id` is not the
+/// Returns `None` when the context has no group, when `key_id` is not the
 /// group's *current* key (unknown key ids and superseded keys are treated
 /// identically — presence has no history, so only the current key is ever
 /// accepted), when `sent_at_ms` sits outside the freshness window, when the
@@ -78,16 +116,20 @@ const EPHEMERAL_MAX_CIPHERTEXT_BYTES: usize = EPHEMERAL_MAX_BYTES + calimero_cry
 /// Never writes to the DAG, RocksDB, or any persistent store.
 pub(crate) async fn resolve_and_decrypt(
     context_client: &ContextClient,
-    context_id: ContextId,
-    author: PublicKey,
-    seq: u64,
-    key_id: [u8; 32],
-    sent_at_ms: u64,
+    envelope: EphemeralEnvelope,
     now_ms: u64,
-    nonce: Nonce,
-    ciphertext: Vec<u8>,
-    signature: [u8; 64],
 ) -> Option<Vec<u8>> {
+    let EphemeralEnvelope {
+        context_id,
+        author,
+        seq,
+        key_id,
+        sent_at_ms,
+        nonce,
+        ciphertext,
+        signature,
+    } = envelope;
+
     // Derive the ContextGroupId the same way the state-delta handler does:
     // `get_group_for_context` reads the context-tree row that
     // `register_context_in_group` wrote at group-creation time. On `None`
@@ -290,15 +332,14 @@ pub(crate) fn emit_ephemeral_diff(node_client: &NodeClient, context_id: ContextI
 pub(crate) fn handle_ephemeral_broadcast(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
-    context_id: ContextId,
-    author: PublicKey,
-    seq: u64,
-    key_id: [u8; 32],
-    sent_at_ms: u64,
-    nonce: Nonce,
-    ciphertext: Vec<u8>,
-    signature: [u8; 64],
+    envelope: EphemeralEnvelope,
 ) {
+    // Copied out before `envelope` is moved into the async block: the
+    // store-apply below keys on them.
+    let context_id = envelope.context_id;
+    let author = envelope.author;
+    let seq = envelope.seq;
+
     let context_client = this.clients.context.clone();
     let node_client = this.clients.node.clone();
 
@@ -315,19 +356,7 @@ pub(crate) fn handle_ephemeral_broadcast(
         async move {
             // Resolve key + freshness + decrypt + verify signature: the only
             // async work.
-            resolve_and_decrypt(
-                &context_client,
-                context_id,
-                author,
-                seq,
-                key_id,
-                sent_at_ms,
-                now_ms,
-                nonce,
-                ciphertext,
-                signature,
-            )
-            .await
+            resolve_and_decrypt(&context_client, envelope, now_ms).await
         }
         .into_actor(this)
         .map(move |plaintext, actor, _ctx| {
@@ -493,15 +522,17 @@ mod tests {
         // Resolve + decrypt + verify the ciphertext.
         let plaintext = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            seq,
-            key_id,
-            SENT_AT,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq,
+                key_id,
+                sent_at_ms: SENT_AT,
+                nonce,
+                ciphertext,
+                signature,
+            },
             NOW,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await
         .expect("should decrypt — key is seeded and signature is valid");
@@ -593,15 +624,17 @@ mod tests {
 
         let result = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            1,
-            wrong_key_id,
-            SENT_AT,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq: 1,
+                key_id: wrong_key_id,
+                sent_at_ms: SENT_AT,
+                nonce,
+                ciphertext,
+                signature,
+            },
             NOW,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await;
 
@@ -672,15 +705,17 @@ mod tests {
 
         let out = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            1,
-            old_key_id,
-            SENT_AT,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq: 1,
+                key_id: old_key_id,
+                sent_at_ms: SENT_AT,
+                nonce,
+                ciphertext,
+                signature,
+            },
             NOW,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await;
 
@@ -727,15 +762,17 @@ mod tests {
 
         let out = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            victim,
-            1,
-            key_id,
-            SENT_AT,
+            EphemeralEnvelope {
+                context_id,
+                author: victim,
+                seq: 1,
+                key_id,
+                sent_at_ms: SENT_AT,
+                nonce,
+                ciphertext,
+                signature,
+            },
             NOW,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await;
 
@@ -772,15 +809,17 @@ mod tests {
 
         let out = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            1,
-            key_id,
-            SENT_AT,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq: 1,
+                key_id,
+                sent_at_ms: SENT_AT,
+                nonce,
+                ciphertext,
+                signature,
+            },
             NOW,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await;
 
@@ -823,15 +862,17 @@ mod tests {
 
         resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            1,
-            key_id,
-            sent_at_ms,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq: 1,
+                key_id,
+                sent_at_ms,
+                nonce,
+                ciphertext,
+                signature,
+            },
             now_ms,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await
     }
@@ -925,15 +966,17 @@ mod tests {
         let replay_at = NOW + 10 * crate::handlers::ephemeral::PRESENCE_MAX_SKEW_MS;
         let out = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            1,
-            key_id,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq: 1,
+                key_id,
+                sent_at_ms: replay_at,
+                nonce,
+                ciphertext,
+                signature,
+            },
             replay_at,
-            replay_at,
-            nonce,
-            ciphertext,
-            signature,
         )
         .await;
 
@@ -1026,15 +1069,17 @@ mod tests {
 
         let result = resolve_and_decrypt(
             &ctx_client,
-            context_id,
-            author,
-            1,
-            key_id,
-            SENT_AT,
+            EphemeralEnvelope {
+                context_id,
+                author,
+                seq: 1,
+                key_id,
+                sent_at_ms: SENT_AT,
+                nonce,
+                ciphertext: oversized_ciphertext,
+                signature: [0u8; 64],
+            },
             NOW,
-            nonce,
-            oversized_ciphertext,
-            [0u8; 64],
         )
         .await;
 

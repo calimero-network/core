@@ -23,10 +23,11 @@ use calimero_network_primitives::messages::{IdentTopic, Message, MessageId, Netw
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{ContextEventPayload, NodeEvent};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use futures_util::StreamExt;
 use serial_test::serial;
 
+use crate::handlers::ephemeral::inbound::EphemeralEnvelope;
 use crate::test_node_harness::boot_test_node;
 
 /// Milliseconds since the UNIX epoch — the same reading the outbound path
@@ -44,15 +45,18 @@ fn now_ms() -> u64 {
 fn ephemeral_network_event(
     source: libp2p::PeerId,
     topic: &str,
-    context_id: ContextId,
-    author: PublicKey,
-    seq: u64,
-    key_id: [u8; 32],
-    sent_at_ms: u64,
-    nonce: [u8; NONCE_LEN],
-    ciphertext: Vec<u8>,
-    signature: [u8; 64],
+    envelope: EphemeralEnvelope,
 ) -> NetworkEvent {
+    let EphemeralEnvelope {
+        context_id,
+        author,
+        seq,
+        key_id,
+        sent_at_ms,
+        nonce,
+        ciphertext,
+        signature,
+    } = envelope;
     let payload = BroadcastMessage::Ephemeral {
         context_id,
         author,
@@ -143,14 +147,16 @@ async fn ephemeral_broadcast_routes_to_awareness_store_and_emits_event() {
     let event = ephemeral_network_event(
         libp2p::PeerId::random(),
         &topic,
-        context_id,
-        author,
-        seq,
-        key_id,
-        sent_at_ms,
-        nonce,
-        ciphertext,
-        signature,
+        EphemeralEnvelope {
+            context_id,
+            author,
+            seq,
+            key_id,
+            sent_at_ms,
+            nonce,
+            ciphertext,
+            signature,
+        },
     );
     node.node_addr
         .send(event)
@@ -245,14 +251,16 @@ async fn forged_author_produces_no_presence_event() {
     let event = ephemeral_network_event(
         libp2p::PeerId::random(),
         &topic,
-        context_id,
-        victim,
-        seq,
-        key_id,
-        sent_at_ms,
-        nonce,
-        ciphertext,
-        signature,
+        EphemeralEnvelope {
+            context_id,
+            author: victim,
+            seq,
+            key_id,
+            sent_at_ms,
+            nonce,
+            ciphertext,
+            signature,
+        },
     );
     node.node_addr
         .send(event)
