@@ -582,13 +582,25 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
+    /// One captured gossipsub publish: the topic it went out on, and the
+    /// borsh-encoded payload bytes.
+    type PublishedMessage = (TopicHash, Vec<u8>);
+
+    /// Shared handle to everything a [`RecordingNetworkActor`] has published.
+    /// Shared because the actor writes it from its own Arbiter while the test
+    /// body reads it.
+    ///
+    /// Test-only, so it lives here beside its use rather than in the module's
+    /// public surface.
+    type PublishLog = Arc<Mutex<Vec<PublishedMessage>>>;
+
     /// Recording network actor: captures every `Publish` call's topic and
     /// payload bytes.  Replies with a stub `MessageId` so callers don't hang.
     ///
     /// Mirrors the `CountingNetworkActor` in `calimero-node-primitives` tests
     /// but records the full `(topic, data)` pair for content assertions.
     struct RecordingNetworkActor {
-        published: Arc<Mutex<Vec<(TopicHash, Vec<u8>)>>>,
+        published: PublishLog,
     }
 
     impl Actor for RecordingNetworkActor {
@@ -616,8 +628,8 @@ mod tests {
     /// actix System) so `RecordingNetworkActor::create` has an Arbiter to
     /// start on.  Returns the `NetworkClient` and a shared handle to the
     /// captured publish calls.
-    fn recording_network_client() -> (NetworkClient, Arc<Mutex<Vec<(TopicHash, Vec<u8>)>>>) {
-        let published: Arc<Mutex<Vec<(TopicHash, Vec<u8>)>>> = Arc::new(Mutex::new(vec![]));
+    fn recording_network_client() -> (NetworkClient, PublishLog) {
+        let published: PublishLog = Arc::new(Mutex::new(vec![]));
         let network_recipient = LazyRecipient::<NetworkMessage>::new();
         let network_client = NetworkClient::new(network_recipient.clone());
         let actor = RecordingNetworkActor {
