@@ -1475,10 +1475,8 @@ impl MemberMigrationState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemberMigrationStatus {
     pub peer: PublicKey,
-    /// The account `peer` speaks for. The cohort is a set of REPLICAS, so one
-    /// account can appear under several peers - this is what lets a caller
-    /// group a person's devices, and the only key that joins these rows to
-    /// `list_group_members` (which is account-keyed and carries the name).
+    /// The account `peer` speaks for; one account can appear under several
+    /// peers. Joins these rows to the account-keyed `list_group_members`.
     pub account: AccountId,
     /// The member's reported facts, or `None` when it has no fresh heartbeat
     /// (in which case `state == Unknown`).
@@ -1487,11 +1485,8 @@ pub struct MemberMigrationStatus {
 }
 
 /// One replica in a migration cohort: the device key that reports, and the
-/// account it speaks for.
-///
-/// Named rather than a `(PublicKey, AccountId)` tuple because both are 32-byte
-/// opaque ids and nothing downstream objects if they are swapped - it would
-/// simply name a principal that exists nowhere.
+/// account it speaks for. Named rather than a tuple because both are 32-byte
+/// opaque ids that would silently swap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CohortMember {
     pub peer: PublicKey,
@@ -1677,10 +1672,8 @@ mod migration_status_tests {
         PublicKey::from([b; 32])
     }
 
-    /// A cohort entry for `peer`, on its own account. The rollup keys every
-    /// count off `peer`, so a distinct account per device is the neutral
-    /// default; the two-devices-one-account case is asserted explicitly in
-    /// `two_devices_on_one_account_are_two_rows`.
+    /// A cohort entry for `peer`, on its own account - the neutral default,
+    /// since the rollup keys every count off `peer`.
     fn one(peer: PublicKey) -> CohortMember {
         CohortMember {
             peer,
@@ -1721,14 +1714,8 @@ mod migration_status_tests {
         }
     }
 
-    /// The cohort counts REPLICAS, and the account is what identifies the
-    /// person behind them.
-    ///
-    /// A caller holding only `peer` cannot name a member: peers render bs58 and
-    /// `list_group_members` is keyed by 64-hex accounts, so the two name
-    /// different principals and nothing errors when they are confused. Carrying
-    /// the account is what lets a caller say "one of alice's two devices is
-    /// stuck" rather than printing a key.
+    /// The cohort counts replicas, so two devices are two rows - but both must
+    /// name the same account, which is what groups them back into one member.
     #[test]
     fn two_devices_on_one_account_are_two_rows_naming_one_member() {
         let laptop = pk(0xA1);

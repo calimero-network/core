@@ -14,11 +14,6 @@ use url::Url;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Empty;
 
-/// Constant compat key: the released calimero-client-py merobox bundles rejects
-/// group/namespace responses that omit it. Delete once merobox ships a client-py
-/// built off post-merge master and MIN_MEROBOX (.github/actions/setup-merobox) names it.
-pub const UPGRADE_POLICY_COMPAT: &str = "LazyOnAccess";
-
 // -------------------------------------------- Application API --------------------------------------------
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1285,9 +1280,6 @@ pub struct GroupInfoApiResponseData {
     pub group_id: String,
     pub app_key: String,
     pub target_application_id: ApplicationId,
-    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
-    #[serde(default)]
-    pub upgrade_policy: String,
     pub member_count: u64,
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1524,22 +1516,13 @@ pub struct MemberMigrationReportApiData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberMigrationStatusApiEntry {
-    /// The cohort member: the DEVICE key that reports, bs58. A person holding
-    /// two devices appears twice.
+    /// The reporting device key, bs58. A member with two devices appears twice.
     pub peer: PublicKey,
-    /// The account `peer` speaks for, 64 hex.
+    /// The account `peer` speaks for, 64 hex. Joins these rows to the
+    /// account-keyed `GET /groups/:id/members`, which carries `name`.
     ///
-    /// The cohort is a set of replicas, so this is what groups a person's
-    /// devices, and it is the only field that joins these rows to
-    /// `GET /groups/:id/members` - which is account-keyed and carries `name`.
-    /// Without it a caller holds a signing key and cannot name the human it
-    /// belongs to, because the two encodings name different principals and
-    /// nothing errors when they are confused.
-    ///
-    /// `Option` for the deserialize side only: a node predating this field omits
-    /// it, and a client must still parse that response. A zero account instead
-    /// would hand the caller a principal-shaped value naming nobody - the very
-    /// confusion this field exists to remove. A node that has it always sends it.
+    /// `None` only from a node predating the field; defaulting it instead would
+    /// name a principal that exists nowhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<AccountId>,
     /// The member's freshest reported facts, or `null` when it has no fresh
@@ -2893,9 +2876,6 @@ pub struct NamespaceApiResponse {
     pub namespace_id: String,
     pub app_key: String,
     pub target_application_id: String,
-    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
-    #[serde(default)]
-    pub upgrade_policy: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
