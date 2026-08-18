@@ -2445,6 +2445,7 @@ impl SyncManager {
                                     storage_delta.id,
                                     author,
                                     pos.as_ref(),
+                                    storage_delta.hlc,
                                     &sig_for_head,
                                 )
                             {

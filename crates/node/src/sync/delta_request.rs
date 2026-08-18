@@ -186,6 +186,7 @@ fn verify_fetched_parent(
         delta_id,
         fetched.author_id,
         pos.as_ref(),
+        fetched.delta.hlc,
         &sig,
     ) {
         warn!(

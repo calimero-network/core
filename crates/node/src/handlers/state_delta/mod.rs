@@ -200,6 +200,7 @@ pub(crate) async fn apply_authorized_state_delta(
         delta_id,
         author_id,
         governance_position.as_ref(),
+        hlc,
         &sig,
     ) {
         warn!(
@@ -1599,6 +1600,7 @@ async fn request_missing_deltas(
                             storage_delta.id,
                             response_author,
                             governance_position.as_ref(),
+                            storage_delta.hlc,
                             &sig_for_parent,
                         )
                     {
@@ -1987,6 +1989,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         delta_id,
         buffered.author_id,
         buffered.governance_position.as_ref(),
+        buffered.hlc,
         &sig_for_replay,
     ) {
         warn!(
