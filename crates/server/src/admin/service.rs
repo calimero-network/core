@@ -636,6 +636,20 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // The application's own `init` refused the call — nearly always because the
+    // `initializationParams` do not match its signature. That is the caller's
+    // input, not a server fault, and the guest's message is the only thing that
+    // says what was wrong. Without this arm it falls through to the generic 500
+    // below and the reason exists nowhere but the node's log, which is not
+    // something an API client can read.
+    if let Some(calimero_context::error::ContextError::InitFailed { .. }) =
+        err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: err.to_string(),
+        };
+    }
     match err.downcast::<ApiError>() {
         Ok(api_error) => api_error,
         // An untyped error is an unexpected internal failure. Don't echo its
@@ -829,6 +843,26 @@ mod parse_api_error_tests {
         assert!(
             api.message.contains("not a member"),
             "expected the typed reason to reach the client, got: {}",
+            api.message
+        );
+    }
+
+    /// The whole point of the typed variant: a caller that got the init params
+    /// wrong must be told so. Before this, the same case answered
+    /// `500 {"error":"Internal server error"}` and the reason lived only in the
+    /// node's log.
+    #[test]
+    fn init_failure_maps_to_400_carrying_the_guest_message() {
+        let err = calimero_context::error::ContextError::InitFailed {
+            message: "guest panicked: init: failed to deserialize arguments: \
+                      missing field `name`"
+                .to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        assert!(
+            api.message.contains("missing field `name`"),
+            "the guest's own diagnosis is the only useful part; got: {}",
             api.message
         );
     }
