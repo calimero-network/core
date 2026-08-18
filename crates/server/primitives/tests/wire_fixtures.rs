@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
-    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
+    JoinGroupApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
+    UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -81,6 +82,11 @@ macro_rules! wire_fixtures {
 wire_fixtures! {
     create_context_req: CreateContextRequest => "contexts/create_context.req.json",
     create_context_res: CreateContextResponseData => "contexts/create_context.res.json",
+    // Shared by `POST groups/join` and `POST namespaces/:id/join`, which build the
+    // same DTO. The key and the account are deliberately unequal and rendered in
+    // different alphabets, so a field crossed between the two spaces shows up as a
+    // diff rather than round-tripping cleanly.
+    join_res: JoinGroupApiResponse => "groups/join.res.json",
     reparent_req: ReparentGroupApiRequest => "groups/reparent.req.json",
     reparent_res: ReparentGroupApiResponse => "groups/reparent.res.json",
     // Populated counters, not nulls: these three are `Option`, so a renamed

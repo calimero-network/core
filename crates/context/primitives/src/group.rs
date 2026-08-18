@@ -302,13 +302,6 @@ pub struct JoinGroupResponse {
     /// metadata, removal), and the account is a hash of the key that no caller
     /// can compute for itself.
     pub member_account: AccountId,
-    /// Always empty. This carried a serialized `SignedGroupOp` back when a join
-    /// had to be relayed to the inviting node; direct request-response join
-    /// replaced that, so the sole construction site sets `vec![]` and no reader
-    /// consumes it. It still reaches clients as `governanceOp: ""` on the group
-    /// and namespace join responses, so retiring it is an SDK-visible wire
-    /// change rather than a local cleanup.
-    pub governance_op_bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
