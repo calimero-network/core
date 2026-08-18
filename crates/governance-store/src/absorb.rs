@@ -154,6 +154,7 @@ mod tests {
             producing_app_key: Some([2; 32]),
             leaf: None,
             entity: None,
+            pending_application: None,
         }
     }
 

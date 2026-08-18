@@ -316,6 +316,118 @@ pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &Conte
     if let Err(err) = drain_absorbed_leaves(input, context_id).await {
         warn!(%context_id, %err, "absorb drain: leaf drain failed");
     }
+
+    // Deltas parked on a not-yet-runnable application drain on a third tag.
+    // Chained here so every existing absorb-drain trigger — namespace network
+    // events, sync settle, startup recovery — doubles as a safety net for them,
+    // whichever way the application arrived (peer blob fetch, bundle install,
+    // an operator installing it over the admin API). The prompt path is the
+    // install hook in the sync manager; this catches whatever that misses.
+    drain_pending_application(input, context_id).await;
+}
+
+/// Replay deltas parked because their application was not runnable locally,
+/// once it is.
+///
+/// Sibling of [`drain_absorbed`] for the `pending_application`-tagged
+/// [`AbsorbRecord`]s that the apply path parked. Readiness is one check per
+/// context — not per record — since every parked delta in a context waits on
+/// that context's application: if it still is not runnable, there is nothing to
+/// do for any of them.
+///
+/// Replay goes through [`apply_authorized_state_delta`] with the fence bypassed,
+/// exactly as the straggler drain does, and a record is deleted only after a
+/// successful replay, so a crash mid-drain just replays the survivors.
+async fn drain_pending_application(input: &StateDeltaContext, context_id: &ContextId) {
+    use calimero_governance_store::AbsorbRepository;
+
+    let store = input.node_clients.context.datastore();
+    let repo = AbsorbRepository::new(store);
+
+    let pending = match repo.enumerate_pending(context_id) {
+        Ok(p) => p,
+        Err(err) => {
+            warn!(%context_id, %err, "absorb drain: failed to enumerate parked deltas");
+            return;
+        }
+    };
+    let parked: Vec<_> = pending
+        .into_iter()
+        .filter(|(_, record)| record.pending_application.is_some())
+        .collect();
+    if parked.is_empty() {
+        return;
+    }
+
+    // One readiness check for the whole batch, before any replay work.
+    match super::application_bytecode_status(
+        &input.node_clients.node,
+        &input.node_clients.context,
+        context_id,
+    ) {
+        Ok(super::BytecodeStatus::Ready) => {}
+        Ok(super::BytecodeStatus::Missing(application_id)) => {
+            debug!(
+                %context_id,
+                %application_id,
+                parked = parked.len(),
+                "absorb drain: application still not runnable — leaving parked deltas"
+            );
+            return;
+        }
+        Err(err) => {
+            warn!(%context_id, %err, "absorb drain: application readiness check failed");
+            return;
+        }
+    }
+
+    let mut drained = 0usize;
+    for ((key_application, delta_id), record) in parked {
+        let buffered = match record.into_buffered() {
+            Ok(b) => b,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "absorb drain: corrupt parked record — cannot reconstruct delta; skipping"
+                );
+                continue;
+            }
+        };
+        let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
+        // Bypass the HLC fence for the same reason the straggler drain does:
+        // this delta already cleared the fence on receive, and re-fencing a
+        // replay would re-absorb it under the schema tag instead of applying it.
+        match apply_authorized_state_delta(input.clone(), reconstructed, true).await {
+            Ok(()) => {
+                if let Err(err) = repo.delete(context_id, key_application, delta_id) {
+                    warn!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        %err,
+                        "absorb drain: replayed parked delta but failed to delete its record"
+                    );
+                    continue;
+                }
+                drained += 1;
+            }
+            Err(err) => warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                %err,
+                "absorb drain: parked delta replay failed — leaving record for retry"
+            ),
+        }
+    }
+
+    if drained > 0 {
+        info!(
+            %context_id,
+            drained,
+            "absorb drain: replayed deltas parked on a not-yet-runnable application"
+        );
+    }
 }
 
 /// Drain buffered sync-repair leaves once the loaded reader has advanced to
@@ -496,6 +608,14 @@ where
         // `__calimero_sync_next` payload — they are not replayable deltas.
         // Skip them; `drain_absorbed_leaves` handles them.
         if record.leaf.is_some() || record.entity.is_some() {
+            continue;
+        }
+        // Application-parked records are replayable deltas, but their readiness
+        // signal is the application becoming runnable, not the reader schema
+        // advancing — `drain_pending_application` owns them. Replaying one here
+        // would only re-park it, and this drain has no way to check the
+        // application (it holds a store, not a node client).
+        if record.pending_application.is_some() {
             continue;
         }
         // Drain-ready signal: replay once the node has caught up to the

@@ -63,6 +63,18 @@ pub struct AbsorbRecord {
     /// buffers the raw `entry` + `index` blobs here; the drain re-verifies +
     /// persists them once the reader advances. Mutually exclusive with `leaf`.
     pub entity: Option<AbsorbedEntity>,
+    /// Set when this record holds a delta parked because the application it must
+    /// execute against is not runnable locally yet — either the application row
+    /// or its bytecode blob has not landed. Holds that application id.
+    ///
+    /// The record is delta-shaped and replays verbatim like any other, but its
+    /// readiness signal differs from the schema-migration ones: the schema is
+    /// fine, the bytecode simply is not here. The schema drain therefore skips
+    /// these records — replaying one before its application arrives would only
+    /// re-park it — and the bytecode drain owns them, gated on the application
+    /// becoming runnable. Kept trailing for forward hygiene, as the sibling tags
+    /// are.
+    pub pending_application: Option<[u8; 32]>,
 }
 
 /// A buffered sync-repair leaf.
@@ -118,6 +130,7 @@ impl AbsorbRecord {
             producing_app_key: bd.producing_app_key,
             leaf: None,
             entity: None,
+            pending_application: None,
         }
     }
 
@@ -147,6 +160,7 @@ impl AbsorbRecord {
                 schema_app_key,
             }),
             entity: None,
+            pending_application: None,
         }
     }
 
@@ -183,6 +197,20 @@ impl AbsorbRecord {
                 index,
                 schema_app_key,
             }),
+            pending_application: None,
+        }
+    }
+
+    /// Build a durable mirror of a delta parked on a not-yet-runnable
+    /// application. Lossless, exactly as
+    /// [`from_buffered`](Self::from_buffered) — the only difference is the
+    /// `pending_application` tag naming what the drain must wait for, which
+    /// keeps the schema drain off this record.
+    #[must_use]
+    pub fn from_buffered_pending_application(bd: &BufferedDelta, application: [u8; 32]) -> Self {
+        Self {
+            pending_application: Some(application),
+            ..Self::from_buffered(bd)
         }
     }
 
@@ -301,5 +329,37 @@ mod tests {
         assert_eq!(back.delta_signature, bd.delta_signature);
         assert_eq!(back.governance_drain_attempts, bd.governance_drain_attempts);
         assert_eq!(back.producing_app_key, bd.producing_app_key);
+    }
+
+    /// An application-parked record carries the awaited application and is still
+    /// a replayable delta: the tag changes which drain owns it, not whether the
+    /// original signed bytes come back intact.
+    #[test]
+    fn pending_application_record_tags_without_disturbing_the_delta() {
+        let bd = sample_buffered_delta();
+        let rec = AbsorbRecord::from_buffered_pending_application(&bd, [0xAB; 32]);
+
+        assert_eq!(rec.pending_application, Some([0xAB; 32]));
+        assert!(rec.leaf.is_none(), "not a leaf-shaped record");
+        assert!(rec.entity.is_none(), "not an entity-shaped record");
+
+        let bytes = borsh::to_vec(&rec).unwrap();
+        let decoded = AbsorbRecord::try_from_slice(&bytes).unwrap();
+        assert_eq!(decoded.pending_application, Some([0xAB; 32]));
+
+        let back = decoded.into_buffered().unwrap();
+        assert_eq!(back.id, bd.id);
+        assert_eq!(back.payload, bd.payload, "replay needs the original bytes");
+        assert_eq!(back.delta_signature, bd.delta_signature);
+        assert_eq!(back.producing_app_key, bd.producing_app_key);
+    }
+
+    /// The untagged constructor must leave the tag clear, or every straggler
+    /// would silently move to the application drain.
+    #[test]
+    fn from_buffered_leaves_pending_application_clear() {
+        assert!(AbsorbRecord::from_buffered(&sample_buffered_delta())
+            .pending_application
+            .is_none());
     }
 }

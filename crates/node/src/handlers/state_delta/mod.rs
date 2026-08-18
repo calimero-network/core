@@ -7,6 +7,7 @@ use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
 use calimero_governance_store::{DenyListRepository, NamespaceRepository};
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::ExecutionEvent;
 use calimero_primitives::hash::Hash;
@@ -26,7 +27,7 @@ mod store_setup;
 mod verify;
 
 pub(crate) use buffering::{
-    drain_all_absorbed, drain_all_governance_pending, recover_absorbed_on_startup,
+    drain_absorbed, drain_all_absorbed, drain_all_governance_pending, recover_absorbed_on_startup,
 };
 use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
 // Used only by the in-module test suite (the live drain/recover entry points
@@ -109,7 +110,6 @@ pub(crate) struct ReplayBufferedDeltaInput {
     pub(crate) context_id: ContextId,
     pub(crate) our_identity: PublicKey,
     pub(crate) buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
-    pub(crate) sync_timeout: std::time::Duration,
     pub(crate) is_covered_by_checkpoint: bool,
 }
 
@@ -363,6 +363,63 @@ pub(crate) async fn apply_authorized_state_delta(
         // Fall through to normal processing
     }
 
+    // Resolved here rather than after the decrypt so the runnability check below
+    // can skip self-authored deltas. A delta this node authored was already
+    // applied locally, so parking one would replay it later and double-apply it.
+    let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
+
+    // Applying before the application is runnable would apply the delta and then
+    // skip its handlers, so check before doing any of the work below — there is
+    // no point fetching a group key or decrypting a payload this node cannot
+    // execute against. A blocked delta is parked in the absorb buffer, keyed by
+    // the application it waits on, and replayed verbatim once that application
+    // arrives.
+    //
+    // Parking rather than dropping matters because gossipsub does not re-deliver
+    // a message it has already delivered: without a durable copy the only
+    // recovery would be hash-heartbeat divergence triggering a snapshot sync.
+    // The original ciphertext is what gets stored — a replay is verified against
+    // the same bytes the sender signed.
+    if author_id != our_identity {
+        if let BytecodeStatus::Missing(application_id) =
+            application_bytecode_status(&node_clients.node, &node_clients.context, &context_id)?
+        {
+            let record = calimero_governance_store::AbsorbRecord::from_buffered_pending_application(
+                &calimero_node_primitives::delta_buffer::BufferedDelta {
+                    id: delta_id,
+                    parents: parent_ids.clone(),
+                    hlc,
+                    payload: artifact.clone(),
+                    nonce,
+                    author_id,
+                    source_peer: source,
+                    key_id,
+                    governance_position: governance_position.clone(),
+                    delta_signature,
+                    governance_drain_attempts: 0,
+                    producing_app_key,
+                },
+                *application_id.as_ref(),
+            );
+            // Keyed by the awaited application rather than by `producing_app_key`:
+            // the application id resolves from local context metadata even when
+            // nothing about the application has landed, and a delta may carry no
+            // `producing_app_key` at all. `delta_id` keeps the key unique, so a
+            // re-delivery overwrites instead of duplicating.
+            calimero_governance_store::AbsorbRepository::new(node_clients.context.datastore())
+                .save(&context_id, *application_id.as_ref(), &record)?;
+            info!(
+                %context_id,
+                %author_id,
+                %application_id,
+                delta_id = ?delta_id,
+                "Parking state delta — application not runnable locally; will replay when it arrives"
+            );
+            crate::node_metrics::record_delta_outcome("parked_pending_application");
+            return Ok(());
+        }
+    }
+
     let group_key = {
         let store = node_clients.context.datastore();
         let gid = calimero_governance_store::get_group_for_context(store, &context_id)?;
@@ -420,8 +477,6 @@ pub(crate) async fn apply_authorized_state_delta(
         kind: calimero_dag::DeltaKind::Regular,
     };
 
-    let our_identity = choose_owned_identity(&node_clients.context, &context_id).await?;
-
     // Check if this is our own delta (gossipsub echoes back to sender).
     // Self-authored deltas are already applied locally, so we should NOT re-apply them.
     // This prevents state divergence from double-application of actions.
@@ -441,25 +496,6 @@ pub(crate) async fn apply_authorized_state_delta(
         return Ok(());
     }
 
-    // Check if application is available BEFORE applying the delta.
-    // If not available, bail early so the delta can be retried later when rebroadcast.
-    // This prevents the scenario where we apply the delta but skip handlers because
-    // the application blob hasn't finished downloading yet.
-    if let Err(e) = ensure_application_available(
-        &node_clients.node,
-        &node_clients.context,
-        &context_id,
-        sync_timeout,
-    )
-    .await
-    {
-        bail!(
-            "Application not available for context {} - delta will be retried on rebroadcast: {}",
-            context_id,
-            e
-        );
-    }
-
     let DeltaStoreSetup {
         store: delta_store_ref,
         is_uninitialized,
@@ -469,7 +505,6 @@ pub(crate) async fn apply_authorized_state_delta(
         context_id,
         our_identity,
         context.root_hash,
-        sync_timeout,
     )
     .await?;
 
@@ -520,7 +555,6 @@ pub(crate) async fn apply_authorized_state_delta(
             &node_clients.context,
             &context_id,
             &our_identity,
-            sync_timeout,
             "missing parent check",
             Some(&delta_id),
             &delta_store_ref,
@@ -629,7 +663,6 @@ pub(crate) async fn apply_authorized_state_delta(
                             &node_clients.context,
                             &context_id,
                             &our_identity,
-                            sync_timeout,
                             "peer-fetch cascade",
                             Some(&delta_id),
                             &delta_store_ref,
@@ -780,7 +813,6 @@ pub(crate) async fn apply_authorized_state_delta(
         &node_clients.context,
         &context_id,
         &our_identity,
-        sync_timeout,
         "dag cascade",
         None,
         &delta_store_ref,
@@ -1759,87 +1791,45 @@ async fn request_missing_deltas(
     Ok(cascaded_events)
 }
 
-/// Ensures the application blob is available for a context before handler execution.
+/// Whether a context's application bytecode is executable right now.
+pub(crate) enum BytecodeStatus {
+    /// The application is installed and its bytecode blob is stored locally.
+    Ready,
+    /// Not executable yet. Carries the context's application id, which is
+    /// resolvable from local context metadata whether or not the application row
+    /// itself has landed, so a caller always has something to key a parked delta
+    /// on.
+    Missing(ApplicationId),
+}
+
+/// Reports whether the application bytecode for `context_id` can be executed,
+/// so callers never apply a delta or run handlers against bytecode this node
+/// does not have.
 ///
-/// This fixes the race condition where gossipsub state deltas arrive before the
-/// WASM application blob has finished downloading. Without this check, handler
-/// execution would fail with "ApplicationNotInstalled" errors.
-///
-/// The function polls for blob availability with exponential backoff, up to the
-/// specified timeout. If the blob becomes available, it returns Ok(()); otherwise
-/// it returns an error.
-async fn ensure_application_available(
+/// This only observes; it never waits. A blocked delta is parked in the absorb
+/// buffer and replayed once the bytecode lands. Waiting here would be waiting on
+/// someone else's work in any case — the download is driven by the sync manager,
+/// not by this path — and each waiting caller holds a delta payload and store
+/// handles for the duration, so a peer that gossips deltas for a context whose
+/// bytecode it never serves could grow that set at the full delta arrival rate.
+fn application_bytecode_status(
     node_client: &calimero_node_primitives::client::NodeClient,
     context_client: &calimero_context_client::client::ContextClient,
     context_id: &ContextId,
-    timeout: std::time::Duration,
-) -> Result<()> {
-    use std::time::Duration;
-    use tokio::time::{sleep, Instant};
-
+) -> Result<BytecodeStatus> {
     let context = context_client
         .get_context(context_id)?
         .ok_or_else(|| eyre::eyre!("context not found"))?;
 
     let application_id = context.application_id;
 
-    // Check if application is already installed and blob available
-    if let Ok(Some(app)) = node_client.get_application(&application_id) {
-        // Application exists, check if bytecode blob is available
-        if node_client.has_blob(&app.blob.bytecode)? {
-            debug!(
-                %context_id,
-                %application_id,
-                "Application blob already available"
-            );
-            return Ok(());
-        }
+    // A missing application row and a present row whose bytecode blob has not
+    // arrived are the same situation to every caller: nothing to execute yet.
+    // On the sync path the row and the blob land together.
+    match node_client.get_application(&application_id) {
+        Ok(Some(app)) if node_client.has_blob(&app.blob.bytecode)? => Ok(BytecodeStatus::Ready),
+        _ => Ok(BytecodeStatus::Missing(application_id)),
     }
-
-    // Blob not yet available - poll with backoff
-    let start = Instant::now();
-    let mut delay = Duration::from_millis(50);
-    let max_delay = Duration::from_millis(500);
-
-    info!(
-        %context_id,
-        %application_id,
-        timeout_ms = timeout.as_millis(),
-        "Waiting for application blob to become available..."
-    );
-
-    while start.elapsed() < timeout {
-        sleep(delay).await;
-
-        // Re-check application and blob
-        if let Ok(Some(app)) = node_client.get_application(&application_id) {
-            if node_client.has_blob(&app.blob.bytecode)? {
-                info!(
-                    %context_id,
-                    %application_id,
-                    elapsed_ms = start.elapsed().as_millis(),
-                    "Application blob now available"
-                );
-                return Ok(());
-            }
-        }
-
-        // Exponential backoff
-        delay = std::cmp::min(delay * 2, max_delay);
-    }
-
-    // Timeout reached
-    warn!(
-        %context_id,
-        %application_id,
-        elapsed_ms = start.elapsed().as_millis(),
-        "Timeout waiting for application blob"
-    );
-
-    Err(eyre::eyre!(
-        "Application blob not available after {:?}",
-        timeout
-    ))
 }
 
 /// Replay a buffered delta after snapshot sync completes.
@@ -1862,7 +1852,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         context_id,
         our_identity,
         buffered,
-        sync_timeout,
         is_covered_by_checkpoint,
     } = input;
 
@@ -2166,7 +2155,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             &context_client,
             &context_id,
             &our_identity,
-            sync_timeout,
             "buffered-replay crash recovery",
             None,
             &delta_store,
@@ -2312,7 +2300,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         &context_client,
         &context_id,
         &our_identity,
-        sync_timeout,
         "buffered delta replay",
         None,
         &delta_store,
@@ -2764,6 +2751,51 @@ mod tests {
             let drained = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
             assert_eq!(drained, 1, "the future delta drains once the node advances");
             assert!(repo.enumerate_pending(&ctx).unwrap().is_empty());
+        }
+
+        /// A delta parked on a not-yet-runnable application must be SKIPPED by
+        /// the schema drain even when the node is at the target schema. Its
+        /// readiness signal is the application arriving, which this drain cannot
+        /// observe (it holds a store, not a node client) — replaying it here
+        /// would only re-park it.
+        #[tokio::test]
+        async fn delta_drain_skips_application_parked_records() {
+            // loaded == target == v2, so nothing schema-related holds this back.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+
+            repo.save(
+                &ctx,
+                APP_V2,
+                &AbsorbRecord::from_buffered_pending_application(
+                    &sample_buffered([0xF6; 32], APP_V2),
+                    [0xAA; 32],
+                ),
+            )
+            .unwrap();
+
+            let replayed = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+            let replayed_capture = replayed.clone();
+            let drained = drain_absorbed_records(&store, &ctx, move |_buffered| {
+                let replayed = replayed_capture.clone();
+                async move {
+                    *replayed.lock().unwrap() += 1;
+                    Ok::<bool, eyre::Report>(true)
+                }
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(
+                drained, 0,
+                "an application-parked delta is not a schema drain's to replay"
+            );
+            assert_eq!(*replayed.lock().unwrap(), 0, "replay must not be invoked");
+            assert_eq!(
+                repo.enumerate_pending(&ctx).unwrap().len(),
+                1,
+                "the parked delta stays pending for the application drain"
+            );
         }
 
         /// Leaf- and entity-shaped sync-repair records are NOT replayable deltas

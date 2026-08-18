@@ -43,7 +43,6 @@ pub(super) async fn init_delta_store(
     context_id: ContextId,
     our_identity: PublicKey,
     root_hash: Hash,
-    sync_timeout: std::time::Duration,
 ) -> Result<DeltaStoreSetup> {
     let is_uninitialized = root_hash == Hash::default();
 
@@ -118,7 +117,6 @@ pub(super) async fn init_delta_store(
                 &node_clients.context,
                 &context_id,
                 &our_identity,
-                sync_timeout,
                 "initial load",
                 None,
                 &delta_store_ref,

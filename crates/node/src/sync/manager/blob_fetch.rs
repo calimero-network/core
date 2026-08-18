@@ -220,7 +220,36 @@ impl SyncManager {
         // Use the verified installed application
         *application = Some(installed_application);
 
+        // The application is runnable as of here: its bytecode blob is local
+        // (checked at the top of this function) and its row is installed and
+        // verified. Any state delta that arrived while it was missing was parked
+        // rather than applied, so replay those now instead of leaving them for
+        // the next namespace event or sync settle.
+        self.drain_deltas_parked_on_application(context_id).await;
+
         Ok(())
+    }
+
+    /// Replay state deltas parked because this context's application was not
+    /// runnable yet.
+    ///
+    /// The gossip apply path parks such a delta in the durable absorb buffer
+    /// instead of applying it against bytecode this node cannot execute. This is
+    /// the prompt trigger for the common case — the application just arrived by
+    /// blob sync. Applications can also land by other routes (an operator
+    /// installing one over the admin API), which is why the same drain is
+    /// chained off every other absorb-drain hook as a safety net.
+    async fn drain_deltas_parked_on_application(&self, context_id: &ContextId) {
+        let drain_input = crate::handlers::state_delta::StateDeltaContext {
+            node_clients: crate::state::NodeClients {
+                context: self.context_client.clone(),
+                node: self.node_client.clone(),
+            },
+            node_state: self.node_state.clone(),
+            network_client: self.network_client.clone(),
+            sync_timeout: self.sync_config.timeout,
+        };
+        crate::handlers::state_delta::drain_absorbed(&drain_input, context_id).await;
     }
 
     /// Resolves an application's semver from its `ApplicationMeta` row via the
