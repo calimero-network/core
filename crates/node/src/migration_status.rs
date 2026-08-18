@@ -792,6 +792,56 @@ pub(crate) fn on_heartbeat_facts_changed(
 /// or the record has not finished being written - so the caller puts the
 /// completion edge back. A guard that DID decide returns `true` and the
 /// caller's consumed edge stays consumed.
+/// What claiming the one-time fleet-convergence stamp decided.
+#[derive(Debug, PartialEq, Eq)]
+enum FleetStamp {
+    /// This caller persisted the stamp; announce with exactly this timestamp.
+    Claimed(u64),
+    /// Already stamped, or this record does not name the target - nothing left
+    /// to decide, so the caller keeps the completion edge consumed.
+    Settled,
+    /// A store fault decided nothing; the caller hands the edge back.
+    Faulted,
+}
+
+/// The fleet stamp's read-check-write, serialized and write-once.
+///
+/// `now` is a parameter rather than read here so a test can hand concurrent
+/// callers distinct timestamps; at one-second resolution two racing writes
+/// would otherwise usually produce the same value and hide the very
+/// divergence this guards.
+///
+/// The store has no compare-and-swap and two actors reach this for the same
+/// namespace (the gossip receive path and `MigrationEmitter`), so without the
+/// lock both can read an absent stamp and both write - the later landing last
+/// and replacing the timestamp its peer already announced.
+fn claim_fleet_stamp(
+    repo: &calimero_governance_store::UpgradesRepository<'_>,
+    ns: &calimero_context_config::types::ContextGroupId,
+    names_target: bool,
+    now: u64,
+) -> FleetStamp {
+    let _guard = FLEET_STAMP_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match repo.fleet_completed_at(ns) {
+        Ok(None) => {}
+        Ok(Some(_)) => return FleetStamp::Settled,
+        Err(err) => {
+            tracing::error!(?err, "failed to read the migration completion stamp");
+            return FleetStamp::Faulted;
+        }
+    }
+    if !names_target {
+        return FleetStamp::Settled;
+    }
+    if let Err(err) = repo.set_fleet_completed_at(ns, now) {
+        tracing::error!(?err, "failed to stamp migration completion");
+        return FleetStamp::Faulted;
+    }
+    FleetStamp::Claimed(now)
+}
+
 fn stamp_fleet_completion(
     datastore: &Store,
     node_client: &NodeClient,
@@ -817,34 +867,16 @@ fn stamp_fleet_completion(
     ) {
         return false;
     }
-    // Held across the read and the write below: the announcing caller must be
-    // the one whose timestamp persists, and a second actor that observed the
-    // same absent stamp would otherwise overwrite it.
-    let stamp_guard = FLEET_STAMP_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match repo.fleet_completed_at(ns) {
-        Ok(None) => {}
-        Ok(Some(_)) => return true,
-        Err(err) => {
-            tracing::error!(?err, "failed to read the migration completion stamp");
-            return false;
-        }
-    }
-    if record.to_state_version != target_version {
-        return true;
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    if let Err(err) = repo.set_fleet_completed_at(ns, now) {
-        tracing::error!(?err, "failed to stamp migration completion");
-        return false;
-    }
-    // The stamp is durable now, so a concurrent caller reads `Some` and stops.
-    // Emitting below must not hold a process-global lock.
-    drop(stamp_guard);
+    let claimed = match claim_fleet_stamp(&repo, ns, record.to_state_version == target_version, now)
+    {
+        FleetStamp::Faulted => return false,
+        FleetStamp::Settled => return true,
+        FleetStamp::Claimed(at) => at,
+    };
     let to_version = record.to_version;
     if !announce {
         return true;
@@ -855,8 +887,10 @@ fn stamp_fleet_completion(
         datastore,
         ns,
         calimero_primitives::events::GroupMigrationPayload::MigrationCompleted {
+            // What `claim_fleet_stamp` persisted, not the locally-computed
+            // `now`: the announced timestamp must be the stored one.
             to_version,
-            completed_at: now,
+            completed_at: claimed,
         },
     );
     true
@@ -1143,6 +1177,81 @@ mod tests {
     use super::*;
 
     const NS: [u8; 32] = [42u8; 32];
+
+    /// The stamp is written ONCE, by whichever caller wins, and the winner's
+    /// timestamp is what persists.
+    ///
+    /// Two actors reach `stamp_fleet_completion` for the same namespace - the
+    /// gossip receive path and `MigrationEmitter` - and the latch mutex guards
+    /// only the in-memory edge, not the store. Without serialization both read
+    /// an absent stamp and both write, and the later one replaces the timestamp
+    /// its peer has ALREADY announced, so `MigrationCompleted.completed_at`
+    /// stops matching `fleet_completed_at`.
+    ///
+    /// Each thread offers a distinct `now` precisely so a second write is
+    /// visible: at one-second resolution real racing writes usually collide on
+    /// the same value and the divergence hides.
+    #[test]
+    fn the_fleet_stamp_is_claimed_once_and_the_winner_is_what_persists() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::UpgradesRepository;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 16;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x7Au8; 32]);
+        // Released together, so the read-check-write windows genuinely overlap.
+        let barrier = Arc::new(Barrier::new(THREADS));
+
+        let claims: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|i| {
+                    let store = store.clone();
+                    let barrier = Arc::clone(&barrier);
+                    scope.spawn(move || {
+                        let repo = UpgradesRepository::new(&store);
+                        let _ = barrier.wait();
+                        // Distinct, increasing timestamps: 1_000, 1_001, ...
+                        claim_fleet_stamp(&repo, &ns, true, 1_000 + i as u64)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("claim thread panicked"))
+                .collect()
+        });
+
+        let winners: Vec<u64> = claims
+            .iter()
+            .filter_map(|outcome| match outcome {
+                FleetStamp::Claimed(at) => Some(*at),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            winners.len(),
+            1,
+            "exactly one caller may claim the stamp, got {winners:?}"
+        );
+        assert_eq!(
+            UpgradesRepository::new(&store)
+                .fleet_completed_at(&ns)
+                .expect("the stamp must read back"),
+            Some(winners[0]),
+            "the persisted stamp must be the winner's - a later writer \
+             replacing it is what breaks the announced completed_at"
+        );
+        assert!(
+            claims
+                .iter()
+                .all(|outcome| !matches!(outcome, FleetStamp::Faulted)),
+            "no caller may fault: {claims:?}"
+        );
+    }
 
     /// Build a heartbeat signed by `sk` over the canonical signable bytes.
     fn signed_hb(
