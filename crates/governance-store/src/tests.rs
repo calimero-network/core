@@ -8764,6 +8764,52 @@ mod apply_auth_at_cut {
         }
     }
 
+    /// The announcement must still go out when there is no previous id.
+    ///
+    /// It used to be gated on a `Some` previous id, and that id is read through
+    /// `.ok().flatten()` - so a transient store error made `MigrationStarted`
+    /// vanish entirely rather than report an unknown `from`. A subscriber has no
+    /// replay, so an event that is never emitted is never recoverable, and
+    /// merobox's `/ws` gate and the drive panel both wait on exactly this event.
+    #[test]
+    fn a_migration_with_no_previous_id_is_still_announced() {
+        use crate::op_events::OpEvent;
+        use crate::ops::group::context::GroupApplyCtx;
+
+        let store = test_store();
+        let gid = test_group_id();
+        let signer = PublicKey::from([0x11; 32]);
+        let target = ApplicationId::from([0x5B; 32]);
+
+        let mut ctx =
+            GroupApplyCtx::new_with_apply_auth(&store, &gid, &signer, &CUT, &FixedAuthorizer(true));
+        ctx.queue_migration_started(None, &target, Some(2), 7);
+
+        let announced = ctx
+            .pending_events
+            .iter()
+            .find_map(|event| match event {
+                OpEvent::MigrationStarted {
+                    from_version,
+                    to_state_version,
+                    local_contexts_total,
+                    ..
+                } => Some((
+                    from_version.clone(),
+                    *to_state_version,
+                    *local_contexts_total,
+                )),
+                _ => None,
+            })
+            .expect("an absent previous id must still announce MigrationStarted");
+
+        assert_eq!(
+            announced,
+            ("unknown".to_owned(), 2, 7),
+            "no previous id names no version, and the rest of the payload still rides"
+        );
+    }
+
     /// The persisted record and the announced event derive `from_version`
     /// through this one function, because deriving it twice is how they came to
     /// disagree: the record fell back to "unknown" on an ABSENT previous id
