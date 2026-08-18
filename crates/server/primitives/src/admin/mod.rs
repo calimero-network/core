@@ -1519,10 +1519,8 @@ pub struct MemberMigrationStatusApiEntry {
     /// The reporting device key, bs58. A member with two devices appears twice.
     pub peer: PublicKey,
     /// The account `peer` speaks for, 64 hex. Joins these rows to the
-    /// account-keyed `GET /groups/:id/members`, which carries `name`.
-    ///
-    /// `None` only from a node predating the field; defaulting it instead would
-    /// name a principal that exists nowhere.
+    /// account-keyed `GET /groups/:id/members`. `None` only from a node
+    /// predating the field - a default would name a principal that exists nowhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<AccountId>,
     /// The member's freshest reported facts, or `null` when it has no fresh
@@ -2682,12 +2680,8 @@ mod tests {
         assert!(!resp.group_created);
     }
 
-    /// A node predating `account` omits it, and a newer client must still parse
-    /// that response rather than fail the whole read.
-    ///
-    /// The absent case has to stay ABSENT, not default to a zero account: that
-    /// would hand the caller a principal-shaped value naming nobody, which is
-    /// the exact confusion the field was added to remove.
+    /// A node predating `account` omits it and must still parse. Absent stays
+    /// absent: a zero account would name a principal that exists nowhere.
     #[test]
     fn a_member_entry_without_an_account_still_deserializes() {
         let json = serde_json::json!({
