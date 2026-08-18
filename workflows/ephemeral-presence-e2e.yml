@@ -242,7 +242,7 @@ steps:
   # Eviction is observed the only way presence can be: a FRESH subscriber is
   # seeded with exactly what the awareness store still holds, so the seed is
   # the snapshot. The check also requires node 2's OWN entry to be in that seed,
-  # so an empty/ broken subscription cannot pass as a successful eviction.
+  # so an empty/broken subscription cannot pass as a successful eviction.
   - name: "Run TTL eviction check (node 1 entry must expire on node 2)"
     type: script
     script: workflows/scripts/ephemeral-ttl-check.sh
