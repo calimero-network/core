@@ -3010,7 +3010,6 @@ impl SyncManager {
                 context_id,
                 our_identity,
                 buffered,
-                sync_timeout: self.sync_config.timeout,
                 is_covered_by_checkpoint,
             })
             .await

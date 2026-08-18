@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::delta_store::DeltaStore;
 
-use super::ensure_application_available;
+use super::{application_bytecode_status, BytecodeStatus};
 
 // ---- CascadeOutcome ----
 #[derive(Default)]
@@ -51,7 +51,6 @@ pub(super) async fn execute_cascaded_events(
     context_client: &ContextClient,
     context_id: &ContextId,
     our_identity: &PublicKey,
-    sync_timeout: std::time::Duration,
     phase: &str,
     current_delta: Option<&[u8; 32]>,
     delta_store: &DeltaStore,
@@ -90,10 +89,10 @@ pub(super) async fn execute_cascaded_events(
         }
     }
 
-    let app_available =
-        ensure_application_available(node_client, context_client, context_id, sync_timeout)
-            .await
-            .is_ok();
+    let app_available = matches!(
+        application_bytecode_status(node_client, context_client, context_id),
+        Ok(BytecodeStatus::Ready)
+    );
 
     if !app_available {
         warn!(

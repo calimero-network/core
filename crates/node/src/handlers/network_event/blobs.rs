@@ -43,6 +43,12 @@ pub(super) fn handle_blob_providers_found(
 /// content check that used to live here is not lost — the requesting path makes
 /// the same one against the id it asked for, and refuses the peer's answer on a
 /// mismatch.
+///
+/// For the same reason this is also the wrong place to react to a blob becoming
+/// usable — an application arriving, say. This event fires when the bytes finish
+/// transferring, which is *before* the requesting path stores them, so anything
+/// checking whether the blob is present would race and usually lose. React at
+/// the point the requesting path has stored it instead.
 pub(super) fn handle_blob_downloaded(
     blob_id: BlobId,
     context_id: ContextId,
