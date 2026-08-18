@@ -5,6 +5,7 @@ use core::task::{Context, Poll};
 use std::collections::HashSet;
 use std::io::ErrorKind as IoErrorKind;
 use std::process;
+use std::sync::Arc;
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
@@ -19,6 +20,7 @@ use futures_util::{AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 use tokio::fs::{create_dir_all, read as async_read, rename, try_exists, write as async_write};
+use tokio::sync::{Mutex, MutexGuard};
 use tracing::{debug, error, trace};
 
 pub mod config;
@@ -45,10 +47,78 @@ const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as usize] = [
 const MAX_BLOB_DEPTH: usize = 64;
 const MAX_BLOB_NODES: usize = 1 << 20;
 
+/// How many mutex stripes serialise reference-count updates (see [`RefLocks`]).
+/// The set is allocated once per manager and never grows, so this is the whole
+/// memory cost of the guarantee.
+const REF_LOCK_STRIPES: usize = 64;
+
+/// Serialises a blob's reference-count read-modify-write, together with the
+/// backing-file operation that belongs to it, per blob id.
+///
+/// Blobs are content-addressed, so unrelated callers routinely land on the same
+/// id: two owners uploading identical bytes, a synced blob arriving while a
+/// local delete tears the same content down, two roots sharing a chunk. Each
+/// side reads `refs`, adjusts it and writes it back over separate store
+/// operations, so interleaved they can both read `N` and both write `N + 1` —
+/// losing an increment and freeing content somebody still owns — or both
+/// decrement `1` to zero and double-free. The store's atomic path
+/// ([`calimero_store::Store::apply`]) does not close this on its own: it is one
+/// `WriteBatch`, so it makes the *writes* all-or-nothing but has no read set,
+/// and both racers would still read the same stale count outside the batch.
+///
+/// Stripes rather than a map keyed by blob id: the lock has to be held before
+/// the row is read and until after it is written, so a map would need its own
+/// lock plus eviction for ids that no longer exist. A fixed set is bounded by
+/// construction. Two unrelated ids sharing a stripe merely wait for each other;
+/// correctness needs only that one id always maps to one stripe.
+#[derive(Debug)]
+struct RefLocks([Mutex<()>; REF_LOCK_STRIPES]);
+
+impl RefLocks {
+    fn new() -> Self {
+        Self(core::array::from_fn(|_| Mutex::new(())))
+    }
+
+    /// Lock the stripe owning `id`, for the whole of the metadata update and the
+    /// file put/delete that goes with it — they are one logical operation, and
+    /// splitting them lets a delete's file removal land after a concurrent
+    /// re-add has already written both the row and the bytes.
+    ///
+    /// Hold one stripe at a time. With a single guard per task there is no lock
+    /// order to get wrong, which is why [`BlobManager::delete`] lets the root's
+    /// guard drop before it touches the chunks.
+    async fn lock(&self, id: BlobId) -> MutexGuard<'_, ()> {
+        // A blob id is a SHA-256 digest, so every byte is uniformly distributed
+        // and one byte is enough to spread ids across the stripes.
+        let stripe = usize::from(AsRef::<[u8; 32]>::as_ref(&id)[0]) % REF_LOCK_STRIPES;
+        self.0[stripe].lock().await
+    }
+}
+
+/// What releasing one reference to a blob id did.
+#[derive(Debug)]
+enum RefRelease {
+    /// No metadata row referenced the id — there was nothing to release.
+    Absent,
+    /// References remain: the decremented count is persisted and the blob stays
+    /// readable for its other owners.
+    Released {
+        /// The row's chunk links, so the caller can release the per-chunk
+        /// references that belong to the add it is undoing.
+        links: Box<[BlobMetaKey]>,
+    },
+    /// The last reference is gone: the row and the backing file were removed.
+    Freed { links: Box<[BlobMetaKey]> },
+}
+
 #[derive(Clone, Debug)]
 pub struct BlobManager {
     data_store: DataStore,
     blob_store: FileSystem, // Arc<dyn BlobRepository>
+    /// Shared by every clone: a `BlobManager` is cloned freely (each `get`
+    /// clones one), and stripes only serialise anything if all clones contend
+    /// on the same set.
+    ref_locks: Arc<RefLocks>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,10 +165,11 @@ impl Size {
 
 impl BlobManager {
     #[must_use]
-    pub const fn new(data_store: DataStore, blob_store: FileSystem) -> Self {
+    pub fn new(data_store: DataStore, blob_store: FileSystem) -> Self {
         Self {
             data_store,
             blob_store,
+            ref_locks: Arc::new(RefLocks::new()),
         }
     }
 
@@ -156,32 +227,19 @@ impl BlobManager {
     /// physically removed — if other owners still reference the content, only
     /// the count was decremented and the blob remains readable for them.
     ///
-    /// The read-decrement-write is not atomic against a concurrent add/delete of
-    /// the *same* content id; callers today drive blob lifecycle serially per
-    /// id (see the INVARIANT on [`Self::release_ref`]). Making it fully atomic
-    /// would move the refcount update onto the store's transaction path
-    /// ([`calimero_store::Store::apply`]).
+    /// Safe against a concurrent add or delete of the *same* content id: each
+    /// reference change runs under that id's stripe lock (see [`RefLocks`]), so
+    /// no increment can be lost and no content can be freed twice. Ids are
+    /// locked one at a time — the root's guard is dropped before its chunks are
+    /// released — so two deletes over overlapping chunk sets cannot deadlock.
     pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
-        let Some(meta) = self.data_store.handle().get(&BlobMetaKey::new(id))? else {
-            // No metadata row references this id, so as a *referenced blob* it was
-            // already absent — return `false` regardless of whether an orphan file
-            // happened to linger. Still sweep any such file best-effort (ignoring
-            // its outcome) so `has` (metadata-only) and `get` (file-backed) stay
-            // consistent.
-            let _ = self.blob_store.delete(id).await;
-            return Ok(false);
+        // Release the root's own reference, and its file once that was the last
+        // one. A root blob keeps its content in its chunks and has no backing
+        // file of its own, so the file delete is a harmless no-op for roots.
+        let links = match self.release_ref(id).await? {
+            RefRelease::Absent => return Ok(false),
+            RefRelease::Released { links } | RefRelease::Freed { links } => links,
         };
-
-        // Release the root's own reference. A root blob keeps its content in its
-        // chunks and has no backing file of its own, so `blob_store.delete` on
-        // the root id is a harmless no-op; it is kept for blobs that ever carry
-        // their own file. A failed file delete is logged, not propagated, so we
-        // still go on to release the chunk references below.
-        if self.release_ref(id, &meta)? {
-            if let Err(err) = self.blob_store.delete(id).await {
-                tracing::warn!(%id, %err, "failed to delete root blob file during delete");
-            }
-        }
 
         // Release one reference from every chunk, mirroring the per-chunk
         // increment on add. A chunk shared by another still-live root keeps a
@@ -189,63 +247,62 @@ impl BlobManager {
         // chunk is logged and skipped rather than propagated, so it cannot leave
         // the *remaining* chunks with their reference counts un-decremented
         // (which would leak them permanently).
-        for link in &meta.links {
+        for link in &links {
             let chunk_id = link.blob_id();
-            let chunk_meta = match self.data_store.handle().get(&BlobMetaKey::new(chunk_id)) {
-                Ok(Some(chunk_meta)) => chunk_meta,
-                Ok(None) => continue,
-                Err(err) => {
-                    tracing::warn!(%chunk_id, %err, "failed to read chunk metadata during delete; skipping");
-                    continue;
-                }
-            };
-            match self.release_ref(chunk_id, &chunk_meta) {
-                Ok(true) => {
-                    if let Err(err) = self.blob_store.delete(chunk_id).await {
-                        tracing::warn!(%chunk_id, %err, "failed to delete chunk file during delete");
-                    }
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    tracing::warn!(%chunk_id, %err, "failed to release chunk reference during delete");
-                }
+            if let Err(err) = self.release_ref(chunk_id).await {
+                tracing::warn!(%chunk_id, %err, "failed to release chunk reference during delete");
             }
         }
 
         Ok(true)
     }
 
-    /// Decrement `id`'s reference count by one. Returns `true` when the count
-    /// reaches zero — the metadata row is deleted and the caller must remove the
-    /// backing file — or `false` when references remain, in which case the
-    /// decremented count is persisted and the blob is kept.
+    /// Decrement `id`'s reference count by one, removing the metadata row and
+    /// the backing file once it reaches zero.
     ///
-    /// INVARIANT: this and [`Self::persist_ref`] read-modify-write a single
-    /// metadata row across separate store operations and are NOT atomic. Callers
-    /// must serialize add/delete for the same blob id (the node drives blob
-    /// lifecycle serially per id today). A concurrent add interleaved with a
-    /// delete could lose an increment and free content that still has a live
-    /// owner; making it atomic means moving the update onto the store's
-    /// transaction path ([`calimero_store::Store::apply`]).
-    fn release_ref(&self, id: BlobId, meta: &BlobMetaValue) -> EyreResult<bool> {
+    /// The row is read, adjusted and written back under `id`'s stripe lock, and
+    /// the file delete happens under the same guard, so a concurrent add of the
+    /// same content can neither lose its increment nor have the bytes it just
+    /// wrote swept by this delete. The count is therefore read *here*, never
+    /// taken from a caller that read it before the lock: such a copy can already
+    /// be stale by the time it would be written back.
+    async fn release_ref(&self, id: BlobId) -> EyreResult<RefRelease> {
         let key = BlobMetaKey::new(id);
+        let _guard = self.ref_locks.lock(id).await;
+
+        let Some(meta) = self.data_store.handle().get(&key)? else {
+            // No metadata row references this id, so as a *referenced blob* it was
+            // already absent. Still sweep any orphan file best-effort (ignoring
+            // its outcome) so `has` (metadata-only) and `get` (file-backed) stay
+            // consistent.
+            let _ = self.blob_store.delete(id).await;
+            return Ok(RefRelease::Absent);
+        };
+
         // refs should never be 0 for a stored entry; if it is (store corruption
         // or a bug that wrote a zero-ref row), surface it rather than silently
         // "fixing" it, then proceed to reclaim the row via the zero arm below.
         if meta.refs == 0 {
             tracing::warn!(%id, "release_ref on a blob with refs == 0; reclaiming as last reference");
         }
+
         match meta.refs.saturating_sub(1) {
             0 => {
                 self.data_store.handle().delete(&key)?;
-                Ok(true)
+                // A failed file delete is logged, not propagated, so the caller
+                // still goes on to release this blob's chunks.
+                if let Err(err) = self.blob_store.delete(id).await {
+                    tracing::warn!(%id, %err, "failed to delete blob file after last reference");
+                }
+                Ok(RefRelease::Freed { links: meta.links })
             }
             remaining => {
+                let links = meta.links;
                 self.data_store.handle().put(
                     &key,
-                    &BlobMetaValue::new(meta.size, meta.hash, meta.links.clone(), remaining),
+                    &BlobMetaValue::new(meta.size, meta.hash, links.clone(), remaining),
                 )?;
-                Ok(false)
+                Ok(RefRelease::Released { links })
             }
         }
     }
@@ -255,16 +312,23 @@ impl BlobManager {
     /// a chunk shared by another root) bumps the count instead of silently
     /// aliasing a single reference that the first delete would tear down.
     ///
-    /// INVARIANT: like [`Self::release_ref`], the read-modify-write here is not
-    /// atomic; callers must serialize add/delete for the same blob id.
-    fn persist_ref(
+    /// `contents` carries the chunk bytes for a leaf, or `None` for a root (whose
+    /// content lives in its chunks). They are written under the same stripe lock
+    /// as the row, and before it, so a crash can only ever leave an orphan file —
+    /// swept by the next delete — never a row pointing at bytes that were never
+    /// written. Like [`Self::release_ref`], holding the lock across the whole
+    /// read-modify-write is what makes a concurrent add/delete of this id safe.
+    async fn persist_ref(
         &self,
         id: BlobId,
         size: u64,
         hash: [u8; 32],
         links: Box<[BlobMetaKey]>,
+        contents: Option<&[u8]>,
     ) -> EyreResult<()> {
         let key = BlobMetaKey::new(id);
+        let _guard = self.ref_locks.lock(id).await;
+
         let refs = match self.data_store.handle().get(&key)? {
             // Overflow is not physically reachable (it needs u32::MAX live
             // references to one content id) but is surfaced rather than saturated:
@@ -275,6 +339,11 @@ impl BlobManager {
             })?,
             None => 1,
         };
+
+        if let Some(contents) = contents {
+            self.blob_store.put(id, contents).await?;
+        }
+
         self.data_store
             .handle()
             .put(&key, &BlobMetaValue::new(size, hash, links, refs))?;
@@ -353,9 +422,14 @@ impl BlobManager {
 
                 let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
 
-                self.persist_ref(id, blob.size as u64, *id, Box::default())?;
-
-                self.blob_store.put(id, &buf[..blob.size]).await?;
+                self.persist_ref(
+                    id,
+                    blob.size as u64,
+                    *id,
+                    Box::default(),
+                    Some(&buf[..blob.size]),
+                )
+                .await?;
 
                 trace!(
                     ?id,
@@ -429,7 +503,8 @@ impl BlobManager {
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
-        self.persist_ref(id, size, *hash, links.into_boxed_slice())?;
+        self.persist_ref(id, size, *hash, links.into_boxed_slice(), None)
+            .await?;
 
         debug!(
             ?id,
@@ -1245,6 +1320,227 @@ mod concurrent_write_tests {
             names,
             vec![id.to_string()],
             "the blob itself must be the only file left"
+        );
+    }
+}
+
+/// Reference counting is a read-modify-write over one metadata row, so its
+/// correctness only shows up under genuine concurrency on the *same* content id —
+/// exactly what content addressing makes routine.
+#[cfg(test)]
+mod refcount_concurrency_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store as DataStore;
+    use camino::Utf8PathBuf;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    async fn manager(root: &Path) -> BlobManager {
+        let data_store = DataStore::new(Arc::new(InMemoryDB::owned()));
+        let config = BlobStoreConfig::new(Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap());
+        let blob_store = FileSystem::new(&config).await.unwrap();
+        BlobManager::new(data_store, blob_store)
+    }
+
+    fn refs_of(mgr: &BlobManager, id: BlobId) -> Option<u32> {
+        mgr.data_store
+            .handle()
+            .get(&BlobMetaKey::new(id))
+            .unwrap()
+            .map(|meta| meta.refs)
+    }
+
+    async fn read_all(mgr: &BlobManager, id: BlobId) -> Vec<u8> {
+        let mut stream = mgr.get(id).unwrap().expect("blob present");
+        let mut out = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            out.extend_from_slice(&chunk.unwrap());
+        }
+        out
+    }
+
+    /// Every concurrent owner of identical bytes must end up with a reference of
+    /// its own. An unsynchronised read-modify-write drops increments here — two
+    /// adds both read `refs == N` and both write `N + 1` — and the blob is then
+    /// freed while later owners still point at it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_adds_of_identical_content_keep_every_reference() {
+        const OWNERS: u32 = 32;
+
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+        let data = b"bytes several owners upload at the same time".to_vec();
+
+        let adds: Vec<_> = (0..OWNERS)
+            .map(|_| {
+                let mgr = mgr.clone();
+                let data = data.clone();
+                tokio::spawn(async move { mgr.put(&data[..]).await.unwrap() })
+            })
+            .collect();
+
+        let mut id = None;
+        for add in adds {
+            let (added, _, _) = add.await.unwrap();
+            assert_eq!(*id.get_or_insert(added), added, "content must dedup");
+        }
+        let id = id.expect("at least one add");
+
+        assert_eq!(
+            refs_of(&mgr, id),
+            Some(OWNERS),
+            "every concurrent add must be counted"
+        );
+
+        // Each owner but the last releases its reference and the content must
+        // still be readable — the real cost of a lost increment.
+        for remaining in (1..OWNERS).rev() {
+            assert!(mgr.delete(id).await.unwrap());
+            assert_eq!(refs_of(&mgr, id), Some(remaining));
+            assert_eq!(read_all(&mgr, id).await, data, "surviving owners keep data");
+        }
+
+        assert!(mgr.delete(id).await.unwrap());
+        assert_eq!(refs_of(&mgr, id), None, "last release frees the blob");
+        assert!(!mgr.has(id).unwrap());
+    }
+
+    /// Adds and deletes of the same content, run at once, net out to no change:
+    /// however the locks interleave, the count moves by `+N - N`. Racing them
+    /// unsynchronised either loses an increment (content freed under a live owner)
+    /// or leaves the row without its bytes. `STANDING` references are held
+    /// throughout so no legitimate interleaving can reach zero and free the blob —
+    /// the test is about the count, not about reclamation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_adds_and_deletes_of_same_content_net_out() {
+        const RACERS: u32 = 8;
+        const STANDING: u32 = 2 * RACERS;
+        const ROUNDS: usize = 8;
+
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+        let data = b"content some owners drop as others add it".to_vec();
+
+        let (id, _, _) = mgr.put(&data[..]).await.unwrap();
+        for _ in 1..STANDING {
+            let _ = mgr.put(&data[..]).await.unwrap();
+        }
+        assert_eq!(refs_of(&mgr, id), Some(STANDING));
+
+        for round in 0..ROUNDS {
+            let racers: Vec<_> = (0..RACERS)
+                .flat_map(|_| {
+                    let adder = {
+                        let mgr = mgr.clone();
+                        let data = data.clone();
+                        tokio::spawn(async move {
+                            let (added, _, _) = mgr.put(&data[..]).await.unwrap();
+                            assert_eq!(added, id, "content must dedup");
+                        })
+                    };
+                    let deleter = {
+                        let mgr = mgr.clone();
+                        tokio::spawn(async move {
+                            assert!(mgr.delete(id).await.unwrap(), "blob was present");
+                        })
+                    };
+                    [adder, deleter]
+                })
+                .collect();
+
+            for racer in racers {
+                racer.await.unwrap();
+            }
+
+            assert_eq!(
+                refs_of(&mgr, id),
+                Some(STANDING),
+                "adds and deletes must net out in round {round}"
+            );
+            assert_eq!(
+                read_all(&mgr, id).await,
+                data,
+                "the bytes must survive round {round}"
+            );
+        }
+    }
+
+    /// The same guarantee one level down: a chunk shared by roots written
+    /// concurrently must carry one reference per root, or deleting one root frees
+    /// a chunk the others still read through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_roots_sharing_a_chunk_each_hold_a_reference() {
+        const ROOTS: u32 = 16;
+
+        let dir = tempdir().unwrap();
+        let mgr = manager(dir.path()).await;
+
+        // Files with an identical leading chunk but divergent tails: distinct
+        // roots, one shared chunk id that every add touches at the same time.
+        let files: Vec<Vec<u8>> = (0..ROOTS)
+            .map(|i| {
+                let mut file = vec![3_u8; CHUNK_SIZE];
+                file.extend_from_slice(format!("divergent tail {i}").as_bytes());
+                file
+            })
+            .collect();
+
+        let puts: Vec<_> = files
+            .iter()
+            .cloned()
+            .map(|file| {
+                let mgr = mgr.clone();
+                tokio::spawn(async move { mgr.put(&file[..]).await.unwrap() })
+            })
+            .collect();
+
+        let mut roots = Vec::new();
+        for put in puts {
+            let (root, _, _) = put.await.unwrap();
+            roots.push(root);
+        }
+
+        let links = mgr
+            .data_store
+            .handle()
+            .get(&BlobMetaKey::new(roots[0]))
+            .unwrap()
+            .unwrap()
+            .links;
+        let shared_chunk = links[0].blob_id();
+        assert_eq!(
+            refs_of(&mgr, shared_chunk),
+            Some(ROOTS),
+            "every concurrent root must count on the shared chunk"
+        );
+
+        // Drop all but the last root: the shared chunk is decremented each time
+        // and the remaining files still read back whole.
+        for (i, root) in roots.iter().enumerate().take(roots.len() - 1) {
+            assert!(mgr.delete(*root).await.unwrap());
+            assert_eq!(
+                refs_of(&mgr, shared_chunk),
+                Some(ROOTS - u32::try_from(i).unwrap() - 1),
+                "the shared chunk tracks the roots still alive"
+            );
+        }
+
+        let last = roots.len() - 1;
+        assert_eq!(
+            read_all(&mgr, roots[last]).await,
+            files[last],
+            "the surviving root is not corrupted"
+        );
+
+        assert!(mgr.delete(roots[last]).await.unwrap());
+        assert_eq!(
+            refs_of(&mgr, shared_chunk),
+            None,
+            "the last root frees the shared chunk"
         );
     }
 }
