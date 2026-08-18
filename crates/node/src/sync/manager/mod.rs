@@ -2302,6 +2302,26 @@ impl SyncManager {
                                 continue;
                             }
 
+                            // And does that id content-address what arrived
+                            // with it? The id-equality guard above proves the
+                            // responder answered the right question; this
+                            // proves it answered honestly. Needed here too
+                            // because the genesis carve-out below skips the
+                            // envelope-signature check entirely, leaving these
+                            // two structural checks as the only authentication
+                            // on that branch. `head_id` is not attacker-
+                            // supplied, so the pair chains content-addressing
+                            // off a reference this node already trusts.
+                            if !storage_delta.id_matches_content() {
+                                warn!(
+                                    %context_id,
+                                    head_id = ?head_id,
+                                    parent_count = storage_delta.parents.len(),
+                                    "DAG head pull: delta id does not content-address its                                      parents/actions, dropping"
+                                );
+                                continue;
+                            }
+
                             // Apply-time cross-DAG membership check —
                             // parity with the gossip-path check in
                             // `handle_state_delta`. `response_author` is

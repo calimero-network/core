@@ -8764,6 +8764,52 @@ mod apply_auth_at_cut {
         }
     }
 
+    /// The announcement must still go out when there is no previous id.
+    ///
+    /// It used to be gated on a `Some` previous id, and that id is read through
+    /// `.ok().flatten()` - so a transient store error made `MigrationStarted`
+    /// vanish entirely rather than report an unknown `from`. A subscriber has no
+    /// replay, so an event that is never emitted is never recoverable, and
+    /// merobox's `/ws` gate and the drive panel both wait on exactly this event.
+    #[test]
+    fn a_migration_with_no_previous_id_is_still_announced() {
+        use crate::op_events::OpEvent;
+        use crate::ops::group::context::GroupApplyCtx;
+
+        let store = test_store();
+        let gid = test_group_id();
+        let signer = PublicKey::from([0x11; 32]);
+        let target = ApplicationId::from([0x5B; 32]);
+
+        let mut ctx =
+            GroupApplyCtx::new_with_apply_auth(&store, &gid, &signer, &CUT, &FixedAuthorizer(true));
+        ctx.queue_migration_started(None, &target, Some(2), 7);
+
+        let announced = ctx
+            .pending_events
+            .iter()
+            .find_map(|event| match event {
+                OpEvent::MigrationStarted {
+                    from_version,
+                    to_state_version,
+                    local_contexts_total,
+                    ..
+                } => Some((
+                    from_version.clone(),
+                    *to_state_version,
+                    *local_contexts_total,
+                )),
+                _ => None,
+            })
+            .expect("an absent previous id must still announce MigrationStarted");
+
+        assert_eq!(
+            announced,
+            ("unknown".to_owned(), 2, 7),
+            "no previous id names no version, and the rest of the payload still rides"
+        );
+    }
+
     /// The persisted record and the announced event derive `from_version`
     /// through this one function, because deriving it twice is how they came to
     /// disagree: the record fell back to "unknown" on an ABSENT previous id
@@ -9674,30 +9720,34 @@ mod self_leave_rotation_crypto {
         );
 
         // The leaver cannot unwrap what was never wrapped for them: even handed the
-        // whole rotation, no envelope decrypts under their key.
+        // whole rotation, no envelope opens under the secret their own node holds.
+        //
+        // This goes through `unwrap_any` with the leaver's real `DeviceSecret`, which
+        // is the call their node would actually make. Reaching for the
+        // member-addressed `unwrap_for_recipient` here would assert a failure that
+        // every device-addressed envelope produces anyway — a variant mismatch — and
+        // would pass just as happily if the rotation HAD wrapped a key for the
+        // leaver's device.
+        let leaver_device = crate::test_fixtures::device_secret_for(&leaver);
         for envelope in &rotation.envelopes {
             assert!(
-                GroupKeyring::unwrap_for_recipient(
+                GroupKeyring::unwrap_any(
                     &leaver_sk,
+                    Some(&leaver_device),
                     &ns_gid.to_bytes(),
                     Some(&admin_pk),
                     envelope,
                 )
                 .is_err(),
-                "no envelope in the rotation may be unwrappable by the departed member"
+                "no envelope in the rotation may open under the departed member's own \
+                 device secret — that is the whole of what forward secrecy buys here"
             );
         }
 
-        // ...while the member who stayed is addressed by one of them. The
-        // envelopes are DEVICE-addressed, so this checks the device the stayer's
-        // binding names rather than a member key.
-        //
-        // What it deliberately does NOT do is unwrap: the credential fixture
-        // pins a placeholder `kem_pk` with no private half, so no test in this
-        // crate can decrypt a device-addressed envelope. The leaver-side check
-        // above still bites (it asserts a failure), but the positive direction —
-        // "the envelope a remaining member gets actually opens" — has no
-        // coverage until the fixture mints a real X25519 pair per device.
+        // ...while the member who stayed is addressed by one of them, and that
+        // envelope actually OPENS. Asserting only that an envelope names their
+        // device would not distinguish a correct rotation from one that sealed
+        // gibberish to the right address.
         let stayer_device = crate::AccountBindingRepository::new(&store)
             .live_bindings(&ns_gid)
             .expect("read bindings")
@@ -9705,14 +9755,226 @@ mod self_leave_rotation_crypto {
             .find(|b| b.account == stayer_account)
             .expect("the stayer is bound")
             .device;
-        assert!(
-            rotation
-                .envelopes
-                .iter()
-                .any(|e| matches!(e.recipient, calimero_governance_types::EnvelopeRecipient::Device { device, .. } if device == stayer_device)),
-            "a remaining member must be addressed by an envelope, or the rotation \
-             locks them out of their own group"
+        let stayer_envelope = rotation
+            .envelopes
+            .iter()
+            .find(|e| matches!(e.recipient, calimero_governance_types::EnvelopeRecipient::Device { device, .. } if device == stayer_device))
+            .expect(
+                "a remaining member must be addressed by an envelope, or the rotation \
+                 locks them out of their own group",
+            );
+        let opened = GroupKeyring::unwrap_any(
+            &stayer_sk,
+            Some(&crate::test_fixtures::device_secret_for(&stayer)),
+            &ns_gid.to_bytes(),
+            Some(&admin_pk),
+            stayer_envelope,
+        )
+        .expect("the envelope addressed to a remaining member must open under its secret");
+        assert_eq!(
+            opened, new_key,
+            "the envelope must carry the very key the admin minted — a rotation that \
+             delivers anything else locks the whole group out instead of just the leaver"
         );
+    }
+
+    #[test]
+    fn the_leavers_retained_key_cannot_read_what_the_group_writes_next() {
+        // The property the whole mechanism exists for, asserted on ciphertext rather
+        // than on bookkeeping. Everything else in this module checks that the right
+        // rows move and the right envelopes go out; this checks the only thing a user
+        // cares about — that after the rotation lands, the key the leaver kept on its
+        // disk no longer reads the group's traffic.
+        //
+        // Driven end to end: two stores (the admin's node and the leaver's), the real
+        // apply path for the leave, the real recipient/wrap path for the rotation, and
+        // the real op encryption on both sides.
+        let admin_store = test_store();
+        let leaver_store = test_store();
+        let ns_id = [0xB3u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+
+        // Both replicas fold the same membership. `bootstrap_namespace_with_admin_account`
+        // mints its own admin key per store, so the admin identity is taken from the
+        // store that will actually sign the rotation.
+        let ((admin_sk, admin_pk), admin) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&admin_store, ns_id);
+        let _ = crate::test_fixtures::bootstrap_namespace_with_admin_account(&leaver_store, ns_id);
+
+        let stayer_sk = PrivateKey::random(&mut OsRng);
+        let stayer = stayer_sk.public_key();
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = leaver_sk.public_key();
+
+        let mut leaver_account = None;
+        for store in [&admin_store, &leaver_store] {
+            let stayer_account = enrol_member(store, &ns_gid, &stayer);
+            let account = enrol_member(store, &ns_gid, &leaver);
+            MembershipRepository::new(store)
+                .add_member(&ns_gid, &stayer_account, GroupMemberRole::Member)
+                .unwrap();
+            MembershipRepository::new(store)
+                .add_member(&ns_gid, &account, GroupMemberRole::Member)
+                .unwrap();
+            leaver_account = Some(account);
+        }
+        let leaver_account = leaver_account.expect("enrolled on both replicas");
+
+        // The key everyone holds before the departure. The leaver keeps a copy of this
+        // forever — deleting it is not something the group can enforce.
+        let key_before: [u8; 32] = OsRng.gen();
+        GroupKeyring::new(&admin_store, ns_gid)
+            .store_key_with_epoch(&key_before, 1)
+            .unwrap();
+        GroupKeyring::new(&leaver_store, ns_gid)
+            .store_key_with_epoch(&key_before, 1)
+            .unwrap();
+
+        // Precondition: while still a member, the leaver really can read the group's
+        // traffic. Without this the negative assertion at the end proves nothing — a
+        // decrypt that never worked would "fail" just as convincingly.
+        let before_op = calimero_governance_types::GroupOp::TargetApplicationSet {
+            app_key: calimero_context_config::types::AppKey::from([0x11; 32]),
+            target_application_id: ApplicationId::from([0x12; 32]),
+        };
+        let sealed_before = GroupKeyring::encrypt_op(&key_before, &before_op).expect("encrypt");
+        let leaver_key_before = GroupKeyring::new(&leaver_store, ns_gid)
+            .load_current_key()
+            .unwrap()
+            .expect("the leaver holds the pre-departure key")
+            .1;
+        assert!(
+            GroupKeyring::decrypt_op(&leaver_key_before, &sealed_before).is_ok(),
+            "precondition: a member must be able to read the group before it leaves, or \
+             the post-departure failure below is not evidence of anything"
+        );
+
+        // --- The leave, through the real apply path, on both replicas. ---
+        let leave = SignedGroupOp::sign(
+            &leaver_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            calimero_governance_types::GroupOp::MemberLeft {
+                member: leaver_account,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft");
+        for store in [&admin_store, &leaver_store] {
+            apply_local_signed_group_op(store, &leave).expect("apply MemberLeft");
+            assert!(
+                crate::PendingRotationRepository::new(store)
+                    .is_pending(&ns_gid, &leaver_account)
+                    .unwrap(),
+                "every replica folds the debt, which is what lets any remaining admin \
+                 pick the work up"
+            );
+        }
+
+        // --- The remaining admin discharges it. ---
+        let key_after: [u8; 32] = OsRng.gen();
+        assert_ne!(key_before, key_after);
+        let admin_ring = GroupKeyring::new(&admin_store, ns_gid);
+        let entitled = admin_ring.current_key_recipients().expect("recipients");
+        assert!(
+            !entitled.iter().any(|e| e.member == leaver_account),
+            "the departed member's row is gone, so the recipient list must no longer \
+             name them — this is where the exclusion actually happens"
+        );
+        let recipients: Vec<KeyRecipient> = entitled.into_iter().map(|e| e.recipient).collect();
+        let rotation = admin_ring
+            .build_rotation(&key_after, &admin_sk, &recipients)
+            .expect("build rotation");
+        admin_ring.store_key_with_epoch(&key_after, 2).unwrap();
+
+        // The leaver's node receives the rotation like any other replica — it is on the
+        // wire, not addressed away from them — and can open none of it.
+        let leaver_device = crate::test_fixtures::device_secret_for(&leaver);
+        for envelope in &rotation.envelopes {
+            assert!(
+                GroupKeyring::unwrap_any(
+                    &leaver_sk,
+                    Some(&leaver_device),
+                    &ns_gid.to_bytes(),
+                    Some(&admin_pk),
+                    envelope,
+                )
+                .is_err(),
+                "the leaver sees the rotation go past and must not be able to open any \
+                 envelope in it"
+            );
+        }
+
+        // --- What the group writes next. ---
+        let after_op = calimero_governance_types::GroupOp::TargetApplicationSet {
+            app_key: calimero_context_config::types::AppKey::from([0x21; 32]),
+            target_application_id: ApplicationId::from([0x22; 32]),
+        };
+        let sealed_after = GroupKeyring::encrypt_op(&key_after, &after_op).expect("encrypt");
+
+        // The leaver still holds `key_before` — nothing took it away. It no longer reads.
+        assert!(
+            GroupKeyring::decrypt_op(&key_before, &sealed_after).is_err(),
+            "THE PROPERTY: the key the leaver retained must not decrypt anything the \
+             group writes after the rotation. If this ever passes, a self-leave has \
+             stopped providing forward secrecy at all."
+        );
+
+        // ...and the member who stayed reads it fine, using only the key it recovered
+        // from its own envelope. A rotation that locked everyone out would satisfy the
+        // assertion above for the wrong reason.
+        let stayer_envelope = rotation
+            .envelopes
+            .iter()
+            .find(|e| {
+                GroupKeyring::unwrap_any(
+                    &stayer_sk,
+                    Some(&crate::test_fixtures::device_secret_for(&stayer)),
+                    &ns_gid.to_bytes(),
+                    Some(&admin_pk),
+                    e,
+                )
+                .is_ok()
+            })
+            .expect("the member who stayed must be addressed by some envelope");
+        let stayer_key = GroupKeyring::unwrap_any(
+            &stayer_sk,
+            Some(&crate::test_fixtures::device_secret_for(&stayer)),
+            &ns_gid.to_bytes(),
+            Some(&admin_pk),
+            stayer_envelope,
+        )
+        .expect("already established to open");
+        assert_eq!(stayer_key, key_after);
+        assert!(
+            GroupKeyring::decrypt_op(&stayer_key, &sealed_after).is_ok(),
+            "a member who stayed must still read the group with the key the rotation \
+             delivered — otherwise the rotation is a group-wide lockout, not a revocation"
+        );
+
+        // Discharging the debt clears the worklist, so no admin rotates again for a
+        // departure already paid for.
+        let discharge = SignedGroupOp::sign(
+            &admin_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            calimero_governance_types::GroupOp::GroupKeyRotated {
+                departed: leaver_account,
+            },
+        )
+        .expect("sign GroupKeyRotated");
+        apply_local_signed_group_op(&admin_store, &discharge)
+            .expect("the admin's rotation applies");
+        assert!(
+            !crate::PendingRotationRepository::new(&admin_store)
+                .is_pending(&ns_gid, &leaver_account)
+                .unwrap(),
+            "the debt is settled once the rotation lands"
+        );
+        let _ = admin;
     }
 
     #[test]
