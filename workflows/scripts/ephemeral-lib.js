@@ -45,6 +45,14 @@ export function die(label, detail) {
   process.exit(1);
 }
 
+/**
+ * Print the run total and exit non-zero if anything failed.
+ *
+ * Reads the module-level [`tally`] that `ok`/`bad`/`check` mutate — there is
+ * exactly one counter per process, so there is nothing to inject. Takes no
+ * argument on purpose: a parameter here would imply a caller-supplied tally
+ * could change the outcome, which it cannot.
+ */
 export function summarize() {
   console.log(`\n=== ${tally.pass} passed, ${tally.fail} failed ===`);
   process.exit(tally.fail === 0 ? 0 : 1);

@@ -20,7 +20,7 @@
 //   * a transport error yields no events at all, which reads identically to a
 //     successful eviction — so those abort loudly instead.
 
-import { bad, die, ok, rpc, sleep, subscribe, summarize, tally } from './ephemeral-lib.js';
+import { bad, die, ok, rpc, sleep, subscribe, summarize } from './ephemeral-lib.js';
 
 const NODE2_URL = process.argv[2] || process.env.NODE2_URL || 'http://localhost:8931';
 const CONTEXT_ID = process.argv[3] || process.env.CONTEXT_ID || '';
@@ -84,4 +84,4 @@ if (stale.length === 0) {
   bad('node 1 entry NOT evicted from node 2 awareness after TTL', `still present: ${JSON.stringify(stale)}`);
 }
 
-summarize(tally);
+summarize();
