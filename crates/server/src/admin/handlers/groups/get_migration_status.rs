@@ -69,6 +69,7 @@ pub async fn handler(
                 .into_iter()
                 .map(|m| MemberMigrationStatusApiEntry {
                     peer: m.peer,
+                    account: Some(m.account),
                     report: m.report.map(|r| MemberMigrationReportApiData {
                         schema_version: r.schema_version,
                         residue_auto: r.residue_auto,

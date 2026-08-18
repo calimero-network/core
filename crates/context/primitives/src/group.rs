@@ -1475,10 +1475,22 @@ impl MemberMigrationState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemberMigrationStatus {
     pub peer: PublicKey,
+    /// The account `peer` speaks for; one account can appear under several
+    /// peers. Joins these rows to the account-keyed `list_group_members`.
+    pub account: AccountId,
     /// The member's reported facts, or `None` when it has no fresh heartbeat
     /// (in which case `state == Unknown`).
     pub report: Option<MemberMigrationReport>,
     pub state: MemberMigrationState,
+}
+
+/// One replica in a migration cohort: the device key that reports, and the
+/// account it speaks for. Named rather than a tuple because both are 32-byte
+/// opaque ids that would silently swap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CohortMember {
+    pub peer: PublicKey,
+    pub account: AccountId,
 }
 
 /// Rollup counters across the pinned cohort.
@@ -1551,7 +1563,7 @@ pub fn compute_migration_status_rollup(
     target_version: u32,
     cohort_pinned_at_hlc: Option<HybridTimestamp>,
     cohort_pinned_at_seq: Option<u64>,
-    closure: &[PublicKey],
+    closure: &[CohortMember],
     mut report_for: impl FnMut(&PublicKey) -> Option<MemberMigrationReport>,
 ) -> MigrationStatus {
     let mut members = Vec::with_capacity(closure.len());
@@ -1561,7 +1573,8 @@ pub fn compute_migration_status_rollup(
     let mut failed = 0usize;
     let mut members_pending_signature = 0usize;
 
-    for peer in closure {
+    for &CohortMember { peer, account } in closure {
+        let peer = &peer;
         let report = report_for(peer);
 
         // Pin overlay: a member whose freshest heartbeat proves it synced only
@@ -1613,6 +1626,7 @@ pub fn compute_migration_status_rollup(
         };
         members.push(MemberMigrationStatus {
             peer: *peer,
+            account,
             report,
             state,
         });
@@ -1650,12 +1664,21 @@ mod migration_status_tests {
     use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
     use super::{
-        compute_migration_status_rollup, MemberMigrationReport, MemberMigrationState,
-        MigrationFailureKind,
+        compute_migration_status_rollup, AccountId, CohortMember, MemberMigrationReport,
+        MemberMigrationState, MigrationFailureKind,
     };
 
     fn pk(b: u8) -> PublicKey {
         PublicKey::from([b; 32])
+    }
+
+    /// A cohort entry for `peer`, on its own account - the neutral default,
+    /// since the rollup keys every count off `peer`.
+    fn one(peer: PublicKey) -> CohortMember {
+        CohortMember {
+            peer,
+            account: AccountId::from(*peer),
+        }
     }
 
     /// A heartbeat report whose freshest sync position is well past any pin
@@ -1691,11 +1714,57 @@ mod migration_status_tests {
         }
     }
 
+    /// The cohort counts replicas, so two devices are two rows - but both must
+    /// name the same account, which is what groups them back into one member.
+    #[test]
+    fn two_devices_on_one_account_are_two_rows_naming_one_member() {
+        let laptop = pk(0xA1);
+        let phone = pk(0xA2);
+        let alice = AccountId::from([0xAA; 32]);
+
+        let st = compute_migration_status_rollup(
+            2,
+            None,
+            None,
+            &[
+                CohortMember {
+                    peer: laptop,
+                    account: alice,
+                },
+                CohortMember {
+                    peer: phone,
+                    account: alice,
+                },
+            ],
+            |peer| {
+                // The laptop migrated; the phone has not reported at all.
+                (*peer == laptop).then(|| report(2, 0))
+            },
+        );
+
+        assert_eq!(st.rollup.total, 2, "the cohort counts devices, not people");
+        assert_eq!(st.rollup.migrated, 1);
+        assert_eq!(st.rollup.unknown, 1);
+        assert!(
+            !st.rollup.all_migrated,
+            "one device still outstanding keeps the fleet un-migrated"
+        );
+        assert!(
+            st.members.iter().all(|m| m.account == alice),
+            "both rows name the same member, which is what groups them"
+        );
+        assert_eq!(
+            st.members.iter().map(|m| m.peer).collect::<Vec<_>>(),
+            vec![laptop, phone],
+            "and each row keeps its own device key"
+        );
+    }
+
     #[test]
     fn failed_member_surfaces_as_failed_not_in_progress() {
         let pa = pk(0xA1);
         let pb = pk(0xB2);
-        let st = compute_migration_status_rollup(2, None, None, &[pa, pb], |peer| {
+        let st = compute_migration_status_rollup(2, None, None, &[one(pa), one(pb)], |peer| {
             if *peer == pa {
                 Some(report(2, 0)) // migrated
             } else {
@@ -1717,7 +1786,7 @@ mod migration_status_tests {
         // exactly like the other failure kinds.
         let pa = pk(0xA1);
         let pb = pk(0xB2);
-        let st = compute_migration_status_rollup(2, None, None, &[pa, pb], |peer| {
+        let st = compute_migration_status_rollup(2, None, None, &[one(pa), one(pb)], |peer| {
             if *peer == pa {
                 Some(report(2, 0))
             } else {
@@ -1767,9 +1836,10 @@ mod migration_status_tests {
         let _ = reports.insert(b, report(2, 0));
         // C absent — no fresh heartbeat.
 
-        let st = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
-            reports.get(peer).copied()
-        });
+        let st =
+            compute_migration_status_rollup(2, None, None, &[one(a), one(b), one(c)], |peer| {
+                reports.get(peer).copied()
+            });
 
         assert_eq!(st.rollup.unknown, 1);
         assert_eq!(st.rollup.migrated, 2);
@@ -1816,7 +1886,7 @@ mod migration_status_tests {
             2,
             cascade_hlc_at(7_600_000_000_000_000_000),
             Some(pin_seq),
-            &[a, b, c, d],
+            &[one(a), one(b), one(c), one(d)],
             |peer| reports.get(peer).copied(),
         );
 
@@ -1858,7 +1928,7 @@ mod migration_status_tests {
             2,
             cascade_hlc_at(7_600_000_000_000_000_000),
             Some(10),
-            &[a, b],
+            &[one(a), one(b)],
             |peer| reports.get(peer).copied(),
         );
 
@@ -1886,7 +1956,7 @@ mod migration_status_tests {
         let _ = reports.insert(a, report_synced(2, 0, 20));
         // B absent.
 
-        let st = compute_migration_status_rollup(2, None, Some(10), &[a, b], |peer| {
+        let st = compute_migration_status_rollup(2, None, Some(10), &[one(a), one(b)], |peer| {
             reports.get(peer).copied()
         });
 
@@ -1903,7 +1973,9 @@ mod migration_status_tests {
 
         // All migrated -> green.
         let all_ok =
-            compute_migration_status_rollup(2, None, None, &[a, b, c], |_| Some(report(2, 0)));
+            compute_migration_status_rollup(2, None, None, &[one(a), one(b), one(c)], |_| {
+                Some(report(2, 0))
+            });
         assert!(all_ok.rollup.all_migrated);
         assert_eq!(all_ok.rollup.migrated, 3);
 
@@ -1912,9 +1984,10 @@ mod migration_status_tests {
         let _ = reports.insert(a, report(2, 0));
         let _ = reports.insert(b, report(2, 0));
         let _ = reports.insert(c, report(2, 1));
-        let with_residue = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
-            reports.get(peer).copied()
-        });
+        let with_residue =
+            compute_migration_status_rollup(2, None, None, &[one(a), one(b), one(c)], |peer| {
+                reports.get(peer).copied()
+            });
         assert!(!with_residue.rollup.all_migrated);
         assert_eq!(with_residue.rollup.in_progress, 1);
         let c_row = with_residue
@@ -1929,9 +2002,10 @@ mod migration_status_tests {
         let _ = behind.insert(a, report(2, 0));
         let _ = behind.insert(b, report(1, 0));
         let _ = behind.insert(c, report(2, 0));
-        let behind_status = compute_migration_status_rollup(2, None, None, &[a, b, c], |peer| {
-            behind.get(peer).copied()
-        });
+        let behind_status =
+            compute_migration_status_rollup(2, None, None, &[one(a), one(b), one(c)], |peer| {
+                behind.get(peer).copied()
+            });
         assert!(!behind_status.rollup.all_migrated);
         assert_eq!(behind_status.rollup.in_progress, 1);
 
@@ -1969,7 +2043,8 @@ mod migration_status_tests {
         };
         assert_eq!(zero_stamp.reported_at, 0, "modeling a now_ms == 0 clock");
 
-        let st = compute_migration_status_rollup(2, None, None, &[a, b], |_| Some(zero_stamp));
+        let st =
+            compute_migration_status_rollup(2, None, None, &[one(a), one(b)], |_| Some(zero_stamp));
 
         // The zero-stamp reports are counted as migrated, not discarded.
         assert_eq!(st.rollup.total, 2);
@@ -1993,7 +2068,7 @@ mod migration_status_tests {
     fn same_major_release_does_not_report_a_laggard_as_migrated() {
         let migrated_peer = pk(0xA1);
         let laggard_peer = pk(0xB2);
-        let closure = vec![migrated_peer, laggard_peer];
+        let closure = vec![one(migrated_peer), one(laggard_peer)];
 
         let status = compute_migration_status_rollup(
             2, // target ABI state version, from a 10.2.0 bundle

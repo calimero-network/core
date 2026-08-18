@@ -1516,8 +1516,13 @@ pub struct MemberMigrationReportApiData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberMigrationStatusApiEntry {
-    /// The cohort member.
+    /// The reporting device key, bs58. A member with two devices appears twice.
     pub peer: PublicKey,
+    /// The account `peer` speaks for, 64 hex. Joins these rows to the
+    /// account-keyed `GET /groups/:id/members`. `None` only from a node
+    /// predating the field - a default would name a principal that exists nowhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountId>,
     /// The member's freshest reported facts, or `null` when it has no fresh
     /// heartbeat (in which case `state == "unknown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2675,6 +2680,29 @@ mod tests {
         assert!(!resp.group_created);
     }
 
+    /// A node predating `account` omits it and must still parse. Absent stays
+    /// absent: a zero account would name a principal that exists nowhere.
+    #[test]
+    fn a_member_entry_without_an_account_still_deserializes() {
+        let json = serde_json::json!({
+            "targetVersion": 2,
+            "expectedMembers": 1,
+            "rollup": {
+                "migrated": 1, "inProgress": 0, "unknown": 0, "failed": 0,
+                "total": 1, "allMigrated": true, "membersPendingSignature": 0
+            },
+            "members": [{ "peer": PublicKey::from([0x11; 32]), "state": "migrated" }]
+        });
+
+        let resp: GetMigrationStatusApiResponse =
+            serde_json::from_value(json).expect("an older node's response must still parse");
+
+        assert_eq!(
+            resp.members[0].account, None,
+            "absent must stay absent - a zero account would name nobody"
+        );
+    }
+
     #[test]
     fn migration_status_response_serializes_rollup_and_members() {
         // The `get_migration_status` admin route (Task 6c.10) returns this
@@ -2702,6 +2730,7 @@ mod tests {
             members: vec![
                 MemberMigrationStatusApiEntry {
                     peer: migrated_peer,
+                    account: Some(AccountId::from(*migrated_peer)),
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 2,
                         residue_auto: 0,
@@ -2715,11 +2744,13 @@ mod tests {
                 },
                 MemberMigrationStatusApiEntry {
                     peer: unknown_peer,
+                    account: Some(AccountId::from(*unknown_peer)),
                     report: None,
                     state: "unknown".into(),
                 },
                 MemberMigrationStatusApiEntry {
                     peer: failed_peer,
+                    account: Some(AccountId::from(*failed_peer)),
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 1,
                         residue_auto: 1,
