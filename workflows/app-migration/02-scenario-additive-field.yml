@@ -55,13 +55,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key
-    type: get_namespace_identity
-    node: app-migration-additive-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      admin_key: publicKey
-
   - name: Create Open subgroup under namespace
     type: create_group_in_namespace
     node: app-migration-additive-1

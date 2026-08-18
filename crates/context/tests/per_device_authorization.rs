@@ -317,7 +317,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
 
 /// The production shape, and the divergence the acceptance scenario hit.
 ///
-/// `account create` records the device's `sign_pk` as the node's NAMESPACE
+/// Enrolment records the device's `sign_pk` as the node's NAMESPACE
 /// IDENTITY — the very key the group's membership row is keyed under. So a member
 /// who enrols a device becomes, at every cut that contains its own link, a key that
 /// `account_for_author` resolves to the account's real `AccountId` — while
@@ -343,7 +343,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
         "baseline: a member resolves at the cut that added them"
     );
 
-    // `account create`: the member enrols its own device, and the certificate names
+    // Enrolment: the member enrols its own device, and the certificate names
     // the member's own namespace identity as the device's signing key.
     let account_root = PrivateKey::from([0x42; 32]);
     let genesis = AccountGenesis::new(account_root.public_key());

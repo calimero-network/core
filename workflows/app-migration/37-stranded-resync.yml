@@ -57,13 +57,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key
-    type: get_namespace_identity
-    node: app-migration-strand-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      admin_key: publicKey
-
   - name: Create Open subgroup under namespace
     type: create_group_in_namespace
     node: app-migration-strand-1
@@ -107,9 +100,8 @@ steps:
   # The identity the rollup keys node 2's member row by, so the stranded member
   # can be asserted by name rather than by position.
   - name: Capture node 2 key
-    type: get_namespace_identity
+    type: node_identity
     node: app-migration-strand-2
-    namespace_id: "{{namespace_id}}"
     outputs:
       strand_2_key: publicKey
 

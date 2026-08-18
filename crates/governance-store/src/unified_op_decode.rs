@@ -25,6 +25,10 @@ use calimero_context_client::local_governance::GroupOp;
 /// disagree about who authored it. Returns `None` for a key with no live binding —
 /// a joiner whose own join is what creates one, or pre-credential data — and the
 /// caller then gets the stand-in rather than a fabricated claim to a real account.
+///
+/// **For one op.** A producer attributing *many* ops in the same namespace should
+/// build [`signer_bindings_in`] once and read that instead — this resolves against
+/// a fresh scan of the binding column every call.
 pub fn signer_binding_for(
     store: &calimero_store::Store,
     namespace: &calimero_context_config::types::ContextGroupId,
@@ -35,6 +39,35 @@ pub fn signer_binding_for(
         .ok()
         .flatten()
         .map(|binding| (binding.account, binding.device))
+}
+
+/// Every signing key `namespace` can attribute an op to, mapped to the account and
+/// device it speaks for.
+///
+/// Look a signer up with `bindings.get(&sign_pk).copied()`; an absent key means
+/// exactly what [`signer_binding_for`]'s `None` means, so a caller reading this map
+/// reaches the same stand-in for the same ops.
+pub type SignerBindings = std::collections::BTreeMap<PublicKey, (AccountId, DeviceId)>;
+/// [`signer_binding_for`] for every signer at once, in a single scan.
+///
+/// Hoist this out of any loop that attributes more than one op: the per-op form
+/// rescans the whole binding column each time, so *n* ops over a group with *d*
+/// devices cost *n × d* reads for one answer set that does not change as the loop
+/// runs.
+///
+/// An unreadable store yields an EMPTY map rather than an error, which degrades the
+/// same way the per-op form's `.ok()` does — every signer resolves to the stand-in.
+/// Callers here are shadow/backfill producers with no channel to fail into.
+pub fn signer_bindings_in(
+    store: &calimero_store::Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+) -> SignerBindings {
+    crate::AccountBindingRepository::new(store)
+        .live_bindings_by_sign_pk(namespace)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(sign_pk, binding)| (sign_pk, (binding.account, binding.device)))
+        .collect()
 }
 
 /// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`

@@ -294,13 +294,161 @@ impl Behaviour {
 
 #[cfg(test)]
 mod tests {
+    use core::fmt::Debug;
     use std::time::Duration;
+
+    use libp2p::futures::FutureExt;
 
     use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
     use libp2p::{identify, Swarm};
-    use libp2p_swarm_test::{drive, SwarmExt};
+    use libp2p_swarm_test::SwarmExt;
 
     use super::*;
+
+    /// Upper bound on total silence from BOTH swarms before the interaction is
+    /// declared stuck.
+    ///
+    /// Deliberately under the 10s `SwarmExt::next_swarm_event` enforces internally:
+    /// on a wedged interaction this fires first and reports what each side managed to
+    /// produce, where the harness's own panic is a bare "Swarm did not emit an event
+    /// within 10s" with nothing to go on. It cannot be raised above 10s for the same
+    /// reason — the harness would win the race.
+    const DRIVE_QUIET_LIMIT: Duration = Duration::from_secs(9);
+
+    /// Poll both swarms until each side's events satisfy its predicate, appending
+    /// everything they produce to the caller's logs.
+    ///
+    /// The condition-driven counterpart to [`drive`], which collects a FIXED number of
+    /// events and so couples a test's outcome to the scheduler: too few arrive and it
+    /// panics inside the harness, the right number arrives in the wrong mix and the
+    /// caller's own assertion fails. Both were observed under contention.
+    ///
+    /// **The logs belong to the caller and accumulate across every phase**, which is
+    /// the part that makes this deterministic rather than merely better. Waiting for a
+    /// condition necessarily over-collects — while one side is still short, the next
+    /// phase's events can already be arriving and are appended too. Give each phase a
+    /// fresh log and those events are simply gone: the phase that wanted them is handed
+    /// an empty slice and waits for something that has already happened, until the
+    /// harness's internal timeout ends it. Measured, that costs more than it fixes.
+    /// Sharing one log per side means a phase asks "has this happened yet", and every
+    /// stop condition is a monotone fact about the run rather than about a window of it.
+    ///
+    /// One log type, full [`SwarmEvent`], for the same reason: a behaviour-only log
+    /// beside a swarm-event log reintroduces the loss at the boundary between a phase
+    /// using one and a phase using the other. Callers that want behaviour events filter
+    /// with [`behaviour_events`].
+    async fn drive_swarm_until<C, S>(
+        client: &mut Swarm<C>,
+        server: &mut Swarm<S>,
+        client_events: &mut Vec<SwarmEvent<C::ToSwarm>>,
+        server_events: &mut Vec<SwarmEvent<S::ToSwarm>>,
+        what: &str,
+        client_done: impl Fn(&[SwarmEvent<C::ToSwarm>]) -> bool,
+        server_done: impl Fn(&[SwarmEvent<S::ToSwarm>]) -> bool,
+    ) where
+        C: NetworkBehaviour + Send,
+        C::ToSwarm: Debug,
+        S: NetworkBehaviour + Send,
+        S::ToSwarm: Debug,
+    {
+        while !(client_done(client_events) && server_done(server_events)) {
+            let stepped = tokio::time::timeout(DRIVE_QUIET_LIMIT, async {
+                libp2p::futures::select! {
+                    event = client.next_swarm_event().fuse() => client_events.push(event),
+                    event = server.next_swarm_event().fuse() => server_events.push(event),
+                }
+            })
+            .await;
+            assert!(
+                stepped.is_ok(),
+                "both swarms went quiet for {DRIVE_QUIET_LIMIT:?} while waiting for \
+                 {what}\n  client saw: {client_events:?}\n  server saw: {server_events:?}"
+            );
+        }
+    }
+
+    /// The behaviour events in a swarm-event log, in arrival order.
+    ///
+    /// Borrowed rather than cloned: the enums `#[derive(NetworkBehaviour)]` generates
+    /// are not `Clone`, and neither is `identify::Event`.
+    fn behaviour_events<T>(events: &[SwarmEvent<T>]) -> Vec<&T> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SwarmEvent::Behaviour(event) => Some(event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How many `identify::Event::Received` exchanges this side observed.
+    fn identify_exchanges<T>(
+        events: &[SwarmEvent<T>],
+        pick: fn(&T) -> Option<&identify::Event>,
+    ) -> usize {
+        identify_infos(events, pick).len()
+    }
+
+    /// The identify infos this side received, in arrival order.
+    ///
+    /// `pick` is a `fn` rather than a closure so it stays generic over the borrow's
+    /// lifetime and one of them can serve several event logs.
+    fn identify_infos<'a, T>(
+        events: &'a [SwarmEvent<T>],
+        pick: fn(&'a T) -> Option<&'a identify::Event>,
+    ) -> Vec<&'a identify::Info> {
+        behaviour_events(events)
+            .into_iter()
+            .filter_map(pick)
+            .filter_map(|e| match e {
+                identify::Event::Received { info, .. } => Some(info),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn switchable_identify(event: &SwitchableNatEvent) -> Option<&identify::Event> {
+        match event {
+            SwitchableNatEvent::Identify(event) => Some(event),
+            _ => None,
+        }
+    }
+
+    fn server_identify(event: &ServerEvent) -> Option<&identify::Event> {
+        match event {
+            ServerEvent::Identify(event) => Some(event),
+            _ => None,
+        }
+    }
+
+    /// Did the switchable observe that its peer speaks the autonat server side?
+    fn saw_server_support(events: &[SwarmEvent<SwitchableNatEvent>]) -> bool {
+        behaviour_events(events).into_iter().any(|e| {
+            matches!(
+                e,
+                SwitchableNatEvent::Autonat(Event::PeerHasServerSupport { .. })
+            )
+        })
+    }
+
+    /// Has the peer gone entirely, rather than just one of its connections?
+    ///
+    /// `num_established` counts what is left to that peer, so the close carrying `0` is
+    /// the last one. Waiting for it drains every close the disconnect produces without
+    /// having to know how many connections there were — and leaving one queued is not
+    /// harmless, because `SwarmExt::listen` panics on any event it did not expect, so a
+    /// straggler fails the NEXT phase instead of this one.
+    fn saw_full_disconnect<T>(events: &[SwarmEvent<T>]) -> bool {
+        events.iter().any(|e| {
+            matches!(
+                e,
+                SwarmEvent::ConnectionClosed {
+                    num_established: 0,
+                    ..
+                }
+            )
+        })
+    }
 
     #[derive(NetworkBehaviour)]
     struct Client {
@@ -470,15 +618,34 @@ mod tests {
         // relative order in which identify and autonat events interleave is timing-
         // dependent. Assert on event *presence* and the causal order of the two identify
         // exchanges rather than on an exact positional sequence, which would flake.
-        let (switchable_events, server_events): ([SwitchableNatEvent; 5], [ServerEvent; 4]) =
-            drive(&mut switchable, &mut server).await;
+        //
+        // Collected until the facts under test have appeared, NOT for a fixed count.
+        // `drive` returns fixed-size arrays: it panics outright when it cannot fill
+        // them, and when it does fill them the caller is asserting on the composition
+        // of whatever happened to land in that window. Under CPU contention the
+        // interleaving shifts, so a run collects the right NUMBER of events and the
+        // wrong MIX — which is both failure modes seen in #3488, from one cause.
+        // Waiting on the events themselves makes the outcome a function of what the
+        // swarms do rather than of how the scheduler interleaved them.
+        // One log per side for the whole test; see `drive_swarm_until` on why they are
+        // shared across phases rather than per phase.
+        let mut switchable_events = Vec::new();
+        let mut server_events = Vec::new();
+
+        drive_swarm_until(
+            &mut switchable,
+            &mut server,
+            &mut switchable_events,
+            &mut server_events,
+            "two identify exchanges each way, and the switchable observing autonat support",
+            |sw| identify_exchanges(sw, switchable_identify) >= 2 && saw_server_support(sw),
+            |srv| identify_exchanges(srv, server_identify) >= 2,
+        )
+        .await;
 
         // Switchable must have observed the server's autonat server support at some point.
         assert!(
-            switchable_events.iter().any(|e| matches!(
-                e,
-                SwitchableNatEvent::Autonat(Event::PeerHasServerSupport { .. })
-            )),
+            saw_server_support(&switchable_events),
             "Switchable should observe server's autonat support, got: {switchable_events:?}"
         );
 
@@ -486,29 +653,19 @@ mod tests {
         // are causally ordered (the second only happens after the switchable gains the
         // dial-back protocol), so indexing them is safe even though autonat events may
         // interleave around them.
-        let srv_infos: Vec<_> = switchable_events
-            .iter()
-            .filter_map(|e| match e {
-                SwitchableNatEvent::Identify(identify::Event::Received { info, .. }) => Some(info),
-                _ => None,
-            })
-            .collect();
-        let switchable_infos: Vec<_> = server_events
-            .iter()
-            .filter_map(|e| match e {
-                ServerEvent::Identify(identify::Event::Received { info, .. }) => Some(info),
-                _ => None,
-            })
-            .collect();
+        let srv_infos = identify_infos(&switchable_events, switchable_identify);
+        let switchable_infos = identify_infos(&server_events, server_identify);
 
-        assert_eq!(
-            srv_infos.len(),
-            2,
+        // At least two, not exactly two: the wait guarantees both exchanges have
+        // happened, and a third arriving alongside them is not a protocol-change
+        // failure. What the assertions below are about is the CONTENT of the first and
+        // the second, which is unaffected by anything landing after.
+        assert!(
+            srv_infos.len() >= 2,
             "expected two server identify exchanges, got: {switchable_events:?}"
         );
-        assert_eq!(
-            switchable_infos.len(),
-            2,
+        assert!(
+            switchable_infos.len() >= 2,
             "expected two switchable identify exchanges, got: {server_events:?}"
         );
 
@@ -559,10 +716,23 @@ mod tests {
         // Wait for server to complete the AutoNAT test. The address confirmation and the
         // trailing autonat behaviour event can arrive in either order, so locate the
         // confirmation by value rather than by position.
-        let (switchable_events, server_events): (
-            [SwarmEvent<SwitchableNatEvent>; 2],
-            [ServerEvent; 1],
-        ) = drive(&mut switchable, &mut server).await;
+        drive_swarm_until(
+            &mut switchable,
+            &mut server,
+            &mut switchable_events,
+            &mut server_events,
+            "the switchable's address to be confirmed and the server to report its probe",
+            |sw| {
+                sw.iter()
+                    .any(|e| matches!(e, SwarmEvent::ExternalAddrConfirmed { .. }))
+            },
+            |srv| {
+                behaviour_events(srv)
+                    .into_iter()
+                    .any(|e| matches!(e, ServerEvent::Autonat(_)))
+            },
+        )
+        .await;
 
         let confirmed_addr = switchable_events
             .iter()
@@ -574,10 +744,19 @@ mod tests {
                 panic!("expected ExternalAddrConfirmed, got: {switchable_events:?}")
             });
 
-        match &server_events[0] {
-            ServerEvent::Autonat(event) => assert!(matches!(event.result, Ok(()))),
-            other => panic!("expected server autonat result, got: {other:?}"),
-        }
+        // Located by value, not by position: the shared log holds everything the server
+        // produced, so `[0]` is whatever happened to arrive first.
+        let probe_ok = behaviour_events(&server_events)
+            .into_iter()
+            .find_map(|e| match e {
+                ServerEvent::Autonat(event) => Some(matches!(event.result, Ok(()))),
+                _ => None,
+            });
+        assert_eq!(
+            probe_ok,
+            Some(true),
+            "expected a successful server autonat probe, got: {server_events:?}"
+        );
 
         // Now switch to server mode
         switchable.behaviour_mut().autonat.enable_server().unwrap();
@@ -604,23 +783,33 @@ mod tests {
 
         // Disconnect from the server
         switchable.disconnect_peer_id(server_id).unwrap();
-        // Wait for the disconnect to complete. Both sides observe two connection-closed
-        // events; the order they're drained in is irrelevant.
-        let (switchable_events, server_events): (
-            [SwarmEvent<SwitchableNatEvent>; 2],
-            [SwarmEvent<ServerEvent>; 2],
-        ) = drive(&mut switchable, &mut server).await;
+        // Wait for the disconnect to complete on both sides.
+        //
+        // Safe to evaluate over the shared log: nothing closes a connection before the
+        // explicit `disconnect_peer_id` above, so a close in the log can only be this one.
+        drive_swarm_until(
+            &mut switchable,
+            &mut server,
+            &mut switchable_events,
+            &mut server_events,
+            "both sides to observe the peer fully disconnecting",
+            saw_full_disconnect,
+            saw_full_disconnect,
+        )
+        .await;
+        // Both sides saw the peer go. The original assertion was `all(ConnectionClosed)`,
+        // which held only because a fixed 2-event window happened to contain nothing else
+        // — "no other event arrived" is not a property of a disconnect, it is a property
+        // of how long we happened to look. Counting the closes instead is the same
+        // mistake one step removed: it is a fact about how many connections existed, not
+        // about whether the peer is gone. `num_established: 0` says that directly.
         assert!(
-            switchable_events
-                .iter()
-                .all(|e| matches!(e, SwarmEvent::ConnectionClosed { .. })),
-            "Switchable should only see ConnectionClosed, got: {switchable_events:?}"
+            saw_full_disconnect(&switchable_events),
+            "switchable must observe the server fully disconnecting, got: {switchable_events:?}"
         );
         assert!(
-            server_events
-                .iter()
-                .all(|e| matches!(e, SwarmEvent::ConnectionClosed { .. })),
-            "Server should only see ConnectionClosed, got: {server_events:?}"
+            saw_full_disconnect(&server_events),
+            "server must observe the switchable fully disconnecting, got: {server_events:?}"
         );
 
         // NOTE: there's a bug in the code that causes the autonat behaviour to not work correctly

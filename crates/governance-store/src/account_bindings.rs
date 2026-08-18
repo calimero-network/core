@@ -7,7 +7,7 @@
 //! materialized rows rather than a fold, because that is how the shipping
 //! governance wire works.
 //!
-//! Three rules earn their place here, and each one is a bug that
+//! Four rules earn their place here, and each one is a bug that
 //! `crates/projection/tests/account_plane.rs` caught before this existed:
 //!
 //! 1. **Revocation is its own row family, and it is terminal.** A revocation
@@ -450,6 +450,12 @@ impl<'a> AccountBindingRepository<'a> {
     /// to `None` — revocation therefore withdraws the right to author, not only
     /// the right to receive keys.
     ///
+    /// **For one key.** A caller resolving *several* signers against the same
+    /// group must use
+    /// [`live_bindings_by_sign_pk`](Self::live_bindings_by_sign_pk) instead: this
+    /// searches a full scan, so calling it in a loop rescans the binding column
+    /// once per item and makes the loop quadratic in the group's device count.
+    ///
     /// # Errors
     /// Propagates the store scan failure.
     pub fn binding_for_sign_pk(
@@ -536,6 +542,42 @@ impl<'a> AccountBindingRepository<'a> {
         let mut out: BTreeMap<AccountId, Vec<DeviceBinding>> = BTreeMap::new();
         for binding in self.live_bindings(group)? {
             out.entry(binding.account).or_default().push(binding);
+        }
+        Ok(out)
+    }
+
+    /// [`live_bindings`](Self::live_bindings) keyed by each device's certified
+    /// signing key — one scan for every signer in the group.
+    ///
+    /// The batch form of
+    /// [`binding_for_sign_pk`](Self::binding_for_sign_pk), for the callers that
+    /// attribute *many* signatures against one group: the projection backfill
+    /// resolves a signer per governance op, and the ACL shadow resolves one per
+    /// rotation-log entry. Each of those searched a fresh scan, so a walk of *n*
+    /// ops over a group with *d* devices read the binding column *n × d* times to
+    /// answer questions that share a single answer set.
+    ///
+    /// Built from the filtered list rather than from the raw rows, so the
+    /// read-time rules — revocation, root-key supersession, and the replica-seed
+    /// reduction that is a function of the whole set — hold exactly as they do for
+    /// a single lookup. This is also why there is no reverse *key family* here: a
+    /// point index from `sign_pk` could not answer whether the device it names
+    /// survives a seed collision without reading the devices it collides with.
+    ///
+    /// Nothing constrains two devices to distinct signing keys, so a duplicate
+    /// resolves to the **first** binding in scan order — the same one
+    /// `binding_for_sign_pk`'s search returns, which is what makes this
+    /// substitutable for it.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn live_bindings_by_sign_pk(
+        &self,
+        group: &ContextGroupId,
+    ) -> EyreResult<BTreeMap<PublicKey, DeviceBinding>> {
+        let mut out: BTreeMap<PublicKey, DeviceBinding> = BTreeMap::new();
+        for binding in self.live_bindings(group)? {
+            let _ = out.entry(binding.sign_pk).or_insert(binding);
         }
         Ok(out)
     }
@@ -1399,6 +1441,125 @@ mod tests {
             member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
             None,
             "a revoked device must stop being a route into the group"
+        );
+    }
+    #[test]
+    fn the_sign_pk_map_answers_every_lookup_the_single_search_does() {
+        // The substitutability the batch form exists for. It replaces
+        // `binding_for_sign_pk` at the loop call sites, so the two have to agree
+        // on every state a signing key can be in — live, revoked, superseded, and
+        // never linked at all. Building the map from the raw rows instead of from
+        // the filtered list would pass a "live device resolves" check and quietly
+        // resurrect the other three.
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+
+        // Two accounts, so the map has to key on the signing key rather than
+        // collapse to one account's devices.
+        let a = genesis_for(1);
+        let b = genesis_for(2);
+        let _ = repo
+            .apply_link(&gid, &a, &[], &cert_for(&a, &key(1), 5, 0, 0))
+            .expect("store")
+            .expect("admitted");
+        let revoked = cert_for(&a, &key(1), 6, 0, 0);
+        let _ = repo
+            .apply_link(&gid, &a, &[], &revoked)
+            .expect("store")
+            .expect("admitted");
+        repo.apply_revocation(&gid, revoked.device).expect("revoke");
+        let _ = repo
+            .apply_link(&gid, &b, &[], &cert_for(&b, &key(2), 7, 0, 0))
+            .expect("store")
+            .expect("admitted");
+
+        // A third account whose root rotates, superseding its epoch-0 device.
+        let c = genesis_for(3);
+        let _ = repo
+            .apply_link(&gid, &c, &[], &cert_for(&c, &key(3), 8, 0, 0))
+            .expect("store")
+            .expect("admitted");
+        let handoff = sign_root_key_handoff(&key(3), c.account_id(), 0, &key(4).public_key())
+            .expect("sign handoff");
+        repo.apply_rotation(&gid, &handoff)
+            .expect("store")
+            .expect("rotated");
+
+        let map = repo.live_bindings_by_sign_pk(&gid).expect("map");
+        for seed in [5u8, 6, 7, 8, 99] {
+            let sign_pk = key(seed).public_key();
+            assert_eq!(
+                map.get(&sign_pk).copied(),
+                repo.binding_for_sign_pk(&gid, &sign_pk).expect("search"),
+                "the two forms disagree about the device signing with key({seed})"
+            );
+        }
+        // Live: the two unrevoked, unsuperseded devices — not the other three keys.
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn a_device_dropped_by_the_seed_reduction_is_absent_from_the_sign_pk_map() {
+        // Why the batch form is a map built over the filtered list and NOT a
+        // reverse `sign_pk -> device` key family. The seed rule is a function of
+        // the whole stored set: whether this device is live depends on the OTHER
+        // devices sharing its HLC seed. A point index could return the loser's
+        // row without ever reading the row that beats it, so it would hand
+        // authorship to a device the live view excludes.
+        let g = genesis_for(1);
+        let account = g.account_id();
+
+        // Forge two ids sharing a seed, as
+        // `two_devices_sharing_a_replica_seed_converge_on_the_lower_id_either_order`
+        // does — the seed is the id's first 16 bytes.
+        let mut low = [0u8; 32];
+        low[..16].copy_from_slice(&[0xAA; 16]);
+        let mut high = low;
+        high[31] = 0xFF;
+        let (low, high) = (DeviceId::from(low), DeviceId::from(high));
+        assert!(low < high);
+
+        let cert_for_device = |device: DeviceId, seed: u8| {
+            sign_device_cert(
+                &key(1),
+                account,
+                device,
+                &key(seed).public_key(),
+                &KemPublicKey::from([seed; 32]),
+                0,
+                0,
+            )
+            .expect("sign")
+        };
+
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let _ = repo
+            .apply_link(&gid, &g, &[], &cert_for_device(low, 5))
+            .expect("store");
+        let _ = repo
+            .apply_link(&gid, &g, &[], &cert_for_device(high, 6))
+            .expect("store");
+
+        let map = repo.live_bindings_by_sign_pk(&gid).expect("map");
+        let (winner, loser) = (key(5).public_key(), key(6).public_key());
+        assert_eq!(
+            map.get(&winner).map(|b| b.device),
+            Some(low),
+            "the surviving device must be reachable by its signing key"
+        );
+        assert_eq!(
+            map.get(&loser),
+            None,
+            "the device the seed reduction dropped must not be reachable at all"
+        );
+        // And the single-lookup form says the same, which is the invariant the
+        // hoisted call sites depend on.
+        assert_eq!(
+            repo.binding_for_sign_pk(&gid, &loser).expect("search"),
+            None
         );
     }
 }

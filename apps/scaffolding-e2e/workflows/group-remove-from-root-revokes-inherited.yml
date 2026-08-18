@@ -108,10 +108,9 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture node-1 namespace identity
-    type: get_namespace_identity
+  - name: Capture node-1's signing key
+    type: node_identity
     node: revoke-inherit-node-1
-    namespace_id: '{{namespace_id}}'
     outputs:
       node1_key: publicKey
 

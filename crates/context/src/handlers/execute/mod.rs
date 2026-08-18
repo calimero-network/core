@@ -1017,6 +1017,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // can never affect execution.
                     if let Some((objects, delta_id)) = &acl_shadow_objects {
                         let scope = calimero_op::ScopeId::from(*context_id.digest());
+                        // Hoisted out of BOTH loops: every rotation entry of every
+                        // touched anchor resolves against the same binding set, and
+                        // the per-entry form rescanned the whole column for each
+                        // one. This runs on the write path of every state op.
+                        let signer_bindings = calimero_governance_store::signer_bindings_in(
+                            &xcall_datastore,
+                            &calimero_context_config::types::ContextGroupId::from(
+                                *context_id.digest(),
+                            ),
+                        );
                         let mut ops = Vec::new();
                         for object in objects {
                             let Some(log) = crate::scope_projection::load_rotation_log_direct(
@@ -1031,15 +1041,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // Same resolution the apply and backfill paths
                                 // use: a rotation entry names a KEY, and the
                                 // writer plane is keyed by account.
-                                let signer_binding = entry.signer.and_then(|signer| {
-                                    calimero_governance_store::signer_binding_for(
-                                        &xcall_datastore,
-                                        &calimero_context_config::types::ContextGroupId::from(
-                                            *context_id.digest(),
-                                        ),
-                                        &signer,
-                                    )
-                                });
+                                let signer_binding = entry
+                                    .signer
+                                    .and_then(|signer| signer_bindings.get(&signer).copied());
                                 if let Some(op) = crate::scope_projection::op_from_rotation_entry(
                                     *object,
                                     scope,

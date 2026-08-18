@@ -83,12 +83,11 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Node-1 captures its namespace identity
-    type: get_namespace_identity
+  - name: Node-1 captures its account
+    type: node_identity
     node: af-late-flip-node-1
-    namespace_id: "{{namespace_id}}"
     outputs:
-      node1_account: account
+      node1_account: accountId
 
   - name: Node-1 creates subgroup
     type: create_group_in_namespace

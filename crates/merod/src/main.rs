@@ -77,26 +77,75 @@ const DEFAULT_DIRECTIVES: &str = "merod=info,calimero_=info,mero_auth=info";
 /// leaving the level open costs nothing if one of them ever has something real to
 /// report.
 ///
-/// Prepended rather than appended: a target-specific directive beats the blanket
-/// level regardless of order, while an explicit `RUST_LOG=<target>=debug` names
-/// the same target and so wins by coming later. Both halves of that, and the
-/// warn-still-gets-through property, are pinned by the tests below.
+/// A target-specific directive beats a blanket level regardless of order, which
+/// is what lets `RUST_LOG=debug` keep everything else. Naming one of these
+/// targets explicitly drops our entry for it entirely — see `log_directives`,
+/// which will not emit two directives for one target.
 ///
 /// Deliberately NOT included, despite being the next largest: `libp2p_gossipsub`
 /// (12.1%) is mesh formation — `HEARTBEAT: Mesh low`, `Updating mesh`, peer
 /// counts — which is the evidence mesh-join and mesh-scoring bugs are diagnosed
 /// from, and `libp2p_swarm`'s connection-closed lines are how a peer's death is
 /// spotted at all.
-const QUIET_TARGETS: &str =
-    "cranelift_codegen=warn,multistream_select=warn,libp2p_core::transport::choice=warn";
+const QUIET_TARGETS: [&str; 3] = [
+    "cranelift_codegen",
+    "multistream_select",
+    "libp2p_core::transport::choice",
+];
+
+/// The level the quieted targets are held at. `warn` rather than `off` so a
+/// genuine complaint from one of them still arrives.
+const QUIET_LEVEL: &str = "warn";
+
+/// The target a single `RUST_LOG` directive applies to, or `None` for a bare
+/// level like `debug`.
+///
+/// Only the target is needed, so this stops at the first `=` and drops any
+/// `[span{field}]` part rather than trying to model the whole grammar.
+fn directive_target(directive: &str) -> Option<&str> {
+    let head = directive.split('=').next().unwrap_or("").trim();
+    let head = head.split('[').next().unwrap_or("").trim();
+
+    // A bare level is not a target, and is exactly the case the quieting exists
+    // for — it must not count as the operator having asked about these targets.
+    if head.is_empty() || head.parse::<tracing::Level>().is_ok() || head.eq_ignore_ascii_case("off")
+    {
+        return None;
+    }
+
+    Some(head)
+}
 
 /// Builds the tracing filter from `RUST_LOG`, or the default when it is unset
 /// or blank.
+///
+/// A quieted target is dropped from the prefix when `RUST_LOG` names that exact
+/// target, so the result never carries two directives for one target. That is
+/// not a tidiness point: which of two same-target directives wins is not
+/// something `EnvFilter` documents, and depending on it made
+/// `RUST_LOG=cranelift_codegen=debug` work on one platform and silently not on
+/// another. With one directive per target there is nothing to resolve.
+///
+/// A *more specific* target is left alone — `cranelift_codegen::context=debug`
+/// alongside our `cranelift_codegen=warn` is unambiguous, because a longer
+/// target always wins — so asking for one module back does not un-quiet the
+/// rest of the crate.
 fn log_directives(rust_log: Option<&str>) -> String {
-    match rust_log {
-        Some(value) if !value.trim().is_empty() => format!("{QUIET_TARGETS},{value}"),
-        _ => format!("{QUIET_TARGETS},{DEFAULT_DIRECTIVES}"),
-    }
+    let requested = match rust_log {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => DEFAULT_DIRECTIVES,
+    };
+
+    let spoken_for: Vec<&str> = requested.split(',').filter_map(directive_target).collect();
+
+    let mut directives: Vec<String> = QUIET_TARGETS
+        .iter()
+        .filter(|target| !spoken_for.contains(*target))
+        .map(|target| format!("{target}={QUIET_LEVEL}"))
+        .collect();
+
+    directives.push(requested.to_owned());
+    directives.join(",")
 }
 
 fn setup() -> EyreResult<()> {
@@ -174,160 +223,170 @@ mod tests {
     use std::io::{Result as IoResult, Write};
     use std::sync::{Arc, Mutex};
 
-    use super::{log_directives, DEFAULT_DIRECTIVES};
+    use super::{log_directives, DEFAULT_DIRECTIVES, QUIET_TARGETS};
     use tracing_subscriber::fmt::layer;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{registry, EnvFilter};
 
-    /// A `MakeWriter` sink that keeps the formatted output in memory.
-    struct Buffer(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for Buffer {
-        fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
-            self.0
-                .lock()
-                .expect("log buffer poisoned")
-                .extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> IoResult<()> {
-            Ok(())
-        }
-    }
-
-    /// Emits one line per quieted target at both `debug` and `warn`, plus a node
-    /// line, and returns whatever `directives` let through.
+    /// The resolved filter, as `EnvFilter` itself reports it.
     ///
-    /// Asserting on real emitted output rather than on the directive string is
-    /// the point: the precedence being pinned here is `EnvFilter`'s, not ours.
-    /// The targets are literals because a callsite's metadata is static — they
-    /// cannot be parameterised at runtime.
-    fn emit_under(directives: &str) -> String {
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&buffer);
-
-        let subscriber = registry()
-            .with(
-                EnvFilter::builder()
-                    .parse(directives)
-                    .expect("directives must parse"),
-            )
-            .with(
-                layer()
-                    .with_ansi(false)
-                    .with_writer(move || Buffer(Arc::clone(&sink))),
-            );
-
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::debug!(target: "cranelift_codegen::context", "compiler chatter");
-            tracing::debug!(target: "multistream_select::dialer_select", "negotiation chatter");
-            tracing::debug!(target: "libp2p_core::transport::choice", "transport chatter");
-
-            tracing::warn!(target: "cranelift_codegen::context", "compiler complaint");
-            tracing::warn!(target: "multistream_select::dialer_select", "negotiation complaint");
-            tracing::warn!(target: "libp2p_core::transport::choice", "transport complaint");
-
-            // Kept loud: mesh formation and connection teardown are how mesh-join
-            // bugs and a peer's death are diagnosed.
-            tracing::debug!(target: "libp2p_gossipsub::behaviour", "HEARTBEAT: Mesh low");
-            tracing::debug!(target: "libp2p_swarm", "Connection closed with error");
-            tracing::debug!(target: "libp2p_core::upgrade::apply", "Failed to upgrade outbound stream");
-
-            tracing::info!(target: "calimero_node::sync", "performing interval sync");
-        });
-
-        let bytes = buffer.lock().expect("log buffer poisoned").clone();
-        String::from_utf8(bytes).expect("formatted output must be utf-8")
+    /// Assertions run against this rather than against emitted output. Emission
+    /// depends on process-global state — `tracing` caches a per-callsite decision
+    /// the first time a callsite runs, and the max-level hint is shared — so tests
+    /// that emit through the same callsites are order- and parallelism-sensitive,
+    /// which is how the previous version of this suite passed locally and failed
+    /// in CI. `EnvFilter`'s own `Display` is a pure function of the directives.
+    fn resolved(directives: &str) -> String {
+        EnvFilter::builder()
+            .parse(directives)
+            .expect("directives must parse")
+            .to_string()
     }
 
-    const CHATTER: [&str; 3] = [
-        "compiler chatter",
-        "negotiation chatter",
-        "transport chatter",
-    ];
-
     #[test]
-    fn blanket_debug_drops_every_quieted_target() {
-        let output = emit_under(&log_directives(Some("debug")));
+    fn a_blanket_level_keeps_the_quieted_targets_quiet() {
+        let filter = resolved(&log_directives(Some("debug")));
 
-        for chatter in CHATTER {
+        for target in QUIET_TARGETS {
             assert!(
-                !output.contains(chatter),
-                "{chatter:?} must stay quiet under a blanket debug, got: {output}"
+                filter.contains(&format!("{target}=warn")),
+                "{target} must be held at warn under a blanket debug, got: {filter}"
+            );
+        }
+        assert!(
+            filter.contains("debug"),
+            "the blanket level must survive, got: {filter}"
+        );
+    }
+
+    /// The bug this replaces: the quiet prefix and the operator's own directive
+    /// both named the same target, and which one won was left to `EnvFilter`.
+    #[test]
+    fn naming_a_target_replaces_our_directive_rather_than_competing_with_it() {
+        for target in QUIET_TARGETS {
+            let directives = log_directives(Some(&format!("{target}=debug")));
+
+            assert!(
+                !directives.contains(&format!("{target}=warn")),
+                "{target} must not appear twice with two levels, got: {directives}"
+            );
+            assert_eq!(
+                directives.matches(target).count(),
+                1,
+                "{target} must appear exactly once, got: {directives}"
+            );
+            assert!(
+                resolved(&directives).contains(&format!("{target}=debug")),
+                "{target} must end up at debug, got: {}",
+                resolved(&directives)
             );
         }
     }
 
+    /// Asking for one module back must not un-quiet the whole crate: a longer
+    /// target always wins in `EnvFilter`, so both directives can coexist.
     #[test]
-    fn blanket_debug_still_keeps_everything_worth_reading() {
-        let output = emit_under(&log_directives(Some("debug")));
+    fn a_more_specific_target_is_added_without_dropping_the_quieting() {
+        let directives = log_directives(Some("cranelift_codegen::context=debug"));
 
-        for kept in [
-            "performing interval sync",
-            "HEARTBEAT: Mesh low",
-            "Connection closed with error",
-            "Failed to upgrade outbound stream",
-        ] {
-            assert!(
-                output.contains(kept),
-                "{kept:?} must survive the quieting, got: {output}"
-            );
-        }
-    }
+        assert!(
+            directives.contains("cranelift_codegen=warn"),
+            "the crate-wide quieting must stay, got: {directives}"
+        );
 
-    #[test]
-    fn a_quieted_target_can_still_raise_a_warning() {
-        let output = emit_under(&log_directives(Some("debug")));
-
-        for complaint in [
-            "compiler complaint",
-            "negotiation complaint",
-            "transport complaint",
-        ] {
-            assert!(
-                output.contains(complaint),
-                "{complaint:?} must get through — these are turned down to warn, \
-                 not off, got: {output}"
-            );
-        }
-    }
-
-    #[test]
-    fn an_explicit_directive_opts_a_quieted_target_back_in() {
-        for (directive, chatter) in [
-            ("cranelift_codegen=debug", "compiler chatter"),
-            ("multistream_select=debug", "negotiation chatter"),
-            ("libp2p_core::transport::choice=debug", "transport chatter"),
-        ] {
-            let output = emit_under(&log_directives(Some(directive)));
-            assert!(
-                output.contains(chatter),
-                "{directive:?} must opt {chatter:?} back in, got: {output}"
-            );
-        }
+        let filter = resolved(&directives);
+        assert!(
+            filter.contains("cranelift_codegen::context=debug"),
+            "the requested module must be at debug, got: {filter}"
+        );
+        assert!(
+            filter.contains("cranelift_codegen=warn"),
+            "the rest of the crate must stay at warn, got: {filter}"
+        );
     }
 
     #[test]
     fn an_unset_or_blank_rust_log_falls_back_to_the_defaults() {
         for unset in [None, Some(""), Some("   ")] {
             let directives = log_directives(unset);
+
             assert!(
                 directives.ends_with(DEFAULT_DIRECTIVES),
                 "{unset:?} must fall back to the defaults, got: {directives}"
             );
-
-            let output = emit_under(&directives);
-            assert!(
-                output.contains("performing interval sync"),
-                "the default filter must show calimero_ info lines, got: {output}"
-            );
-            for chatter in CHATTER {
+            for target in QUIET_TARGETS {
                 assert!(
-                    !output.contains(chatter),
-                    "the default filter must not show {chatter:?}, got: {output}"
+                    directives.contains(&format!("{target}=warn")),
+                    "{target} must be quiet by default too, got: {directives}"
                 );
             }
         }
+    }
+
+    /// One emission test, kept because the levels above are only worth anything
+    /// if they actually gate output. It is a single test with one callsite per
+    /// case, so no callsite's cached decision can leak between cases, and it does
+    /// not race the tests above because they never emit.
+    #[test]
+    fn the_levels_gate_real_output() {
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
+                self.0
+                    .lock()
+                    .expect("log buffer poisoned")
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> IoResult<()> {
+                Ok(())
+            }
+        }
+
+        fn capture(directives: &str, emit: impl FnOnce()) -> String {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&buffer);
+
+            let subscriber = registry()
+                .with(
+                    EnvFilter::builder()
+                        .parse(directives)
+                        .expect("directives must parse"),
+                )
+                .with(
+                    layer()
+                        .with_ansi(false)
+                        .with_writer(move || Buffer(Arc::clone(&sink))),
+                );
+
+            tracing::subscriber::with_default(subscriber, emit);
+
+            let bytes = buffer.lock().expect("log buffer poisoned").clone();
+            String::from_utf8(bytes).expect("formatted output must be utf-8")
+        }
+
+        // Under a blanket debug: the compiler's chatter is gone, a warning from
+        // the same target still arrives, and the node's own lines are untouched.
+        let output = capture(&log_directives(Some("debug")), || {
+            tracing::debug!(target: "cranelift_codegen::context", "quieted chatter");
+            tracing::warn!(target: "cranelift_codegen::context", "quieted complaint");
+            tracing::debug!(target: "libp2p_gossipsub::behaviour", "HEARTBEAT: Mesh low");
+            tracing::info!(target: "calimero_node::sync", "performing interval sync");
+        });
+
+        assert!(!output.contains("quieted chatter"), "got: {output}");
+        assert!(output.contains("quieted complaint"), "got: {output}");
+        assert!(output.contains("HEARTBEAT: Mesh low"), "got: {output}");
+        assert!(output.contains("performing interval sync"), "got: {output}");
+
+        // Naming the target opts its debug output back in. A distinct callsite
+        // from the one above, on purpose.
+        let output = capture(&log_directives(Some("cranelift_codegen=debug")), || {
+            tracing::debug!(target: "cranelift_codegen::context", "requested chatter");
+        });
+
+        assert!(output.contains("requested chatter"), "got: {output}");
     }
 }

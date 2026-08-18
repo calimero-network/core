@@ -340,10 +340,6 @@ pub(crate) fn setup(
             post(namespaces::leave_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/identity",
-            get(namespaces::get_identity::handler),
-        )
-        .route(
             "/namespaces/for-application/:application_id",
             get(namespaces::list_for_application::handler),
         )
