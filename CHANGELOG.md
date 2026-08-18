@@ -21,8 +21,14 @@
   into a type with a required field of that name — but the node only ever sent
   `""` there, the last piece of the relay #3450 removed, so no working caller
   can depend on its value. Read `memberAccount` for the principal the join
-  produced. Matching SDK releases drop the field from `mero-js` and
-  `swift-sdk` ([#3485])
+  produced.
+
+  Every pinned decoder was updated first, because one of them runs our own
+  E2E: `mero-js` 11.2.0 and `swift-sdk` dropped the field, `calimero-client-py`
+  0.6.29 rebuilt against the tolerance added in [#3530], and merobox 0.6.56
+  bundles that client — so `MIN_MEROBOX` moves to 0.6.56 here, the floor at
+  which a join against a node without the field still decodes ([#3485],
+  [#3528])
 
 ### Changed
 
