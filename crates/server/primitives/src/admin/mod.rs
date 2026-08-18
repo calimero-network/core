@@ -2096,6 +2096,11 @@ pub struct JoinGroupApiResponseData {
     /// The account that key joined as, 64 hex characters — the id every
     /// member-addressing endpoint expects. See `NodeIdentityApiResponseData`.
     pub member_account: String,
+    /// Always `""`. Retained on the wire only so clients compiled against an
+    /// older copy of this struct keep deserializing a join response; the
+    /// `default` is what lets a client built from here survive its removal.
+    /// Nothing produces a value and nothing reads one.
+    #[serde(default)]
     pub governance_op: String,
 }
 
@@ -2612,6 +2617,25 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn join_response_deserializes_without_governance_op() {
+        // The shape a node serves once the field is retired. `calimero-client-py`
+        // compiles this struct from core's master branch and ships as a prebuilt
+        // wheel inside merobox, so a join response that dropped the key used to
+        // fail every scenario that joins a namespace with a serde `missing field`
+        // error from a client nobody had rebuilt yet. This is the tolerance that
+        // lets such a client outlive the field.
+        let json = serde_json::json!({
+            "groupId": hex::encode([0xCC; 32]),
+            "memberIdentity": PublicKey::from([0xBB; 32]),
+            "memberAccount": hex::encode([0xDD; 32]),
+        });
+
+        let resp: JoinGroupApiResponseData = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.governance_op, "");
+        assert_eq!(resp.member_account, hex::encode([0xDD; 32]));
+    }
 
     #[test]
     fn create_context_response_serializes_with_group_info() {
