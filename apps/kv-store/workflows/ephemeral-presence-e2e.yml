@@ -1,7 +1,7 @@
 name: "Ephemeral Presence e2e — delivery, replay-on-subscribe + no-DAG-growth guard"
 description: >
-  Two native nodes share one context. Node 1 publishes a presence slice with
-  the JSON-RPC set_ephemeral method; the workflow asserts that
+  Two nodes share one context. Node 1 publishes a presence slice with the
+  JSON-RPC set_ephemeral method; the workflow asserts that
 
     (a) a live subscriber on node 2 receives it over gossip,
     (b) a subscriber that connects AFTERWARDS is seeded with the entry it
@@ -24,22 +24,17 @@ description: >
   load-bearing guard: it must stay green for any future refactor that touches
   the inbound or outbound ephemeral handlers.
 
-no_docker: true
 nuke_on_start: true
 nuke_on_end: false
 
-# Two native nodes with fixed ports so the script step can build
-# deterministic URLs without dynamic lookup.
+# Two Docker nodes. The ports are pinned rather than auto-allocated because the
+# `target: local` script steps build their URLs by hand: with base_rpc_port set,
+# merobox publishes host port `base_rpc_port + i` for node i+1, so
+# localhost:8930 / localhost:8931 are stable.
 #
-# e2e_mode is intentionally NOT set here. Binary-mode nodes depend on mDNS
-# for peer discovery when running locally. e2e_mode clears bootstrap.nodes
-# (devnet isolation) but the binary manager does NOT wire sibling multiaddrs
-# the way the Docker manager does — so nodes would only have mDNS, which is
-# unreliable on macOS with VPNs. Keeping the default devnet bootstrap gives
-# the nodes a stable rendezvous server and lets mDNS serve as backup.
-#
-# For CI (which has no VPN), the devnet bootstrap is reachable and
-# convergence happens within ~30s.
+# Peer discovery needs no help here: for a multi-node cluster the Docker manager
+# wires static /ip4 bootstrap peers between siblings and gates startup on a
+# connectivity check, so nodes find each other without mDNS (merobox #231).
 nodes:
   count: 2
   prefix: ephemeral-node
@@ -48,46 +43,14 @@ nodes:
 
 steps:
 
-  # ── Phase 0: Wire explicit bootstrap so nodes find each other fast ───────
-  #
-  # Binary-mode merobox does NOT wire sibling multiaddrs automatically (unlike
-  # the Docker manager). Without explicit wiring the nodes rely on mDNS, which
-  # takes >120 s on macOS with VPN interfaces.
-  #
-  # We patch node 2's bootstrap.nodes to include node 1's local TCP multiaddr
-  # (derived from the peer_id merod generated during init), then stop and
-  # restart node 2 so it picks up the updated config. Node 2 will connect to
-  # node 1 within seconds of restart.
-
-  - name: Patch node 2 bootstrap with node 1 peer address
-    type: script
-    script: workflows/scripts/wire-bootstrap.sh
-    target: local
-
-  - name: Stop node 2 (to reload the patched bootstrap config)
-    type: stop_node
-    nodes:
-      - ephemeral-node-2
-
-  - name: Restart node 2 with patched bootstrap config
-    type: start_node
-    nodes:
-      - ephemeral-node-2
-
-  # Give the nodes a moment to form the p2p connection after restart.
-  - name: Wait for p2p connection to form after bootstrap wiring
-    type: wait
-    seconds: 5
-
   # ── Phase 1: Install app + build namespace + context on node 1 ──────────
 
   - name: Install kv-store on node 1 (scaffold for namespace/context creation)
     type: install_application
     node: ephemeral-node-1
-    # Pre-built kv-store wasm — built as part of the workspace WASM targets.
-    # Run: cargo build -p kv-store --target wasm32-unknown-unknown --release
-    # from core/ if the file is missing.
-    path: target/wasm32-unknown-unknown/app-release/kv_store.wasm
+    # The scenario runs from apps/kv-store, so this is the app's own build
+    # output (`cargo mero build`, or the e2e-apps CI artifact).
+    path: "res/kv_store.wasm"
     dev: true
     outputs:
       app_id: applicationId
@@ -196,7 +159,7 @@ steps:
 
   - name: "Run ephemeral presence assertions (delivery + replay + no-DAG-growth)"
     type: script
-    script: workflows/scripts/ephemeral-presence-e2e.sh
+    script: scripts/ephemeral-presence-e2e.sh
     target: local
     # Positional args: $1=node1_url $2=node2_url $3=context_id $4=node1_key
     args:
@@ -245,7 +208,7 @@ steps:
   # so an empty/broken subscription cannot pass as a successful eviction.
   - name: "Run TTL eviction check (node 1 entry must expire on node 2)"
     type: script
-    script: workflows/scripts/ephemeral-ttl-check.sh
+    script: scripts/ephemeral-ttl-check.sh
     target: local
     # Positional args: $1=node2_url $2=context_id $3=node1_key
     args:
