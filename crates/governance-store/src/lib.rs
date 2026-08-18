@@ -66,7 +66,9 @@ mod permission_checker;
 mod reentry;
 mod tee;
 pub mod unified_op_decode;
-pub use crate::unified_op_decode::{op_from_namespace_op_with_binding, signer_binding_for};
+pub use crate::unified_op_decode::{
+    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
+};
 mod upgrade_ladder;
 mod upgrades;
 use self::local_state::{op_log_contains_content_hash, persist_group_governance_progress};

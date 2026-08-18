@@ -1194,6 +1194,15 @@ impl ScopeProjections {
         };
 
         let op_log = NamespaceOpLogService::new(store, namespace_id.into());
+        // One scan for the whole walk. The per-op form rescanned the binding
+        // column for every op the walk stepped over, and the walk is capped at
+        // `MAX_BACKFILL_OPS` — so a deep namespace paid that scan tens of
+        // thousands of times to read a set the loop never changes (it holds no
+        // lock and writes no bindings).
+        let signer_bindings = calimero_governance_store::signer_bindings_in(
+            store,
+            &ContextGroupId::from(namespace_id),
+        );
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: std::collections::VecDeque<[u8; 32]> = heads.into_iter().collect();
         let mut ops = Vec::new();
@@ -1255,11 +1264,7 @@ impl ScopeProjections {
             };
             // Same resolution the apply path uses, so a backfilled op and a
             // live-folded one are attributed identically.
-            let signer_binding = calimero_governance_store::signer_binding_for(
-                store,
-                &ContextGroupId::from(namespace_id),
-                &signed.signer,
-            );
+            let signer_binding = signer_bindings.get(&signed.signer).copied();
             ops.push(
                 calimero_governance_store::op_from_namespace_op_with_binding(
                     &signed,
