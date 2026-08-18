@@ -19,6 +19,20 @@ ignore = [
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
+    # Covers ONLY the h2 0.3.27 copy, which arrives as a BUILD dependency
+    # (cached-path -> reqwest 0.11 -> hyper 0.14) and never ships in merod. The
+    # advisory is patched in 0.4.16 with no 0.3.x release to move to, so this
+    # clears when cached-path stops pulling reqwest 0.11.
+    #
+    # The served path -- hyper 1.x <- axum <- calimero-server -- is NOT ignored
+    # here: it was lock-bumped to h2 0.4.16 alongside this entry, and must stay
+    # at or above that. cargo-deny cannot scope a vulnerability ignore to one
+    # version (a bare `crate@version` in this list scopes the *yanked* check, not
+    # advisories), so this id necessarily silences the advisory for both copies.
+    # If a future lock change drags the hyper 1.x branch back below 0.4.16, this
+    # entry would hide it -- so check `cargo tree -i h2` when touching axum,
+    # hyper, or reqwest, rather than trusting a green `cargo deny` alone.
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3.27 is build-only via cached-path/reqwest 0.11; the served path runs 0.4.16" },
 ]
 
 [bans]
