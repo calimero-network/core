@@ -138,6 +138,20 @@ export function subscribe(httpUrl, contextId, { timeoutMs = 15000 } = {}) {
  * Ephemeral events delivered to it. SSE splits subscribe (a POST) from the
  * stream (a GET), so this is a materially different delivery path from WS and
  * is worth exercising in its own right.
+ *
+ * Returns a handle with:
+ *   `events`  — every Ephemeral payload seen so far, in arrival order
+ *   `waitFor` — resolve when an event matching a predicate arrives (or has)
+ *   `settle`  — wait a fixed window, then hand back everything seen
+ *   `close`   — abort the stream
+ *
+ * `waitFor` mirrors the WS handle's semantics on purpose: an SSE assertion
+ * expressed as a fixed sleep would be weaker and flakier than its WS twin, so
+ * the pairing would be dishonest. It resolves on the first matching event
+ * INCLUDING one already buffered (a seed frequently lands before the caller
+ * asks for it), and it re-raises a `pumpError` as an explicit transport
+ * failure rather than letting a dead stream read as "no event" — the same
+ * false-pass `settle()` was hardened against.
  */
 export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
@@ -148,6 +162,7 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
   if (!res.ok || !res.body) throw new Error(`SSE connect failed: ${res.status}`);
 
   const events = [];
+  const waiters = [];
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -160,6 +175,20 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
   // the shell scripts were fixed for.
   let pumpError = null;
   let closed = false;
+
+  const transportFailure = (err) =>
+    new Error(`SSE stream failed: ${err.message} — this is a transport failure, NOT an empty seed`);
+
+  const deliver = (payload) => {
+    events.push(payload);
+    for (const waiter of [...waiters]) {
+      if (waiter.pred(payload)) {
+        clearTimeout(waiter.timer);
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve(payload);
+      }
+    }
+  };
 
   const pump = (async () => {
     while (true) {
@@ -201,26 +230,45 @@ export async function subscribeSse(httpUrl, contextId, { timeoutMs = 15000 } = {
 
         const event = msg.result;
         if (event && event.type === 'Ephemeral') {
-          events.push({ ...event.data, contextId: event.contextId ?? event.context_id });
+          deliver({ ...event.data, contextId: event.contextId ?? event.context_id });
         }
       }
     }
   })().catch((err) => {
     // An abort from `close()` is the expected way this ends, not a failure.
-    if (!closed) pumpError = err;
+    if (closed) return;
+    pumpError = err;
+    // Anyone already waiting is told it was the transport that died, not that
+    // the event failed to show up — reporting a dead stream as "no event"
+    // points the reader at the feature instead of at the connection.
+    for (const waiter of waiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(transportFailure(err));
+    }
   });
 
   return {
     events,
+    waitFor(pred, ms = timeoutMs, label = 'a matching Ephemeral event') {
+      if (pumpError) return Promise.reject(transportFailure(pumpError));
+      const already = events.find(pred);
+      if (already) return Promise.resolve(already);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`SSE: no ${label} within ${ms}ms`)),
+          ms,
+        );
+        waiters.push({ pred, resolve, reject, timer });
+      });
+    },
     async settle(ms = 3000) {
       await new Promise((r) => setTimeout(r, ms));
-      if (pumpError) {
-        throw new Error(`SSE stream failed: ${pumpError.message} — this is a transport failure, NOT an empty seed`);
-      }
+      if (pumpError) throw transportFailure(pumpError);
       return events;
     },
     close() {
       closed = true;
+      for (const waiter of waiters) clearTimeout(waiter.timer);
       controller.abort();
       return pump;
     },

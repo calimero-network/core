@@ -3,14 +3,21 @@ description: >
   Two nodes share one context. Node 1 publishes a presence slice with the
   JSON-RPC set_ephemeral method; the workflow asserts that
 
-    (a) a live subscriber on node 2 receives it over gossip,
+    (a) a live subscriber on node 2 receives it over gossip — over both WS
+        and SSE,
     (b) a subscriber that connects AFTERWARDS is seeded with the entry it
         missed — replay-on-subscribe, carrying `ageMs` — over both WS and SSE,
     (c) that seed reaches only the connection that asked for it,
     (d) node 1's context state hash is identical before and after the presence
         write, measured against a NON-NULL baseline, proving presence never
         touches the DAG (the load-bearing invariant), and
-    (e) the entry is evicted from node 2 after PRESENCE_TTL_MS (7 s).
+    (e) the entry is evicted from node 2 after PRESENCE_TTL_MS (7 s), again
+        observed over both transports.
+
+  Every behaviour is asserted on BOTH transports: SSE is what mero-js uses in
+  production (`MeroJs.events` is an SseClient), WS is still served and must not
+  regress. Each phase pairs one subscriber per transport around a single
+  publish, so the extra coverage costs no extra wait cycles.
 
   Presence has NO read endpoint: a client learns it only by subscribing to the
   event stream. The assertions therefore run as Node scripts driving real
@@ -148,8 +155,9 @@ steps:
   #
   # The script step opens real subscribers against node 2 and asserts:
   #   1. set_ephemeral on node 1 succeeds (no RPC error).
-  #   2. a subscriber live BEFORE the publish receives the delta (gossip), and
-  #      that delta carries no `ageMs` — it is fresh by construction.
+  #   2. subscribers live BEFORE the publish — one on WS, one on SSE — both
+  #      receive the delta (gossip), and that delta carries no `ageMs` — it is
+  #      fresh by construction.
   #   3. a subscriber connecting AFTER the publish is seeded with the entry,
   #      carrying `ageMs` inside the TTL window — over WS and over SSE.
   #   4. that seed does NOT reach the already-connected subscriber (delivery is
@@ -204,8 +212,9 @@ steps:
 
   # Eviction is observed the only way presence can be: a FRESH subscriber is
   # seeded with exactly what the awareness store still holds, so the seed is
-  # the snapshot. The check also requires node 2's OWN entry to be in that seed,
-  # so an empty/broken subscription cannot pass as a successful eviction.
+  # the snapshot. One such subscriber per transport (WS + SSE). The check also
+  # requires node 2's OWN entry to be in each seed, so an empty/broken
+  # subscription cannot pass as a successful eviction.
   - name: "Run TTL eviction check (node 1 entry must expire on node 2)"
     type: script
     script: scripts/ephemeral-ttl-check.sh

@@ -11,7 +11,9 @@
 // subscriber socket.
 //
 // What this proves:
-//   1. DELIVERY  — node 1 publishes, a subscriber on node 2 receives it (gossip).
+//   1. DELIVERY  — node 1 publishes, a subscriber on node 2 receives it (gossip),
+//                  over BOTH transports: SSE (what mero-js uses in production)
+//                  and WS (still served, must not regress).
 //   2. REPLAY    — a subscriber that connects AFTER the fact is seeded with the
 //                  existing entry, carrying `ageMs`. This is the behaviour that
 //                  replaced the get_ephemeral RPC.
@@ -112,6 +114,11 @@ if (hashBefore && hashBefore !== NULL_HASH) {
 
 console.log('\n-- Phase 2: a subscriber on node 2 receives node 1 presence (gossip) --');
 
+// One subscriber per transport, both attached BEFORE the single publish below.
+// The pairing is deliberate: SSE is the transport mero-js uses in production
+// (`MeroJs.events` is an SseClient), while WS is still served and must not
+// regress — so every presence behaviour is proven on both. Pairing them around
+// one publish rather than duplicating the phase also costs no extra wait cycle.
 const watcher = subscribe(NODE2_URL, CONTEXT_ID);
 try {
   await watcher.ready;
@@ -121,6 +128,15 @@ try {
   die('node 2 acknowledged the WS subscription', e.message);
 }
 
+let sseWatcher;
+try {
+  sseWatcher = await subscribeSse(NODE2_URL, CONTEXT_ID);
+  ok('node 2 accepted the SSE subscription (production transport)');
+} catch (e) {
+  watcher.close();
+  die('node 2 accepted the SSE subscription', `${e.message} — the SSE half of Phase 2 cannot be evaluated`);
+}
+
 try {
   const setResp = await rpc(NODE1_URL, 'set_ephemeral', { contextId: CONTEXT_ID, state: SLICE }, 1);
   console.log(`  set_ephemeral response: ${JSON.stringify(setResp)}`);
@@ -128,6 +144,7 @@ try {
   else ok('set_ephemeral on node 1 succeeded (no RPC error)');
 } catch (e) {
   watcher.close();
+  sseWatcher.close();
   die('set_ephemeral on node 1', `${e.message} — the request never completed`);
 }
 
@@ -163,6 +180,43 @@ if (live) {
     ok('live delta is an upsert (removed absent-or-false)');
   }
 }
+
+// The same delta, over SSE. Same predicate as the WS side — including the loose
+// `ageMs == null`, for the same reason: if the server ever serialized
+// `ageMs: null` on a live delta, a strict match here would time out and the
+// failure would read "gossip not delivered", blaming the network for a
+// wire-shape regression. The dedicated absent-not-null assertion below still
+// holds the server to the exact contract.
+let sseLive;
+try {
+  sseLive = await sseWatcher.waitFor(
+    (p) => JSON.stringify(p.state) === JSON.stringify(SLICE) && p.ageMs == null,
+    15000,
+    'live delta carrying the published slice',
+  );
+  ok('node 2 SSE subscriber received node 1 presence over gossip');
+} catch (e) {
+  bad('node 2 SSE subscriber received node 1 presence over gossip', `${e.message} — gossip not delivered over SSE`);
+}
+
+if (sseLive) {
+  check('SSE live delta state equals the published slice', SLICE, sseLive.state);
+  check('SSE live delta author is node 1', NODE1_KEY, sseLive.author);
+  if ('ageMs' in sseLive) {
+    bad('SSE live delta omits ageMs', `a live delta must not carry an age: ${JSON.stringify(sseLive)}`);
+  } else {
+    ok('SSE live delta omits ageMs (absent, not null) — it is fresh at emission');
+  }
+  if (sseLive.removed !== undefined && sseLive.removed !== false) {
+    bad('SSE live delta is an upsert', `removed=${sseLive.removed}`);
+  } else {
+    ok('SSE live delta is an upsert (removed absent-or-false)');
+  }
+}
+
+// Closed here so Phase 3's "a seed reaches only the connection that asked for
+// it" check is measured against the WS watcher alone, exactly as before.
+sseWatcher.close();
 
 // --- Phase 3: replay-on-subscribe — the NEW behaviour ----------------------
 //

@@ -19,8 +19,13 @@
 //     that is a failure, not a pass.
 //   * a transport error yields no events at all, which reads identically to a
 //     successful eviction — so those abort loudly instead.
+//
+// Both traps are checked once per transport: eviction is asserted over SSE (the
+// transport mero-js uses in production) and over WS (still served, must not
+// regress). The two subscribers are opened together after a single TTL wait, so
+// covering both costs no extra wall-clock time.
 
-import { bad, die, ok, rpc, sleep, subscribe, summarize } from './ephemeral-lib.js';
+import { bad, die, ok, rpc, sleep, subscribe, subscribeSse, summarize } from './ephemeral-lib.js';
 
 const NODE2_URL = process.argv[2] || process.env.NODE2_URL || 'http://localhost:8931';
 const CONTEXT_ID = process.argv[3] || process.env.CONTEXT_ID || '';
@@ -50,7 +55,8 @@ try {
 console.log('  waiting 13s for TTL (7s) + heartbeat sweeps (2×2.5s) ...');
 await sleep(13000);
 
-// A fresh subscriber is seeded with whatever the awareness store still holds.
+// A fresh subscriber is seeded with whatever the awareness store still holds —
+// one per transport, opened together so the single TTL wait above covers both.
 const watcher = subscribe(NODE2_URL, CONTEXT_ID);
 try {
   await watcher.ready;
@@ -60,14 +66,37 @@ try {
   die('node 2 acknowledged the WS subscription', `${e.message} — the TTL guard cannot be evaluated`);
 }
 
-// Node 2's own entry is heartbeated locally and must survive; waiting for it
-// both proves the seed arrived and gives the seed time to land in full.
+let sseWatcher;
 try {
-  await watcher.waitFor((p) => JSON.stringify(p.state) === JSON.stringify(NODE2_SLICE), 10000);
-  ok("node 2's own presence is in the seed — the seed is non-empty, so the check below is not vacuous");
+  sseWatcher = await subscribeSse(NODE2_URL, CONTEXT_ID);
+  ok('node 2 accepted the SSE subscription (production transport)');
 } catch (e) {
   watcher.close();
-  die("node 2's own presence is in the seed", `${e.message} — an empty seed would make the eviction check vacuous`);
+  die('node 2 accepted the SSE subscription', `${e.message} — the SSE TTL guard cannot be evaluated`);
+}
+
+const ownPresence = (p) => JSON.stringify(p.state) === JSON.stringify(NODE2_SLICE);
+
+// Node 2's own entry is heartbeated locally and must survive; waiting for it
+// both proves the seed arrived and gives the seed time to land in full. This is
+// the non-vacuity guard, and it is required on EACH transport: a zero-entry
+// result from a broken subscription must not read as a successful eviction.
+try {
+  await watcher.waitFor(ownPresence, 10000);
+  ok("node 2's own presence is in the WS seed — the seed is non-empty, so the check below is not vacuous");
+} catch (e) {
+  watcher.close();
+  sseWatcher.close();
+  die("node 2's own presence is in the WS seed", `${e.message} — an empty seed would make the eviction check vacuous`);
+}
+
+try {
+  await sseWatcher.waitFor(ownPresence, 10000, "node 2's own presence in the seed");
+  ok("node 2's own presence is in the SSE seed — the seed is non-empty, so the check below is not vacuous");
+} catch (e) {
+  watcher.close();
+  sseWatcher.close();
+  die("node 2's own presence is in the SSE seed", `${e.message} — an empty seed would make the eviction check vacuous`);
 }
 
 // Give any further seed frames a moment to arrive before counting.
@@ -75,13 +104,33 @@ await sleep(1000);
 watcher.close();
 
 const seed = watcher.events;
-console.log(`  entries in the seed: ${JSON.stringify(seed)}`);
+console.log(`  entries in the WS seed : ${JSON.stringify(seed)}`);
 
 const stale = seed.filter((p) => p.author === NODE1_KEY);
 if (stale.length === 0) {
-  ok('node 1 entry evicted from node 2 awareness after TTL (PRESENCE_TTL_MS=7000ms)', '0 remaining');
+  ok('node 1 entry evicted from node 2 awareness after TTL, seen over WS (PRESENCE_TTL_MS=7000ms)', '0 remaining');
 } else {
-  bad('node 1 entry NOT evicted from node 2 awareness after TTL', `still present: ${JSON.stringify(stale)}`);
+  bad('node 1 entry NOT evicted from node 2 awareness after TTL (WS)', `still present: ${JSON.stringify(stale)}`);
+}
+
+// `settle` (not a bare sleep) so a stream that died between the seed and the
+// count is reported as a transport failure instead of as an empty — i.e.
+// successfully evicted — seed.
+let sseSeed;
+try {
+  sseSeed = await sseWatcher.settle(1000);
+} catch (e) {
+  sseWatcher.close();
+  die('SSE seed readable for the eviction count', e.message);
+}
+sseWatcher.close();
+console.log(`  entries in the SSE seed: ${JSON.stringify(sseSeed)}`);
+
+const staleSse = sseSeed.filter((p) => p.author === NODE1_KEY);
+if (staleSse.length === 0) {
+  ok('node 1 entry evicted from node 2 awareness after TTL, seen over SSE (PRESENCE_TTL_MS=7000ms)', '0 remaining');
+} else {
+  bad('node 1 entry NOT evicted from node 2 awareness after TTL (SSE)', `still present: ${JSON.stringify(staleSse)}`);
 }
 
 summarize();
