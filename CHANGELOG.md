@@ -14,6 +14,15 @@
   on a published crate and posted to `admin-api/groups/claim-invitation`, a
   route with no handler anywhere, so any caller got a 404. Direct
   request-response join replaced the relay it belonged to ([#3450])
+- **`governanceOp`** from both join responses (`POST admin-api/groups/join`,
+  `POST admin-api/namespaces/:namespace_id/join`), along with
+  `JoinGroupResponse::governance_op_bytes`. **Breaking** for
+  `calimero-server-primitives` and for any client that decodes the response
+  into a type with a required field of that name — but the node only ever sent
+  `""` there, the last piece of the relay #3450 removed, so no working caller
+  can depend on its value. Read `memberAccount` for the principal the join
+  produced. Matching SDK releases drop the field from `mero-js` and
+  `swift-sdk` ([#3485])
 
 ### Changed
 
@@ -789,4 +798,5 @@ Integrations:
 [#3440]: https://github.com/calimero-network/core/pull/3440
 [#3450]: https://github.com/calimero-network/core/pull/3450
 [#3485]: https://github.com/calimero-network/core/issues/3485
+[#3528]: https://github.com/calimero-network/core/pull/3528
 [#3530]: https://github.com/calimero-network/core/pull/3530
