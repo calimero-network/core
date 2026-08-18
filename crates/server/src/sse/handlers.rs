@@ -1034,6 +1034,71 @@ mod tests {
         );
     }
 
+    // A RE-subscribe to a context the session is already subscribed to must
+    // seed again. This is the whole reconnect story: `mero-js` re-POSTs
+    // `subscribe` with every remembered context id after each `connect` frame,
+    // and on a reconnect that adopts the surviving session (`Last-Event-ID`)
+    // those ids are already in `inner.subscriptions`. If the handler seeded
+    // only newly-added ids, a reconnecting client would get no seed at all and
+    // `mero-react`'s replay-is-authoritative reconciliation would have nothing
+    // to reconcile against, leaving ghost peers forever.
+    //
+    // The guarantee comes from `subscribed` being the authorized subset of the
+    // REQUEST's ids, never a delta against the session's existing set.
+    #[actix::test]
+    async fn a_repeat_subscribe_seeds_again() {
+        let author = PublicKey::from([0xA5; 32]);
+        let ctx = ContextId::from([0x35; 32]);
+        let (state, _blob_dir) = sse_state_with(vec![(author, vec![7], 30)]).await;
+
+        // A session registered in the map, as `create_new_session` leaves it,
+        // with a live connection bound.
+        let (session, _tx, mut rx) = session_with_connection();
+        let session_id: ConnectionId = 42;
+        drop(
+            state
+                .sessions
+                .write()
+                .await
+                .insert(session_id, session.clone()),
+        );
+
+        let subscribe = || {
+            handle_subscription(
+                Extension(Arc::clone(&state)),
+                None,
+                None,
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "id": session_id.to_string(),
+                        "method": "subscribe",
+                        "params": { "contextIds": [ctx] },
+                    }))
+                    .expect("subscribe request parses"),
+                ),
+            )
+        };
+
+        drop(subscribe().await);
+        assert_eq!(
+            drain_ephemeral(&mut rx).len(),
+            1,
+            "the first subscribe must seed",
+        );
+
+        // Same session, same context, already subscribed — the reconnect shape.
+        drop(subscribe().await);
+        assert_eq!(
+            drain_ephemeral(&mut rx).len(),
+            1,
+            "a repeat subscribe must seed again, or a reconnecting client never gets its seed",
+        );
+
+        // The subscription set is still just the one context: seeding again is
+        // not the same as double-recording the subscription.
+        assert_eq!(session.inner.read().await.subscriptions.len(), 1);
+    }
+
     // Rebinding a session to a new connection (the SSE reconnect path) must
     // redirect the seed to the NEW connection — a seed delivered to the stale
     // one would be invisible to the client that asked for it.
