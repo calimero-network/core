@@ -14,11 +14,6 @@ use url::Url;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Empty;
 
-/// Constant compat key: the released calimero-client-py merobox bundles rejects
-/// group/namespace responses that omit it. Delete once merobox ships a client-py
-/// built off post-merge master and MIN_MEROBOX (.github/actions/setup-merobox) names it.
-pub const UPGRADE_POLICY_COMPAT: &str = "LazyOnAccess";
-
 // -------------------------------------------- Application API --------------------------------------------
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1285,9 +1280,6 @@ pub struct GroupInfoApiResponseData {
     pub group_id: String,
     pub app_key: String,
     pub target_application_id: ApplicationId,
-    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
-    #[serde(default)]
-    pub upgrade_policy: String,
     pub member_count: u64,
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2853,9 +2845,6 @@ pub struct NamespaceApiResponse {
     pub namespace_id: String,
     pub app_key: String,
     pub target_application_id: String,
-    /// Compat shim, always [`UPGRADE_POLICY_COMPAT`].
-    #[serde(default)]
-    pub upgrade_policy: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
