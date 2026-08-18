@@ -123,6 +123,19 @@ pub(crate) struct SelfPurgeReconcileLabels {
     pub(crate) outcome: &'static str,
 }
 
+/// Why an at-cut authority question could not be decided, for
+/// `at_cut_undecidable_total`.
+///
+/// As with [`SelfPurgeReconcileLabels`], `cause` is a `&'static str` from the
+/// closed [`UndecidableCause`] enum, so the label set allocates nothing per
+/// [`record_at_cut_undecidable`] call. The label space is therefore bounded by
+/// the enum's variant count — it can never be widened by a peer's input, which
+/// matters because the recording site is driven by ops that arrive off the wire.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct AtCutUndecidableLabels {
+    pub(crate) cause: &'static str,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
@@ -134,6 +147,7 @@ struct GroupStoreMetricSink {
     self_purge_failures: Family<SelfPurgeFailureLabels, Counter>,
     self_purge_reconcile: Family<SelfPurgeReconcileLabels, Counter>,
     self_purge_events_dropped: Counter,
+    at_cut_undecidable: Family<AtCutUndecidableLabels, Counter>,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
@@ -317,6 +331,39 @@ impl Metrics {
             self_purge_events_dropped.clone(),
         );
 
+        // The apply-time authority gate refusing to answer, sliced by cause.
+        // Deciding an op's authority means resolving it at the op's own causal
+        // cut; when the cited ancestry isn't folded here, the gate refuses
+        // (`AuthorityUndecidable`) and the op parks for retry rather than being
+        // judged against this replica's current state, which would let two
+        // replicas decide one op differently.
+        //
+        // The point of the `cause` slice is that a park is only *sometimes*
+        // transient, and the three outcomes are operationally opposite:
+        //
+        // - `scope_unfed` / `heads_missing` / `ancestry_gap` — usually a node
+        //   mid-backfill. Self-healing: the op retries once sync delivers the
+        //   history. Expect a nonzero rate during catch-up, decaying to ~zero.
+        // - `log_truncated` — the retained op-log no longer reaches the cut, so
+        //   the walk can NEVER complete. Permanent, and it does not self-heal.
+        //   A sustained rate here is the signal that a namespace's governance
+        //   history has outgrown the retained window and that node's governance
+        //   DAG has stopped advancing. This is the series to alert on.
+        // - `fold_unavailable` / `namespace_unresolved` / `view_unavailable` —
+        //   a store or mapping fault, not a history gap.
+        //
+        // A rate that never decays for a given cause means ops are parked
+        // indefinitely, not retrying successfully.
+        let at_cut_undecidable = Family::<AtCutUndecidableLabels, Counter>::default();
+        group_store_registry.register(
+            "at_cut_undecidable_total",
+            "Apply-time at-cut authority questions the gate refused to decide, \
+             sliced by cause. Transient (scope_unfed / heads_missing / \
+             ancestry_gap) decays as sync catches up; log_truncated is permanent \
+             and means that node's governance DAG has stopped advancing",
+            at_cut_undecidable.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
@@ -327,6 +374,7 @@ impl Metrics {
             self_purge_failures: self_purge_failures.clone(),
             self_purge_reconcile: self_purge_reconcile.clone(),
             self_purge_events_dropped: self_purge_events_dropped.clone(),
+            at_cut_undecidable: at_cut_undecidable.clone(),
         });
 
         Self {
@@ -557,6 +605,99 @@ pub fn record_events_dropped(n: u64) {
     metrics.self_purge_events_dropped.inc_by(n);
 }
 
+/// Why an apply-time at-cut authority question could not be decided — the
+/// `cause` label of `at_cut_undecidable_total`.
+///
+/// Deciding authority at a cut asks: was this signer authorized as of the op's
+/// own parents? That question has one answer on every replica, which is why the
+/// gate must not substitute the replica-local question ("is this signer
+/// authorized right now, on me?") when it cannot resolve the cut. It refuses
+/// instead, and this records why.
+///
+/// The variants are ordered from "will fix itself" to "will not": the first four
+/// describe a history gap, of which only [`Self::LogTruncated`] is permanent.
+/// Distinguishing them is the whole point — before this, every refusal looked
+/// identical, so a node parked forever was indistinguishable from a node parked
+/// for the next two seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndecidableCause {
+    /// The projection holds no ops at all for this scope — never fed, or fed
+    /// only after this op arrived. Transient in the normal case (startup /
+    /// first contact with a namespace).
+    ScopeUnfed,
+    /// The log is non-empty but one or more of the cut's own head ids are absent
+    /// from it: the op outran its parents. Transient — the ordinary
+    /// arrive-before-your-parents case that sync then repairs.
+    HeadsMissing,
+    /// Every cited head is present, but the walk hit a missing ancestor deeper
+    /// in. The "partial frontier" the backfill walk deliberately tolerates.
+    /// Usually transient, but NOT necessarily: a node that received state by
+    /// snapshot rather than by replaying the DAG has no such history coming.
+    AncestryGap,
+    /// The retained op-log for this scope has been truncated — evicted by the
+    /// live-log bound, or cut short by the backfill walk cap — so it cannot
+    /// reach the cut and never will again. **Permanent.** The op parks forever
+    /// and that namespace's governance DAG stops advancing on this node.
+    LogTruncated,
+    /// The ephemeral fold could not be built at all (governance head unreadable
+    /// — a store fault). Not a history gap.
+    FoldUnavailable,
+    /// The group's namespace could not be resolved (a store or mapping fault).
+    /// Not a history gap.
+    NamespaceUnresolved,
+    /// The ancestry is complete, but folding it yielded no view. Should not
+    /// happen given a complete ancestry; recorded distinctly so it cannot hide
+    /// inside a history-gap series.
+    ViewUnavailable,
+}
+
+impl UndecidableCause {
+    fn as_label(self) -> &'static str {
+        match self {
+            UndecidableCause::ScopeUnfed => "scope_unfed",
+            UndecidableCause::HeadsMissing => "heads_missing",
+            UndecidableCause::AncestryGap => "ancestry_gap",
+            UndecidableCause::LogTruncated => "log_truncated",
+            UndecidableCause::FoldUnavailable => "fold_unavailable",
+            UndecidableCause::NamespaceUnresolved => "namespace_unresolved",
+            UndecidableCause::ViewUnavailable => "view_unavailable",
+        }
+    }
+
+    /// Can the refusal this cause describes resolve on its own, once sync
+    /// delivers more history?
+    ///
+    /// [`Self::LogTruncated`] cannot: the history is gone from the retained
+    /// window, so no amount of sync brings the walk back within reach. Exposed
+    /// so the recording site can log a truncation loudly (it needs an operator)
+    /// while leaving the self-healing cases quiet, and so a future caller can
+    /// branch on permanence without re-deriving the classification.
+    #[must_use]
+    pub fn is_transient(self) -> bool {
+        !matches!(self, UndecidableCause::LogTruncated)
+    }
+}
+
+/// Record one apply-time at-cut authority refusal, labeled by cause. No-op
+/// until [`Metrics::new`] has installed the process-global sink (e.g. a node
+/// started without a Prometheus registry).
+///
+/// Called from `calimero-context`'s at-cut resolution funnel — once per gate
+/// decision that refuses, NOT once per predicate: a single op consults several
+/// predicates (admin, capability, last-admin) over one fold, and counting each
+/// would inflate the rate by a factor that varies with the op's kind.
+pub fn record_at_cut_undecidable(cause: UndecidableCause) {
+    let Some(metrics) = GROUP_STORE_METRICS.get() else {
+        return;
+    };
+    metrics
+        .at_cut_undecidable
+        .get_or_create(&AtCutUndecidableLabels {
+            cause: cause.as_label(),
+        })
+        .inc();
+}
+
 #[cfg(test)]
 mod tests {
     use prometheus_client::encoding::text::encode;
@@ -597,6 +738,71 @@ mod tests {
             out.contains("context_cache_application_size 3"),
             "missing application size gauge:\n{out}"
         );
+    }
+
+    /// Every [`UndecidableCause`] round-trips to a distinct `cause` label, and
+    /// exactly one variant is classified as permanent.
+    ///
+    /// The distinctness assertion is the point: two causes collapsing to one
+    /// label would silently merge a permanent stall into a transient series, and
+    /// the whole reason this metric exists is to tell those apart. Built against
+    /// a local family rather than the process-global sink for the reason
+    /// `self_purge_failures_register_and_encode` documents below.
+    #[test]
+    fn undecidable_causes_encode_distinctly_and_only_truncation_is_permanent() {
+        let all = [
+            UndecidableCause::ScopeUnfed,
+            UndecidableCause::HeadsMissing,
+            UndecidableCause::AncestryGap,
+            UndecidableCause::LogTruncated,
+            UndecidableCause::FoldUnavailable,
+            UndecidableCause::NamespaceUnresolved,
+            UndecidableCause::ViewUnavailable,
+        ];
+
+        let labels: std::collections::HashSet<&str> = all.iter().map(|c| c.as_label()).collect();
+        assert_eq!(
+            labels.len(),
+            all.len(),
+            "two causes share a label, so one would hide inside the other's series",
+        );
+
+        let permanent: Vec<&str> = all
+            .iter()
+            .filter(|c| !c.is_transient())
+            .map(|c| c.as_label())
+            .collect();
+        assert_eq!(
+            permanent,
+            vec!["log_truncated"],
+            "only a truncated log is unrecoverable; the rest clear once sync \
+             delivers the missing history",
+        );
+
+        let mut registry = Registry::default();
+        let family = Family::<AtCutUndecidableLabels, Counter>::default();
+        registry.register(
+            "at_cut_undecidable",
+            "At-cut authority refusals by cause",
+            family.clone(),
+        );
+        for cause in all {
+            family
+                .get_or_create(&AtCutUndecidableLabels {
+                    cause: cause.as_label(),
+                })
+                .inc();
+        }
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+        for cause in all {
+            let series = format!(
+                "at_cut_undecidable_total{{cause=\"{}\"}} 1",
+                cause.as_label()
+            );
+            assert!(out.contains(&series), "missing {series}:\n{out}");
+        }
     }
 
     /// The `self_purge_failures_total` family registers against a fresh

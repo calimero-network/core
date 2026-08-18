@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
@@ -329,6 +330,18 @@ pub struct ScopeProjections {
     /// Namespaces already replayed from persisted state, so `backfill_namespace`
     /// walks each governance DAG at most once (the live feed maintains it after).
     backfilled: HashSet<[u8; 32]>,
+    /// Scopes whose retained op-log has been truncated — evicted by
+    /// [`enforce_log_bound`](Self::enforce_log_bound), or cut short by the
+    /// [`MAX_BACKFILL_OPS`] walk cap. Sticky: once the oldest ops are gone, no
+    /// later ingest brings them back, so a cut older than the retained window is
+    /// unresolvable here permanently.
+    ///
+    /// Kept solely to classify an unresolvable cut
+    /// ([`UndecidableCause::LogTruncated`] rather than a transient gap). Nothing
+    /// authorization-relevant reads it: the *decision* is unchanged either way —
+    /// the gate refuses — this only distinguishes a refusal that will clear
+    /// itself from one that needs an operator.
+    truncated: HashSet<ScopeId>,
 }
 
 impl ScopeProjections {
@@ -398,6 +411,11 @@ impl ScopeProjections {
         }
         let drain = log.len() - LIVE_LOG_LOW_WATER;
         let drained_ids: Vec<[u8; 32]> = log.drain(0..drain).map(|op| op.id()).collect();
+        // Sticky, and set BEFORE the bookkeeping below so an early return can't
+        // skip it: from here on, any cut whose ancestry reaches into the dropped
+        // prefix is unresolvable on this node forever, and a refusal for that
+        // reason must not be reported as a transient backfill gap.
+        let _ = self.truncated.insert(scope);
         if let Some(seen) = self.seen.get_mut(&scope) {
             for id in &drained_ids {
                 let _ = seen.remove(id);
@@ -1382,6 +1400,16 @@ impl ScopeProjections {
     /// [`collect_namespace_ops`]: Self::collect_namespace_ops
     pub fn apply_backfill(&mut self, namespace_id: [u8; 32], ops: Vec<Op>) {
         let _ = self.backfilled.insert(namespace_id);
+        // A walk that returned the cap's worth of ops is a walk that stopped
+        // early (`collect_namespace_ops` breaks at `MAX_BACKFILL_OPS`), so the
+        // oldest history is absent and cuts reaching into it are unresolvable.
+        // Detected from the length rather than plumbed out of the walk so the
+        // `pub` collector's signature — five call sites across two crates —
+        // stays put; `ingest_op`'s own bound catches the same scope anyway once
+        // the log crosses the high-water mark.
+        if ops.len() >= MAX_BACKFILL_OPS {
+            let _ = self.truncated.insert(ScopeId::from(namespace_id));
+        }
         for op in &ops {
             self.ingest_op(op);
         }
@@ -1816,6 +1844,13 @@ impl ScopeProjections {
     /// Exposed so the apply gates can tell "no cut to resolve against" (fine — use
     /// live) apart from "the cut is real but this node hasn't folded its ancestry"
     /// (not fine — refuse, and retry when the history arrives).
+    /// This is also the ONE place an at-cut refusal is counted
+    /// (`at_cut_undecidable_total`), and deliberately not
+    /// [`auth_cut_context`](Self::auth_cut_context): the gates call that once per
+    /// predicate over a shared fold, so counting there would scale the rate with
+    /// an op's predicate count instead of with refusals. `can_resolve_cut` is
+    /// asked exactly once per apply decision, and `false` here is precisely the
+    /// answer that becomes `AuthorityUndecidable`.
     #[must_use]
     pub fn can_resolve_cut(
         &self,
@@ -1823,7 +1858,36 @@ impl ScopeProjections {
         group: ContextGroupId,
         heads: &[[u8; 32]],
     ) -> bool {
-        self.auth_cut_context(store, group, heads).is_some()
+        match self.auth_cut_context_or_cause(store, group, heads) {
+            Ok(_) => true,
+            Err(cause) => {
+                record_at_cut_undecidable(cause);
+                if cause.is_transient() {
+                    // The common, self-healing case — the op parks and retries
+                    // once sync delivers the history. Not worth an operator's
+                    // attention, and loud enough at debug to explain a park.
+                    tracing::debug!(
+                        group = ?group,
+                        ?cause,
+                        "at-cut authority undecidable; op parks for retry"
+                    );
+                } else {
+                    // Permanent: no amount of sync brings a dropped prefix back,
+                    // so this op will park on every retry and everything causally
+                    // downstream of it stalls behind it on this node. Warn —
+                    // nothing below this layer can recover it.
+                    tracing::warn!(
+                        group = ?group,
+                        ?cause,
+                        "at-cut authority permanently undecidable: the retained \
+                         op-log no longer reaches this cut, so the op cannot ever \
+                         apply here and this namespace's governance DAG will not \
+                         advance past it"
+                    );
+                }
+                false
+            }
+        }
     }
 
     fn auth_cut_context(
@@ -1832,15 +1896,33 @@ impl ScopeProjections {
         group: ContextGroupId,
         heads: &[[u8; 32]],
     ) -> Option<AuthCutContext> {
+        self.auth_cut_context_or_cause(store, group, heads).ok()
+    }
+
+    /// [`auth_cut_context`](Self::auth_cut_context) with the abstention's reason
+    /// preserved instead of collapsed to `None`.
+    ///
+    /// Split out so [`can_resolve_cut`](Self::can_resolve_cut) can report *why*
+    /// it refused. The predicates keep taking the `Option`: they act on presence
+    /// or absence and have no use for the cause, and threading it through all
+    /// five would buy nothing.
+    fn auth_cut_context_or_cause(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Result<AuthCutContext, UndecidableCause> {
         let namespace_id = NamespaceRepository::new(store)
             .resolve(&group)
-            .ok()?
+            .map_err(|_| UndecidableCause::NamespaceUnresolved)?
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
         if !self.cut_ancestry_complete(&scope, heads) {
-            return None;
+            return Err(self.classify_unresolvable_cut(&scope, heads));
         }
-        let view = self.acl_view_at(&scope, heads)?;
+        let view = self
+            .acl_view_at(&scope, heads)
+            .ok_or(UndecidableCause::ViewUnavailable)?;
         let root_group = ContextGroupId::from(namespace_id);
         let root = MetaRepository::new(store)
             .load(&root_group)
@@ -1852,7 +1934,35 @@ impl ScopeProjections {
             .ok()
             .flatten()
             .unwrap_or(0);
-        Some((view, root, default_cap_base))
+        Ok((view, root, default_cap_base))
+    }
+
+    /// Why can't this scope's retained log resolve the cut at `heads`?
+    ///
+    /// Called only once the ancestry walk has already failed, so it never
+    /// re-walks — it reads the three cheap facts that separate the failure modes.
+    ///
+    /// Truncation is checked FIRST, and that ordering is the point of the whole
+    /// classification: a truncated log also *presents* as a missing head or a
+    /// mid-ancestry gap, because dropping the oldest prefix is exactly what makes
+    /// ancestors missing. Checking the gap shape first would file every permanent
+    /// stall under a cause that reads as "retrying, give it a moment", and hide
+    /// the one series that needs an operator.
+    fn classify_unresolvable_cut(&self, scope: &ScopeId, heads: &[[u8; 32]]) -> UndecidableCause {
+        if self.truncated.contains(scope) {
+            return UndecidableCause::LogTruncated;
+        }
+        let Some(log) = self.logs.get(scope) else {
+            return UndecidableCause::ScopeUnfed;
+        };
+        if log.is_empty() {
+            return UndecidableCause::ScopeUnfed;
+        }
+        let ids: HashSet<[u8; 32]> = log.iter().map(|op| op.id()).collect();
+        if heads.iter().any(|head| !ids.contains(head)) {
+            return UndecidableCause::HeadsMissing;
+        }
+        UndecidableCause::AncestryGap
     }
 
     /// Diagnostics for a divergence at `heads` — why does the projection NOT see
@@ -2346,6 +2456,156 @@ mod tests {
             ..entry
         };
         assert!(op_from_rotation_entry(object, scope, &unsigned, None).is_none());
+    }
+
+    /// A one-op-per-scenario walk through every history-gap cause, over the
+    /// SAME two-op ancestry (`add <- remove`) so only the projection's state
+    /// differs between cases.
+    ///
+    /// The last case is the load-bearing one: with the log shaped exactly as the
+    /// `AncestryGap` case, marking the scope truncated must change the verdict to
+    /// `LogTruncated`. Truncation is *why* the ancestor is missing, and it is
+    /// permanent, so classifying by log shape first would file a node that has
+    /// stalled forever under a cause that reads as "retrying, give it a moment".
+    #[test]
+    fn an_unresolvable_cut_is_classified_by_the_reason_it_cannot_resolve() {
+        let scope = ScopeId::from([7u8; 32]);
+        let group = ContextGroupId::from([3u8; 32]);
+        let admin = PublicKey::from([1u8; 32]);
+        let member = PublicKey::from([0x55; 32]);
+
+        let build = |ns: u64, parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            Op::new(
+                scope,
+                parents,
+                calimero_op::Authorship::unattributed(admin),
+                hlc(ns),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+        let add = build(
+            10,
+            vec![],
+            OpPayload::MemberAdded {
+                group,
+                member: test_account(&member),
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = build(
+            20,
+            vec![add.id()],
+            OpPayload::MemberRemoved {
+                group,
+                member: test_account(&member),
+            },
+        );
+        let cut = [remove.id()];
+
+        // Nothing folded for this scope at all.
+        let empty = ScopeProjections::new();
+        assert_eq!(
+            empty.classify_unresolvable_cut(&scope, &cut),
+            UndecidableCause::ScopeUnfed,
+        );
+
+        // Fed, but the cited head itself hasn't arrived — the op outran its
+        // parent.
+        let mut heads_missing = ScopeProjections::new();
+        heads_missing.ingest_op(&add);
+        assert_eq!(
+            heads_missing.classify_unresolvable_cut(&scope, &cut),
+            UndecidableCause::HeadsMissing,
+        );
+
+        // The head is present, but its own parent is not: the gap is deeper in.
+        let mut gap = ScopeProjections::new();
+        gap.ingest_op(&remove);
+        assert_eq!(
+            gap.classify_unresolvable_cut(&scope, &cut),
+            UndecidableCause::AncestryGap,
+        );
+
+        // Identical log to the case above; only the truncation mark differs, and
+        // it must win.
+        let mut truncated = ScopeProjections::new();
+        truncated.ingest_op(&remove);
+        let _ = truncated.truncated.insert(scope);
+        assert_eq!(
+            truncated.classify_unresolvable_cut(&scope, &cut),
+            UndecidableCause::LogTruncated,
+            "a truncated log presents as an ancestry gap; reporting it as one \
+             would hide a permanent stall inside a transient-looking cause",
+        );
+
+        // Sanity: a complete ancestry is not classified at all — the walk
+        // succeeds, so nothing is recorded.
+        let mut complete = ScopeProjections::new();
+        complete.ingest_op(&add);
+        complete.ingest_op(&remove);
+        assert!(complete.cut_ancestry_complete(&scope, &cut));
+    }
+
+    /// Both truncation mechanisms set the sticky mark, so a cut reaching into the
+    /// dropped prefix is reported as permanent rather than as a backfill gap.
+    ///
+    /// Deliberately two separate projections: `apply_backfill`'s cap check and
+    /// `enforce_log_bound`'s eviction are independent paths that happen to reach
+    /// the same conclusion, and a single fixture would let one cover for the
+    /// other. `Noop` payloads keep both cheap — the fold ignores them, so the
+    /// cost is a log push per op and nothing else.
+    #[test]
+    fn both_truncation_paths_mark_the_scope() {
+        let scope = ScopeId::from([9u8; 32]);
+        let signer = PublicKey::from([2u8; 32]);
+        let build = |ns: u64| -> Op {
+            Op::new(
+                scope,
+                vec![],
+                calimero_op::Authorship::unattributed(signer),
+                hlc(ns),
+                OpPayload::Noop,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+
+        // The backfill walk stopped at its cap, so the oldest history is absent
+        // from the ops it handed back. Exactly at the cap, so the live-log bound
+        // does NOT also fire — this asserts the `apply_backfill` branch alone.
+        let capped: Vec<Op> = (0..MAX_BACKFILL_OPS as u64).map(build).collect();
+        let mut backfilled = ScopeProjections::new();
+        backfilled.apply_backfill(*scope.as_bytes(), capped);
+        assert!(
+            backfilled.truncated.contains(&scope),
+            "a capped backfill walk leaves the oldest ancestry unreachable",
+        );
+        assert_eq!(
+            backfilled.logs.get(&scope).map_or(0, Vec::len),
+            MAX_BACKFILL_OPS,
+            "at exactly the cap the live-log bound must not have evicted, or this \
+             test is proving the wrong path",
+        );
+
+        // One op past the live-log high-water mark: the feed evicts the oldest
+        // prefix, which is the mechanism that actually fires today (the op-store
+        // load the projection is now backed by is itself unbounded).
+        let mut evicted = ScopeProjections::new();
+        for ns in 0..=(MAX_LIVE_LOG_OPS as u64) {
+            evicted.ingest_op(&build(ns));
+        }
+        assert!(
+            evicted.truncated.contains(&scope),
+            "live-log eviction drops the oldest ops; cuts citing them are \
+             unresolvable from here on",
+        );
+        assert_eq!(
+            evicted.logs.get(&scope).map_or(0, Vec::len),
+            LIVE_LOG_LOW_WATER,
+            "eviction trims to the low-water mark",
+        );
     }
 
     #[test]
