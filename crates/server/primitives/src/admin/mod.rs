@@ -1749,32 +1749,6 @@ pub struct PairDeviceInitApiResponse {
     pub data: PairDeviceInitApiResponseData,
 }
 
-/// Which account this node speaks for in a namespace.
-///
-/// The read that was missing: an account id is derived from this node's root and
-/// the namespace, so nothing on the wire ever carries it and a caller had no way
-/// to learn it except by keeping the output of `account create`. Everything that
-/// names an account — granting a writer, revoking a device — needs this first.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceAccountApiResponseData {
-    /// Hex-encoded `AccountId` this node executes as in the namespace.
-    pub account_id: String,
-    /// Hex-encoded namespace the account is scoped to. Accounts are
-    /// per-namespace on purpose, so the same node is uncorrelatable across two.
-    pub namespace_id: String,
-    /// Hex-encoded `DeviceId` this node holds there, when it has enrolled one.
-    /// `None` before `account create` — the account id is still derivable, but no
-    /// device speaks for it yet.
-    pub device_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceAccountApiResponse {
-    pub data: NamespaceAccountApiResponseData,
-}
-
 /// Certify a device another node minted, link it, and deliver the scope key.
 ///
 /// Every field is what that node's pair-init returned. None is a secret: the
@@ -2120,8 +2094,13 @@ pub struct JoinGroupApiResponseData {
     /// The key the joiner signs with, bs58.
     pub member_identity: PublicKey,
     /// The account that key joined as, 64 hex characters — the id every
-    /// member-addressing endpoint expects. See `NamespaceIdentityApiResponse`.
+    /// member-addressing endpoint expects. See `NodeIdentityApiResponseData`.
     pub member_account: String,
+    /// Always `""`. Retained on the wire only so clients compiled against an
+    /// older copy of this struct keep deserializing a join response; the
+    /// `default` is what lets a client built from here survive its removal.
+    /// Nothing produces a value and nothing reads one.
+    #[serde(default)]
     pub governance_op: String,
 }
 
@@ -2640,6 +2619,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn join_response_deserializes_without_governance_op() {
+        // The shape a node serves once the field is retired. `calimero-client-py`
+        // compiles this struct from core's master branch and ships as a prebuilt
+        // wheel inside merobox, so a join response that dropped the key used to
+        // fail every scenario that joins a namespace with a serde `missing field`
+        // error from a client nobody had rebuilt yet. This is the tolerance that
+        // lets such a client outlive the field.
+        let json = serde_json::json!({
+            "groupId": hex::encode([0xCC; 32]),
+            "memberIdentity": PublicKey::from([0xBB; 32]),
+            "memberAccount": hex::encode([0xDD; 32]),
+        });
+
+        let resp: JoinGroupApiResponseData = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.governance_op, "");
+        assert_eq!(resp.member_account, hex::encode([0xDD; 32]));
+    }
+
+    #[test]
     fn create_context_response_serializes_with_group_info() {
         let context_id = ContextId::from([0xAA; 32]);
         let member_pk = PublicKey::from([0xBB; 32]);
@@ -2921,22 +2919,6 @@ pub struct NodeIdentityApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct NodeIdentityApiResponse {
     pub data: NodeIdentityApiResponseData,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NamespaceIdentityApiResponse {
-    pub namespace_id: String,
-    /// The key this node signs with, bs58.
-    pub public_key: String,
-    /// The account that key writes as, 64 hex characters.
-    ///
-    /// This — not `public_key` — is what every member-addressing endpoint takes
-    /// (`PUT .../members/{account}/...`, `RemoveGroupMembersApiRequest::members`).
-    /// The two encodings differ so one cannot be pasted where the other belongs,
-    /// which means a caller holding only the key has no way to name itself; this
-    /// field is that way.
-    pub account: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

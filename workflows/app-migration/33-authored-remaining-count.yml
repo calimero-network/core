@@ -59,13 +59,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key (for teardown)
-    type: get_namespace_identity
-    node: app-migration-authored-count-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      admin_key: publicKey
-
   - name: Create descendant subgroup
     type: create_group_in_namespace
     node: app-migration-authored-count-1

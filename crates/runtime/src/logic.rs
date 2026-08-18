@@ -1225,7 +1225,18 @@ mod tests {
 
     /// Captures everything logged while `body` runs, so a test can assert on what
     /// a log line does *not* contain.
-    fn capture_logs(body: impl FnOnce()) -> String {
+    ///
+    /// `body` may run twice, so it must be repeatable. `tracing` caches callsite
+    /// interest process-wide and resolves it through whichever subscriber the
+    /// evaluating thread holds, so with ~150 tests in parallel and a subscriber
+    /// scoped to this one, a callsite can end up cached as uninteresting by a
+    /// thread that is not capturing. The capture then comes back empty, which
+    /// reads as "the audited line was never emitted" while nothing is wrong with
+    /// the code under test — a red required check for a test-harness race. An
+    /// empty capture is therefore retried once with the interest cache rebuilt
+    /// from this thread, where the capturing subscriber is the one that answers.
+    /// A line that genuinely is not emitted still fails, now twice over.
+    fn capture_logs(body: impl Fn()) -> String {
         use std::io::{Result as IoResult, Write};
         use std::sync::{Arc, Mutex};
 
@@ -1247,18 +1258,31 @@ mod tests {
             }
         }
 
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&buffer);
-        let subscriber = registry().with(
-            layer()
-                .with_ansi(false)
-                .with_writer(move || Buffer(Arc::clone(&sink))),
-        );
+        fn capture_once(body: &dyn Fn(), rebuild_interest: bool) -> String {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&buffer);
+            let subscriber = registry().with(
+                layer()
+                    .with_ansi(false)
+                    .with_writer(move || Buffer(Arc::clone(&sink))),
+            );
 
-        tracing::subscriber::with_default(subscriber, body);
+            tracing::subscriber::with_default(subscriber, || {
+                if rebuild_interest {
+                    tracing::callsite::rebuild_interest_cache();
+                }
+                body();
+            });
 
-        let bytes = buffer.lock().expect("log buffer poisoned").clone();
-        String::from_utf8(bytes).expect("formatted output must be utf-8")
+            let bytes = buffer.lock().expect("log buffer poisoned").clone();
+            String::from_utf8(bytes).expect("formatted output must be utf-8")
+        }
+
+        let captured = capture_once(&body, false);
+        if !captured.is_empty() {
+            return captured;
+        }
+        capture_once(&body, true)
     }
 
     /// `VMLogic::new` used to Debug-print the whole `VMContext`, which carries

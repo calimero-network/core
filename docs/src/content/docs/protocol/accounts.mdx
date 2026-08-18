@@ -279,25 +279,27 @@ An `AccountId` appears on no wire and in no operation, so a node has to be asked
 which one it writes as:
 
 ```bash
-meroctl account show <NAMESPACE_ID>     # GET /admin-api/namespaces/:id/account
+meroctl account show                    # GET /admin-api/identity
 ```
 
-The answer changes at enrollment, and the reason is worth understanding:
+The answer does not change at enrollment, and that is deliberate. The id is the
+content address of the account root, so it exists as soon as the node has a root —
+before it has joined anything, and identically in every namespace. What enrollment
+adds is the **device binding**: the row that lets a peer map this node's signing
+key to that account, and that lets a *second* device of the same person write
+under the same principal.
 
-- **After `account create`**, the node writes as its real `AccountId` — derived
-  from its account root and the namespace, published as a device binding. That
-  binding is what lets a peer map its signing key to it, and what lets a *second*
-  device of the same person write under the same principal.
-- **Before**, there is no binding, so no peer can compute a root-derived id — it
-  is derived from a secret. The node therefore writes as the stand-in any peer
-  *can* derive from its signing key alone. Naming the root-derived id in a writer
-  set at this point would produce a grant nothing could ever match.
+There used to be a second answer here. A node that had not enrolled wrote as a
+**stand-in** account derived from its signing key, because a root-derived id is
+derived from a secret and no peer could compute it. That meant a writer set seeded
+before its writer enrolled held a principal that stopped matching the moment it
+did, and the advice was to re-grant afterwards. The stand-in is gone: a join now
+carries the device credential, so a node is bound by the operation that admits it
+and there is no window in which it writes as something else.
 
-Both ends use one rule for this — the node deciding what to put in a writer set
-and the peer resolving an incoming signature — because a disagreement means a
-node's own writes are refused everywhere else. The consequence to plan around: a
-writer set seeded before the writer enrolled holds the stand-in, so **re-grant
-after `account create`**.
+Both ends still resolve through one rule — the node deciding what to put in a
+writer set and the peer resolving an incoming signature — because a disagreement
+means a node's own writes are refused everywhere else.
 
 Everything that names a person needs this first: granting a writer, revoking a
 device, or an app method that takes an `AccountId`. Naming them by signing key
@@ -481,9 +483,8 @@ Account operations travel as `GroupOp` variants because that is the transport th
 
 ### One root, one account, everywhere
 
-Worth being precise about the cardinalities, because `meroctl account create` /
-merobox's `account_create` read as if they mint something new each time, and they
-do not:
+Worth being precise about the cardinalities, because "enrolling in a namespace"
+reads as if it mints something new each time, and it does not:
 
 | | scope |
 | --- | --- |
@@ -499,11 +500,14 @@ wherever it is published, and one PeerId serves every namespace — so it was co
 without benefit. What is genuinely many-to-one is **devices per account**, via
 [pairing](#pairing-a-second-device): several machines, one account, one grant.
 
-`account create` is therefore an *ensure*, not a create. It derives the account for
-the namespace from the root that already exists and mints a device only if that
-namespace has none, so calling it twice returns the same id. The one ordering rule:
-run it **after** joining, because enrolment publishes an encrypted `GroupOp` and
-encrypting it needs the scope key the node only holds once it has joined.
+Enrolment is therefore an *ensure*, not a create — and there is no command for it.
+It derives the account from the root that already exists and mints a device only if
+this node holds none, so it is idempotent by construction. It happens inside the
+join: `MemberJoined`, `MemberJoinedAt`, `MemberJoinedOpen` and
+`MemberJoinedViaTeeAttestation` are cleartext `RootOp`s that carry the
+`JoinAccountCredential`, so the binding lands in the same apply as the membership
+and needs no scope key. That is also why the old "join first, then enrol" ordering
+rule is gone: there is nothing left to sequence.
 
 ### What a backup is
 
@@ -582,9 +586,9 @@ merod --node node1 account import                              # paste the phras
 merod --node node1 run
 ```
 
-Then, for each namespace you used, enrol a device (`meroctl account create
-<NAMESPACE_ID>`) and a peer delivers the current scope key to it, exactly as it
-would to any newly linked device.
+Then rejoin each namespace you used. The join mints and links a device for the
+restored account, and a peer delivers the current scope key to it, exactly as it
+would to any newly linked device — there is no separate enrol step to run.
 
 What comes back, and what does not:
 
@@ -596,10 +600,10 @@ What comes back, and what does not:
 | the node's own identity keypair | **new**, so the old member row is dead and the node needs a fresh invitation to the namespace |
 | local history | **not restored from the phrase** — the node re-syncs current state like any cold joiner |
 
-The ordering constraint that catches people: **enrolling a device requires the
-scope key**, because a device link travels as an encrypted group operation. So
-rejoin the namespace and context *first*, then `account create`. Doing it the other
-way round deadlocks.
+The ordering constraint that used to catch people is gone: a device link once
+travelled as an encrypted group operation, so enrolling needed the scope key and
+had to follow the join. The credential now rides the cleartext join op, so the join
+*is* the enrolment and there is no order to get wrong.
 
 ### Import's guards
 

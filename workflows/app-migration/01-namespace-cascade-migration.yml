@@ -67,13 +67,6 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture admin key (for teardown)
-    type: get_namespace_identity
-    node: app-migration-cascade-1
-    namespace_id: "{{namespace_id}}"
-    outputs:
-      admin_key: publicKey
-
   - name: Create descendant Open subgroup on node 1
     # Open visibility lets node 2 materialise its inherited membership
     # via `join_subgroup_inheritance` instead of needing an

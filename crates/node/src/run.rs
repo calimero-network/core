@@ -557,6 +557,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     // one panics).
     let mut server_done = false;
     let mut bridge_done = false;
+    let mut system_done = false;
     let mut stop_cause = StopCause::Signal;
 
     let exit: eyre::Result<()> = loop {
@@ -577,6 +578,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
                 // (`state_delta_arbiter`) lives until this function returns;
                 // the underlying Actix arbiter thread is owned by the System
                 // and shuts down with it.
+                system_done = true;
                 break res.map_err(eyre::Report::from).and_then(|inner| inner);
             }
             cause = &mut term_signal => {
@@ -637,7 +639,48 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 4. Abort + reap the detached background tasks so none of them can wake
+    // 4. Stop the Actix system, which ends every arbiter thread and with it
+    //    every actor.
+    //
+    //    The system did already come down without this, but only by accident and
+    //    only far too late: dropping `arbiter_pool` closes the arbiter-handle
+    //    channel, whose sender lives in a task that calls `System::current()
+    //    .stop()` when the send fails. That drop happens when this function
+    //    RETURNS — by which point the global runtime is already on its way out,
+    //    so the arbiters tear their actors down against a dying runtime. Any
+    //    actor holding an IO resource registered on that runtime then sees it
+    //    fail, and a behaviour that treats the failure as retryable spins: the
+    //    swarm's mdns interface watcher polls a netlink socket whose runtime is
+    //    gone at ~280k iterations a second, which both pegs a core and keeps the
+    //    arbiter from finishing, so the process has to be killed from outside.
+    //
+    //    Stopping here instead means the actors come down while the runtime that
+    //    owns their IO is still healthy, so there is no failing resource to spin
+    //    on. Here specifically, because actors write to the datastore just as
+    //    the tasks below do and so must stop before the flush for the same
+    //    reason — and after the server and bridge drains above, which both talk
+    //    to actors.
+    if !system_done {
+        arbiter_pool.stop();
+        match tokio::time::timeout(SHUTDOWN_GRACE, &mut arbiter_pool.system_handle).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(err))) => tracing::warn!(%err, "actix system errored during shutdown"),
+            Ok(Err(join_err)) => {
+                tracing::warn!(%join_err, "actix system task join error during shutdown");
+            }
+            Err(_) => {
+                // The system did not come down in time. There is nothing to
+                // abort — the arbiters are OS threads owned by Actix, not tasks
+                // — so record it and carry on; the flush below still runs, and
+                // it is the reason this is a warning rather than a hang.
+                tracing::warn!(
+                    "actix system did not stop within the shutdown grace period; continuing"
+                );
+            }
+        }
+    }
+
+    // 5. Abort + reap the detached background tasks so none of them can wake
     //    up and touch the datastore after we flush. Their RocksDB writes are
     //    synchronous and inline (none use `spawn_blocking`), so a cancellation
     //    can only be observed at an `.await` boundary — after any in-progress
@@ -658,7 +701,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 5. Flush the datastore so an abrupt process exit immediately afterwards
+    // 6. Flush the datastore so an abrupt process exit immediately afterwards
     //    cannot lose what the just-drained writers persisted. The RocksDB
     //    `Drop` impl is a backstop for any path that skips this.
     if !stop_cause.flushes() {

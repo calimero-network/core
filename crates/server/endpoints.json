@@ -37,7 +37,6 @@
   "GET /admin-api/namespaces",
   "GET /admin-api/namespaces/:namespace_id",
   "GET /admin-api/namespaces/:namespace_id/groups",
-  "GET /admin-api/namespaces/:namespace_id/identity",
   "GET /admin-api/namespaces/for-application/:application_id",
   "GET /admin-api/network/status",
   "GET /admin-api/packages",

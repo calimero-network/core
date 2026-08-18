@@ -1,6 +1,6 @@
 ---
 title: Identity & Key Rotation
-description: How Calimero rotates a scope's symmetric encryption key when a member is involuntarily removed, why self-leave does not rotate, and how a member that missed a delivery pulls the key back.
+description: How Calimero rotates a scope's symmetric encryption key when a member departs, why a self-leave's rotation is owed by the members who remain, and how a member that missed a delivery pulls the key back.
 sidebar:
   order: 17
 ---
@@ -8,7 +8,7 @@ sidebar:
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-A scope (a group or a namespace; see [Identities](/protocol/identities/) and [Governance](/protocol/governance/)) protects its replicated data with a single **symmetric scope key**. Every governance op and state delta written into the scope is encrypted under that key, so holding the key is what lets a node read the scope at all. This chapter is about the one event that forces that key to change — an _involuntary_ member removal — and the self-healing path a member uses to acquire a key it is entitled to but does not yet hold.
+A scope (a group or a namespace; see [Identities](/protocol/identities/) and [Governance](/protocol/governance/)) protects its replicated data with a single **symmetric scope key**. Every governance op and state delta written into the scope is encrypted under that key, so holding the key is what lets a node read the scope at all. This chapter is about what forces that key to change — a member's departure, whether an involuntary removal or a voluntary self-leave — and the self-healing path a member uses to acquire a key it is entitled to but does not yet hold.
 
 <Aside type="note">
 The code names this symmetric key the **group key** (`group_key`, `GroupKeyring`, `GroupKeyEntry`). A namespace is its own root group, so the same machinery covers both a subgroup's key and a namespace-root key. This chapter says **scope key** for the concept and uses the code's `group_key` / `group_id` names when quoting types.
@@ -168,32 +168,53 @@ On an involuntary removal that rotates, the publisher MUST mint a fresh key and 
 
 Rotation is forward-only. The removed member keeps the old key and the plaintext history it already decrypted — Calimero does not and cannot claw that back. The guarantee is strictly that **data authored after the rotation is unreadable** to it, because that data is encrypted under a key it was never handed.
 
-## Why self-leave does not rotate
+## Self-leave rotates too — but not by the leaver
 
-A voluntary `MemberLeft` deliberately does **not** rotate the scope key. The reasoning is in the apply handler (`crates/governance-store/src/ops/group/member_left.rs`):
+A voluntary `MemberLeft` cannot carry its own rotation, for the reason the apply handler gives (`crates/governance-store/src/ops/group/member_left.rs`):
 
 > this op deliberately does NOT trigger the key-rotation pipeline that `MemberRemoved` does, because the publisher (the leaver) cannot generate the new key without also retaining it — which would defeat forward secrecy.
 
-The leaver is the one publishing the op. If the leaver minted the new key, it would by construction know that key, so wrapping it for the remaining members would buy nothing — the departing node could read every "post-leave" write. Worse, the leaver already holds the _current_ key, so there is no read it can do after leaving that it could not already do. A self-leave therefore removes the membership row and deny-lists the leaver (the governance-level departure) but leaves the key untouched.
+The leaver is the one publishing the op. If the leaver minted the new key it would by construction know that key, so wrapping it for the remaining members would buy nothing. Peers reject a rotation signed by a non-admin anyway.
 
-The cryptographically-complete path is an _admin-initiated_ `MemberRemoved`, where the publisher is a remaining member who can keep the new key secret from the departing one. A proper forward-secret self-leave would need a two-phase follow-up (a remaining admin's apply hook publishing the new key after the leave); that is noted as deferred in the code and is not implemented today.
+So the two halves are split across nodes: the apply **records the debt** rather than paying it, and the members who remain settle it.
+
+<Steps>
+
+1. The leaver publishes `MemberLeft`. Its apply removes the membership row, deny-lists the leaver, and marks the rotation owed — writing a replicated `GroupPendingKeyRotation` row on every node. The apply is deterministic, so the worklist replicates rather than needing its own gossip.
+
+2. `rotation_listener` (`crates/context/src/rotation_listener.rs`), running on each **remaining admin**, picks the debt up and issues `RotateGroupKeyRequest`, which mints a fresh key and publishes `GroupKeyRotated` with it wrapped for the members who are still there.
+
+3. The first `GroupKeyRotated` to apply clears the pending row. Later attempts find it cleared and become no-ops.
+
+</Steps>
+
+There is deliberately **no election and no quorum**. Every remaining admin reacts, and two admins racing mint _different_ keys — which is safe, because the keyring already converges on one (highest epoch, ties broken by the larger key id: a total order over a hash, so every node makes the same choice), and because **every** competing key excludes the leaver. Whichever wins, the leaver holds none of them. The only cost is redundant envelopes on the wire.
+
+Liveness has two triggers, because the live op-event alone is not enough — an admin that was offline when the leave applied never saw it. The listener therefore also runs a **startup sweep** of the persisted worklist. Both triggers funnel into the same idempotent request, so they can overlap harmlessly. The worklist drains; it does not evaporate.
+
+### The window before the rotation lands
+
+Rotation on self-leave is **deferred, not immediate**, and that difference is the whole of what a self-leave gives up next to an admin-published `MemberRemoved`, which rotates in the same op. Until a remaining admin discharges the debt, new writes are still encrypted under the key the leaver holds. The deny-list stops the leaver _writing_ and it unsubscribes from the topic, but a leaver that keeps watching gossip can still read that window.
+
+The window is bounded by how quickly a remaining admin rotates, and it is **observable** — the pending row is the standing record of what is owed. It does not close on its own if no admin ever returns: a group whose remaining admins are all permanently offline keeps the debt outstanding indefinitely.
 
 <Aside type="note">
-This is also why TEE fleet eviction is driven by an owner-side `remove_group_members` (which rotates) rather than a fleet-initiated leave. [ADR 0002](/protocol/tee-attestation/) records that a `fleet_leave` self-leave would give _worse_ forward secrecy than the owner-side removal, so the owner-side `MemberRemoved` is the correct eviction primitive.
+This is also why TEE fleet eviction prefers an owner-side `remove_group_members` over a fleet-initiated leave: the owner-side removal rotates _in the same op_, leaving no deferred window. [ADR 0002](/protocol/tee-attestation/) records that reasoning from before a self-leave carried a rotation debt at all — the gap it describes is now one of timing, not of a rotation that never comes.
 </Aside>
 
 :::caution[Normative]
-A self-leave (`MemberLeft`) MUST NOT be relied on for forward secrecy: it does not rotate the scope key, and the leaver retains a key that decrypts subsequent writes. Cryptographic eviction MUST go through an admin-published `MemberRemoved`.
+A self-leave (`MemberLeft`) MUST NOT be relied on for _immediate_ forward secrecy. The rotation it owes is discharged by a remaining admin, so the leaver can still read writes made in the window before that lands — and the debt stays outstanding for as long as no remaining admin is online to settle it. Where eviction must be cryptographically effective at once, it MUST go through an admin-published `MemberRemoved`, which rotates in the same op.
 :::
 
-## When rotation is skipped even on removal
+## When rotation is skipped entirely
 
-Not every removal rotates, and the publisher decides by which key encrypted the op:
+Not every departure rotates. For a removal the publisher decides by which key encrypted the op; for a self-leave the same question is asked by `group_rotates_on_departure` (`crates/governance-store/src/pending_rotation.rs`), which records a debt only for a scope that encrypts under its **own** key. Either way the answer turns on the same distinction:
 
-- **Restricted subgroup** (the op was encrypted under the subgroup's _own_ key): rotate. This is the standard forward-secrecy path described above.
-- **Open subgroup** (the op was encrypted under the _namespace_ key, because an Open subgroup inherits the namespace's key): **skip rotation**. The removed member's namespace membership is unaffected by a subgroup removal, so it still holds the namespace key — a per-subgroup rotation would mint a key that nothing uses while the subgroup stays Open. An Open-subgroup removal revokes _authorization_ (the membership row is gone, so the removed identity can no longer pass the membership walk) but not cryptographic _read access_; revoking that would require rotating the namespace key (a broad blast radius) or flipping the subgroup to Restricted.
+- **Restricted subgroup** (encrypted under the subgroup's _own_ key), or any subgroup behind a Restricted ancestor: rotate. This is the standard forward-secrecy path described above.
+- **Namespace root**: rotate. The namespace key also decrypts every Open subgroup beneath it, so a member who leaves the namespace entirely would otherwise go on reading the root and all of those.
+- **Open subgroup beneath a fully-Open chain** (encrypted under the _namespace_ key, which it inherits): **skip rotation**. The departing member's namespace membership is unaffected by a subgroup departure, so it still holds the namespace key — a per-subgroup rotation would mint a key that nothing uses while the subgroup stays Open. Leaving such a subgroup revokes _authorization_ (the membership row is gone, so the identity can no longer pass the membership walk) but not cryptographic _read access_; revoking that means rotating the namespace key (a broad blast radius) or flipping the subgroup to Restricted.
 
-This is the documented trade-off in `group_governance_publisher.rs`; the choice keys off whether the encrypting group is the subgroup itself or the namespace root.
+This is the documented trade-off in `group_governance_publisher.rs`; the choice keys off whether the encrypting scope is the subgroup itself or the namespace root.
 
 ## Pull-based key recovery
 

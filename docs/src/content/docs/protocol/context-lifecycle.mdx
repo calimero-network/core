@@ -92,7 +92,7 @@ These publish a real governance op — `GroupOp::MemberLeft` signed by the leave
 - **`leave-group`** leaves one subgroup. It rejects being called on a namespace root (routing you to `leave_namespace`) and deliberately does **not** unsubscribe from the namespace topic, because the leaver may still belong to other groups under it. For a regular `Admin`/`Member`/`Observer` self-leave, local rows are preserved as soft-leave residue that rejoin/re-keyshare paths depend on; only a `ReadOnlyTee` self-leave purges local rows.
 - **`leave-namespace`** leaves the root group and **cascades** to every descendant where the leaver holds a direct row — owner and last-admin checks across all of them upfront, then a row-removal cascade. It additionally issues `unsubscribe_namespace`, since the member is leaving the entire subtree.
 
-Neither leave attaches key rotation; forward secrecy after a departure is a deferred admin follow-up.
+Neither leave mints its own key rotation — the leaver cannot, since it would have to generate the very key it is being cut off from. Instead the apply records the rotation as a **debt**, and a remaining admin discharges it automatically; see [Key Rotation](/protocol/key-rotation/). Forward secrecy after a self-leave is therefore real but *deferred*: writes made before the rotation lands are still readable by the leaver.
 
 ## Delete — admin teardown, not history erasure
 
