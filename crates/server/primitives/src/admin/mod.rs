@@ -1524,8 +1524,18 @@ pub struct MemberMigrationReportApiData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberMigrationStatusApiEntry {
-    /// The cohort member.
+    /// The cohort member: the DEVICE key that reports, bs58. A person holding
+    /// two devices appears twice.
     pub peer: PublicKey,
+    /// The account `peer` speaks for, 64 hex.
+    ///
+    /// The cohort is a set of replicas, so this is what groups a person's
+    /// devices, and it is the only field that joins these rows to
+    /// `GET /groups/:id/members` - which is account-keyed and carries `name`.
+    /// Without it a caller holds a signing key and cannot name the human it
+    /// belongs to, because the two encodings name different principals and
+    /// nothing errors when they are confused.
+    pub account: AccountId,
     /// The member's freshest reported facts, or `null` when it has no fresh
     /// heartbeat (in which case `state == "unknown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2710,6 +2720,7 @@ mod tests {
             members: vec![
                 MemberMigrationStatusApiEntry {
                     peer: migrated_peer,
+                    account: AccountId::from(*migrated_peer),
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 2,
                         residue_auto: 0,
@@ -2723,11 +2734,13 @@ mod tests {
                 },
                 MemberMigrationStatusApiEntry {
                     peer: unknown_peer,
+                    account: AccountId::from(*unknown_peer),
                     report: None,
                     state: "unknown".into(),
                 },
                 MemberMigrationStatusApiEntry {
                     peer: failed_peer,
+                    account: AccountId::from(*failed_peer),
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 1,
                         residue_auto: 1,

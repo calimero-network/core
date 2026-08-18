@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use actix::{ActorResponse, Handler, Message};
 use calimero_account::AccountId;
 use calimero_context_client::group::{
-    compute_migration_status_rollup, GetMigrationStatusRequest, MemberMigrationReport,
-    MigrationStatus,
+    compute_migration_status_rollup, CohortMember, GetMigrationStatusRequest,
+    MemberMigrationReport, MigrationStatus,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{MembershipRepository, NamespaceRepository, UpgradesRepository};
@@ -26,7 +26,7 @@ use crate::ContextManager;
 pub fn collect_migration_cohort(
     store: &calimero_store::Store,
     namespace_id: &ContextGroupId,
-) -> eyre::Result<Vec<PublicKey>> {
+) -> eyre::Result<Vec<CohortMember>> {
     // `collect_descendants` EXCLUDES the starting group, so we prepend it.
     let mut groups = vec![*namespace_id];
     groups.extend(NamespaceRepository::new(store).collect_descendants(namespace_id)?);
@@ -46,15 +46,19 @@ pub fn collect_migration_cohort(
     // bindings of its own — reading them there returns nothing and the cohort
     // comes back empty, which reads as "every member has migrated".
     let anchor = NamespaceRepository::new(store).resolve(namespace_id)?;
-    let expand = |accounts: std::collections::BTreeSet<AccountId>| -> eyre::Result<Vec<PublicKey>> {
-        let bindings = calimero_governance_store::AccountBindingRepository::new(store)
-            .live_bindings(&anchor)?;
-        Ok(bindings
-            .iter()
-            .filter(|binding| accounts.contains(&binding.account))
-            .map(|binding| binding.sign_pk)
-            .collect())
-    };
+    let expand =
+        |accounts: std::collections::BTreeSet<AccountId>| -> eyre::Result<Vec<CohortMember>> {
+            let bindings = calimero_governance_store::AccountBindingRepository::new(store)
+                .live_bindings(&anchor)?;
+            Ok(bindings
+                .iter()
+                .filter(|binding| accounts.contains(&binding.account))
+                .map(|binding| CohortMember {
+                    peer: binding.sign_pk,
+                    account: binding.account,
+                })
+                .collect())
+        };
 
     if let Some(projected) =
         crate::scope_projection::ScopeProjections::member_identities_subtree_ephemeral(
@@ -332,11 +336,13 @@ mod tests {
 
         // The cohort over the subtree rooted at the child must include BOTH.
         let cohort = collect_migration_cohort(&store, &child).unwrap();
+        // Compare on `peer`: the cohort now carries the account alongside it.
+        let peers: Vec<_> = cohort.iter().map(|m| m.peer).collect();
         assert!(
-            cohort.contains(&inherited),
+            peers.contains(&inherited),
             "inherited Open-subgroup member must be in the cohort, not dropped by count()"
         );
-        assert!(cohort.contains(&direct));
+        assert!(peers.contains(&direct));
         assert_eq!(cohort.len(), 2);
         assert!(
             cohort.len() > direct_count,
