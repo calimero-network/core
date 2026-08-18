@@ -32,11 +32,28 @@
 //! reject, otherwise apply. Applying is modeled as inserting the delta's
 //! entity into the real tree; a rejected delta never inserts, so the
 //! independently-computed Merkle root is provably unchanged.
+//!
+//! # Content-address gate
+//!
+//! The signature gate above binds `delta_id`, but `parent_ids` ride the wire
+//! OUTSIDE the signed payload, so a second gate re-derives the id from the
+//! content it claims to address (`CausalDelta::content_address_matches`). The
+//! `content_gate_and_apply` helper below transcribes BOTH gates, and the tests
+//! using it cover the republish attack: gossipsub messages are publisher-signed,
+//! so a delta cannot be tampered with in flight — but any node in the mesh can
+//! republish a member's delta under its own libp2p key with `parent_ids`
+//! rewritten. Every author-keyed gate still passes, because they all resolve the
+//! honest `author_id` rather than the publisher.
 
 use calimero_node_primitives::sync::delta_auth::{delta_signature_payload, verify_delta_signature};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::action::Action;
+use calimero_storage::address::Id as StorageId;
+use calimero_storage::delta::CausalDelta;
+use calimero_storage::entities::Metadata;
+use calimero_storage::logical_clock::HybridTimestamp;
 
 use crate::sync_sim::prelude::*;
 
@@ -222,6 +239,188 @@ fn missing_signature_rejected_no_state_mutation() {
         b"unsigned".to_vec(),
     );
     assert!(!applied, "an unsigned delta must be rejected by the gate");
+    assert_eq!(
+        node.root_hash(),
+        root_before,
+        "rejected delta must not mutate storage: root_hash must be unchanged"
+    );
+}
+
+// =============================================================================
+// Content-address gate (parents authentication)
+// =============================================================================
+
+/// One CRDT action, so the fixtures hash a non-empty action list rather than
+/// only exercising the parents half of the preimage.
+fn fixture_actions() -> Vec<Action> {
+    vec![Action::Add {
+        id: StorageId::from([0x5A_u8; 32]),
+        data: b"payload".to_vec(),
+        ancestors: vec![],
+        metadata: Metadata::default(),
+    }]
+}
+
+/// Faithful transcription of the handler's gate chain as it now stands:
+/// envelope signature first (authorship), then the content address (the fields
+/// the signature does not cover). Mirrors the block added to
+/// `apply_authorized_state_delta` after `decrypt_delta_actions` — the check runs
+/// post-decrypt because it needs `actions`, and pre-DAG-insert because a
+/// disconnected head is exactly what it prevents.
+///
+/// Returns `true` iff BOTH gates passed and the entity reached the real Merkle
+/// tree. `parents`/`actions`/`hlc` are the values that arrived on the wire; the
+/// attacker controls them, and `delta_id` is what the signature covers.
+#[allow(clippy::too_many_arguments)]
+fn content_gate_and_apply(
+    node: &mut SimNode,
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    author_id: PublicKey,
+    signature: Option<[u8; 64]>,
+    parents: &[[u8; 32]],
+    actions: &[Action],
+    hlc: &HybridTimestamp,
+    apply_entity: EntityId,
+    apply_data: Vec<u8>,
+) -> bool {
+    // Gate 1: authorship (unchanged — see `gate_and_apply`).
+    let sig = match signature {
+        Some(s) => s,
+        None => return false,
+    };
+    if verify_delta_signature(context_id, delta_id, author_id, None, &sig).is_err() {
+        return false;
+    }
+
+    // Gate 2: does the signed id actually address the content that arrived?
+    if !CausalDelta::content_address_matches(&delta_id, parents, actions, hlc) {
+        return false;
+    }
+
+    node.insert_entity(apply_entity, apply_data, CrdtType::lww_register("byz"));
+    true
+}
+
+/// Control: an honest delta — id derived from the parents and actions it
+/// carries, signed by its real author — passes both gates and advances the root.
+/// Without this the negative tests below could pass on a broken fixture.
+#[test]
+fn honest_delta_passes_both_gates_and_mutates_state() {
+    let mut node = initialized_node();
+    let context_id = node.context_id();
+    let (alice_sk, alice_pk) = alice();
+
+    let parents = vec![[0x31_u8; 32]];
+    let actions = fixture_actions();
+    let hlc = HybridTimestamp::default();
+    let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+    let payload =
+        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
+
+    let root_before = node.root_hash();
+    let applied = content_gate_and_apply(
+        &mut node,
+        context_id,
+        delta_id,
+        alice_pk,
+        Some(sig),
+        &parents,
+        &actions,
+        &hlc,
+        EntityId::from_u64(10),
+        b"honest".to_vec(),
+    );
+    assert!(applied, "an honest delta must pass both gates");
+    assert_ne!(
+        node.root_hash(),
+        root_before,
+        "a genuine apply must advance the Merkle root"
+    );
+}
+
+/// The #3540 attack. A republisher takes Alice's delta VERBATIM — same
+/// `delta_id`, same genuine signature, same honest `author_id` — and strips
+/// `parent_ids` to empty. The signature gate cannot see it (parents are not in
+/// the signed payload) and every author-keyed gate resolves Alice, a full
+/// member. Empty parents are the worst case: they hit the vacuously-true branch
+/// of `DagStore::can_apply` and apply immediately as a disconnected head,
+/// bypassing missing-parent detection. The content gate must catch it.
+#[test]
+fn republished_delta_with_emptied_parents_rejected_no_state_mutation() {
+    let mut node = initialized_node();
+    let context_id = node.context_id();
+    let (alice_sk, alice_pk) = alice();
+
+    let parents = vec![[0x31_u8; 32]];
+    let actions = fixture_actions();
+    let hlc = HybridTimestamp::default();
+    let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+    // Alice's real signature over her real delta — the attacker does not forge
+    // anything, it replays what Alice published.
+    let payload =
+        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
+
+    let root_before = node.root_hash();
+    let applied = content_gate_and_apply(
+        &mut node,
+        context_id,
+        delta_id,
+        alice_pk,
+        Some(sig),
+        &[], // <-- the only tampered field
+        &actions,
+        &hlc,
+        EntityId::from_u64(11),
+        b"disconnected-head".to_vec(),
+    );
+    assert!(
+        !applied,
+        "a delta whose parents were stripped to empty must be rejected"
+    );
+    assert_eq!(
+        node.root_hash(),
+        root_before,
+        "rejected delta must not mutate storage: root_hash must be unchanged"
+    );
+}
+
+/// Same attack, non-empty variant: re-parenting moves the causal cut that
+/// at-cut authorization resolves against, so a swapped parent set must be
+/// rejected too — the gate is about content-addressing, not just emptiness.
+#[test]
+fn republished_delta_with_swapped_parents_rejected_no_state_mutation() {
+    let mut node = initialized_node();
+    let context_id = node.context_id();
+    let (alice_sk, alice_pk) = alice();
+
+    let parents = vec![[0x31_u8; 32]];
+    let actions = fixture_actions();
+    let hlc = HybridTimestamp::default();
+    let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+
+    let payload =
+        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
+
+    let root_before = node.root_hash();
+    let applied = content_gate_and_apply(
+        &mut node,
+        context_id,
+        delta_id,
+        alice_pk,
+        Some(sig),
+        &[[0x77_u8; 32]], // a different, still non-empty, parent
+        &actions,
+        &hlc,
+        EntityId::from_u64(12),
+        b"reparented".to_vec(),
+    );
+    assert!(!applied, "a re-parented delta must be rejected");
     assert_eq!(
         node.root_hash(),
         root_before,
