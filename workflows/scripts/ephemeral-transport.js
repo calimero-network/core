@@ -1,11 +1,11 @@
 // ephemeral-transport.js — transport-only helpers for talking presence to a node.
 //
-// Extracted from ephemeral-lib.js so that BOTH the e2e assertions (which live
-// next door) and the runnable demo (tools/ephemeral-presence-demo) drive the
-// node the same way, instead of two copies of a WebSocket client drifting
-// apart. Nothing in here asserts or exits: it is purely "how a client speaks
-// presence". The assertion helpers stayed in ephemeral-lib.js, which re-exports
-// this module, so existing e2e imports are unchanged.
+// Kept separate from ephemeral-lib.js so that the e2e assertions (which live
+// next door) and any other presence client drive the node the same way, instead
+// of two copies of a WebSocket client drifting apart. Nothing in here asserts
+// or exits: it is purely "how a client speaks presence". The assertion helpers
+// live in ephemeral-lib.js, which re-exports this module, so existing e2e
+// imports are unchanged.
 //
 // Presence has no request/response read surface: a client learns presence ONLY
 // by subscribing to the node’s event stream, which seeds it with the context’s

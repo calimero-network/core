@@ -37,5 +37,3 @@ tools/cargo-mero/tests/fixtures/*/crates/*/res/
 # Random bytes, 141 MiB at the default tier — regenerated per run, never committed.
 apps/blobs/static/generated/
 
-# ephemeral-presence demo: per-run ids written by its merobox workflow
-tools/ephemeral-presence-demo/.demo-env

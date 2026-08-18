@@ -10,8 +10,9 @@
 //
 // This file now holds only the assertion vocabulary; the transport (`rpc`,
 // `readContext`, `subscribe`, `subscribeSse`, `sleep`) moved to
-// ephemeral-transport.js and is re-exported at the bottom, so the e2e scripts
-// and the runnable demo under tools/ephemeral-presence-demo share one client.
+// ephemeral-transport.js and is re-exported at the bottom, so every presence
+// client (the e2e scripts here, and anything else that drives a node) shares
+// one implementation.
 
 /** A passed/failed counter shared by a script's assertions. */
 export const tally = { pass: 0, fail: 0 };
@@ -60,9 +61,8 @@ export function summarize() {
 
 
 // The transport helpers (`rpc`, `readContext`, `subscribe`, `subscribeSse`,
-// `sleep`) now live in ephemeral-transport.js so the runnable demo under
-// tools/ephemeral-presence-demo can drive a node exactly the way these
-// assertions do, rather than carrying a second copy of the WebSocket client.
-// They are re-exported here so every existing importer of this module keeps
-// working unchanged.
+// `sleep`) live in ephemeral-transport.js so anything else that needs to drive
+// a node can speak presence exactly the way these assertions do, rather than
+// carrying a second copy of the WebSocket client. They are re-exported here so
+// every existing importer of this module keeps working unchanged.
 export * from './ephemeral-transport.js';
