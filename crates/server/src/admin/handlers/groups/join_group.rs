@@ -37,7 +37,6 @@ pub async fn handler(
                         group_id: group_id_hex,
                         member_identity: resp.member_identity,
                         member_account: resp.member_account.to_string(),
-                        governance_op: hex::encode(&resp.governance_op_bytes),
                     },
                 },
             }

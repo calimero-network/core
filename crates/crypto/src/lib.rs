@@ -6,6 +6,16 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 pub const NONCE_LEN: usize = 12;
 
+/// Authentication tag length, in bytes, appended to the ciphertext by
+/// [`SharedKey::encrypt`] / [`SharedKey::encrypt_with_nonce`] (AES-256-GCM).
+///
+/// Sourced from `ring::aead::AES_256_GCM.tag_len()` — pinned as a constant
+/// here (rather than re-derived at every call site) because it is the fixed
+/// per-message overhead callers need to reason about ciphertext-length caps
+/// without hardcoding a guess. A test below asserts this matches `ring`'s
+/// reported tag length, so a `ring` upgrade that changed it would fail loudly.
+pub const AEAD_TAG_LEN: usize = 16;
+
 // Domain-separation label for the HKDF that turns the raw ECDH point into the
 // AEAD key. Bump the version suffix if the derivation ever changes.
 const AEAD_KDF_INFO: &[u8] = b"calimero.sharedkey.aead.v2";
@@ -268,6 +278,15 @@ mod tests {
     use rand::thread_rng;
 
     use super::*;
+
+    #[test]
+    fn aead_tag_len_matches_ring() {
+        assert_eq!(
+            AEAD_TAG_LEN,
+            aead::AES_256_GCM.tag_len(),
+            "AEAD_TAG_LEN must track ring::aead::AES_256_GCM's reported tag length"
+        );
+    }
 
     #[test]
     fn test_encrypt_decrypt() -> eyre::Result<()> {

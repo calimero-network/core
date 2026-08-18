@@ -2728,3 +2728,212 @@ fn flip_back_at_mid_chain_revokes_inheritance_from_root() {
         "a Restricted hop anywhere on the chain cuts inheritance at the leaf"
     );
 }
+
+// -----------------------------------------------------------------------
+// Why a group can never be left memberless by a departure.
+//
+// `MemberLeft`'s apply has a last-ADMIN guard but no last-MEMBER guard, which reads
+// like a hole: a group with zero members would owe a forward-secrecy rotation with
+// nobody left who could discharge it, and the debt would stand forever.
+//
+// It is not reachable, but the reason lives somewhere else entirely — in the OWNER
+// guards. Every group pins an owner, the owner may not walk out, and handing the
+// role over requires a successor who is already an Admin, so the role never vacates.
+// Three separate checks in two files uphold that between them, which is exactly the
+// shape that regresses quietly when one of them is refactored. These pin it.
+mod owner_guard_prevents_a_memberless_group {
+    use super::*;
+    use calimero_governance_types::SignedGroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    fn sign_leave(
+        signer_sk: &PrivateKey,
+        group: &ContextGroupId,
+        member: AccountId,
+        nonce: u64,
+    ) -> SignedGroupOp {
+        SignedGroupOp::sign(
+            signer_sk,
+            group.to_bytes().into(),
+            vec![],
+            nonce,
+            GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        )
+        .expect("sign MemberLeft")
+    }
+
+    #[test]
+    fn the_owner_cannot_self_leave() {
+        let store = test_store();
+        let ns_id = [0xC1u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let ((owner_sk, owner_pk), owner) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+
+        // A SECOND admin, so the last-admin guard cannot be what rejects the leave.
+        // Without this the test would pass even if the owner guard were deleted, and
+        // it would be pinning the wrong invariant.
+        let other_sk = PrivateKey::random(&mut OsRng);
+        let other = crate::test_fixtures::enrol_member(&store, &ns_gid, &other_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &other, GroupMemberRole::Admin)
+            .unwrap();
+
+        let err = apply_local_signed_group_op(&store, &sign_leave(&owner_sk, &ns_gid, owner, 1))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<MembershipError>(),
+                Some(MembershipError::OwnerCannotSelfLeave(_))
+            ),
+            "the owner must be refused for OWNING the group, not for being its last admin \
+             — expected OwnerCannotSelfLeave, got: {err}"
+        );
+
+        // The refusal must be total. A partially-applied leave here is what would
+        // actually strand the group.
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns_gid, &owner)
+                .unwrap(),
+            Some(GroupMemberRole::Admin),
+            "a rejected leave must leave the owner's row untouched"
+        );
+        assert!(
+            !crate::PendingRotationRepository::new(&store)
+                .is_pending(&ns_gid, &owner)
+                .unwrap(),
+            "a rejected leave must not record a rotation debt — nobody departed, so a \
+             rotation would be owed forever with no departure to justify it"
+        );
+        let _ = owner_pk;
+    }
+
+    #[test]
+    fn a_namespace_leave_is_refused_when_the_leaver_owns_a_descendant() {
+        // The cascade is where this could slip: leaving the root walks every
+        // descendant, and a leaver who owns one of them would strand THAT group even
+        // though the root itself was fine. The check runs upfront across the whole
+        // subtree, before anything mutates.
+        let store = test_store();
+        let ns_id = [0xC2u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let (_root_admin, root_owner) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+
+        let leaver_sk = PrivateKey::random(&mut OsRng);
+        let leaver = crate::test_fixtures::enrol_member(&store, &ns_gid, &leaver_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &leaver, GroupMemberRole::Admin)
+            .unwrap();
+
+        // A subgroup the leaver owns, and holds a direct row in.
+        let sub_gid = ContextGroupId::from([0xC3u8; 32]);
+        MetaRepository::new(&store)
+            .save(&sub_gid, &sample_meta_with_admin(leaver))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub_gid, &leaver, GroupMemberRole::Admin)
+            .unwrap();
+        nest_for_test(&store, &ns_gid, &sub_gid);
+
+        let err = apply_local_signed_group_op(&store, &sign_leave(&leaver_sk, &ns_gid, leaver, 1))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<MembershipError>(),
+                Some(MembershipError::OwnerOwnsSubgroup(_))
+            ),
+            "a namespace leave must be refused while the leaver owns any group in the \
+             subtree — expected OwnerOwnsSubgroup, got: {err}"
+        );
+
+        // Upfront means upfront: no descendant may be half-torn-down.
+        let members = MembershipRepository::new(&store);
+        assert_eq!(
+            members.role_of(&ns_gid, &leaver).unwrap(),
+            Some(GroupMemberRole::Admin),
+            "the root row must survive a refused cascade"
+        );
+        assert_eq!(
+            members.role_of(&sub_gid, &leaver).unwrap(),
+            Some(GroupMemberRole::Admin),
+            "the owned subgroup's row must survive too — this is the group the guard \
+             exists to protect"
+        );
+        assert!(
+            crate::PendingRotationRepository::new(&store)
+                .all_pending()
+                .unwrap()
+                .is_empty(),
+            "a refused cascade must record no rotation debt anywhere in the subtree"
+        );
+        let _ = root_owner;
+    }
+
+    #[test]
+    fn transferring_ownership_hands_the_role_to_a_member_who_stays() {
+        // The way out for an owner who really wants to leave — and the reason the exit
+        // never empties the group. Transfer requires a successor who is ALREADY an
+        // Admin, so at the moment the former owner walks out there is provably still
+        // somebody holding the role.
+        let store = test_store();
+        let ns_id = [0xC4u8; 32];
+        let ns_gid = ContextGroupId::from(ns_id);
+        let ((owner_sk, _owner_pk), owner) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+
+        let successor_sk = PrivateKey::random(&mut OsRng);
+        let successor =
+            crate::test_fixtures::enrol_member(&store, &ns_gid, &successor_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &successor, GroupMemberRole::Admin)
+            .unwrap();
+
+        let transfer = SignedGroupOp::sign(
+            &owner_sk,
+            ns_gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::TransferOwnership {
+                new_owner: successor,
+            },
+        )
+        .expect("sign TransferOwnership");
+        apply_local_signed_group_op(&store, &transfer).expect("the owner may hand the role over");
+
+        // Both pins move. Leaving `admin_identity` behind would give the former owner
+        // permanent unrevokable admin after walking out.
+        let meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        assert_eq!(meta.owner_identity, successor);
+        assert_eq!(
+            meta.admin_identity, successor,
+            "the meta admin pin must follow ownership, or the former owner keeps admin \
+             nothing can revoke"
+        );
+
+        // Now the former owner may leave, because they no longer own the group.
+        apply_local_signed_group_op(&store, &sign_leave(&owner_sk, &ns_gid, owner, 2))
+            .expect("a former owner is an ordinary member and may leave");
+
+        // And the group is not empty: the successor is still here, still admin-capable,
+        // so the rotation the leave owes has someone who can discharge it.
+        let members = MembershipRepository::new(&store);
+        assert_eq!(
+            members.role_of(&ns_gid, &owner).unwrap(),
+            None,
+            "the former owner really left"
+        );
+        assert_eq!(
+            members.role_of(&ns_gid, &successor).unwrap(),
+            Some(GroupMemberRole::Admin),
+            "THE INVARIANT: a departure always leaves an admin-capable owner behind, \
+             which is why no group can end up memberless owing a rotation nobody can pay"
+        );
+    }
+}

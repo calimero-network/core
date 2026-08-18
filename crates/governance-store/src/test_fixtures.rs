@@ -30,6 +30,20 @@ pub(super) fn test_account_root() -> (PrivateKey, calimero_account::AccountGenes
     (root_sk, genesis)
 }
 
+/// The agreement secret a fixture-issued device holds, derived from the device
+/// seed so any test can recover it.
+///
+/// Production mints this pair on the node and certifies only the public half, so a
+/// fixture that invented a `kem_pk` with no private counterpart produced devices
+/// that could never open an envelope addressed to them. That is not a cosmetic
+/// gap: it silently made every "the recipient cannot decrypt this" assertion pass
+/// for the wrong reason, since no device in the crate could decrypt anything.
+/// Deriving both halves from the seed keeps the fixture faithful and lets a test
+/// assert the positive direction too.
+pub(super) fn device_kem_secret(device: [u8; 32]) -> calimero_crypto::X25519SecretKey {
+    calimero_crypto::X25519SecretKey::from(device)
+}
+
 /// Certify `sign_pk` as `device` under an existing account root.
 pub(super) fn join_account_for(
     root_sk: &PrivateKey,
@@ -43,7 +57,9 @@ pub(super) fn join_account_for(
         genesis.account_id(),
         calimero_account::DeviceId::from(device),
         sign_pk,
-        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        // The real public half of `device_kem_secret(device)`, so an envelope
+        // sealed to this device can actually be opened by a test holding it.
+        &calimero_account::KemPublicKey::from(*device_kem_secret(device).public_key().as_bytes()),
         0,
         device_epoch,
     )
@@ -279,6 +295,20 @@ pub(super) fn enrol_member(
         .record_endorser(namespace, account, &account)
         .expect("record the endorser");
     account
+}
+
+/// The [`crate::DeviceSecret`] belonging to a member enrolled by [`enrol_member`].
+///
+/// [`real_join_account`] derives the device id from the signing key and
+/// [`device_kem_secret`] derives the agreement secret from that same device id, so
+/// this reconstructs what the member's own node would hold — which is what lets a
+/// test open an envelope addressed to that device, and prove the leaver's cannot.
+pub(super) fn device_secret_for(sign_pk: &PublicKey) -> crate::DeviceSecret {
+    let device: [u8; 32] = *sign_pk.as_ref();
+    crate::DeviceSecret {
+        device: calimero_account::DeviceId::from(device),
+        kem_secret: device_kem_secret(device),
+    }
 }
 
 /// Shortcut for nesting one group under another inside tests, unwrapping

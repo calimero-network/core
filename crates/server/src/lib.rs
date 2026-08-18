@@ -25,11 +25,14 @@ pub mod admin;
 mod auth;
 mod caller_account;
 pub mod config;
+mod ephemeral_replay;
 mod execute;
 pub mod jsonrpc;
 mod metrics;
 mod service_mounts;
 pub mod sse;
+#[cfg(test)]
+mod test_support;
 pub mod ws;
 
 /// Node lifecycle state consulted by the readiness (`/ready`) probe.

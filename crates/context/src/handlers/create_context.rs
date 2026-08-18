@@ -24,6 +24,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use tracing::{debug, error, warn};
 
+use crate::error::ContextError;
+
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
@@ -376,7 +378,19 @@ async fn create_context(
     )
     .await?;
 
-    if let Some(res) = outcome.returns? {
+    // Map the guest's failure to a TYPED error instead of letting `?` push a
+    // bare `FunctionCallError` up as an untyped report. `parse_api_error`
+    // refuses to echo untyped errors to the caller — rightly, they can carry
+    // store paths and key material — so this path used to answer
+    // `500 {"error":"Internal server error"}` with the reason available
+    // nowhere but the node's own log. The guest's message is app-authored and
+    // is the whole diagnosis (almost always: the initializationParams do not
+    // match `init`'s signature), so it is safe and necessary to surface.
+    let returns = outcome.returns.map_err(|err| ContextError::InitFailed {
+        message: err.to_string(),
+    })?;
+
+    if let Some(res) = returns {
         bail!(
             "context initialization returned a value, but it should not: {:?}",
             res

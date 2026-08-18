@@ -46,9 +46,25 @@ runs:
         #            the typed binding with "node identity read failed" — before
         #            any HTTP call, which is why the node logs showed no request
         #            at all. merobox#337 stopped the two pins drifting.
-        # When this next moves: if the bundled client-py no longer requires
-        # upgradePolicy, delete UPGRADE_POLICY_COMPAT (crates/server/primitives).
-        MIN_MEROBOX="0.6.55"
+        #   0.6.56 — the bundled `calimero-client-py` is >= 0.6.29, which is the
+        #            first release compiled against a core that made
+        #            `governanceOp` optional on the join responses. Below this the
+        #            bundled client rejects a join from a node that has retired
+        #            the field, with a serde `missing field` error before any
+        #            scenario logic runs — every scenario that joins a namespace
+        #            fails at the join step (#3485). 0.6.56 also drops the
+        #            `requester` step field with the DTOs that lost it (#3492).
+        # UPGRADE_POLICY_COMPAT: the previous note here said to delete it once the
+        # bundled client-py stopped requiring `upgradePolicy`. It has — nothing in
+        # client-py master sends or reads the field — but deleting the shim is a
+        # response-shape change of exactly the class #3485 turned out to be:
+        # `mero-js` types `upgradePolicy: string` and `swift-sdk` declares it
+        # non-optional on a synthesized `Codable`, so removing it needs the same
+        # SDK-then-client-py-then-merobox sequence rather than a rider on this
+        # bump. Core's own struct has carried `#[serde(default)]` on the field
+        # since before rc.21, so a client compiled from core survives its
+        # removal; the two hand-written SDKs are what need the coordination.
+        MIN_MEROBOX="0.6.56"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;

@@ -14,6 +14,21 @@
   on a published crate and posted to `admin-api/groups/claim-invitation`, a
   route with no handler anywhere, so any caller got a 404. Direct
   request-response join replaced the relay it belonged to ([#3450])
+- **`governanceOp`** from both join responses (`POST admin-api/groups/join`,
+  `POST admin-api/namespaces/:namespace_id/join`), along with
+  `JoinGroupResponse::governance_op_bytes`. **Breaking** for
+  `calimero-server-primitives` and for any client that decodes the response
+  into a type with a required field of that name — but the node only ever sent
+  `""` there, the last piece of the relay #3450 removed, so no working caller
+  can depend on its value. Read `memberAccount` for the principal the join
+  produced.
+
+  Every pinned decoder was updated first, because one of them runs our own
+  E2E: `mero-js` 11.2.0 and `swift-sdk` dropped the field, `calimero-client-py`
+  0.6.29 rebuilt against the tolerance added in [#3530], and merobox 0.6.56
+  bundles that client — so `MIN_MEROBOX` moves to 0.6.56 here, the floor at
+  which a join against a node without the field still decodes ([#3485],
+  [#3528])
 
 ### Changed
 
@@ -789,4 +804,5 @@ Integrations:
 [#3440]: https://github.com/calimero-network/core/pull/3440
 [#3450]: https://github.com/calimero-network/core/pull/3450
 [#3485]: https://github.com/calimero-network/core/issues/3485
+[#3528]: https://github.com/calimero-network/core/pull/3528
 [#3530]: https://github.com/calimero-network/core/pull/3530

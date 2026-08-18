@@ -73,6 +73,7 @@ impl Request<RequestPayload> {
 pub enum RequestPayload {
     Execute(ExecutionRequest),
     SyncStatus(SyncStatusRequest),
+    SetEphemeral(SetEphemeralRequest),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -251,6 +252,57 @@ impl SyncStatusResponse {
 pub enum SyncStatusError {
     #[error("context not found")]
     ContextNotFound,
+}
+
+// -------------------------------------------- Ephemeral presence types --------------------------------------------
+
+/// Set the caller's local ephemeral-presence slice for a context.
+///
+/// The author identity is resolved server-side (the node's owned key for the
+/// context) — callers never specify it, mirroring the `execute` convention.
+/// `state` is the raw presence bytes (e.g. cursor position, typing indicator).
+/// Rejected by the handler when `state.len() > EPHEMERAL_MAX_BYTES` (16 384).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct SetEphemeralRequest {
+    pub context_id: ContextId,
+    pub state: Vec<u8>,
+}
+
+impl SetEphemeralRequest {
+    #[must_use]
+    pub const fn new(context_id: ContextId, state: Vec<u8>) -> Self {
+        Self { context_id, state }
+    }
+}
+
+/// Acknowledgement returned by `set_ephemeral`. Empty body — the call is
+/// fire-and-forget from the client's perspective; the JSON-RPC ack keeps
+/// the transport uniform and lets the client detect size/auth errors.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct SetEphemeralResponse {}
+
+/// Errors that the `set_ephemeral` handler can return to the client.
+#[derive(Debug, Deserialize, Serialize, thiserror::Error)]
+#[serde(tag = "type", content = "data")]
+#[non_exhaustive]
+pub enum SetEphemeralError {
+    /// The authenticated caller is not a member of the target context, so it
+    /// may not publish presence into it.
+    #[error("caller is not a member of this context")]
+    Unauthorized,
+    /// No owned identity found for the context — the node is not a member.
+    #[error("no owned identity found for context")]
+    NoOwnedIdentity,
+    /// The presence slice exceeds the protocol maximum (16 384 bytes).
+    #[error("ephemeral slice too large: {size} bytes (max {max})")]
+    SliceTooLarge { size: usize, max: usize },
+    /// Any other node-level error (key-loading failure, crypto error, etc.).
+    #[error("set_ephemeral failed: {0}")]
+    InternalError(String),
 }
 
 // -------------------------------------------- Validation Implementation --------------------------------------------

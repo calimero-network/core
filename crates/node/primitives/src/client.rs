@@ -854,6 +854,60 @@ impl NodeClient {
             .map_err(|_| eyre::eyre!("migration status reports response channel dropped"))
     }
 
+    /// Set the local node's ephemeral-presence slice for `(context_id, author)`.
+    ///
+    /// Rounds through `NodeManager` so the seq-counter management and the async
+    /// gossip-publish run on the actor's Arbiter. Returns `Err` when the slice
+    /// exceeds `EPHEMERAL_MAX_BYTES` or a crypto/key-lookup step fails; publish
+    /// failure (no mesh peers) is best-effort and not propagated.
+    pub async fn set_local_ephemeral(
+        &self,
+        context_id: ContextId,
+        author: PublicKey,
+        slice: Vec<u8>,
+    ) -> eyre::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::SetLocalEphemeral {
+                context_id,
+                author,
+                slice,
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| eyre::eyre!("node manager mailbox dropped"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("set_local_ephemeral response channel dropped"))?
+    }
+
+    /// Snapshot the live ephemeral-presence entries for `context_id` from the
+    /// node's in-memory `AwarenessStore`. Returns an empty `Vec` when the
+    /// context has no recorded entries.
+    ///
+    /// Internal accessor, not a client-facing read: its one caller is the
+    /// server's replay-on-subscribe path, which seeds a newly-subscribed client
+    /// with these entries as ordinary `Ephemeral` events. Clients read presence
+    /// from the event stream only — there is no snapshot endpoint.
+    ///
+    /// Each entry is `(author, slice, age_ms)`; the age is what the replay
+    /// stamps onto `EphemeralPayload::age_ms` to distinguish a replayed entry
+    /// from a live delta.
+    pub async fn ephemeral_snapshot(
+        &self,
+        context_id: ContextId,
+    ) -> eyre::Result<Vec<(PublicKey, Vec<u8>, u64)>> {
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::GetEphemeralSnapshot {
+                context_id,
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| eyre::eyre!("node manager mailbox dropped"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("ephemeral_snapshot response channel dropped"))
+    }
+
     pub async fn sync(
         &self,
         context_id: Option<&ContextId>,

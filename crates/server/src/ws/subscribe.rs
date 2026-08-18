@@ -39,16 +39,13 @@ async fn handle(
     // without holding any lock.
     let mut subscribed = Vec::with_capacity(request.context_ids.len());
     for id in request.context_ids {
-        let caller_is_member =
-            caller.map(|key| {
-                let account = crate::caller_account::for_context(&state.ctx_client, &id, &key);
-                state.ctx_client.has_member(&id, &key, account).unwrap_or_else(|err| {
-                warn!(context_id=%id, %err, "has_member lookup failed; denying subscription");
-                false
-            })
-            });
-
-        if may_observe_context(state.auth_enabled, node_owner, caller_is_member) {
+        if caller_may_observe_context(
+            &state.ctx_client,
+            state.auth_enabled,
+            node_owner,
+            caller.as_ref(),
+            &id,
+        ) {
             subscribed.push(id);
         } else {
             warn!(context_id=%id, "denying WS subscription: caller is not a member of the context");
@@ -80,6 +77,53 @@ async fn handle(
     }
     let subscribed_groups = groups.subscribed;
 
+    // Seed this connection with each context's CURRENT presence, now that the
+    // subscription is live.
+    //
+    // Order is load-bearing and deliberately this way round. Live first, then
+    // snapshot: a delta landing between the two is delivered (possibly twice,
+    // harmlessly — it is idempotent last-writer-wins state), whereas reading
+    // the snapshot first would drop it entirely, leaving the client stale until
+    // that author's slice next *changed* (a heartbeat re-sending identical
+    // bytes produces no diff). The snapshot cannot be older than a delta
+    // already delivered, because the node writes its awareness store before
+    // emitting the diff.
+    //
+    // Delivery is per-connection: `try_push_event` writes to this connection's
+    // own command channel, so no other subscriber sees another client's seed.
+    // Every context's snapshot read is issued concurrently, so a subscribe
+    // naming N contexts is bounded by ONE snapshot timeout rather than N of
+    // them stacking ahead of the client's acknowledgment.
+    //
+    // # Wire contract: events for a context may precede its subscribe ack
+    //
+    // `mount_method!` writes the `id`-tagged ack only after this function
+    // returns, while the pushes below (and any live delta) go onto the
+    // connection's command channel before that. A client can therefore see
+    // `Ephemeral` frames (`id: null`) for a context *before* the ack naming it.
+    //
+    // This is not fixable by pushing the seed after the ack, and reordering
+    // would be a false reassurance: the subscription is registered above, so a
+    // live delta can be pushed between that registration and the ack regardless
+    // of where the seed goes. The only way to make the ack strictly first is to
+    // withhold the subscription until after it — which drops exactly the deltas
+    // the live-then-snapshot ordering above exists to keep.
+    //
+    // Clients are therefore expected to correlate on the request `id`, which is
+    // unaffected, and to be able to buffer or apply `Ephemeral` frames for a
+    // context they have asked for but not yet been acked for. Presence is
+    // idempotent LWW state, so applying a frame "early" needs no special
+    // handling. A client that instead gates on the ack before listening will
+    // miss the seed and stay blank for that author until their slice next
+    // *changes* — a heartbeat re-sending identical bytes produces no diff.
+    for (_context_id, events) in
+        crate::ephemeral_replay::presence_replay_many(&state.node_client, &subscribed).await
+    {
+        for event in events {
+            connection_state.try_push_event(&event);
+        }
+    }
+
     Ok(SubscribeResponse {
         context_ids: subscribed,
         group_ids: subscribed_groups,
@@ -102,6 +146,38 @@ pub(crate) fn may_observe_context(
     } else {
         caller_is_member.unwrap_or(false)
     }
+}
+
+/// Context-observation authorization gate, shared by every transport that
+/// hands a caller a context's live data: the WS `subscribe` handler and the
+/// SSE `subscribe` handler.
+///
+/// Resolves the account `caller` acts as (membership rows are account-keyed)
+/// and applies [`may_observe_context`]. Both the live delta stream and the
+/// presence replay a subscriber is seeded with pass through this one
+/// predicate, so a caller refused the stream cannot be served the seed; two
+/// implementations of "may this caller see this context" could drift and let
+/// one route serve what the other refuses.
+///
+/// Fails **closed**: a store fault during the membership lookup is warned and
+/// treated as "not a member", never as an implicit grant.
+pub(crate) fn caller_may_observe_context(
+    ctx_client: &ContextClient,
+    auth_enabled: bool,
+    node_owner: bool,
+    caller: Option<&calimero_primitives::identity::PublicKey>,
+    context_id: &calimero_primitives::context::ContextId,
+) -> bool {
+    let caller_is_member = caller.map(|key| {
+        let account = crate::caller_account::for_context(ctx_client, context_id, key);
+        ctx_client
+            .has_member(context_id, key, account)
+            .unwrap_or_else(|err| {
+                warn!(%context_id, %err, "has_member lookup failed; denying observation");
+                false
+            })
+    });
+    may_observe_context(auth_enabled, node_owner, caller_is_member)
 }
 
 /// Whether a connection may subscribe to a group's membership events.

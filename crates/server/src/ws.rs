@@ -38,8 +38,11 @@ mod execute;
 mod subscribe;
 mod unsubscribe;
 
+// `may_observe_context` is not re-exported: the SSE handler reaches the context
+// gate through `caller_may_observe_context`, which applies it internally, so the
+// two transports cannot drift on the rule.
 pub(crate) use subscribe::{
-    authorize_group_subscriptions, may_deliver_group_event, may_observe_context,
+    authorize_group_subscriptions, caller_may_observe_context, may_deliver_group_event,
 };
 
 /// Globally unique identifier of a WebSocket client connection. Internal to the
@@ -129,6 +132,41 @@ impl ConnectionStateInner {
 pub(crate) struct ConnectionState {
     commands: mpsc::Sender<Command>,
     inner: Arc<RwLock<ConnectionStateInner>>,
+}
+
+impl ConnectionState {
+    /// Push a node event to **this connection only**.
+    ///
+    /// The broadcast path ([`fan_out_node_events`]) reaches every subscribed
+    /// connection; this is its per-connection counterpart, for events that are
+    /// meaningful to exactly one client — currently the presence replay a
+    /// subscriber is seeded with (see [`crate::ephemeral_replay`]). Sending a
+    /// seed through the broadcast instead would re-deliver it to every other
+    /// connected client as well.
+    ///
+    /// Best-effort, like the broadcast path: a full command channel (slow or
+    /// closing client) drops the event with a `debug!` rather than blocking the
+    /// caller. For a presence seed the client simply converges on the next
+    /// delta.
+    pub(crate) fn try_push_event(&self, event: &NodeEvent) {
+        let body = match to_json_value(event) {
+            Ok(value) => ResponseBody::Result(value),
+            Err(err) => {
+                error!(%err, "Failed to serialize node event for a single connection");
+                return;
+            }
+        };
+
+        // `id: None` marks a server-pushed event rather than a reply, exactly
+        // as the broadcast fan-out does — a replayed entry must be
+        // indistinguishable from a live one at the envelope level.
+        if let Err(err) = self
+            .commands
+            .try_send(Command::Send(Response { id: None, body }))
+        {
+            debug!(%err, "Dropping pushed event for slow or closing connection");
+        }
+    }
 }
 
 pub(crate) struct ServiceState {
@@ -967,18 +1005,57 @@ mod tests {
     }
 
     async fn spawn_test_ws() -> TestServer {
-        spawn_test_ws_full(false, None, WsConfig::new(true)).await
+        spawn_test_ws_full(false, None, LazyRecipient::new(), WsConfig::new(true)).await
+    }
+
+    /// No-auth server whose node actor answers presence-snapshot reads with
+    /// `entries`. Must run inside an actix System (`#[actix::test]`).
+    async fn spawn_test_ws_seeded(entries: Vec<crate::test_support::SnapshotEntry>) -> TestServer {
+        spawn_test_ws_full(
+            false,
+            None,
+            crate::test_support::stub_node_manager(entries),
+            WsConfig::new(true),
+        )
+        .await
     }
 
     // Auth-enabled server with an authenticated (non-owner) caller, so the
     // per-request subscribe auth gates actually run.
     async fn spawn_test_ws_authed(caller: PublicKey) -> TestServer {
-        spawn_test_ws_full(true, Some(caller), WsConfig::new(true)).await
+        spawn_test_ws_full(
+            true,
+            Some(caller),
+            LazyRecipient::new(),
+            WsConfig::new(true),
+        )
+        .await
     }
 
     async fn spawn_test_ws_full(
         auth_enabled: bool,
         caller: Option<PublicKey>,
+        // The node actor the `NodeClient` routes to. `LazyRecipient::new()`
+        // (uninitialized) for tests that never reach it; a stub for the ones
+        // that read the presence snapshot.
+        node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
+        config: WsConfig,
+    ) -> TestServer {
+        // Initial receiver dropped immediately so `receiver_count()` reflects
+        // only the shared node-event fan-out task.
+        let (event_sender, _) = broadcast::channel(256);
+        spawn_test_ws_full_with_events(auth_enabled, caller, node_manager, event_sender, config)
+            .await
+    }
+
+    /// As [`spawn_test_ws_full`], but over a caller-supplied event sender — for
+    /// tests where something outside the server (the stubbed node actor) must
+    /// broadcast on the same channel the service listens to.
+    async fn spawn_test_ws_full_with_events(
+        auth_enabled: bool,
+        caller: Option<PublicKey>,
+        node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
+        event_sender: broadcast::Sender<NodeEvent>,
         config: WsConfig,
     ) -> TestServer {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -994,9 +1071,6 @@ mod tests {
         );
         let blob_manager = BlobManager::new(blob_store);
 
-        // Initial receiver dropped immediately so `receiver_count()` reflects
-        // only the shared node-event fan-out task.
-        let (event_sender, _) = broadcast::channel(256);
         let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(64);
         let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(64);
         let (ns_join_tx, _ns_join_rx) = mpsc::channel(16);
@@ -1008,7 +1082,7 @@ mod tests {
             store.clone(),
             blob_manager,
             NetworkClient::new(LazyRecipient::new()),
-            LazyRecipient::new(),
+            node_manager,
             event_sender.clone(),
             sync_client,
             None,
@@ -1664,9 +1738,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    // Context subscriptions seed presence, so this needs a node actor that
+    // answers a snapshot read — an empty one, since presence is not what is
+    // under test here.
+    #[actix::test]
     async fn subscribe_and_unsubscribe_round_trip() {
-        let server = spawn_test_ws().await;
+        let server = spawn_test_ws_seeded(vec![]).await;
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
 
         let ctx = ContextId::from([7u8; 32]);
@@ -1732,7 +1809,7 @@ mod tests {
         config.ping_interval_secs = 1;
         config.pong_timeout_secs = 1;
 
-        let server = spawn_test_ws_full(false, None, config).await;
+        let server = spawn_test_ws_full(false, None, LazyRecipient::new(), config).await;
         let (_write, mut read) = connect_async(&server.url).await.unwrap().0.split();
 
         let mut pings = 0_u32;
@@ -1761,7 +1838,7 @@ mod tests {
         config.ping_interval_secs = 1;
         config.pong_timeout_secs = 1;
 
-        let server = spawn_test_ws_full(false, None, config).await;
+        let server = spawn_test_ws_full(false, None, LazyRecipient::new(), config).await;
         let mut socket = TcpStream::connect(server.addr).await.unwrap();
 
         socket
@@ -1797,9 +1874,11 @@ mod tests {
         assert!(closed, "server should close a client that never pongs");
     }
 
-    #[tokio::test]
+    // A context subscription reads the presence snapshot, so the node actor has
+    // to answer.
+    #[actix::test]
     async fn events_only_reach_subscribers() {
-        let server = spawn_test_ws().await;
+        let server = spawn_test_ws_seeded(vec![]).await;
         let ctx = ContextId::from([42u8; 32]);
 
         // A subscribes to ctx; B stays unsubscribed.
@@ -1879,6 +1958,263 @@ mod tests {
         assert!(
             resp.get("error").is_some(),
             "execute against a non-existent context should error: {resp}"
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // Presence replay on subscribe
+    //
+    // A subscriber is seeded with the context's CURRENT presence as ordinary
+    // `Ephemeral` events on its own socket. These tests pin the three
+    // properties that make that safe: it reaches only the connection that
+    // asked, it is distinguishable from a live delta (`ageMs`), and it is
+    // behind the same authorization gate as the stream.
+    // ----------------------------------------------------------------------
+
+    /// Presence entry served by the stubbed node actor in the tests below.
+    fn replay_author() -> PublicKey {
+        PublicKey::from([0xA1u8; 32])
+    }
+
+    /// Read frames until one satisfies `pred`, or `dur` elapses.
+    async fn next_json_where<S>(
+        read: &mut S,
+        dur: Duration,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Option<Value>
+    where
+        S: Stream<Item = Result<Message, WsError>> + Unpin,
+    {
+        tokio::time::timeout(dur, async {
+            while let Some(Ok(msg)) = read.next().await {
+                if let Message::Text(text) = msg {
+                    let value: Value = serde_json::from_str(&text).expect("server sent valid json");
+                    if pred(&value) {
+                        return Some(value);
+                    }
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    fn is_ephemeral(v: &Value) -> bool {
+        v["result"]["type"] == json!("Ephemeral")
+    }
+
+    fn live_ephemeral_event(ctx: ContextId, author: PublicKey, state: Vec<u8>) -> NodeEvent {
+        NodeEvent::Context(ContextEvent {
+            context_id: ctx,
+            payload: ContextEventPayload::Ephemeral(
+                calimero_primitives::events::EphemeralPayload {
+                    author,
+                    state: Some(state),
+                    removed: false,
+                    // The live path never stamps an age — that is the whole
+                    // discriminator this suite asserts on.
+                    age_ms: None,
+                },
+            ),
+        })
+    }
+
+    async fn wait_for_fanout(server: &TestServer) {
+        let listening = tokio::time::timeout(Duration::from_secs(5), async {
+            while server.event_sender.receiver_count() < 1 {
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(listening, "the event fan-out task should be listening");
+    }
+
+    // The seed is addressed to the connection that subscribed, and to nobody
+    // else. This is the property that makes replay-on-subscribe viable at all:
+    // routing it through the node-wide broadcast would re-deliver one client's
+    // seed to every other connected client, every time anyone subscribed.
+    #[actix::test]
+    async fn presence_replay_reaches_only_the_subscribing_connection() {
+        let ctx = ContextId::from([0x21u8; 32]);
+        let node_manager =
+            crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 1_500)]);
+        let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
+
+        let (mut write_a, mut read_a) = connect_async(&server.url).await.unwrap().0.split();
+        let (mut write_b, mut read_b) = connect_async(&server.url).await.unwrap().0.split();
+
+        // A subscribes and is seeded.
+        write_a.send(subscribe_msg(1, ctx)).await.unwrap();
+        let seed_a = next_json_where(&mut read_a, Duration::from_secs(5), is_ephemeral)
+            .await
+            .expect("the subscribing connection must be seeded with current presence");
+        assert_eq!(
+            seed_a["result"]["data"]["author"],
+            json!(replay_author().to_string()),
+        );
+        assert_eq!(seed_a["result"]["data"]["state"], json!([1, 2, 3]));
+
+        // Drain A's subscribe ack so the next assertion cannot trip over it.
+        let ack_a = next_json_where(&mut read_a, Duration::from_secs(5), |v| v["id"] == json!(1))
+            .await
+            .expect("subscribe ack");
+        assert_eq!(ack_a["result"]["contextIds"], json!([ctx]));
+
+        // B subscribes: B is seeded, A must hear nothing about it.
+        write_b.send(subscribe_msg(2, ctx)).await.unwrap();
+        let seed_b = next_json_where(&mut read_b, Duration::from_secs(5), is_ephemeral)
+            .await
+            .expect("the second subscriber must also be seeded");
+        assert_eq!(seed_b["result"]["data"]["state"], json!([1, 2, 3]));
+
+        let leaked = next_json(&mut read_a, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "another connection's presence seed must not reach an already-connected \
+             subscriber: {leaked:?}",
+        );
+    }
+
+    // One payload type, two sources, told apart by one field: a replayed entry
+    // carries `ageMs` (it may be up to the TTL stale), a live delta does not
+    // (it is fresh at the moment of emission).
+    #[actix::test]
+    async fn replayed_entry_carries_age_and_a_live_delta_does_not() {
+        let ctx = ContextId::from([0x22u8; 32]);
+        let node_manager =
+            crate::test_support::stub_node_manager(vec![(replay_author(), vec![7], 4_200)]);
+        let server = spawn_test_ws_full(false, None, node_manager, WsConfig::new(true)).await;
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_msg(1, ctx)).await.unwrap();
+
+        let seed = next_json_where(&mut read, Duration::from_secs(5), is_ephemeral)
+            .await
+            .expect("presence seed");
+        assert_eq!(
+            seed["result"]["data"]["ageMs"],
+            json!(4_200),
+            "a replayed entry must carry its age: {seed}",
+        );
+
+        wait_for_fanout(&server).await;
+        server
+            .event_sender
+            .send(live_ephemeral_event(ctx, replay_author(), vec![8]))
+            .unwrap();
+
+        let live = next_json_where(&mut read, Duration::from_secs(5), |v| {
+            is_ephemeral(v) && v["result"]["data"]["state"] == json!([8])
+        })
+        .await
+        .expect("live delta");
+        assert!(
+            live["result"]["data"].get("ageMs").is_none(),
+            "a live delta must omit ageMs entirely (absent, not null): {live}",
+        );
+    }
+
+    // The seed rides the subscription's authorization: a caller refused the
+    // context is refused its presence too. Without this the replay would be a
+    // second, ungated read path for decrypted presence.
+    #[actix::test]
+    async fn unauthorized_caller_receives_no_presence_replay() {
+        let ctx = ContextId::from([0x23u8; 32]);
+        let non_member = PublicKey::from([0x55u8; 32]);
+        let node_manager =
+            crate::test_support::stub_node_manager(vec![(replay_author(), vec![1, 2, 3], 10)]);
+        let server =
+            spawn_test_ws_full(true, Some(non_member), node_manager, WsConfig::new(true)).await;
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        write.send(subscribe_msg(1, ctx)).await.unwrap();
+
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        // Note this asserts only that a DENIED subscriber is seeded with
+        // nothing, so the ack is trivially its first frame. It is not a general
+        // ack-before-events invariant: for an authorized subscribe, seed and
+        // live frames may legitimately precede the ack — see the wire-contract
+        // note in `ws::subscribe::handle`.
+        assert_eq!(
+            resp["id"],
+            json!(1),
+            "a denied subscriber must receive nothing before its ack: {resp}"
+        );
+        assert_eq!(
+            resp["result"]["contextIds"],
+            json!([]),
+            "a non-member subscription must be denied: {resp}",
+        );
+
+        let leaked = next_json(&mut read, Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "a denied subscriber must receive no presence: {leaked:?}",
+        );
+    }
+
+    // Ordering: the subscription must be LIVE before the snapshot is read, so a
+    // delta landing in that window is delivered rather than dropped. The stub
+    // node actor broadcasts a delta while serving the snapshot request — the
+    // exact instant that is only reachable if the subscription is already live
+    // — and the subscriber must end up with both that delta and the seed.
+    //
+    // Flip the order to snapshot-then-subscribe and this delta falls in the
+    // gap: it is in neither the already-read snapshot nor the not-yet-live
+    // stream, and this test times out.
+    #[actix::test]
+    async fn a_delta_landing_during_the_snapshot_read_is_not_lost() {
+        let ctx = ContextId::from([0x24u8; 32]);
+        let (event_sender, _) = broadcast::channel(256);
+        let node_manager = crate::test_support::stub_node_manager_interleaving(
+            vec![(replay_author(), vec![1], 900)],
+            event_sender.clone(),
+            live_ephemeral_event(ctx, PublicKey::from([0xB2u8; 32]), vec![42]),
+        );
+        let server = spawn_test_ws_full_with_events(
+            false,
+            None,
+            node_manager,
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+        // The fan-out task must be draining the broadcast before the delta is
+        // emitted, otherwise the loss under test would be a harness artifact.
+        wait_for_fanout(&server).await;
+        write.send(subscribe_msg(1, ctx)).await.unwrap();
+
+        let mut saw_seed = false;
+        let mut saw_delta = false;
+        for _ in 0..8 {
+            let Some(frame) =
+                next_json_where(&mut read, Duration::from_secs(5), is_ephemeral).await
+            else {
+                break;
+            };
+            let data = &frame["result"]["data"];
+            if data["state"] == json!([42]) {
+                saw_delta = true;
+            } else if data["state"] == json!([1]) && data["ageMs"] == json!(900) {
+                saw_seed = true;
+            }
+            if saw_seed && saw_delta {
+                break;
+            }
+        }
+
+        assert!(saw_seed, "the subscriber must be seeded with the snapshot");
+        assert!(
+            saw_delta,
+            "a delta emitted while the snapshot was being read must still reach the \
+             subscriber — the subscription has to be live BEFORE the snapshot is read",
         );
     }
 }

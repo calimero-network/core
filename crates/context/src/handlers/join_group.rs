@@ -745,7 +745,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     group_id,
                     member_identity: joiner_identity,
                     member_account,
-                    governance_op_bytes: vec![],
                 })
             }
             .into_actor(self),

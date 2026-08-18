@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::{ContextId, GroupMemberRole};
 use crate::hash::Hash;
+use crate::identity::PublicKey;
 use crate::sync_status::SyncState;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -172,6 +173,110 @@ pub enum ContextEventPayload {
     /// execution error — giving the fire-and-forget xcall path a feedback
     /// channel (#2137). `contextId` on the wrapper is the *source* context.
     XCall(XCallPayload),
+    /// Transient per-peer presence update; never persisted, decrypted from the
+    /// context group key before reaching a subscriber.
+    Ephemeral(EphemeralPayload),
+}
+
+/// Maximum size, in bytes, of a single ephemeral-presence slice.
+///
+/// **Single source of truth** for the presence size cap, shared across the
+/// node (which enforces it on the outbound path in
+/// `calimero-node::handlers::ephemeral`) and the JSON-RPC layer (which
+/// pre-validates against it in `calimero-server`'s `set_ephemeral` handler so
+/// the client receives a typed `SliceTooLarge` error). Defined here — in the
+/// crate both depend on — so the two paths can never drift.
+pub const EPHEMERAL_MAX_BYTES: usize = 16_384;
+
+/// Payload of a [`ContextEventPayload::Ephemeral`] event. Carries a per-peer
+/// presence slice, decrypted from the context group key before delivery.
+/// `state` is present on upsert and absent on removal (`removed = true`).
+/// `contextId` rides on the flattened [`ContextEvent`].
+///
+/// Removal means only "this node is no longer tracking that author": it is
+/// emitted on TTL/disconnect expiry, and also when a context at its author cap
+/// evicts its stalest entry to admit a new author. A client must therefore not
+/// read `removed` as "that peer went offline" — see the membership note below,
+/// which applies equally to disappearance.
+///
+/// # Security — `author` is identity-authenticated, not membership-checked
+///
+/// The presence envelope is encrypted under the context **group key** and
+/// **signed** by `author`'s identity key over `(context_id, author, seq,
+/// key_id, sent_at_ms, nonce, sha256(ciphertext))` (`calimero-node`'s
+/// `handlers::ephemeral::auth`). For **remotely-received** presence, the
+/// receive path verifies this signature before the slice reaches the
+/// awareness store or this event is emitted, so a group-key holder cannot
+/// forge another member's `author`; a message that fails verification is
+/// silently dropped and never surfaces as an event. **Locally-originated**
+/// presence (the setting client's own slice) is echoed into this same event
+/// type without a signature at all — it never leaves the node unsigned, but a
+/// consumer of this type should not assume every instance it ever observes
+/// passed through signature verification.
+///
+/// This authenticates *identity*, at the moment of signing. It does **not**
+/// prove current group membership, and the freshness it does prove is coarse:
+///
+/// * **Membership.** A member removed from the group is *intended* to be cut
+///   off by group-key rotation, not by this check, but that is conditional on
+///   the receiving node's own keyring resolving the post-rotation key as
+///   "current" — see the caveat on `calimero-node`'s
+///   `handlers::ephemeral::inbound` module doc. Unlike a state-delta
+///   envelope, the presence envelope binds no `governance_position`, and the
+///   receive path performs no membership or authorization check. An
+///   ex-member who still holds a pre-rotation group key can publish presence
+///   signed by their own (valid) identity key until that key is actually
+///   rejected as superseded.
+/// * **Freshness.** The signed payload binds the sender's `sent_at_ms` wall
+///   clock, and the receive path drops anything outside a symmetric window
+///   around its own clock, so a recorded envelope is replayable only inside
+///   that window rather than forever. The window is sized to close as the
+///   TTL sweep makes a replay effective, leaving a residual bounded by
+///   sender/receiver clock skew rather than by the TTL
+///   (see `PRESENCE_MAX_SKEW_MS` in
+///   `calimero-node`'s `handlers::ephemeral`), but it is a *clock* check, not
+///   a per-envelope seen-cache: it bounds replay, it does not make each
+///   envelope single-use. `sent_at_ms` is not exposed on this type — use
+///   [`age_ms`](Self::age_ms), which is measured on the emitting node.
+///
+/// Presence remains transient and never persisted, but clients MUST NOT treat
+/// `author` here as proof of current membership, nor `state` as proof that the
+/// peer is online *right now* (e.g. for access control).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EphemeralPayload {
+    /// The peer whose presence slice this update belongs to. Verified against
+    /// an ed25519 signature on receipt — see the type-level security note.
+    pub author: PublicKey,
+    /// Decrypted slice bytes on upsert; absent when `removed` is `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<Vec<u8>>,
+    /// `true` on TTL/disconnect expiry; `state` is omitted in that case.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+    /// Milliseconds since this author was last heard from, measured on the
+    /// emitting node — present **only on replay**, absent on a live delta.
+    ///
+    /// A subscriber is seeded with the context's current presence at subscribe
+    /// time (see `calimero-server`'s WS/SSE subscribe handlers); a replayed
+    /// entry may be anything from brand new to nearly TTL-expired, and the
+    /// subscriber cannot tell those apart from the bytes alone. A live delta
+    /// carries no age because it is emitted at the moment of change, so the
+    /// receiver's own clock is the better reading — hence
+    /// `skip_serializing_if`: the field is *absent*, not `null`, on the live
+    /// path, and its presence is itself the "this is replayed state" signal.
+    ///
+    /// **Relative by design.** The underlying `last_seen_ms` is stamped from
+    /// the emitting node's wall clock; shipping it absolute would force a
+    /// reader on another machine to subtract against its own clock, and any
+    /// skew between the two would corrupt the result. A relative age needs no
+    /// clock agreement.
+    ///
+    /// Bounded above by the node's presence TTL (7s) for any entry still live
+    /// enough to be replayed, and typically below the heartbeat interval
+    /// (2.5s) for an active author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
 }
 
 /// Payload of a [`ContextEventPayload::AppVersionChanged`] event. Versions are
@@ -450,5 +555,87 @@ mod tests {
         let json = serde_json::to_string(&ctx).expect("to_string");
         let back: NodeEvent = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(back, NodeEvent::Context(_)), "got {back:?}");
+    }
+
+    // Ephemeral upsert: tag is "Ephemeral", state present, contextId on wrapper.
+    #[test]
+    fn ephemeral_upsert_tag_and_shape() {
+        let event = ContextEvent {
+            context_id: ContextId::from([0x01; 32]),
+            payload: ContextEventPayload::Ephemeral(EphemeralPayload {
+                author: PublicKey::from([0x05; 32]),
+                state: Some(vec![1, 2, 3]),
+                removed: false,
+                age_ms: None,
+            }),
+        };
+        let v = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(v["type"], "Ephemeral");
+        assert_eq!(v["data"]["state"], serde_json::json!([1, 2, 3]));
+        assert!(v.get("contextId").is_some());
+    }
+
+    // A live delta carries NO age: `age_ms` is absent from the wire, not null.
+    // Clients discriminate replayed state from live state on presence of the
+    // field, so a regression to `"ageMs": null` would break that test.
+    #[test]
+    fn ephemeral_live_delta_omits_age() {
+        let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
+            author: PublicKey::from([0x05; 32]),
+            state: Some(vec![1]),
+            removed: false,
+            age_ms: None,
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(
+            v["data"].get("ageMs").is_none(),
+            "live deltas must omit ageMs entirely: {v}"
+        );
+    }
+
+    // A replayed entry carries the age, camelCase on the wire.
+    #[test]
+    fn ephemeral_replay_carries_camel_case_age() {
+        let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
+            author: PublicKey::from([0x05; 32]),
+            state: Some(vec![1]),
+            removed: false,
+            age_ms: Some(1_250),
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert_eq!(v["data"]["ageMs"], serde_json::json!(1_250));
+        assert!(
+            v["data"].get("age_ms").is_none(),
+            "age must be camelCase on the wire"
+        );
+    }
+
+    // A payload persisted/serialized before `age_ms` existed still decodes
+    // (`#[serde(default)]`), landing as "no age" == a live delta.
+    #[test]
+    fn ephemeral_payload_without_age_still_deserializes() {
+        let json = serde_json::json!({
+            "type": "Ephemeral",
+            "data": { "author": PublicKey::from([0x05; 32]), "state": [1] }
+        });
+        let payload: ContextEventPayload = serde_json::from_value(json).expect("deserialize");
+        let ContextEventPayload::Ephemeral(payload) = payload else {
+            panic!("wrong variant");
+        };
+        assert_eq!(payload.age_ms, None);
+    }
+
+    // Ephemeral removal: state absent, removed=true.
+    #[test]
+    fn ephemeral_removed_omits_state() {
+        let payload = ContextEventPayload::Ephemeral(EphemeralPayload {
+            author: PublicKey::from([0x05; 32]),
+            state: None,
+            removed: true,
+            age_ms: None,
+        });
+        let v = serde_json::to_value(&payload).expect("serialize");
+        assert!(v["data"].get("state").is_none());
+        assert_eq!(v["data"]["removed"], true);
     }
 }

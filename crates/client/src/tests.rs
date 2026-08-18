@@ -557,8 +557,7 @@ async fn join_namespace() {
                 // member it just became and the key for everything still keyed
                 // by one — and the two render differently, so a fixture carrying
                 // only one would not catch a field wired to the wrong space.
-                "memberAccount": ZERO_HEX_ACCOUNT,
-                "governanceOp": "deadbeef"
+                "memberAccount": ZERO_HEX_ACCOUNT
             }
         })))
         .expect(1)

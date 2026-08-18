@@ -1,0 +1,574 @@
+//! In-memory awareness store: LWW-by-`(author, seq)` with TTL expiry.
+//!
+//! **Deliberately import-free of network, storage, and actix.** This is the
+//! structural "never persisted" boundary — a type with no RocksDB access
+//! cannot write to disk. Tasks 6 (inbound) and 7 (outbound) drive this.
+//!
+//! Time is always passed in as `now_ms`; no wall-clock calls exist here so
+//! the type is fully deterministic and unit-testable in isolation.
+
+use std::collections::{BTreeMap, HashMap};
+
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
+use tracing::debug;
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/// Maximum number of distinct authors held for a single context.
+///
+/// Bounds the memory one context's presence can pin: at most
+/// `MAX_AUTHORS_PER_CONTEXT * EPHEMERAL_MAX_BYTES` (512 × 16 KiB = 8 MiB) of
+/// slice bytes, plus per-entry overhead.
+///
+/// **This is a backstop, not the primary defence.** The receive path
+/// authenticates that the claimed author's key signed the envelope, but not
+/// that the author is a registered context member — so any holder of the
+/// *current group key* can mint throwaway keypairs and insert one entry per
+/// key, faster than the TTL sweep reclaims them. Membership already gates
+/// possession of that key; the cap is what stops a member (or anyone who has
+/// obtained the key) from turning that into unbounded growth on every
+/// receiving node.
+///
+/// Reaching the cap **evicts the stalest author rather than refusing the new
+/// one** — see [`AwarenessStore::apply`] for why refusing is the worse of the
+/// two failure modes.
+///
+/// 512 sits far above any plausible real context — presence is a
+/// cursors/typing/online channel for humans in one shared document — while
+/// keeping the worst case a bounded few MiB.
+pub const MAX_AUTHORS_PER_CONTEXT: usize = 512;
+
+/// A single diff produced by a mutating operation on the store.
+#[derive(Debug, PartialEq)]
+pub enum Diff {
+    Upsert { author: PublicKey, slice: Vec<u8> },
+    Remove { author: PublicKey },
+}
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct Entry {
+    slice: Vec<u8>,
+    seq: u64,
+    last_seen_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// AwarenessStore
+// ---------------------------------------------------------------------------
+
+/// Per-context map of `author -> {slice, seq, last_seen_ms}`.
+#[derive(Debug)]
+pub struct AwarenessStore {
+    // Outer: context → per-author entries.
+    // Inner: BTreeMap so PublicKey (which is Ord but not std::hash::Hash)
+    // can be used as a key, and iteration order is deterministic (sorted by
+    // author bytes), which `snapshot` exploits for free.
+    inner: HashMap<ContextId, BTreeMap<PublicKey, Entry>>,
+}
+
+impl AwarenessStore {
+    /// Create an empty store.
+    pub fn new() -> Self {
+        Self {
+            inner: HashMap::new(),
+        }
+    }
+
+    /// Apply an incoming awareness slice for `author` in `ctx`.
+    ///
+    /// LWW rule: if an entry with `seq >= incoming_seq` already exists the
+    /// call is a no-op and returns no diffs.
+    ///
+    /// On accept the entry is updated. Yields a `Diff::Upsert` **only** if the
+    /// live slice bytes changed; a same-bytes re-apply with a higher `seq`
+    /// updates liveness but yields nothing (no visible diff).
+    ///
+    /// An author already present is always allowed to update, full map or not
+    /// — otherwise a flood would freeze every real participant's presence at
+    /// whatever it was when the map filled.
+    ///
+    /// # Behaviour at the cap
+    ///
+    /// When a *new* author arrives and the context already holds
+    /// [`MAX_AUTHORS_PER_CONTEXT`], the **stalest** entry (largest
+    /// `now_ms - last_seen_ms`) is evicted to make room, and the call returns
+    /// both diffs: `Diff::Remove` for the evicted author, then `Diff::Upsert`
+    /// for the newcomer. The map never exceeds the cap.
+    ///
+    /// Refusing the newcomer instead — the original behaviour — turned a
+    /// bounded-memory win into an availability loss: anyone holding the current
+    /// group key can mint 512 throwaway keypairs and keep them alive with
+    /// heartbeats under the TTL, permanently locking out every legitimate
+    /// member who had not yet published. The lockout never self-heals, because
+    /// the flooder's own heartbeats keep each occupied slot fresh.
+    ///
+    /// Eviction cannot restore correctness under an active flood (the attacker
+    /// still churns the table), but it downgrades a permanent lockout to
+    /// transient churn, and it is free in the honest case: presence is
+    /// TTL-bounded, so the stalest entry is the one closest to being swept
+    /// anyway.
+    ///
+    /// Note that the newcomer is stamped at `now_ms` and is therefore always at
+    /// least as fresh as every incumbent, so an "evict only if the victim is
+    /// staler than the newcomer" refinement would never refuse — it is
+    /// deliberately not implemented.
+    ///
+    /// The local-echo path (`set_local_ephemeral`) also lands here, so a node
+    /// setting its own presence into a full context now displaces the stalest
+    /// remote author rather than silently losing its own echo.
+    pub fn apply(
+        &mut self,
+        ctx: ContextId,
+        author: PublicKey,
+        seq: u64,
+        slice: Vec<u8>,
+        now_ms: u64,
+    ) -> Vec<Diff> {
+        let per_ctx = self.inner.entry(ctx).or_default();
+
+        if let Some(entry) = per_ctx.get_mut(&author) {
+            // Stale or equal seq → no-op.
+            if seq <= entry.seq {
+                return vec![];
+            }
+            let slice_changed = entry.slice != slice;
+            entry.seq = seq;
+            entry.last_seen_ms = now_ms;
+            if slice_changed {
+                entry.slice = slice.clone();
+                return vec![Diff::Upsert { author, slice }];
+            }
+            // Same bytes, higher seq → liveness updated, no diff.
+            return vec![];
+        }
+
+        // New entry — the only case the author cap applies to.
+        let mut diffs = Vec::new();
+        if per_ctx.len() >= MAX_AUTHORS_PER_CONTEXT {
+            // Evict the stalest incumbent. Tie-break on author bytes so the
+            // choice is deterministic when several share a `last_seen_ms`.
+            let victim = per_ctx
+                .iter()
+                .min_by_key(|(author, entry)| (entry.last_seen_ms, **author))
+                .map(|(author, _)| *author);
+
+            let Some(victim) = victim else {
+                // Only reachable with a cap of 0; nothing to evict, so the
+                // insert cannot proceed without breaching the bound.
+                return vec![];
+            };
+
+            let _ignored = per_ctx.remove(&victim);
+            debug!(
+                %ctx,
+                %author,
+                %victim,
+                max = MAX_AUTHORS_PER_CONTEXT,
+                "ephemeral: author cap reached — evicting the stalest author to admit a new one"
+            );
+            diffs.push(Diff::Remove { author: victim });
+        }
+
+        let _ignored = per_ctx.insert(
+            author,
+            Entry {
+                slice: slice.clone(),
+                seq,
+                last_seen_ms: now_ms,
+            },
+        );
+        diffs.push(Diff::Upsert { author, slice });
+        diffs
+    }
+
+    /// Refresh liveness for `author` in `ctx` without changing the slice.
+    ///
+    /// Called by the node's heartbeat tick for each of its OWN locally-set
+    /// entries, immediately before the sweep. Remote entries are re-stamped by
+    /// `apply` when their author's heartbeat arrives, but a node never
+    /// receives its own gossip back, so this is the only thing that keeps a
+    /// local author from being evicted by its own TTL sweep.
+    ///
+    /// A missing entry is silently ignored (the author may already have been
+    /// swept).
+    pub fn touch(&mut self, ctx: ContextId, author: PublicKey, now_ms: u64) {
+        if let Some(per_ctx) = self.inner.get_mut(&ctx) {
+            if let Some(entry) = per_ctx.get_mut(&author) {
+                entry.last_seen_ms = now_ms;
+            }
+        }
+    }
+
+    /// Drop entries for `ctx` whose `last_seen_ms` is older than `ttl_ms`
+    /// relative to `now_ms`. Returns one `Diff::Remove` per dropped entry.
+    ///
+    /// A context left with no entries is removed from the outer map rather than
+    /// retained as an empty `BTreeMap`. The sweep is driven by
+    /// [`Self::contexts`], so an empty shell would keep re-entering the sweep
+    /// forever with nothing to do, and the outer map would grow monotonically
+    /// with every context this node ever saw presence in — permanent residue in
+    /// a subsystem whose entire premise is that it holds nothing durable.
+    pub fn sweep(&mut self, ctx: ContextId, ttl_ms: u64, now_ms: u64) -> Vec<Diff> {
+        let Some(per_ctx) = self.inner.get_mut(&ctx) else {
+            return vec![];
+        };
+
+        let mut removals = Vec::new();
+        per_ctx.retain(|author, entry| {
+            if now_ms.saturating_sub(entry.last_seen_ms) >= ttl_ms {
+                removals.push(Diff::Remove { author: *author });
+                false
+            } else {
+                true
+            }
+        });
+
+        if per_ctx.is_empty() {
+            let _ignored = self.inner.remove(&ctx);
+        }
+
+        removals
+    }
+
+    /// Snapshot of live slices for `ctx`, sorted by author bytes (stable order),
+    /// each carrying how long it has been since that author was last heard from.
+    ///
+    /// Returns `(author, slice, age_ms)` where `age_ms = now_ms - last_seen_ms`.
+    ///
+    /// Age is reported **relative**, never as an absolute timestamp:
+    /// `last_seen_ms` is stamped from *this* node's wall clock, so shipping it
+    /// absolute would force a reader on another machine to subtract against its
+    /// own clock and any skew between the two would corrupt the result.
+    /// Computing the difference here keeps it skew-free.
+    ///
+    /// `age_ms` is bounded above by `PRESENCE_TTL_MS` for any entry the sweep
+    /// has not yet removed, and in practice sits under `PRESENCE_HEARTBEAT_MS`
+    /// for a live author.
+    ///
+    /// Returns an empty `Vec` when the context has no entries.
+    pub fn snapshot(&self, ctx: ContextId, now_ms: u64) -> Vec<(PublicKey, Vec<u8>, u64)> {
+        let Some(per_ctx) = self.inner.get(&ctx) else {
+            return vec![];
+        };
+        // BTreeMap already iterates in sorted (author-bytes) order.
+        per_ctx
+            .iter()
+            .map(|(author, entry)| {
+                (
+                    *author,
+                    entry.slice.clone(),
+                    now_ms.saturating_sub(entry.last_seen_ms),
+                )
+            })
+            .collect()
+    }
+
+    /// All contexts currently holding at least one entry.
+    ///
+    /// Used to drive the TTL sweep: it must cover every context the store
+    /// knows about, not just the ones a given node has locally published to
+    /// (a receive-only node — a read-only viewer, a TEE node, a peer who has
+    /// not yet moved their own cursor — never appears in the caller's local
+    /// publish map, but its remote entries still need to expire on schedule).
+    pub fn contexts(&self) -> impl Iterator<Item = ContextId> + '_ {
+        self.inner.keys().copied()
+    }
+
+    /// Explicitly remove `author` from `ctx` (e.g. on disconnect).
+    ///
+    /// Returns `Some(Diff::Remove)` if the author was present, `None` otherwise.
+    pub fn remove_author(&mut self, ctx: ContextId, author: PublicKey) -> Option<Diff> {
+        let per_ctx = self.inner.get_mut(&ctx)?;
+        per_ctx.remove(&author).map(|_| Diff::Remove { author })
+    }
+}
+
+impl Default for AwarenessStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> ContextId {
+        ContextId::from([1u8; 32])
+    }
+    fn pk(n: u8) -> PublicKey {
+        PublicKey::from([n; 32])
+    }
+
+    #[test]
+    fn apply_then_snapshot() {
+        let mut s = AwarenessStore::new();
+        assert_eq!(
+            s.apply(ctx(), pk(1), 1, vec![1], 1000),
+            vec![Diff::Upsert {
+                author: pk(1),
+                slice: vec![1]
+            }]
+        );
+        // now_ms 1000 == the apply timestamp, so age is 0.
+        assert_eq!(s.snapshot(ctx(), 1000), vec![(pk(1), vec![1], 0)]);
+    }
+
+    #[test]
+    fn lww_ignores_stale_or_equal_seq() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 5, vec![5], 1000);
+        assert!(s.apply(ctx(), pk(1), 4, vec![4], 1001).is_empty()); // stale
+        assert!(s.apply(ctx(), pk(1), 5, vec![9], 1002).is_empty()); // equal seq
+                                                                     // Stale/equal-seq applies do not touch last_seen_ms, which stayed at
+                                                                     // 1000, so at now_ms 1500 the entry reads 500ms old.
+        assert_eq!(s.snapshot(ctx(), 1500), vec![(pk(1), vec![5], 500)]);
+    }
+
+    /// Sweeping a context empty reclaims its slot in the outer map. Left
+    /// behind, the empty shells would accumulate one per context this node
+    /// ever saw presence in and be re-swept forever — durable residue in a
+    /// store whose whole point is holding nothing durable.
+    #[test]
+    fn sweeping_a_context_empty_reclaims_it() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        assert_eq!(s.contexts().count(), 1, "the context is tracked");
+
+        let removed = s.sweep(ctx(), 100, 2000);
+
+        assert_eq!(removed.len(), 1, "the only author expired");
+        assert_eq!(
+            s.contexts().count(),
+            0,
+            "an emptied context must not linger as an empty map"
+        );
+        // Re-applying must still work — removal is reclamation, not tombstoning.
+        assert!(!s.apply(ctx(), pk(1), 2, vec![2], 2001).is_empty());
+        assert_eq!(s.contexts().count(), 1);
+    }
+
+    /// ...but a context that still holds a live author is kept.
+    #[test]
+    fn a_partially_swept_context_is_kept() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.apply(ctx(), pk(2), 1, vec![2], 1950);
+
+        let removed = s.sweep(ctx(), 100, 2000);
+
+        assert_eq!(removed.len(), 1, "only the stale author expired");
+        assert_eq!(s.contexts().count(), 1, "the live author keeps the context");
+        assert_eq!(s.snapshot(ctx(), 2000), vec![(pk(2), vec![2], 50)]);
+    }
+
+    #[test]
+    fn sweep_expires_and_diffs() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        assert!(s.sweep(ctx(), 7000, 5000).is_empty()); // still fresh
+        assert_eq!(
+            s.sweep(ctx(), 7000, 9000),
+            vec![Diff::Remove { author: pk(1) }]
+        ); // expired
+        assert!(s.snapshot(ctx(), 9000).is_empty());
+    }
+
+    /// A pre-epoch clock makes `ephemeral::now_ms` return 0, which freezes
+    /// presence (ages saturate to 0, so nothing expires) rather than aggressively
+    /// expiring it. What makes 0 the right fallback is that it is *self-healing*:
+    /// entries stamped during the outage are swept on the first sweep with a
+    /// real clock. The rejected `u64::MAX` alternative inverts exactly this —
+    /// `real_now.saturating_sub(u64::MAX) == 0` would pin those entries fresh
+    /// forever.
+    #[test]
+    fn entries_stamped_by_a_broken_clock_are_swept_once_it_recovers() {
+        let mut s = AwarenessStore::new();
+        // now_ms == 0: what the pre-epoch fallback stamps.
+        let _ignored = s.apply(ctx(), pk(1), 1, vec![1], 0);
+
+        // While the clock is still broken, nothing expires.
+        assert!(
+            s.sweep(ctx(), 7000, 0).is_empty(),
+            "a frozen clock must not expire entries"
+        );
+        assert_eq!(s.snapshot(ctx(), 0), vec![(pk(1), vec![1], 0)]);
+
+        // First sweep after recovery reclaims it.
+        assert_eq!(
+            s.sweep(ctx(), 7000, 1_700_000_000_000),
+            vec![Diff::Remove { author: pk(1) }],
+            "an entry stamped at 0 must expire against a real clock"
+        );
+        assert_eq!(s.contexts().count(), 0);
+    }
+
+    #[test]
+    fn touch_extends_liveness() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        s.touch(ctx(), pk(1), 6000);
+        assert!(s.sweep(ctx(), 7000, 9000).is_empty()); // touched at 6000 → not expired at 9000
+    }
+
+    /// Fill to the cap with staggered `last_seen_ms`, so exactly one entry is
+    /// unambiguously the stalest. Author `i` is stamped at `base_ms + i`, so
+    /// index 0 is the stalest. Returns the stalest author's key.
+    fn fill_to_cap_staggered(s: &mut AwarenessStore, base_ms: u64) -> PublicKey {
+        let mut stalest = None;
+        for i in 0..MAX_AUTHORS_PER_CONTEXT {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bytes[31] = 0xFF;
+            let author = PublicKey::from(bytes);
+            let _ignored = s.apply(ctx(), author, 1, vec![1], base_ms + i as u64);
+            if i == 0 {
+                stalest = Some(author);
+            }
+        }
+        stalest.expect("cap is non-zero, so index 0 was inserted")
+    }
+
+    /// A full map must not lock out a legitimate new author. Refusing the
+    /// newcomer let anyone holding the group key mint 512 throwaway keypairs,
+    /// heartbeat them under the TTL, and permanently deny presence to every
+    /// member who had not yet published. Evicting the stalest incumbent keeps
+    /// the bound while letting new authors in.
+    #[test]
+    fn a_full_map_admits_a_new_author_by_evicting_the_stalest() {
+        let mut s = AwarenessStore::new();
+        let stalest = fill_to_cap_staggered(&mut s, 1000);
+        assert_eq!(s.snapshot(ctx(), 9_000).len(), MAX_AUTHORS_PER_CONTEXT);
+
+        let newcomer = PublicKey::from([0xAB; 32]);
+        let diffs = s.apply(ctx(), newcomer, 1, vec![9], 9_000);
+
+        assert_eq!(
+            diffs,
+            vec![
+                Diff::Remove { author: stalest },
+                Diff::Upsert {
+                    author: newcomer,
+                    slice: vec![9]
+                }
+            ],
+            "the eviction must be reported so clients drop the evicted author"
+        );
+
+        let live = s.snapshot(ctx(), 9_000);
+        assert_eq!(
+            live.len(),
+            MAX_AUTHORS_PER_CONTEXT,
+            "eviction-then-insert must hold the map exactly at the cap"
+        );
+        assert!(
+            live.iter().any(|(a, _, _)| *a == newcomer),
+            "the newcomer must be live"
+        );
+        assert!(
+            !live.iter().any(|(a, _, _)| *a == stalest),
+            "the stalest author must be gone"
+        );
+    }
+
+    /// Eviction must never let the map grow past the bound, however many new
+    /// authors arrive — that bound is the whole reason the cap exists.
+    #[test]
+    fn a_flood_of_new_authors_never_exceeds_the_cap() {
+        let mut s = AwarenessStore::new();
+        let _stalest = fill_to_cap_staggered(&mut s, 1000);
+
+        for i in 0..(MAX_AUTHORS_PER_CONTEXT * 2) {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            bytes[30] = 0xEE; // distinct from the fill authors
+            let _ignored = s.apply(ctx(), PublicKey::from(bytes), 1, vec![1], 9_000 + i as u64);
+            assert!(
+                s.snapshot(ctx(), 20_000).len() <= MAX_AUTHORS_PER_CONTEXT,
+                "the map exceeded the cap after {i} flood inserts"
+            );
+        }
+        assert_eq!(s.snapshot(ctx(), 20_000).len(), MAX_AUTHORS_PER_CONTEXT);
+    }
+
+    /// Freshness is what protects an active author: a live incumbent is never
+    /// the stalest entry, so heartbeating members are not evicted by a flood
+    /// of newcomers while they keep publishing.
+    #[test]
+    fn a_fresh_incumbent_is_not_the_eviction_victim() {
+        let mut s = AwarenessStore::new();
+        let _stalest = fill_to_cap_staggered(&mut s, 1000);
+
+        // A fresh incumbent: already present, and just heartbeated.
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&5u64.to_le_bytes());
+        bytes[31] = 0xFF;
+        let incumbent = PublicKey::from(bytes);
+        s.touch(ctx(), incumbent, 9_000);
+
+        let newcomer = PublicKey::from([0xAB; 32]);
+        let diffs = s.apply(ctx(), newcomer, 1, vec![9], 9_001);
+
+        assert!(
+            !diffs.contains(&Diff::Remove { author: incumbent }),
+            "a freshly-heartbeated incumbent must not be evicted"
+        );
+        assert!(
+            s.snapshot(ctx(), 9_001)
+                .iter()
+                .any(|(a, _, _)| *a == incumbent),
+            "the fresh incumbent must still be live"
+        );
+    }
+
+    /// The cap gates INSERTS only. An author already in the map must keep
+    /// updating even when the map is full, or a flood would freeze every real
+    /// participant's presence.
+    #[test]
+    fn an_existing_author_still_updates_when_the_map_is_full() {
+        let mut s = AwarenessStore::new();
+        // Fill to the cap, then update one of the authors already in the set.
+        let _stalest = fill_to_cap_staggered(&mut s, 1000);
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&7u64.to_le_bytes());
+        bytes[31] = 0xFF;
+        let incumbent = PublicKey::from(bytes);
+        assert_eq!(s.snapshot(ctx(), 2000).len(), MAX_AUTHORS_PER_CONTEXT);
+
+        assert_eq!(
+            s.apply(ctx(), incumbent, 2, vec![7], 2000),
+            vec![Diff::Upsert {
+                author: incumbent,
+                slice: vec![7]
+            }],
+            "an author already present must update at the cap, evicting nobody"
+        );
+        assert_eq!(
+            s.snapshot(ctx(), 2000).len(),
+            MAX_AUTHORS_PER_CONTEXT,
+            "an incumbent update must not change the population"
+        );
+    }
+
+    #[test]
+    fn remove_author_diffs_once() {
+        let mut s = AwarenessStore::new();
+        s.apply(ctx(), pk(1), 1, vec![1], 1000);
+        assert_eq!(
+            s.remove_author(ctx(), pk(1)),
+            Some(Diff::Remove { author: pk(1) })
+        );
+        assert!(s.remove_author(ctx(), pk(1)).is_none());
+    }
+}

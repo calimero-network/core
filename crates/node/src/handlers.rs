@@ -12,6 +12,7 @@ use crate::NodeManager;
 
 // Each handler in its own focused file (SRP)
 mod blob_protocol;
+pub mod ephemeral;
 mod get_blob_bytes;
 mod network_event;
 pub(crate) mod state_delta;
@@ -118,6 +119,29 @@ impl Handler<NodeMessage> for NodeManager {
                 // signal uses, without the readiness side-effect - a resync
                 // applies no governance op.
                 self.notify_migration_facts(namespace_id);
+            }
+            NodeMessage::SetLocalEphemeral {
+                context_id,
+                author,
+                slice,
+                outcome,
+            } => {
+                let result = crate::handlers::ephemeral::outbound::set_local_ephemeral(
+                    self, ctx, context_id, author, slice,
+                );
+                // A dropped receiver means the caller gave up; ignore.
+                let _ = outcome.send(result);
+            }
+            NodeMessage::GetEphemeralSnapshot {
+                context_id,
+                outcome,
+            } => {
+                // Wall clock, the same helper the inbound apply and the TTL
+                // sweep use, so the ages reported here are computed against the
+                // reading the entries were stamped with.
+                let now_ms = crate::handlers::ephemeral::now_ms();
+                let entries = self.awareness_store.snapshot(context_id, now_ms);
+                let _ = outcome.send(entries);
             }
         }
     }

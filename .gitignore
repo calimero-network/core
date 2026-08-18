@@ -13,7 +13,10 @@ target/
 .DS_Store
 .idea/
 .vscode/
+
+# agent scratch dirs — never committed
 .claude/
+.superpowers/
 
 # typescript
 *.map
@@ -33,3 +36,4 @@ tools/cargo-mero/tests/fixtures/*/crates/*/res/
 # Generated blob fixtures for the cross-node size sweep (apps/blobs/scripts/gen-blob-fixtures.sh).
 # Random bytes, 141 MiB at the default tier — regenerated per run, never committed.
 apps/blobs/static/generated/
+

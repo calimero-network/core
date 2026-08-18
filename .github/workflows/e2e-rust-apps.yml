@@ -610,6 +610,17 @@ jobs:
           - workflow: kv-store-workflow-example
             file: workflows/workflow-example.yml
             app: kv-store
+          # Asserts the load-bearing invariants of ephemeral presence: gossip
+          # delivery to a live subscriber, replay-on-subscribe to a connection
+          # that arrives late (WS and SSE), that the replay reaches ONLY the
+          # connection that asked, TTL eviction after the publisher stops, and
+          # — the one that must never regress — that the context state hash is
+          # byte-identical before and after a presence write, i.e. presence
+          # never touches the DAG. kv-store is only a scaffold: it supplies the
+          # namespace/context presence hangs off and its wasm is never called.
+          - workflow: ephemeral-presence-e2e
+            file: workflows/ephemeral-presence-e2e.yml
+            app: kv-store
           - workflow: nested-crdt
             file: workflows/nested-crdt-test.yml
             app: nested-crdt-test
@@ -663,6 +674,18 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
+
+      # Only ephemeral-presence-e2e needs this. Its assertions are Node scripts
+      # (apps/kv-store/scripts/ephemeral-*.js) using the GLOBAL `WebSocket` and
+      # `fetch` — presence has no read endpoint, so a subscriber is the only way
+      # to observe it, and global WebSocket landed in Node 22. Pinned rather
+      # than inherited so the runner image changing its default node cannot
+      # silently take the scripts out from under us.
+      - name: Setup Node
+        if: matrix.workflow == 'ephemeral-presence-e2e'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
 
       # Only the size sweep needs these, and they are 416 MiB of /dev/urandom —
       # not worth generating for every other workflow in the matrix

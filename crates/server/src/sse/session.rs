@@ -1,5 +1,6 @@
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
+use calimero_server_primitives::sse::{Command, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -164,6 +165,24 @@ pub struct SessionState {
     /// command channel has closed; this handle exists only to cancel a
     /// superseded task when a new connection rebinds the same session.
     event_task: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
+    /// Sink of the SSE connection currently bound to this session, for events
+    /// addressed to *this client only* rather than broadcast to every
+    /// subscriber — currently the presence replay a subscriber is seeded with
+    /// (see `crate::ephemeral_replay`).
+    ///
+    /// Needed because SSE splits subscribe (a POST) from the stream (a
+    /// long-lived GET): the POST handler that authorizes a context has no other
+    /// handle on the connection it must seed. Bound alongside the event task,
+    /// by the same [`SessionState::bind_connection`] call, so the sink and the
+    /// task can never describe different connections.
+    ///
+    /// Held **weakly** on purpose. The stream's receiver dropping is what tells
+    /// the event task its connection is gone (`Sender::closed()`), and a
+    /// session outlives its connections; a strong clone parked here would keep
+    /// a dead connection's channel — and its buffered frames — alive until the
+    /// next connection replaced it. A failed upgrade means "no live connection
+    /// to seed", which is exactly the right answer.
+    connection: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::WeakSender<Command>>>>,
     /// Serializes persistence of this session's state (the subscribe/unsubscribe
     /// store writes) so concurrent mutations of the *same* session commit to the
     /// store in the order they mutated the in-memory state.
@@ -183,6 +202,7 @@ impl SessionState {
         Self {
             inner: Arc::new(RwLock::new(inner)),
             event_task: Arc::new(std::sync::Mutex::new(None)),
+            connection: Arc::new(std::sync::Mutex::new(None)),
             persist_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -196,10 +216,54 @@ impl SessionState {
         self.persist_lock.lock().await
     }
 
+    /// Bind a new connection to this session: its node-event task (see
+    /// [`SessionState::bind_event_task`]) and its command sink, together, so
+    /// the two can never point at different connections.
+    pub fn bind_connection(
+        &self,
+        handle: tokio::task::AbortHandle,
+        sink: tokio::sync::mpsc::WeakSender<Command>,
+    ) {
+        {
+            let mut slot = self
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(slot.replace(sink));
+        }
+        self.bind_event_task(handle);
+    }
+
+    /// Push an event to the SSE connection currently bound to this session, and
+    /// to no one else.
+    ///
+    /// Best-effort by design, matching the broadcast path: no live connection,
+    /// or a full command channel (slow or closing client), drops the event
+    /// rather than blocking the caller. The one caller — the presence seed —
+    /// converges on the next delta when a frame is dropped.
+    ///
+    /// Returns whether the event was queued, which the tests assert on;
+    /// production callers ignore it.
+    pub fn try_push(&self, response: Response) -> bool {
+        let sink = {
+            let slot = self
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.clone()
+        };
+        // A `None` upgrade means the connection's receiver is already gone —
+        // nothing to seed.
+        let Some(sink) = sink.and_then(|weak| weak.upgrade()) else {
+            return false;
+        };
+        sink.try_send(Command::Send(response)).is_ok()
+    }
+
     /// Bind a newly-spawned node-event task to this session, aborting any task
     /// bound by a previous connection. Aborting an already-finished task is a
     /// no-op, so a normally-closed prior connection costs nothing here.
-    pub fn bind_event_task(&self, handle: tokio::task::AbortHandle) {
+    fn bind_event_task(&self, handle: tokio::task::AbortHandle) {
         // Swap the handle under the lock, then release the lock before calling
         // `abort()` — never hold this std::sync::Mutex across external code.
         let prev = {
