@@ -15,6 +15,16 @@
   route with no handler anywhere, so any caller got a 404. Direct
   request-response join replaced the relay it belonged to ([#3450])
 
+### Changed
+
+- **`governanceOp` on both join responses is now optional on deserialization.**
+  The node still sends it (always `""`), so nothing changes on the wire; the
+  `serde` default is what lets a client compiled from this point survive the
+  field's removal. `calimero-client-py` builds `calimero-server-primitives`
+  from master and ships as a prebuilt wheel inside merobox, so without this a
+  removal breaks every E2E scenario that joins a namespace, on a client nobody
+  has rebuilt. Prerequisite for [#3485] ([#3530])
+
 ## [0.11.0-rc.10] - 2026-07-05
 
 > **Draft — release manager to curate.** Another large hardening release
@@ -778,3 +788,5 @@ Integrations:
 [#1522]: https://github.com/calimero-network/core/pull/1522
 [#3440]: https://github.com/calimero-network/core/pull/3440
 [#3450]: https://github.com/calimero-network/core/pull/3450
+[#3485]: https://github.com/calimero-network/core/issues/3485
+[#3530]: https://github.com/calimero-network/core/pull/3530
