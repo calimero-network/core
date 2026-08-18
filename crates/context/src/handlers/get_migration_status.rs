@@ -336,7 +336,6 @@ mod tests {
 
         // The cohort over the subtree rooted at the child must include BOTH.
         let cohort = collect_migration_cohort(&store, &child).unwrap();
-        // Compare on `peer`: the cohort now carries the account alongside it.
         let peers: Vec<_> = cohort.iter().map(|m| m.peer).collect();
         assert!(
             peers.contains(&inherited),

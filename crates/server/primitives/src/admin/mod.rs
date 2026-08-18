@@ -1524,17 +1524,10 @@ pub struct MemberMigrationReportApiData {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberMigrationStatusApiEntry {
-    /// The cohort member: the DEVICE key that reports, bs58. A person holding
-    /// two devices appears twice.
+    /// The reporting device key, bs58. A member with two devices appears twice.
     pub peer: PublicKey,
-    /// The account `peer` speaks for, 64 hex.
-    ///
-    /// The cohort is a set of replicas, so this is what groups a person's
-    /// devices, and it is the only field that joins these rows to
-    /// `GET /groups/:id/members` - which is account-keyed and carries `name`.
-    /// Without it a caller holds a signing key and cannot name the human it
-    /// belongs to, because the two encodings name different principals and
-    /// nothing errors when they are confused.
+    /// The account `peer` speaks for, 64 hex. Joins these rows to the
+    /// account-keyed `GET /groups/:id/members`, which carries `name`.
     pub account: AccountId,
     /// The member's freshest reported facts, or `null` when it has no fresh
     /// heartbeat (in which case `state == "unknown"`).
