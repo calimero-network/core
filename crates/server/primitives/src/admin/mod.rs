@@ -1535,7 +1535,13 @@ pub struct MemberMigrationStatusApiEntry {
     /// Without it a caller holds a signing key and cannot name the human it
     /// belongs to, because the two encodings name different principals and
     /// nothing errors when they are confused.
-    pub account: AccountId,
+    ///
+    /// `Option` for the deserialize side only: a node predating this field omits
+    /// it, and a client must still parse that response. A zero account instead
+    /// would hand the caller a principal-shaped value naming nobody - the very
+    /// confusion this field exists to remove. A node that has it always sends it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountId>,
     /// The member's freshest reported facts, or `null` when it has no fresh
     /// heartbeat (in which case `state == "unknown"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2693,6 +2699,33 @@ mod tests {
         assert!(!resp.group_created);
     }
 
+    /// A node predating `account` omits it, and a newer client must still parse
+    /// that response rather than fail the whole read.
+    ///
+    /// The absent case has to stay ABSENT, not default to a zero account: that
+    /// would hand the caller a principal-shaped value naming nobody, which is
+    /// the exact confusion the field was added to remove.
+    #[test]
+    fn a_member_entry_without_an_account_still_deserializes() {
+        let json = serde_json::json!({
+            "targetVersion": 2,
+            "expectedMembers": 1,
+            "rollup": {
+                "migrated": 1, "inProgress": 0, "unknown": 0, "failed": 0,
+                "total": 1, "allMigrated": true, "membersPendingSignature": 0
+            },
+            "members": [{ "peer": PublicKey::from([0x11; 32]), "state": "migrated" }]
+        });
+
+        let resp: GetMigrationStatusApiResponse =
+            serde_json::from_value(json).expect("an older node's response must still parse");
+
+        assert_eq!(
+            resp.members[0].account, None,
+            "absent must stay absent - a zero account would name nobody"
+        );
+    }
+
     #[test]
     fn migration_status_response_serializes_rollup_and_members() {
         // The `get_migration_status` admin route (Task 6c.10) returns this
@@ -2720,7 +2753,7 @@ mod tests {
             members: vec![
                 MemberMigrationStatusApiEntry {
                     peer: migrated_peer,
-                    account: AccountId::from(*migrated_peer),
+                    account: Some(AccountId::from(*migrated_peer)),
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 2,
                         residue_auto: 0,
@@ -2734,13 +2767,13 @@ mod tests {
                 },
                 MemberMigrationStatusApiEntry {
                     peer: unknown_peer,
-                    account: AccountId::from(*unknown_peer),
+                    account: Some(AccountId::from(*unknown_peer)),
                     report: None,
                     state: "unknown".into(),
                 },
                 MemberMigrationStatusApiEntry {
                     peer: failed_peer,
-                    account: AccountId::from(*failed_peer),
+                    account: Some(AccountId::from(*failed_peer)),
                     report: Some(MemberMigrationReportApiData {
                         schema_version: 1,
                         residue_auto: 1,
