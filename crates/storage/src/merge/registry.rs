@@ -305,10 +305,11 @@ pub fn try_merge_registered(
     existing_ts: u64,
     incoming_ts: u64,
 ) -> MergeRegistryResult {
-    // For now, we don't have type information at runtime.
-    // TODO: Store type hints with root entity for O(1) dispatch (see issue #1993)
-
-    // Try each registered merge function until one succeeds (O(n) where n = registered types).
+    // There is no runtime type information to dispatch on: `TypeId` is
+    // process-local, so it cannot be persisted alongside the root entity and
+    // read back to select a merge function directly. Dispatch is therefore by
+    // trial-deserialize — try each registered merge function until one succeeds
+    // (O(n) where n = registered types).
     //
     // Iteration order over the HashMap is unspecified, but this is sound because
     // a module registers exactly one root state type (the `#[app::state]` type),

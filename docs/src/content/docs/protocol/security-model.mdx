@@ -7,6 +7,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps, Aside } from '@astrojs/starlight/components';
 
 This page states, plainly, what Calimero protects against and what it does not. The protocol has no consensus and no quorum: security rests on **signatures** (who authored an operation), **membership** (who is allowed to write), and **encryption keys** (who is allowed to read). Get those three right and the rest of the model follows.
 
@@ -127,6 +128,41 @@ Two caveats follow directly from this design and are worth stating loudly:
 - **Past ciphertext under the old key remains decryptable to anyone who held the old key.** Rotation changes the *next* key; it does not re-encrypt history.
 
 Mechanics and the rotation-log bookkeeping are in [Key Rotation](/protocol/key-rotation/).
+
+## Which scope key protects a context
+
+A context has no key of its own. Its state deltas are encrypted under the key of the **group the context belongs to**, and which key that is depends on that group's visibility chain (`crates/context/src/handlers/execute/mod.rs`, mirroring the same choice in the governance publisher):
+
+| The context's group | Encrypted under |
+| --- | --- |
+| A **Restricted** subgroup, or any subgroup behind a Restricted ancestor | That subgroup's **own** key |
+| An **Open** subgroup on a fully-Open chain to the namespace | The **namespace** key |
+| The namespace root itself | The namespace key |
+
+Two consequences follow, and both routinely surprise people:
+
+- **Contexts in the same group share one key.** There is no cryptographic wall between them. Which contexts a member may touch is an *authorization* decision — the membership walk — layered over a crypto boundary drawn at the group.
+- **`leave-context` has no cryptographic effect whatsoever.** It is a node-local opt-out: it stops sync and unsubscribes from the topic, and it rotates nothing, because there is no per-context key to rotate. A node that left a context still holds the group key and can still read that context's traffic if it obtains the ciphertext another way. See [Context Lifecycle](/protocol/context-lifecycle/).
+
+### Giving a context its own crypto boundary
+
+If a context needs cryptographic isolation from its siblings — and real forward secrecy when a member leaves *it* specifically — **put that context in its own Restricted subgroup**. This is the supported way to get it, and it needs no machinery that does not already exist:
+
+<Steps>
+
+1. The context's deltas are encrypted under that subgroup's own key rather than the namespace key, so namespace members outside the subgroup cannot read them at all.
+
+2. `leave-group` on that subgroup records a rotation debt (`group_rotates_on_departure`), which a remaining admin discharges automatically.
+
+3. The departing member is excluded from the fresh key and cannot read what the context writes afterwards.
+
+</Steps>
+
+So the unit of cryptographic isolation is the **Restricted subgroup**, and one context per subgroup is what makes "leaving this context" mean something cryptographically. Sharing a subgroup across several contexts is the cheaper arrangement — one key to deliver, one to rotate — and it is the right choice when those contexts sit inside the same trust boundary anyway.
+
+<Aside type="caution">
+Reaching for an **Open** subgroup instead does not buy this. An Open subgroup on a fully-Open chain is encrypted with the namespace key, which every namespace member already holds, so leaving it revokes authorization but not read access — and a rotation there would mint a key nothing uses. [Key Rotation](/protocol/key-rotation/) covers when a departure rotates and when it is skipped.
+</Aside>
 
 ## What is NOT protected
 

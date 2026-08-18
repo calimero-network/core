@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{AtCutAuthorizer, AtCutMembershipPath};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -175,7 +176,18 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         // A real cut. We can only decide it if the fold exists AND has the cited
         // ancestry; otherwise the gates must refuse rather than answer from live,
         // which resolves a different cut entirely.
-        self.folded(group)
-            .is_some_and(|folded| folded.0.can_resolve_cut(self.store, *group, parents))
+        //
+        // The two halves fail for unrelated reasons, so they are counted apart.
+        // `folded()` returning `None` is a store fault, not a history gap, and
+        // `can_resolve_cut` cannot see it — it is never reached — so the cause is
+        // recorded here or nowhere. Note the asymmetry with the predicates above:
+        // they read a failed fold as "defer to live", while this refuses. The
+        // refusal is what wins in practice, since the apply gates consult this
+        // before trusting a live answer.
+        let Some(folded) = self.folded(group) else {
+            record_at_cut_undecidable(UndecidableCause::FoldUnavailable);
+            return false;
+        };
+        folded.0.can_resolve_cut(self.store, *group, parents)
     }
 }
