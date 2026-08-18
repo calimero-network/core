@@ -16,7 +16,7 @@ futures-util = { workspace = true, features = ["io"] }
 serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "sync"] }
 tracing.workspace = true
 
 calimero-primitives.workspace = true
