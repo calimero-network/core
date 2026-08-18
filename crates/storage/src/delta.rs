@@ -55,8 +55,22 @@ pub struct CausalDelta {
     ///
     /// This ensures deterministic DAG structure across nodes even when
     /// WASM execution produces different root hashes due to non-determinism.
-    /// During sync, receiving nodes MUST use this hash rather than their
-    /// computed hash to maintain DAG consistency.
+    ///
+    /// # This is advisory, NOT authoritative
+    ///
+    /// An earlier version of this doc said receivers MUST use this hash rather
+    /// than their computed hash. That is not what the node does, and following
+    /// it would be wrong. `DeltaStore` stores the hash it COMPUTED
+    /// (`CRITICAL: We must store the computed hash, NOT
+    /// delta.expected_root_hash!`) because in a merge the two legitimately
+    /// differ, and a mismatch NEVER rejects a delta — CRDT merge semantics make
+    /// divergence here expected under concurrent writes. The field's only
+    /// operational effect is classifying the delta as a merge (which changes how
+    /// its children are handled) and logging.
+    ///
+    /// It is also NOT in the `compute_id` preimage, and on the DAG-catchup /
+    /// parent-fetch paths it arrives as a plaintext field of the served delta,
+    /// so a responder can set it freely. Treat it as a sender-supplied hint.
     pub expected_root_hash: [u8; 32],
 }
 
@@ -66,6 +80,23 @@ impl CausalDelta {
     /// The ID is deterministic based on parents and actions only.
     /// Timestamps are excluded to ensure nodes computing the same
     /// operations produce identical delta IDs regardless of physical time.
+    ///
+    /// # What the preimage does NOT cover
+    ///
+    /// Not `hlc` (the parameter is unused — hashing it would defeat the
+    /// determinism above), not `expected_root_hash`, and not action metadata
+    /// timestamps or `ancestors`. Anything outside the preimage is NOT
+    /// authenticated by [`Self::content_address_matches`], so it must not be
+    /// treated as trusted input on a receive path.
+    ///
+    /// # Parents are order-sensitive here
+    ///
+    /// Parents are hashed in the order given, so reordering them changes the
+    /// id. This deliberately differs from `calimero_op::Op::compute_id`, which
+    /// SORTS parents so the id is independent of the order a builder listed
+    /// them in. Do not assume the two schemes agree: the order-sensitivity is
+    /// what lets `content_address_matches` detect a re-parented delta whose
+    /// parent SET is unchanged.
     pub fn compute_id(
         parents: &[[u8; 32]],
         actions: &[Action],
@@ -123,6 +154,15 @@ impl CausalDelta {
     /// the preimage changes. Note that this means `hlc` is NOT authenticated by
     /// this check today; it stays malleable on the wire and must not be relied
     /// on as a trusted input.
+    ///
+    /// A forged `hlc` is bounded rather than decisive, which is why closing it
+    /// was not folded in here: the only consumer that acts on a remote delta's
+    /// HLC is the local clock (`Root::sync` -> `env::update_hlc`), and
+    /// `LogicalClock::update` refuses a remote timestamp more than 5s ahead of
+    /// the local wall clock and takes a `max()` otherwise — so a past value is
+    /// inert and a future one buys at most the drift tolerance, which real time
+    /// then erases. Entity-level LWW keys off `metadata.updated_at`, not this
+    /// field.
     #[must_use]
     pub fn content_address_matches(
         delta_id: &[u8; 32],
@@ -816,6 +856,11 @@ mod borsh_roundtrip_tests {
         // `hlc` malleable on the wire. Anything that needs a trusted HLC needs
         // a separate binding. If the preimage ever starts covering the HLC,
         // this test failing is the intended signal to revisit that.
+        //
+        // The exposure was traced rather than assumed: the local clock is the
+        // only consumer of a remote delta's HLC, and its update rule rejects
+        // anything >5s ahead and otherwise takes a max(), so the field is
+        // bounded, not decisive. See `content_address_matches`.
         let mut delta = honest_delta(vec![[7_u8; 32]]);
         delta.hlc = make_hlc(9_999);
         assert!(delta.id_matches_content());
