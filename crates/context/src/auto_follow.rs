@@ -538,22 +538,74 @@ pub(crate) fn decide_on_auto_follow_enabled(
     if self_account != member {
         return AutoFollowEnabledDecision::NotForSelf;
     }
-    let contexts =
-        match calimero_governance_store::enumerate_group_contexts(store, &gid, 0, BACKFILL_LIMIT) {
+    // The SUBTREE, not just this group.
+    //
+    // Auto-follow is otherwise purely event-driven — it has no startup re-scan —
+    // so a context that already existed when a member arrives reaches them only
+    // through this backfill. Enumerating one group made every context in an Open
+    // subgroup permanently invisible to a late arrival, which is what
+    // `tee-matrix-open-late-join` fails on: the replica applies the registration
+    // and then follows nothing.
+    //
+    // `collect_descendants` and NOT `collect_visible_descendants`: the latter
+    // gates on a direct membership row, which excludes precisely the
+    // inherited-only member this exists to serve.
+    let mut groups = vec![gid];
+    match calimero_governance_store::NamespaceRepository::new(store).collect_descendants(&gid) {
+        Ok(descendants) => groups.extend(descendants),
+        Err(err) => {
+            warn!(
+                group_id = %hex::encode(group_id),
+                ?err,
+                "auto-follow: failed to walk the subtree for backfill"
+            );
+            return AutoFollowEnabledDecision::EnumerateFailed;
+        }
+    }
+
+    // Each candidate is gated by `decide_on_context_registered` — the same
+    // authority the event path uses. That is what keeps the two paths from
+    // disagreeing: the flag is resolved per group (walking up to the
+    // inheritance anchor for an inherited-only member), and a context this node
+    // deliberately left stays left.
+    let mut contexts = Vec::new();
+    let mut truncated = false;
+    'walk: for group in groups {
+        let remaining = BACKFILL_LIMIT.saturating_sub(contexts.len());
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let candidates = match calimero_governance_store::enumerate_group_contexts(
+            store, &group, 0, remaining,
+        ) {
             Ok(ids) => ids,
             Err(err) => {
                 warn!(
-                    group_id = %hex::encode(group_id),
+                    group_id = %hex::encode(group.to_bytes()),
                     ?err,
                     "auto-follow: failed to enumerate contexts for backfill"
                 );
                 return AutoFollowEnabledDecision::EnumerateFailed;
             }
         };
+        let saturated = candidates.len() == remaining;
+        for context_id in candidates {
+            if matches!(
+                decide_on_context_registered(store, group.to_bytes(), &context_id),
+                ContextRegisteredDecision::Join
+            ) {
+                contexts.push(context_id);
+            }
+        }
+        if saturated {
+            truncated = true;
+            break 'walk;
+        }
+    }
     if contexts.is_empty() {
         return AutoFollowEnabledDecision::NothingToBackfill;
     }
-    let truncated = contexts.len() == BACKFILL_LIMIT;
     AutoFollowEnabledDecision::Backfill {
         contexts,
         truncated,
@@ -1317,6 +1369,83 @@ mod tests {
                     for cid in [ctx_a, ctx_b, ctx_c] {
                         assert!(contexts.contains(&cid), "missing {cid:?} in backfill list");
                     }
+                }
+                other => panic!("expected Backfill, got {other:?}"),
+            }
+        }
+
+        /// **The backfill reaches a context in an Open SUBGROUP, for a member
+        /// that holds no row there.**
+        ///
+        /// This is `tee-matrix-open-late-join`, and it is the case the old
+        /// single-group enumeration could never serve. Auto-follow has no startup
+        /// re-scan, so a context that already existed when the replica arrived
+        /// reaches it only here — and enumerating just the flag's own group made
+        /// every subgroup context permanently invisible. The replica applied the
+        /// registration and then followed nothing.
+        ///
+        /// The event path already handles this shape
+        /// (`context_registered_join_for_inherited_open_subgroup_member`); this is
+        /// its backfill counterpart, so the two paths agree on a late arrival.
+        #[test]
+        fn auto_follow_enabled_backfills_contexts_in_an_open_subgroup() {
+            let mut rng = OsRng;
+            let root_gid = ContextGroupId::from([0xF1u8; 32]);
+            let (store, _sk, pk, _account) = seed_self_member(&mut rng, root_gid);
+            let account = crate::test_support::account_for(&pk);
+
+            // The anchor row carries the entitlement: the flag and the capability
+            // live at the root, which is the only place this member has a row.
+            CapabilitiesRepository::new(&store)
+                .set_member_capability(
+                    &root_gid,
+                    &account,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .expect("set_member_capability");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &root_gid,
+                    &account,
+                    AutoFollowFlags {
+                        contexts: true,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
+
+            let sub_gid = ContextGroupId::from([0xF2u8; 32]);
+            seed_open_subgroup(&store, root_gid, sub_gid, pk);
+            assert!(
+                MembershipRepository::new(&store)
+                    .member_value(&sub_gid, &account)
+                    .expect("member_value")
+                    .is_none(),
+                "precondition: inherited-only — no direct row in the subgroup"
+            );
+
+            // One context directly in the root, one in the Open subgroup. The
+            // root one would be found either way; the subgroup one is the point.
+            let root_ctx = ContextId::from([0xF3u8; 32]);
+            let sub_ctx = ContextId::from([0xF4u8; 32]);
+            register_context_in_group(&store, &root_gid, &root_ctx).expect("register root ctx");
+            register_context_in_group(&store, &sub_gid, &sub_ctx).expect("register subgroup ctx");
+
+            match decide_on_auto_follow_enabled(&store, root_gid.to_bytes(), account) {
+                AutoFollowEnabledDecision::Backfill {
+                    contexts,
+                    truncated,
+                } => {
+                    assert!(!truncated, "two contexts must not hit BACKFILL_LIMIT");
+                    assert!(
+                        contexts.contains(&sub_ctx),
+                        "the Open subgroup's context must be backfilled — this is the \
+                         whole failure: {contexts:?}"
+                    );
+                    assert!(
+                        contexts.contains(&root_ctx),
+                        "and the root's own context must still be there: {contexts:?}"
+                    );
                 }
                 other => panic!("expected Backfill, got {other:?}"),
             }
