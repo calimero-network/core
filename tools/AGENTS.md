@@ -11,6 +11,8 @@ Development and debugging tools for Calimero infrastructure.
 | `calimero-abi` | `mero-abi`  | ABI extraction and inspection from WASM      |
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
 
+Everything here is a Rust crate.
+
 ## cargo-mero - App Toolchain
 
 The supported build path for Calimero apps: one Cargo subcommand from `cargo mero new` to a signed `.mpk`.

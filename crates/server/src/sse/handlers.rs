@@ -134,6 +134,42 @@ fn owner_allows_access(session_owner: &Option<String>, caller: &Option<String>) 
     }
 }
 
+/// Seed `session`'s currently-bound connection with the live presence of every
+/// context in `contexts`.
+///
+/// The contexts must already have passed the observation gate AND been
+/// recorded on the session — this runs *after* the subscription is live, so
+/// nothing that lands mid-flight is lost (see [`crate::ephemeral_replay`]).
+///
+/// Silent on failure: a session with no live connection (the client
+/// subscribed, then dropped the stream) simply has nothing to seed, and a
+/// dropped frame costs the client one heartbeat of staleness.
+async fn replay_presence(
+    state: &ServiceState,
+    session: &SessionState,
+    contexts: &[calimero_primitives::context::ContextId],
+) {
+    // Concurrent, not sequential: each context's snapshot read carries its own
+    // timeout, and awaiting them in turn would stack those timeouts ahead of
+    // the subscribe acknowledgment on a multi-context subscribe.
+    for (context_id, events) in
+        crate::ephemeral_replay::presence_replay_many(&state.node_client, contexts).await
+    {
+        for event in events {
+            let body = match serde_json::to_value(&event) {
+                Ok(value) => ResponseBody::Result(value),
+                Err(err) => {
+                    error!(%err, %context_id, "Failed to serialize presence replay event");
+                    continue;
+                }
+            };
+            if !session.try_push(SseResponse { body }) {
+                debug!(%context_id, "Presence replay dropped: no live SSE connection or a full channel");
+            }
+        }
+    }
+}
+
 /// A 403 response for the subscription endpoint, matching its `(StatusCode,
 /// Json<SseResponse>)` return shape.
 fn forbidden() -> (StatusCode, Json<SseResponse>) {
@@ -215,19 +251,13 @@ pub async fn handle_subscription(
                     .iter()
                     .copied()
                     .filter(|ctx| {
-                        let caller_is_member =
-                            auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| {
-                                let account =
-                                    crate::caller_account::for_context(&state.ctx_client, ctx, pk);
-                                state.ctx_client.has_member(ctx, pk, account).unwrap_or_else(|err| {
-                                    warn!(%session_id, context_id=%ctx, %err, "has_member lookup failed; denying subscription");
-                                    false
-                                })
-                            });
-                        let authorized = crate::ws::may_observe_context(
+                        let caller = auth_key.as_ref().map(|Extension(AuthenticatedKey(pk))| pk);
+                        let authorized = crate::ws::caller_may_observe_context(
+                            &state.ctx_client,
                             state.auth_enabled,
                             node_owner,
-                            caller_is_member,
+                            caller,
+                            ctx,
                         );
                         if !authorized {
                             warn!(%session_id, context_id=%ctx, "SSE subscribe denied: caller is not a member of the context");
@@ -273,6 +303,15 @@ pub async fn handle_subscription(
                     error!(%session_id, %err, "Failed to persist session subscriptions");
                 }
                 drop(_persist);
+
+                // Seed this session's connection with each context's CURRENT
+                // presence, now that the subscription is live and deltas are
+                // flowing. Subscribe-then-seed (never the reverse) so a delta
+                // landing in between is delivered rather than dropped; see
+                // `crate::ephemeral_replay` for why that direction is the safe
+                // one. Delivery goes to this session's own connection sink, so
+                // no other subscriber sees this client's seed.
+                replay_presence(&state, &session, &subscribed).await;
 
                 (
                     StatusCode::OK,
@@ -589,13 +628,19 @@ pub async fn sse_handler(
     // left running for the same session. Two live tasks would share this
     // session's `event_counter` and each bump it per broadcast event, corrupting
     // event IDs and double-delivering events.
+    //
+    // The sink is registered on the session (weakly — see
+    // `SessionState::connection`) at the same time, so the subscribe POST,
+    // which is a different request entirely, can seed THIS connection with the
+    // context's current presence without broadcasting it to every other client.
+    let connection_sink = commands_sender.downgrade();
     let event_task = tokio::spawn(handle_node_events(
         session_id,
         Arc::clone(&state),
         session_state.clone(),
         commands_sender,
     ));
-    session_state.bind_event_task(event_task.abort_handle());
+    session_state.bind_connection(event_task.abort_handle(), connection_sink);
 
     // Build response with session ID in header for easy client access
     let sse_response = Sse::new(stream).keep_alive(KeepAlive::default());
@@ -850,5 +895,235 @@ mod tests {
         // Auth disabled now (no caller principal): not blocked.
         assert!(owner_allows_access(&alice, &None));
         assert!(owner_allows_access(&None, &None));
+    }
+
+    // ----------------------------------------------------------------------
+    // Presence replay on subscribe
+    //
+    // SSE splits subscribe (a POST) from the stream (a long-lived GET), so the
+    // seed has to find its way from the POST handler to the one connection
+    // bound to that session — and to no other. These tests pin that routing.
+    // ----------------------------------------------------------------------
+
+    use calimero_context_client::client::ContextClient;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tempfile::TempDir;
+
+    /// An SSE `ServiceState` whose node actor answers presence-snapshot reads
+    /// with `snapshot`. The `TempDir` is returned so the blob store outlives
+    /// the state.
+    async fn sse_state_with(
+        snapshot: Vec<crate::test_support::SnapshotEntry>,
+    ) -> (Arc<ServiceState>, TempDir) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(snapshot),
+            event_sender,
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+
+        (
+            Arc::new(ServiceState::new(node_client, ctx_client, store, false)),
+            blob_dir,
+        )
+    }
+
+    /// A session with a connection bound to a fresh command channel, as
+    /// `sse_handler` does on a real connection.
+    ///
+    /// The receiver stands in for the SSE response stream and the returned
+    /// sender for the one the connection's event task owns — the session itself
+    /// holds only a weak reference, so BOTH must be kept alive by the caller for
+    /// the connection to count as live. That is the production shape: the weak
+    /// sink is exactly what makes a dead connection un-seedable.
+    fn session_with_connection() -> (SessionState, mpsc::Sender<Command>, mpsc::Receiver<Command>) {
+        let session = SessionState::new(SessionStateInner::default());
+        let (tx, rx) = mpsc::channel::<Command>(16);
+        let noop = tokio::spawn(async {});
+        session.bind_connection(noop.abort_handle(), tx.downgrade());
+        (session, tx, rx)
+    }
+
+    /// Pull the `Ephemeral` payloads out of whatever is queued on a channel.
+    fn drain_ephemeral(rx: &mut mpsc::Receiver<Command>) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        while let Ok(Command::Send(response)) = rx.try_recv() {
+            let ResponseBody::Result(value) = response.body else {
+                continue;
+            };
+            if value.get("type") == Some(&serde_json::json!("Ephemeral")) {
+                out.push(value);
+            }
+        }
+        out
+    }
+
+    // The seed goes to the session that subscribed, and to nobody else. Routing
+    // it through the node-wide broadcast instead would deliver one client's
+    // seed to every other connected client.
+    #[actix::test]
+    async fn presence_replay_reaches_only_the_subscribing_session() {
+        let author = PublicKey::from([0xA1; 32]);
+        let ctx = ContextId::from([0x31; 32]);
+        let (state, _blob_dir) = sse_state_with(vec![(author, vec![1, 2, 3], 1_500)]).await;
+
+        let (subscriber, _subscriber_tx, mut subscriber_rx) = session_with_connection();
+        let (_bystander, _bystander_tx, mut bystander_rx) = session_with_connection();
+
+        replay_presence(&state, &subscriber, &[ctx]).await;
+
+        let seeded = drain_ephemeral(&mut subscriber_rx);
+        assert_eq!(seeded.len(), 1, "the subscribing session must be seeded");
+        assert_eq!(
+            seeded[0]["data"]["author"],
+            serde_json::json!(author.to_string())
+        );
+        assert_eq!(seeded[0]["data"]["state"], serde_json::json!([1, 2, 3]));
+        assert_eq!(seeded[0]["contextId"], serde_json::json!(ctx));
+
+        assert!(
+            drain_ephemeral(&mut bystander_rx).is_empty(),
+            "another session's seed must not reach an unrelated connection",
+        );
+    }
+
+    // The replayed entry carries its age; the live path (asserted in the WS
+    // suite and in `calimero-primitives`) omits the field entirely.
+    #[actix::test]
+    async fn replayed_entry_carries_age() {
+        let author = PublicKey::from([0xA2; 32]);
+        let ctx = ContextId::from([0x32; 32]);
+        let (state, _blob_dir) = sse_state_with(vec![(author, vec![9], 4_200)]).await;
+
+        let (session, _tx, mut rx) = session_with_connection();
+        replay_presence(&state, &session, &[ctx]).await;
+
+        let seeded = drain_ephemeral(&mut rx);
+        assert_eq!(seeded[0]["data"]["ageMs"], serde_json::json!(4_200));
+    }
+
+    // A session whose connection has gone away (the client dropped the stream)
+    // has nothing to seed. The weak sink must report that rather than resurrect
+    // a dead channel and queue frames nobody will ever read.
+    #[actix::test]
+    async fn a_session_with_no_live_connection_is_not_seeded() {
+        let author = PublicKey::from([0xA3; 32]);
+        let ctx = ContextId::from([0x33; 32]);
+        let (state, _blob_dir) = sse_state_with(vec![(author, vec![1], 10)]).await;
+
+        // Drop BOTH halves: the client's stream is gone and so is the event
+        // task that owned the only strong sender.
+        let (session, tx, rx) = session_with_connection();
+        drop(rx);
+        drop(tx);
+
+        // No panic, no hang, and nothing queued: `try_push` fails closed.
+        replay_presence(&state, &session, &[ctx]).await;
+        assert!(
+            !session.try_push(SseResponse {
+                body: ResponseBody::Result(serde_json::json!({})),
+            }),
+            "a session with no live connection must refuse the push",
+        );
+    }
+
+    // A RE-subscribe to a context the session is already subscribed to must
+    // seed again. This is the whole reconnect story: `mero-js` re-POSTs
+    // `subscribe` with every remembered context id after each `connect` frame,
+    // and on a reconnect that adopts the surviving session (`Last-Event-ID`)
+    // those ids are already in `inner.subscriptions`. If the handler seeded
+    // only newly-added ids, a reconnecting client would get no seed at all and
+    // `mero-react`'s replay-is-authoritative reconciliation would have nothing
+    // to reconcile against, leaving ghost peers forever.
+    //
+    // The guarantee comes from `subscribed` being the authorized subset of the
+    // REQUEST's ids, never a delta against the session's existing set.
+    #[actix::test]
+    async fn a_repeat_subscribe_seeds_again() {
+        let author = PublicKey::from([0xA5; 32]);
+        let ctx = ContextId::from([0x35; 32]);
+        let (state, _blob_dir) = sse_state_with(vec![(author, vec![7], 30)]).await;
+
+        // A session registered in the map, as `create_new_session` leaves it,
+        // with a live connection bound.
+        let (session, _tx, mut rx) = session_with_connection();
+        let session_id: ConnectionId = 42;
+        drop(
+            state
+                .sessions
+                .write()
+                .await
+                .insert(session_id, session.clone()),
+        );
+
+        let subscribe = || {
+            handle_subscription(
+                Extension(Arc::clone(&state)),
+                None,
+                None,
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "id": session_id.to_string(),
+                        "method": "subscribe",
+                        "params": { "contextIds": [ctx] },
+                    }))
+                    .expect("subscribe request parses"),
+                ),
+            )
+        };
+
+        drop(subscribe().await);
+        assert_eq!(
+            drain_ephemeral(&mut rx).len(),
+            1,
+            "the first subscribe must seed",
+        );
+
+        // Same session, same context, already subscribed — the reconnect shape.
+        drop(subscribe().await);
+        assert_eq!(
+            drain_ephemeral(&mut rx).len(),
+            1,
+            "a repeat subscribe must seed again, or a reconnecting client never gets its seed",
+        );
+
+        // The subscription set is still just the one context: seeding again is
+        // not the same as double-recording the subscription.
+        assert_eq!(session.inner.read().await.subscriptions.len(), 1);
+    }
+
+    // Rebinding a session to a new connection (the SSE reconnect path) must
+    // redirect the seed to the NEW connection — a seed delivered to the stale
+    // one would be invisible to the client that asked for it.
+    #[actix::test]
+    async fn rebinding_a_session_redirects_the_seed_to_the_new_connection() {
+        let author = PublicKey::from([0xA4; 32]);
+        let ctx = ContextId::from([0x34; 32]);
+        let (state, _blob_dir) = sse_state_with(vec![(author, vec![5], 20)]).await;
+
+        let (session, _first_tx, mut first_rx) = session_with_connection();
+
+        let (second_tx, mut second_rx) = mpsc::channel::<Command>(16);
+        let noop = tokio::spawn(async {});
+        session.bind_connection(noop.abort_handle(), second_tx.downgrade());
+
+        replay_presence(&state, &session, &[ctx]).await;
+
+        assert!(
+            drain_ephemeral(&mut first_rx).is_empty(),
+            "the superseded connection must not be seeded",
+        );
+        assert_eq!(
+            drain_ephemeral(&mut second_rx).len(),
+            1,
+            "the current connection must be seeded",
+        );
     }
 }

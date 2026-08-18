@@ -1638,6 +1638,7 @@ dependencies = [
 name = "calimero-server"
 version = "0.0.0"
 dependencies = [
+ "actix",
  "axum 0.7.9",
  "base64 0.22.1",
  "borsh",

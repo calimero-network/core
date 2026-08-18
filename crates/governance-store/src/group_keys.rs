@@ -84,6 +84,20 @@ pub struct EntitledRecipient {
 /// making the epoch monotonicity atomic without a store-level compare-and-swap.
 static GROUP_KEY_EPOCH_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Total order over stored group keys: `(epoch, epoch-0 insertion order,
+/// key_id)`, compared most-significant-first. The largest rank is "current".
+type KeyRank = (u64, u64, [u8; 32]);
+
+/// Rank one stored key. The middle component is zeroed for any key carrying a
+/// real DAG epoch, so equal non-zero epochs fall straight through to the
+/// `key_id` hash tie-break and concurrent rotations still converge across
+/// nodes; only epoch-`0` keys — which have no DAG ordering at all — are ordered
+/// by local arrival. See [`GroupKeyring::load_current_key_record`].
+fn key_rank(val: &GroupKeyValue, key_id: [u8; 32]) -> KeyRank {
+    let insertion_seq = if val.epoch == 0 { val.insertion_seq } else { 0 };
+    (val.epoch, insertion_seq, key_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoredGroupKey {
     pub key_id: [u8; 32],
@@ -161,12 +175,22 @@ impl<'a> GroupKeyring<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut handle = self.store.handle();
+        // `insertion_seq` is stamped once, when the entry first appears, and is
+        // carried over verbatim on an epoch-raising rewrite: it records when
+        // this node *learned* the key, which a later epoch bump does not
+        // change. Re-stamping it would reorder epoch-`0` keys on every rewrite.
+        let mut insertion_seq = None;
         if let Some(existing) = handle.get(&entry)? {
             let existing: GroupKeyValue = existing;
             if epoch <= existing.epoch {
                 return Ok(key_id);
             }
+            insertion_seq = Some(existing.insertion_seq);
         }
+        let insertion_seq = match insertion_seq {
+            Some(seq) => seq,
+            None => self.next_insertion_seq()?,
+        };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -175,9 +199,41 @@ impl<'a> GroupKeyring<'a> {
             group_key: *group_key,
             created_at: now,
             epoch,
+            insertion_seq,
         };
         handle.put(&entry, &value)?;
         Ok(key_id)
+    }
+
+    /// One past the highest `insertion_seq` currently stored for this group.
+    ///
+    /// Derived from the store rather than from a process counter so it survives
+    /// restarts: an in-memory counter would restart at 0 and make a key learned
+    /// after a reboot sort *before* one learned before it.
+    ///
+    /// **Caller contract:** must be called while holding
+    /// [`GROUP_KEY_EPOCH_WRITE_LOCK`], which is what makes the
+    /// scan-then-write atomic and the counter collision-free. The scan is a
+    /// prefix scan of one group's keys — the same shape (and cost) as
+    /// [`load_current_key_record`](Self::load_current_key_record) — on a path
+    /// that only runs for rare key writes, never a hot path.
+    fn next_insertion_seq(&self) -> EyreResult<u64> {
+        let gid = self.group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupKeyEntry::new(gid, [0u8; 32]),
+            GROUP_KEY_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let handle = self.store.handle();
+        let mut max_seq = None;
+        for key in keys {
+            let Some(val): Option<GroupKeyValue> = handle.get(&key)? else {
+                continue;
+            };
+            max_seq = Some(max_seq.map_or(val.insertion_seq, |m: u64| m.max(val.insertion_seq)));
+        }
+        Ok(max_seq.map_or(0, |m| m.saturating_add(1)))
     }
 
     pub fn load_key_by_id(&self, key_id: &[u8; 32]) -> EyreResult<Option<[u8; 32]>> {
@@ -201,19 +257,38 @@ impl<'a> GroupKeyring<'a> {
     }
 
     /// Returns the "current" key: the one with the highest deterministic
-    /// `epoch` (the DAG sequence of the op that introduced it), breaking ties by
-    /// the larger `key_id`. This is fully deterministic across nodes — unlike
+    /// `epoch` (the DAG sequence of the op that introduced it), breaking ties as
+    /// described below. This is fully deterministic across nodes — unlike
     /// the old wall-clock `created_at` ordering, two rotations within the same
     /// second or a skewed clock can no longer make two nodes pick different
     /// "current" keys (which caused decrypt divergence).
     ///
-    /// The `key_id` tie-break is what makes two *concurrent* rotations (e.g. two
-    /// admins removing members on causally-unordered ops that land at the same
-    /// epoch) **converge** rather than diverge: once both keys are present, every
-    /// node picks the same one (larger `key_id` wins — a total order over a
-    /// sha256 hash). And the choice is safety-neutral either way, because both
-    /// concurrent rotations exclude the removed member(s) from their envelopes,
-    /// so whichever key wins, a removed member holds neither.
+    /// # Tie-breaks
+    ///
+    /// **Equal non-zero epochs → larger `key_id` wins.** This is what makes two
+    /// *concurrent* rotations (e.g. two admins removing members on
+    /// causally-unordered ops that land at the same epoch) **converge** rather
+    /// than diverge: once both keys are present, every node picks the same one
+    /// (a total order over a sha256 hash, independent of arrival order). And the
+    /// choice is safety-neutral either way, because both concurrent rotations
+    /// exclude the removed member(s) from their envelopes, so whichever key
+    /// wins, a removed member holds neither.
+    ///
+    /// **Equal `epoch = 0` → the later-stored key wins** (higher
+    /// `insertion_seq`, falling back to the larger `key_id` only if two entries
+    /// somehow share a sequence). Epoch `0` is the "no DAG ordering available"
+    /// stamp used by [`store_key`](Self::store_key) — genesis keys and the
+    /// direct-pull path — so a node can legitimately hold two of them (e.g. the
+    /// genesis key plus a post-rotation key learned by pull rather than by
+    /// applying the rotation op). Ordering *those* by `key_id` would order them
+    /// by hash, so roughly half the time the node would resolve the **older**
+    /// key as current: it would encrypt under a superseded key, and on the
+    /// ephemeral-presence path (which accepts only the current key) it would
+    /// drop every legitimate member's presence while accepting a rotated-out
+    /// holder's. Local arrival order is the only ordering signal these keys
+    /// have, and it tracks the real rotation order. This does not weaken the
+    /// convergence property above, because concurrent rotations always carry a
+    /// real (non-zero) DAG epoch.
     pub fn load_current_key_record(&self) -> EyreResult<Option<StoredGroupKey>> {
         let gid = self.group_id.to_bytes();
         let keys = collect_keys_with_prefix(
@@ -223,29 +298,26 @@ impl<'a> GroupKeyring<'a> {
             |k| k.group_id() == gid,
         )?;
         let handle = self.store.handle();
-        let mut best: Option<(StoredGroupKey, u64)> = None;
+        let mut best: Option<(KeyRank, StoredGroupKey)> = None;
 
         for key in keys {
             let Some(val): Option<GroupKeyValue> = handle.get(&key)? else {
                 continue;
             };
-            let current = StoredGroupKey {
-                key_id: key.key_id(),
-                group_key: val.group_key,
-            };
-            let better = match best.as_ref() {
-                None => true,
-                Some((best_rec, best_epoch)) => {
-                    val.epoch > *best_epoch
-                        || (val.epoch == *best_epoch && current.key_id > best_rec.key_id)
-                }
-            };
-            if better {
-                best = Some((current, val.epoch));
+            let key_id = key.key_id();
+            let rank = key_rank(&val, key_id);
+            if best.as_ref().is_none_or(|(best_rank, _)| rank > *best_rank) {
+                best = Some((
+                    rank,
+                    StoredGroupKey {
+                        key_id,
+                        group_key: val.group_key,
+                    },
+                ));
             }
         }
 
-        Ok(best.map(|(record, _)| record))
+        Ok(best.map(|(_, record)| record))
     }
 
     /// Delete every stored group encryption key (`GroupKeyEntry`) for this
@@ -1692,6 +1764,95 @@ mod delete_tests {
         assert_eq!(
             ring.load_current_key_record().unwrap().unwrap().group_key,
             expected
+        );
+    }
+
+    /// Two keys stored at epoch 0 (`store_key`) must resolve to the
+    /// *later-stored* one — the order this node learned them, which tracks the
+    /// real rotation order — regardless of how their `key_id` hashes compare.
+    ///
+    /// Storing the same pair in both orders is what makes this hash-order-proof:
+    /// whichever way `key_id_for(a)` and `key_id_for(b)` happen to compare, one
+    /// of the two halves would fail under the old larger-`key_id` tie-break.
+    #[test]
+    fn epoch_zero_tie_breaks_by_insertion_order_not_key_id_hash() {
+        let a = [0x01u8; 32];
+        let b = [0x02u8; 32];
+
+        let store_ab = test_store();
+        let ring_ab = GroupKeyring::new(&store_ab, ContextGroupId::from([0x44u8; 32]));
+        ring_ab.store_key(&a).unwrap();
+        ring_ab.store_key(&b).unwrap();
+        assert_eq!(
+            ring_ab
+                .load_current_key_record()
+                .unwrap()
+                .unwrap()
+                .group_key,
+            b,
+            "the later-stored epoch-0 key must win"
+        );
+
+        let store_ba = test_store();
+        let ring_ba = GroupKeyring::new(&store_ba, ContextGroupId::from([0x45u8; 32]));
+        ring_ba.store_key(&b).unwrap();
+        ring_ba.store_key(&a).unwrap();
+        assert_eq!(
+            ring_ba
+                .load_current_key_record()
+                .unwrap()
+                .unwrap()
+                .group_key,
+            a,
+            "the later-stored epoch-0 key must win in the opposite arrival order too"
+        );
+    }
+
+    /// A real (non-zero) epoch still outranks a later-stored epoch-0 key: the
+    /// insertion sequence must never be able to promote an unordered key over a
+    /// DAG-ordered rotation.
+    #[test]
+    fn explicit_epoch_beats_a_later_stored_epoch_zero_key() {
+        let store = test_store();
+        let ring = GroupKeyring::new(&store, ContextGroupId::from([0x46u8; 32]));
+
+        let rotated = [0x11u8; 32];
+        let genesis = [0x12u8; 32];
+        ring.store_key_with_epoch(&rotated, 5).unwrap();
+        // Stored LAST, so it has the higher insertion_seq — and must still lose.
+        ring.store_key(&genesis).unwrap();
+
+        assert_eq!(
+            ring.load_current_key_record().unwrap().unwrap().group_key,
+            rotated,
+            "a DAG-ordered epoch must outrank a later-stored epoch-0 key"
+        );
+    }
+
+    /// An epoch-raising rewrite keeps the original `insertion_seq`: the entry
+    /// records when the node learned the key, not when the epoch was last
+    /// bumped. Re-stamping it would silently reorder epoch-0 keys.
+    #[test]
+    fn epoch_raise_preserves_insertion_order() {
+        let store = test_store();
+        let gid = ContextGroupId::from([0x47u8; 32]);
+        let ring = GroupKeyring::new(&store, gid);
+
+        let first = [0x21u8; 32];
+        let second = [0x22u8; 32];
+        ring.store_key(&first).unwrap();
+        ring.store_key(&second).unwrap();
+
+        // Raise `first` to epoch 3 and back down to 0 semantics: the rewrite
+        // must not move it ahead of `second` in insertion order.
+        ring.store_key_with_epoch(&first, 3).unwrap();
+        let handle = store.handle();
+        let entry = GroupKeyEntry::new(gid.to_bytes(), GroupKeyring::key_id_for(&first));
+        let val: GroupKeyValue = handle.get(&entry).unwrap().unwrap();
+        assert_eq!(val.epoch, 3, "the epoch must have been raised");
+        assert_eq!(
+            val.insertion_seq, 0,
+            "the rewrite must carry the original insertion sequence over"
         );
     }
 }

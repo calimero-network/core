@@ -10,14 +10,18 @@ use calimero_server_primitives::jsonrpc::{
 };
 use calimero_server_primitives::validation::Validate;
 use serde::{Deserialize, Serialize};
-use tracing::{error, field, info, info_span, Instrument};
+use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 use crate::config::ServerConfig;
+use crate::execute::CallerIdentity;
 
 mod execute;
+mod set_ephemeral;
 mod sync_status;
+#[cfg(test)]
+mod test_support;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -186,6 +190,16 @@ async fn handle_request_inner(
                     .await
                     .to_res_body()
             }
+            RequestPayload::SetEphemeral(set_req) => {
+                let span = tracing::Span::current();
+                span.record("context_id", field::display(&set_req.context_id));
+                span.record("method", "set_ephemeral");
+
+                set_req
+                    .handle(state, auth_key, auth_node_owner)
+                    .await
+                    .to_res_body()
+            }
         },
         Err(err) => {
             error!(%err, payload=%request.payload, "Failed to parse request payload");
@@ -209,6 +223,49 @@ pub(crate) trait Request {
         auth_key: Option<AuthenticatedKey>,
         auth_node_owner: Option<AuthenticatedNodeOwner>,
     ) -> Result<Self::Response, RpcError<Self::Error>>;
+}
+
+/// Derive the caller identity for a JSON-RPC method from the auth extensions.
+///
+/// Three auth paths, identical for every method that gates on it:
+///   AuthenticatedKey       → token with a verified Ed25519 key; the caller
+///                            must still pass the per-method membership check
+///   AuthenticatedNodeOwner → non-key auth (embedded username/password);
+///                            implicitly authorized for all contexts
+///   neither                → no extensions injected; two sub-cases
+///                            distinguished by `state.auth_enabled`:
+///                             - auth enabled  → the guard ran but injected
+///                               nothing; a misconfiguration. Reject rather
+///                               than silently granting elevated access.
+///                             - auth disabled → intentional no-auth
+///                               deployment; proceed silently at debug level.
+///
+/// Kept in one place so no handler can accidentally implement a laxer variant
+/// of the no-auth carve-out.
+fn caller_identity<'a, E>(
+    state: &ServiceState,
+    auth_key: Option<&'a AuthenticatedKey>,
+    auth_node_owner: Option<&AuthenticatedNodeOwner>,
+    method: &str,
+) -> Result<CallerIdentity<'a>, RpcError<E>> {
+    match auth_key {
+        Some(k) => Ok(CallerIdentity::Key(&k.0)),
+        None => {
+            if auth_node_owner.is_none() {
+                if state.auth_enabled {
+                    warn!(
+                        %method,
+                        "No auth extensions present on JSON-RPC request — auth guard may not be running"
+                    );
+                    return Err(RpcError::InternalError(eyre::eyre!(
+                        "authentication required"
+                    )));
+                }
+                debug!(%method, "No-auth mode: JSON-RPC request proceeding without membership check");
+            }
+            Ok(CallerIdentity::NodeOwner)
+        }
+    }
 }
 
 #[derive(Debug)]

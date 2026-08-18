@@ -755,7 +755,6 @@ impl SealedDeltaPayload {
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
-#[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
 pub enum BroadcastMessage<'a> {
     StateDelta {
         context_id: ContextId,
@@ -882,6 +881,42 @@ pub enum BroadcastMessage<'a> {
     NamespaceStateHeartbeat {
         namespace_id: [u8; 32],
         dag_heads: Vec<[u8; 32]>,
+    },
+
+    /// Transient ephemeral presence message — encrypted presence slice broadcast
+    /// on the context gossip topic. Never enters state_delta; dispatched inline.
+    ///
+    /// The payload is sealed under the group key identified by `key_id` so only
+    /// context members can read it. `seq` provides a per-author monotonic counter
+    /// for LWW tiebreaking at the receiver without any persistent state.
+    Ephemeral {
+        context_id: ContextId,
+        /// Context identity of the sender (LWW key).
+        author: PublicKey,
+        /// Per-author monotonic counter; LWW tiebreak.
+        seq: u64,
+        /// `sha256(group_key)` — identifies which group key sealed this;
+        /// receiver resolves it from its local `GroupKeyEntry` store.
+        key_id: [u8; 32],
+        /// Sender's wall clock (ms since the UNIX epoch) at publish time.
+        ///
+        /// Freshness binding: receivers drop an envelope whose stamp sits
+        /// further than `PRESENCE_MAX_SKEW_MS` from their own clock, which is
+        /// what stops a mesh peer from re-injecting a recorded envelope after
+        /// its author's entry has expired. Covered by `signature`, so it
+        /// cannot be restamped in flight.
+        sent_at_ms: u64,
+        /// Nonce for the AEAD seal (same `Nonce` type as `StateDelta`).
+        nonce: Nonce,
+        /// `SharedKey`-encrypted borsh-encoded presence slice.
+        ciphertext: Cow<'a, [u8]>,
+        /// ed25519 signature by `author` over the canonical payload binding
+        /// `(context_id, author, seq, key_id, sent_at_ms, nonce,
+        /// sha256(ciphertext))`. Mandatory: `author`, `seq`, `sent_at_ms` and
+        /// `nonce` all ride outside the AEAD, so without this they are
+        /// rewritable in flight. Verified on every receive before the
+        /// awareness store is touched.
+        signature: [u8; 64],
     },
 }
 
@@ -1622,6 +1657,45 @@ mod tests {
         let encoded = borsh::to_vec(&aux).expect("serialize");
         let decoded: SnapshotRecord = borsh::from_slice(&encoded).expect("deserialize");
         assert_eq!(aux, decoded);
+    }
+
+    // =========================================================================
+    // BroadcastMessage::Ephemeral Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ephemeral_broadcast_roundtrip() {
+        use calimero_crypto::NONCE_LEN;
+        let msg = BroadcastMessage::Ephemeral {
+            context_id: ContextId::from([1u8; 32]),
+            author: PublicKey::from([2u8; 32]),
+            seq: 7,
+            key_id: [3u8; 32],
+            sent_at_ms: 1_700_000_000_123,
+            nonce: [0u8; NONCE_LEN],
+            ciphertext: std::borrow::Cow::Borrowed(&[9, 9, 9]),
+            signature: [5u8; 64],
+        };
+        let bytes = borsh::to_vec(&msg).unwrap();
+        let back: BroadcastMessage<'_> = borsh::from_slice(&bytes).unwrap();
+        let BroadcastMessage::Ephemeral {
+            seq,
+            sent_at_ms,
+            signature,
+            ..
+        } = back
+        else {
+            panic!("expected Ephemeral");
+        };
+        assert_eq!(seq, 7);
+        assert_eq!(
+            sent_at_ms, 1_700_000_000_123,
+            "the freshness stamp must survive the round-trip"
+        );
+        assert_eq!(
+            signature, [5u8; 64],
+            "signature must survive the round-trip"
+        );
     }
 
     #[test]

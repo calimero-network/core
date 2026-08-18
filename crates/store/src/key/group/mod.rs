@@ -2985,12 +2985,87 @@ impl Debug for GroupPendingDeviceRotation {
 /// wall-clock `created_at` — is what selects the "current" (latest) key for
 /// encryption, so all nodes agree even under clock skew or two rotations within
 /// the same second. `created_at` is retained for diagnostics only.
+///
+/// `insertion_seq` is a per-group, strictly increasing counter stamped when the
+/// entry is first written, i.e. the order in which *this node* learned the key.
+/// It exists solely to order keys that carry **no** DAG ordering — genesis and
+/// direct-pull keys, which are all stamped `epoch = 0`. Without it a node
+/// holding two epoch-`0` keys would tie-break by `key_id` (a sha256 hash) and
+/// could resolve the *older* key as current. It is deliberately NOT consulted
+/// for equal non-zero epochs: those are concurrent rotations, whose convergence
+/// across nodes depends on the hash tie-break rather than on local arrival
+/// order. See `GroupKeyring::load_current_key_record`.
+///
+/// # On-disk compatibility
+///
+/// `epoch` and `insertion_seq` were both appended to a struct that already had
+/// rows on disk (`epoch` in #3114, `insertion_seq` here). Borsh has no field
+/// tags, so a derived `BorshDeserialize` would reject every pre-existing row as
+/// a truncated buffer, bricking the group keyring on any node that upgrades in
+/// place. [`BorshDeserialize`] is therefore hand-written below to read the two
+/// trailing `u64`s **optionally**: a buffer that ends after `created_at`
+/// decodes as `epoch = 0, insertion_seq = 0`, and one that ends after `epoch`
+/// decodes as `insertion_seq = 0`. Both defaults are the value the field would
+/// have carried anyway — a key written before epochs existed is a genesis-era
+/// key (`epoch 0`), and one written before insertion order was tracked has no
+/// recorded arrival order (`0`). The row is rewritten with the full layout the
+/// next time `store_key_with_epoch` raises its epoch.
+///
+/// Serialization is still derived, so every *new* write is the full four-field
+/// layout; only the read side is lenient. Any field added after this one must
+/// extend the same tail-optional pattern rather than re-deriving.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupKeyValue {
     pub group_key: [u8; 32],
     pub created_at: u64,
     pub epoch: u64,
+    pub insertion_seq: u64,
+}
+
+/// Read a `u64` that may legitimately be absent because the buffer predates the
+/// field, distinguishing "nothing left to read" (an older row — return `None`)
+/// from "a partial value" (genuine corruption — an error).
+#[cfg(feature = "borsh")]
+fn read_optional_trailing_u64<R: borsh::io::Read>(
+    reader: &mut R,
+) -> borsh::io::Result<Option<u64>> {
+    let mut buf = [0_u8; 8];
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(err) if err.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    match filled {
+        0 => Ok(None),
+        8 => Ok(Some(u64::from_le_bytes(buf))),
+        _ => Err(borsh::io::Error::new(
+            borsh::io::ErrorKind::InvalidData,
+            "GroupKeyValue: truncated trailing u64",
+        )),
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl BorshDeserialize for GroupKeyValue {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        // The two leading fields have always been present — a buffer missing
+        // either of them is corrupt, not old, so these stay strict.
+        let group_key = <[u8; 32]>::deserialize_reader(reader)?;
+        let created_at = u64::deserialize_reader(reader)?;
+        let epoch = read_optional_trailing_u64(reader)?.unwrap_or(0);
+        let insertion_seq = read_optional_trailing_u64(reader)?.unwrap_or(0);
+        Ok(Self {
+            group_key,
+            created_at,
+            epoch,
+            insertion_seq,
+        })
+    }
 }
 
 /// Durable pending-self-purge marker, keyed by `namespace_id` (the root
@@ -3746,5 +3821,94 @@ mod cascade_hlc_borsh_tests {
             bytes,
             "this binary must write back the same bytes it read"
         );
+    }
+}
+
+/// On-disk backward compatibility for [`GroupKeyValue`].
+///
+/// `epoch` (#3114) and `insertion_seq` (presence key-ordering fix) were both
+/// appended to a struct with live rows on disk. Borsh is untagged, so a derived
+/// decode would fail every one of those rows. These tests pin the lenient decode
+/// by building the *historical* byte layouts directly — a `[u8; 32]` plus one or
+/// two little-endian `u64`s is exactly what borsh emitted for the older shapes —
+/// so they keep failing if someone re-derives `BorshDeserialize`.
+#[cfg(all(test, feature = "borsh"))]
+mod group_key_value_compat_tests {
+    use borsh::{to_vec, BorshDeserialize};
+
+    use super::GroupKeyValue;
+
+    const KEY: [u8; 32] = [0xA5; 32];
+
+    /// Layout before #3114: `group_key || created_at`.
+    fn v1_bytes(created_at: u64) -> Vec<u8> {
+        let mut bytes = KEY.to_vec();
+        bytes.extend_from_slice(&created_at.to_le_bytes());
+        bytes
+    }
+
+    /// Layout after #3114, before `insertion_seq`: `v1 || epoch`.
+    fn v2_bytes(created_at: u64, epoch: u64) -> Vec<u8> {
+        let mut bytes = v1_bytes(created_at);
+        bytes.extend_from_slice(&epoch.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn decodes_pre_epoch_rows_as_genesis() {
+        let decoded = GroupKeyValue::try_from_slice(&v1_bytes(1_700_000_000))
+            .expect("a pre-epoch row must still decode, not brick the keyring");
+
+        assert_eq!(decoded.group_key, KEY);
+        assert_eq!(decoded.created_at, 1_700_000_000);
+        assert_eq!(
+            decoded.epoch, 0,
+            "a row written before epochs is genesis-era"
+        );
+        assert_eq!(decoded.insertion_seq, 0);
+    }
+
+    #[test]
+    fn decodes_pre_insertion_seq_rows_and_keeps_the_epoch() {
+        let decoded = GroupKeyValue::try_from_slice(&v2_bytes(1_700_000_000, 42))
+            .expect("a pre-insertion_seq row must still decode");
+
+        assert_eq!(decoded.epoch, 42, "the epoch that IS on disk must survive");
+        assert_eq!(decoded.insertion_seq, 0);
+    }
+
+    #[test]
+    fn round_trips_the_current_layout() {
+        let value = GroupKeyValue {
+            group_key: KEY,
+            created_at: 7,
+            epoch: 9,
+            insertion_seq: 11,
+        };
+        let decoded =
+            GroupKeyValue::try_from_slice(&to_vec(&value).expect("serialize")).expect("decode");
+
+        assert_eq!(decoded.group_key, KEY);
+        assert_eq!(decoded.created_at, 7);
+        assert_eq!(decoded.epoch, 9);
+        assert_eq!(decoded.insertion_seq, 11);
+    }
+
+    /// Leniency is strictly tail-shaped: a *partial* trailing `u64` is
+    /// corruption and must fail loudly rather than decode as a default, and a
+    /// buffer missing a field that has always been present is not "old".
+    #[test]
+    fn rejects_a_partial_trailing_field() {
+        let mut bytes = v2_bytes(1, 2);
+        bytes.truncate(bytes.len() - 3);
+
+        let _err = GroupKeyValue::try_from_slice(&bytes)
+            .expect_err("a half-written u64 must not silently decode as 0");
+    }
+
+    #[test]
+    fn rejects_a_row_missing_created_at() {
+        let _err = GroupKeyValue::try_from_slice(&KEY)
+            .expect_err("created_at predates every layout — its absence is corruption");
     }
 }
