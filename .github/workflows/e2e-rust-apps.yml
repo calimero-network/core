@@ -268,88 +268,6 @@ jobs:
             apps/kv-store/dist/*.mpk
           retention-days: 1
 
-  # ── Ephemeral presence: 2-node native gate ──
-  # workflows/ephemeral-presence-e2e.yml asserts the load-bearing invariants of
-  # ephemeral presence: gossip delivery to a live subscriber, replay-on-subscribe
-  # to a connection that arrives late (WS and SSE), that the replay reaches ONLY
-  # the connection that asked, TTL eviction after the publisher stops, and — the
-  # one that must never regress — that the context state hash is byte-identical
-  # before and after a presence write, i.e. presence never touches the DAG.
-  #
-  # NOT in the `test` matrix on purpose: that matrix runs merod container images,
-  # while this scenario sets `no_docker: true` and drives native binaries (it
-  # patches node 2's bootstrap config on disk between a stop/start, which the
-  # binary manager supports and the Docker manager does not). Same shape as the
-  # auth-seam job above: the PR's own merod is extracted from the already-built
-  # image rather than compiled a second time.
-  ephemeral-presence:
-    name: Ephemeral presence (2-node, native)
-    needs: [build-image, build-apps]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      # The assertions are Node scripts (workflows/scripts/ephemeral-*.js) that
-      # use the GLOBAL `WebSocket` and `fetch` — presence has no read endpoint,
-      # so a subscriber is the only way to observe it. Global WebSocket lands in
-      # Node 22; pinned here rather than inherited so the runner image changing
-      # its default node cannot silently take the scripts out from under us.
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-
-      - name: Download Docker image
-        uses: actions/download-artifact@v8
-        with:
-          name: merod-image
-          path: /tmp
-
-      - name: Extract merod binary from image
-        run: |
-          zstd -d /tmp/merod-local.tar.zst --stdout | docker load
-          id=$(docker create merod:local)
-          docker cp "$id:/usr/local/bin/merod" ./merod
-          docker rm "$id"
-          chmod +x ./merod
-
-      # kv-store is only a scaffold here: the scenario needs an application to
-      # hang a namespace and a context off, and never calls into the wasm.
-      - name: Download app artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: e2e-apps
-          path: apps
-
-      # `cargo mero build` publishes to `apps/<app>/res/`, which is what the
-      # artifact carries; the scenario installs the path a local
-      # `cargo build -p kv-store --profile app-release` produces. Stage rather
-      # than edit the workflow, so the file runs identically here and locally.
-      - name: Stage kv-store wasm where the scenario installs it from
-        run: |
-          mkdir -p target/wasm32-unknown-unknown/app-release
-          cp apps/kv-store/res/kv_store.wasm \
-            target/wasm32-unknown-unknown/app-release/kv_store.wasm
-
-      - name: Setup merobox
-        uses: ./.github/actions/setup-merobox
-
-      - name: Run ephemeral presence e2e (merobox, native binaries)
-        run: |
-          merobox bootstrap run workflows/ephemeral-presence-e2e.yml \
-            --no-docker --binary-path ./merod
-
-      - name: Logs on failure
-        if: failure()
-        run: cat data/ephemeral-node-*/logs/*.log || true
-
-      - name: Stop nodes
-        if: always()
-        run: merobox stop --no-docker --all || true
-
   # ── Test phase: run each workflow in parallel ──
   test:
     name: Test (${{ matrix.workflow }})
@@ -692,6 +610,17 @@ jobs:
           - workflow: kv-store-workflow-example
             file: workflows/workflow-example.yml
             app: kv-store
+          # Asserts the load-bearing invariants of ephemeral presence: gossip
+          # delivery to a live subscriber, replay-on-subscribe to a connection
+          # that arrives late (WS and SSE), that the replay reaches ONLY the
+          # connection that asked, TTL eviction after the publisher stops, and
+          # — the one that must never regress — that the context state hash is
+          # byte-identical before and after a presence write, i.e. presence
+          # never touches the DAG. kv-store is only a scaffold: it supplies the
+          # namespace/context presence hangs off and its wasm is never called.
+          - workflow: ephemeral-presence-e2e
+            file: workflows/ephemeral-presence-e2e.yml
+            app: kv-store
           - workflow: nested-crdt
             file: workflows/nested-crdt-test.yml
             app: nested-crdt-test
@@ -745,6 +674,18 @@ jobs:
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
+
+      # Only ephemeral-presence-e2e needs this. Its assertions are Node scripts
+      # (apps/kv-store/scripts/ephemeral-*.js) using the GLOBAL `WebSocket` and
+      # `fetch` — presence has no read endpoint, so a subscriber is the only way
+      # to observe it, and global WebSocket landed in Node 22. Pinned rather
+      # than inherited so the runner image changing its default node cannot
+      # silently take the scripts out from under us.
+      - name: Setup Node
+        if: matrix.workflow == 'ephemeral-presence-e2e'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
 
       # Only the size sweep needs these, and they are 416 MiB of /dev/urandom —
       # not worth generating for every other workflow in the matrix
@@ -1000,16 +941,16 @@ jobs:
   # ── Report phase: notify on PR failure ──
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam, ephemeral-presence]
+    needs: [test, auth-seam]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.ephemeral-presence.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.ephemeral-presence.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
