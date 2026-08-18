@@ -22,7 +22,7 @@
 //
 // Auth: nodes run in Proxy mode (default), so no Bearer token is required.
 
-import { bad, check, die, ok, readContext, rpc, sleep, subscribe, subscribeSse, summarize, tally } from './ephemeral-lib.js';
+import { bad, check, die, ok, readContext, rpc, sleep, subscribe, subscribeSse, summarize } from './ephemeral-lib.js';
 
 const NODE1_URL = process.argv[2] || process.env.NODE1_URL || 'http://localhost:8930';
 const NODE2_URL = process.argv[3] || process.env.NODE2_URL || 'http://localhost:8931';
@@ -42,7 +42,12 @@ console.log(`  node2_url   : ${NODE2_URL}`);
 console.log(`  context_id  : ${CONTEXT_ID}`);
 console.log(`  node1_key   : ${NODE1_KEY}`);
 
+// Required inputs are fatal when missing, never skipped. An empty NODE1_KEY
+// used to make the two author assertions vanish while the suite still reported
+// success — a guard that verifies nothing is worse than no guard, because it
+// reads as coverage.
 if (!CONTEXT_ID) die('CONTEXT_ID is empty — was the create_context step output captured?');
+if (!NODE1_KEY) die('NODE1_KEY is empty — was the node-1 identity captured? The author assertions cannot run without it');
 
 // --- Phase 0: both nodes have the context ----------------------------------
 
@@ -146,7 +151,7 @@ try {
 
 if (live) {
   check('live delta state equals the published slice', SLICE, live.state);
-  if (NODE1_KEY) check('live delta author is node 1', NODE1_KEY, live.author);
+  check('live delta author is node 1', NODE1_KEY, live.author);
   if ('ageMs' in live) {
     bad('live delta omits ageMs', `a live delta must not carry an age: ${JSON.stringify(live)}`);
   } else {
@@ -179,7 +184,7 @@ try {
 
 if (replayed) {
   check('replayed entry state equals the published slice', SLICE, replayed.state);
-  if (NODE1_KEY) check('replayed entry author is node 1', NODE1_KEY, replayed.author);
+  check('replayed entry author is node 1', NODE1_KEY, replayed.author);
   if (typeof replayed.ageMs === 'number' && replayed.ageMs >= 0 && replayed.ageMs < PRESENCE_TTL_MS) {
     ok('replayed entry carries an ageMs inside the TTL window', replayed.ageMs);
   } else {
@@ -247,4 +252,4 @@ watcher.close();
 // Phase 5 (TTL expiry) is a separate workflow step: it runs after node 1 has
 // been stopped, so no heartbeat can refresh its entry. See
 // ephemeral-ttl-check.js.
-summarize(tally);
+summarize();
