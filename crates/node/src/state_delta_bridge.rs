@@ -45,6 +45,23 @@ pub const STATE_DELTA_CHANNEL_CAPACITY: usize = 2048;
 /// to completion. The durable fix for the underlying slowness is #2199/#2238.
 const STATE_DELTA_PROCESSING_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Hard ceiling on concurrently in-flight jobs.
+///
+/// The mailbox bound alone does not cap concurrency: `handle` hands each job
+/// to `ctx.spawn` and returns, so the mailbox slot frees immediately and the
+/// job's future accumulates alongside every other still-running one. Anything
+/// that parks a job for seconds — a peer that gossips deltas for a context
+/// whose application bytecode it never serves, a slow merge-apply — therefore
+/// grows in-flight futures at the full delta arrival rate with nothing to stop
+/// it, each holding its delta payload and store handles.
+///
+/// Healthy processing completes in milliseconds, so steady-state in-flight
+/// sits in the single digits and this never trips. It is deliberately well
+/// under [`STATE_DELTA_CHANNEL_CAPACITY`]: the mailbox is sized to absorb a
+/// multi-minute *arrival* burst, which is a different quantity from how many
+/// jobs may run at once.
+const STATE_DELTA_MAX_IN_FLIGHT: u64 = 256;
+
 /// Periodic summary log interval.
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -57,9 +74,20 @@ struct InFlightGuard {
 }
 
 impl InFlightGuard {
-    fn new(counter: Arc<AtomicU64>) -> Self {
-        let _prev = counter.fetch_add(1, Ordering::Relaxed);
-        Self { counter }
+    /// Reserve one in-flight slot, or return `None` when `ceiling` is already
+    /// reached.
+    ///
+    /// The check and the increment are one `fetch_update` rather than a load
+    /// followed by a `fetch_add`: decrements come from guard drops in spawned
+    /// futures, so a split check-then-increment could admit a job on a count
+    /// that went stale between the two operations.
+    fn try_acquire(counter: Arc<AtomicU64>, ceiling: u64) -> Option<Self> {
+        counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < ceiling).then(|| current + 1)
+            })
+            .ok()
+            .map(|_prev| Self { counter })
     }
 }
 
@@ -128,6 +156,10 @@ pub struct StateDeltaActor {
     /// slow-merge storm is distinguishable from an application-error
     /// storm in the summary log.
     over_budget_total: Arc<AtomicU64>,
+    /// Jobs refused because [`STATE_DELTA_MAX_IN_FLIGHT`] was already
+    /// reached. Kept apart from `dropped_total` (mailbox overflow) so a
+    /// concurrency stall is distinguishable from an arrival-rate burst.
+    shed_total: Arc<AtomicU64>,
     dropped_total: Arc<AtomicU64>,
 }
 
@@ -138,6 +170,7 @@ impl StateDeltaActor {
             processed_total: Arc::new(AtomicU64::new(0)),
             error_total: Arc::new(AtomicU64::new(0)),
             over_budget_total: Arc::new(AtomicU64::new(0)),
+            shed_total: Arc::new(AtomicU64::new(0)),
             dropped_total,
         }
     }
@@ -146,14 +179,17 @@ impl StateDeltaActor {
         let processed = self.processed_total.load(Ordering::Relaxed);
         let errors = self.error_total.load(Ordering::Relaxed);
         let over_budget = self.over_budget_total.load(Ordering::Relaxed);
+        let shed = self.shed_total.load(Ordering::Relaxed);
         let dropped = self.dropped_total.load(Ordering::Relaxed);
         let in_flight = self.in_flight.load(Ordering::Relaxed);
         info!(
             processed_total = processed,
             error_total = errors,
             over_budget_total = over_budget,
+            shed_total = shed,
             dropped_total = dropped,
             in_flight,
+            max_in_flight = STATE_DELTA_MAX_IN_FLIGHT,
             "StateDelta actor summary"
         );
     }
@@ -183,12 +219,29 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
         let error_total = Arc::clone(&self.error_total);
         let over_budget_total = Arc::clone(&self.over_budget_total);
 
-        // RAII guard so `in_flight` is decremented even on panic.
-        let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
-
         let StateDeltaJob { context, message } = job;
         let context_id = message.context_id;
         let delta_id = message.delta_id;
+
+        // RAII guard so `in_flight` is decremented even on panic. Acquiring it
+        // is also the admission check: at the ceiling the job is shed here
+        // rather than spawned, so a stalled workload cannot keep growing the
+        // set of parked futures. Shedding costs this delta a redelivery, which
+        // the heartbeat-driven rebroadcast already covers — the same trade the
+        // mailbox-overflow path makes.
+        let Some(in_flight_guard) =
+            InFlightGuard::try_acquire(Arc::clone(&self.in_flight), STATE_DELTA_MAX_IN_FLIGHT)
+        else {
+            let _prev = self.shed_total.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                %context_id,
+                ?delta_id,
+                max_in_flight = STATE_DELTA_MAX_IN_FLIGHT,
+                "StateDelta job shed — in-flight ceiling reached; awaiting rebroadcast"
+            );
+            crate::node_metrics::record_delta_outcome("shed_in_flight_ceiling");
+            return;
+        };
 
         // Counters are incremented INSIDE `work`, before `_guard`
         // drops, so a summary log between guard-drop and the .map()
@@ -291,6 +344,48 @@ mod tests {
         assert_eq!(sender.dropped_total.load(Ordering::Relaxed), 0);
         let _clone = sender.clone();
         let _stopped = arbiter.stop();
+    }
+
+    /// Slots are handed out up to the ceiling and refused past it, so a
+    /// workload that parks jobs cannot grow the in-flight set without bound.
+    #[test]
+    fn try_acquire_refuses_past_the_ceiling() {
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = InFlightGuard::try_acquire(Arc::clone(&counter), 2);
+        let second = InFlightGuard::try_acquire(Arc::clone(&counter), 2);
+        assert!(first.is_some());
+        assert!(second.is_some());
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+
+        let refused = InFlightGuard::try_acquire(Arc::clone(&counter), 2);
+        assert!(refused.is_none());
+        // A refusal must not consume a slot, or a shedding actor would ratchet
+        // its own count upward and never admit another job.
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    /// Dropping a guard frees its slot for the next job.
+    #[test]
+    fn dropping_a_guard_readmits() {
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let guard = InFlightGuard::try_acquire(Arc::clone(&counter), 1);
+        assert!(guard.is_some());
+        assert!(InFlightGuard::try_acquire(Arc::clone(&counter), 1).is_none());
+
+        drop(guard);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert!(InFlightGuard::try_acquire(Arc::clone(&counter), 1).is_some());
+    }
+
+    /// A zero ceiling admits nothing — guards the boundary arithmetic in
+    /// `try_acquire`'s `current < ceiling` test.
+    #[test]
+    fn zero_ceiling_admits_nothing() {
+        let counter = Arc::new(AtomicU64::new(0));
+        assert!(InFlightGuard::try_acquire(Arc::clone(&counter), 0).is_none());
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
     // Functional tests of `handle_state_delta` itself live in the
