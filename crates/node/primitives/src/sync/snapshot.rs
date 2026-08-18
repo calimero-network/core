@@ -755,7 +755,6 @@ impl SealedDeltaPayload {
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
-#[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
 pub enum BroadcastMessage<'a> {
     StateDelta {
         context_id: ContextId,
