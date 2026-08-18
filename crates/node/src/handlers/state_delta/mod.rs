@@ -411,6 +411,35 @@ pub(crate) async fn apply_authorized_state_delta(
         events,
     } = decrypt_delta_actions(artifact, nonce, group_key)?;
 
+    // Content-address check. The envelope signature above binds `delta_id`, but
+    // `parent_ids` and `hlc` ride the wire OUTSIDE it, and `actions` arrive
+    // sealed under a key every member holds. Re-deriving the id from the
+    // content it is supposed to address is what extends the signature's
+    // coverage to `parent_ids`: without it, anyone able to publish on the
+    // context topic can republish a member's delta with `parent_ids` rewritten
+    // and every downstream gate still passes, because they all key off
+    // `author_id` (the honest author) rather than the publisher. An empty
+    // `parent_ids` is the worst case — it applies immediately as a
+    // disconnected head, bypassing missing-parent detection entirely.
+    //
+    // Runs after decryption because it needs `actions`, and before the DAG
+    // insert below.
+    if !calimero_storage::delta::CausalDelta::content_address_matches(
+        &delta_id,
+        &parent_ids,
+        &actions,
+        &hlc,
+    ) {
+        warn!(
+            %context_id,
+            %author_id,
+            delta_id = ?delta_id,
+            parent_count = parent_ids.len(),
+            "Rejecting state delta — id does not content-address its parents/actions"
+        );
+        return Ok(());
+    }
+
     let delta = calimero_dag::CausalDelta {
         id: delta_id,
         parents: parent_ids,
@@ -1442,6 +1471,48 @@ async fn request_missing_deltas(
                         "Received missing parent delta"
                     );
 
+                    // Did we get the delta we asked for? Parity with the
+                    // head-pull path's identical guard in
+                    // `sync/manager/mod.rs`, whose comment already claims
+                    // parity with "the parent-fetch path's sanity check" —
+                    // a check this path never actually had. The envelope
+                    // signature below binds `storage_delta.id`, not
+                    // `missing_id`, so without this a responder holding a
+                    // legitimately signed delta can answer a request for
+                    // one id with a different delta and have it persisted
+                    // under the wrong slot.
+                    //
+                    // Placed BEFORE the genesis carve-out deliberately: that
+                    // branch skips every author-keyed check, so these two
+                    // structural checks are the ONLY thing standing between a
+                    // responder and arbitrary genesis content.
+                    if storage_delta.id != missing_id {
+                        warn!(
+                            %context_id,
+                            requested = ?missing_id,
+                            received = ?storage_delta.id,
+                            "parent-fetch: peer returned a different delta id than                              requested, dropping"
+                        );
+                        continue;
+                    }
+
+                    // And does that id content-address what arrived with it?
+                    // `missing_id` is not attacker-supplied — it came from the
+                    // `parents` of a delta this node already accepted — so
+                    // chaining these two checks authenticates the content
+                    // without needing an author, which is exactly what the
+                    // genesis branch lacks.
+                    if !storage_delta.id_matches_content() {
+                        warn!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            author = %response_author,
+                            parent_count = storage_delta.parents.len(),
+                            "parent-fetch: delta id does not content-address its                              parents/actions, dropping"
+                        );
+                        continue;
+                    }
+
                     // Genesis carve-out: the responder serves the
                     // genesis delta with the all-zeros sentinel
                     // `author_id` because the wire requires an author
@@ -2110,6 +2181,27 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         actions,
         events,
     } = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
+
+    // Content-address check — parity with the gossip apply path. A buffered
+    // delta was received over the wire and carried through snapshot-sync
+    // buffering verbatim, `parent_ids` included, so it needs the same
+    // re-derivation the live path now runs; buffering is a delay, not a
+    // trust boundary that launders the fields the signature never covered.
+    if !calimero_storage::delta::CausalDelta::content_address_matches(
+        &buffered.id,
+        &buffered.parents,
+        &actions,
+        &buffered.hlc,
+    ) {
+        warn!(
+            %context_id,
+            delta_id = ?buffered.id,
+            author = %buffered.author_id,
+            parent_count = buffered.parents.len(),
+            "Rejecting buffered state delta — id does not content-address its parents/actions"
+        );
+        return Ok(false);
+    }
 
     let delta = calimero_dag::CausalDelta {
         id: buffered.id,

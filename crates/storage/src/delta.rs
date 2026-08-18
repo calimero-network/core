@@ -108,6 +108,37 @@ impl CausalDelta {
         hasher.finalize().into()
     }
 
+    /// Whether `delta_id` actually content-addresses `parents` + `actions`.
+    ///
+    /// [`Self::compute_id`] is the producer-side binding between a delta's id
+    /// and its content, but for a long time nothing re-derived it on the
+    /// receive side. The envelope signature covers the *id* only, so a delta's
+    /// `parents` could be rewritten in flight while the signature still
+    /// verified — and an empty `parents` then applied as a disconnected DAG
+    /// head. Receivers call this before the DAG insert so `parents` and
+    /// `actions` inherit the signature that covers the id.
+    ///
+    /// Mirrors [`Self::compute_id`]'s parameter list exactly, including the
+    /// currently-unhashed `hlc`, so the two can never silently drift apart if
+    /// the preimage changes. Note that this means `hlc` is NOT authenticated by
+    /// this check today; it stays malleable on the wire and must not be relied
+    /// on as a trusted input.
+    #[must_use]
+    pub fn content_address_matches(
+        delta_id: &[u8; 32],
+        parents: &[[u8; 32]],
+        actions: &[Action],
+        hlc: &HybridTimestamp,
+    ) -> bool {
+        Self::compute_id(parents, actions, hlc) == *delta_id
+    }
+
+    /// [`Self::content_address_matches`] applied to this delta's own fields.
+    #[must_use]
+    pub fn id_matches_content(&self) -> bool {
+        Self::content_address_matches(&self.id, &self.parents, &self.actions, &self.hlc)
+    }
+
     /// Get the physical timestamp (nanoseconds since epoch).
     #[must_use]
     pub fn physical_time(&self) -> u64 {
@@ -702,5 +733,91 @@ mod borsh_roundtrip_tests {
             result.is_err(),
             "expected error for unknown tag, got {result:?}"
         );
+    }
+
+    /// A delta as an honest producer builds one: id derived from the parents
+    /// and actions it actually carries.
+    fn honest_delta(parents: Vec<[u8; 32]>) -> CausalDelta {
+        let actions = vec![make_action(1), make_action(2)];
+        let hlc = make_hlc(42);
+        CausalDelta {
+            id: CausalDelta::compute_id(&parents, &actions, &hlc),
+            parents,
+            actions,
+            hlc,
+            expected_root_hash: [0x11_u8; 32],
+        }
+    }
+
+    #[test]
+    fn content_address_matches_accepts_honest_delta() {
+        assert!(honest_delta(vec![[7_u8; 32]]).id_matches_content());
+        // Genesis, on the `[0; 32]` convention the state-delta write path uses.
+        assert!(honest_delta(vec![[0_u8; 32]]).id_matches_content());
+    }
+
+    #[test]
+    fn content_address_matches_rejects_emptied_parents() {
+        // The attack this check exists to stop: strip `parents` to empty so the
+        // delta hits the vacuously-true branch of `DagStore::can_apply` and
+        // applies immediately as a disconnected head. The signed `id` is left
+        // untouched, because the envelope signature covers it and the attacker
+        // cannot re-sign.
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.parents = vec![];
+        assert!(
+            !delta.id_matches_content(),
+            "emptied parents must not content-address the original id"
+        );
+    }
+
+    #[test]
+    fn content_address_matches_rejects_reparented_delta() {
+        // Not just the empty case — any re-parenting moves the causal cut that
+        // at-cut authorization resolves against, so a swapped non-empty parent
+        // set must be rejected too.
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.parents = vec![[9_u8; 32]];
+        assert!(!delta.id_matches_content());
+
+        // Including adding a parent alongside the genuine one.
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.parents = vec![[7_u8; 32], [9_u8; 32]];
+        assert!(!delta.id_matches_content());
+    }
+
+    #[test]
+    fn content_address_matches_rejects_swapped_actions() {
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.actions = vec![make_action(3)];
+        assert!(!delta.id_matches_content());
+    }
+
+    #[test]
+    fn content_address_survives_post_id_root_hash_mutation() {
+        // Guards the non-obvious way this check could start false-positiving on
+        // honest traffic. The rotation-log self-log leg of the local write path
+        // recomputes `expected_root_hash` AFTER `compute_id` has already run,
+        // so a check that folded the root hash into the preimage would reject
+        // every writer-set rotation. `expected_root_hash` is not in the
+        // preimage; pin that.
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.expected_root_hash = [0xEE_u8; 32];
+        assert!(
+            delta.id_matches_content(),
+            "expected_root_hash must stay outside the content address"
+        );
+    }
+
+    #[test]
+    fn content_address_does_not_cover_hlc() {
+        // Documents a KNOWN LIMIT rather than desired behaviour: `compute_id`
+        // deliberately excludes the HLC for determinism, so this check leaves
+        // `hlc` malleable on the wire. Anything that needs a trusted HLC needs
+        // a separate binding. If the preimage ever starts covering the HLC,
+        // this test failing is the intended signal to revisit that.
+        let mut delta = honest_delta(vec![[7_u8; 32]]);
+        delta.hlc = make_hlc(9_999);
+        assert!(delta.id_matches_content());
     }
 }

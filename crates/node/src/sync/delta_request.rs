@@ -98,6 +98,40 @@ fn verify_fetched_parent(
 ) -> VerifiedParent {
     use calimero_context_config::types::GovernanceParentEdge;
 
+    // Did we get the delta we asked for? `verify_delta_signature` below is
+    // called with `delta_id` (the id we REQUESTED) while the caller persists
+    // `fetched.delta.id` (the id the responder CLAIMS) — so without this guard
+    // the signature is verified against one delta and a different one lands in
+    // the DAG. Parity with the head-pull path's guard in `sync/manager/mod.rs`.
+    //
+    // Both structural checks sit BEFORE the genesis carve-out deliberately:
+    // that branch skips every author-keyed check, so these are the only thing
+    // standing between a responder and arbitrary genesis content.
+    if fetched.delta.id != delta_id {
+        warn!(
+            %context_id,
+            requested = ?delta_id,
+            received = ?fetched.delta.id,
+            "DAG-catchup parent-pull: peer returned a different delta id than              requested, dropping"
+        );
+        return VerifiedParent::Skip;
+    }
+
+    // And does that id content-address what arrived with it? `delta_id` is not
+    // attacker-supplied — it came from the `parents` of a delta this node
+    // already accepted — so chaining these two checks authenticates the
+    // content without needing an author, which is what genesis lacks.
+    if !fetched.delta.id_matches_content() {
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            author = %fetched.author_id,
+            parent_count = fetched.delta.parents.len(),
+            "DAG-catchup parent-pull: delta id does not content-address its              parents/actions, dropping"
+        );
+        return VerifiedParent::Skip;
+    }
+
     // Genesis carve-out: the responder serves the genesis delta with
     // the all-zeros sentinel `author_id` because the wire requires an
     // author but genesis predates any governance op. Skip every
