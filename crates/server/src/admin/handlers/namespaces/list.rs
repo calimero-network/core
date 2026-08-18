@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::ListNamespacesRequest;
 use calimero_server_primitives::admin::{
-    ListNamespacesApiResponse, ListNamespacesQuery, NamespaceApiResponse, UPGRADE_POLICY_COMPAT,
+    ListNamespacesApiResponse, ListNamespacesQuery, NamespaceApiResponse,
 };
 use tracing::{error, info};
 
@@ -48,7 +48,6 @@ pub async fn handler(
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
                     app_key: hex::encode(ns.app_key.to_bytes()),
                     target_application_id: ns.target_application_id.to_string(),
-                    upgrade_policy: UPGRADE_POLICY_COMPAT.to_owned(),
                     created_at: ns.created_at,
                     name: ns.name,
                     member_count: ns.member_count,

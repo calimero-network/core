@@ -4,6 +4,18 @@
 
 ### Removed
 
+- **`upgradePolicy`** from the namespace and group-info responses (`GET
+  admin-api/namespaces`, `.../namespaces/:id`, `.../namespaces/for-application/:id`,
+  `admin-api/groups/:id`), along with the `UPGRADE_POLICY_COMPAT` constant that
+  filled it. The concept went server-side in #3393; the key survived only for
+  clients that declared it required, and its own doc named the condition for
+  removal — a merobox bundling a client-py built off post-merge master, with
+  `MIN_MEROBOX` naming it. merobox 0.6.56 and client-py 0.6.29 satisfy both.
+  It always held `"LazyOnAccess"`, so no caller can depend on its value.
+  Requests are unaffected: released nodes still require the field on
+  `POST admin-api/namespaces` and `POST admin-api/groups`, and both SDKs keep
+  sending it ([#3485])
+
 - **`meroctl context identity grant` / `revoke`** and the per-context
   capability request/response types behind them. The commands were shipped and
   advertised in `context --help`, but had no route, client method or handler and
