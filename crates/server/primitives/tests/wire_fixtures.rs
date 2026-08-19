@@ -93,8 +93,6 @@ wire_fixtures! {
     // field still deserializes and only a value proves the key survived.
     upgrade_res: UpgradeGroupApiResponse => "groups/upgrade.res.json",
     upgrade_status_res: GetGroupUpgradeStatusApiResponse => "groups/upgrade_status.res.json",
-    // Every per-member optional exercised at once: a report with `migrationFailed`,
-    // a report without it, and a member with no report at all.
     migration_status_res: GetMigrationStatusApiResponse => "groups/migration_status.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
