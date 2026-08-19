@@ -67,6 +67,31 @@ pub enum DeltaKind {
         /// one real meaning explicit and locally-sourced.
         root_hash: [u8; 32],
     },
+    /// Root of the DAG: a delta that legitimately has no parents.
+    ///
+    /// Two conventions for "this is the root" coexist in the codebase (#3126):
+    /// the DAG's own `[0; 32]` sentinel parent, and the unified-op layer's empty
+    /// `parents` list — a genesis op's `parent_op_hashes` is empty, and that
+    /// emptiness is load-bearing elsewhere (it is how
+    /// `NamespaceCreated`'s founder gate recognises a founding op, checked
+    /// before the signer for #596). So the empty list cannot simply be outlawed.
+    ///
+    /// The problem it left behind: `can_apply` could not tell a genuine root from
+    /// a delta whose `parents` were dropped by a bug or stripped on purpose, so
+    /// it accepted both and the latter applied immediately as a disconnected
+    /// head, skipping the missing-parent machinery entirely.
+    ///
+    /// This variant is that missing distinction. It is set by the op -> delta
+    /// adapters, which already read the op to build the delta and therefore
+    /// already know whether it is genesis-eligible; `can_apply` then accepts an
+    /// empty parent list ONLY for this kind. It is deliberately NOT a wire field
+    /// — a receiver derives it locally from the op's own signed content, so it
+    /// cannot be asserted by a peer.
+    ///
+    /// This says only "structurally a root". Whether a root op is ALLOWED to
+    /// establish authority is a separate decision, and stays where it was, in
+    /// the founder gate.
+    Genesis,
 }
 
 impl Default for DeltaKind {
@@ -147,12 +172,26 @@ impl<T> CausalDelta<T> {
         matches!(self.kind, DeltaKind::Checkpoint { .. })
     }
 
-    /// The snapshot root hash, for a checkpoint delta; `None` for a regular one.
+    /// The snapshot root hash, for a checkpoint delta; `None` otherwise.
     pub fn checkpoint_root_hash(&self) -> Option<[u8; 32]> {
         match self.kind {
             DeltaKind::Checkpoint { root_hash } => Some(root_hash),
-            DeltaKind::Regular => None,
+            DeltaKind::Regular | DeltaKind::Genesis => None,
         }
+    }
+
+    /// Mark this delta as the DAG root, so [`DeltaKind::Genesis`] licenses its
+    /// empty parent list. Set by the op -> delta adapters; see the variant docs
+    /// for why a receiver derives this locally rather than trusting the wire.
+    #[must_use]
+    pub fn into_genesis(mut self) -> Self {
+        self.kind = DeltaKind::Genesis;
+        self
+    }
+
+    /// Returns true if this delta declares itself the DAG root.
+    pub fn is_genesis(&self) -> bool {
+        self.kind == DeltaKind::Genesis
     }
 
     /// Convenience constructor for tests that uses a default HLC
@@ -625,12 +664,32 @@ impl<T: Clone> DagStore<T> {
     /// Returns true if all parent deltas have been applied and exist in the DAG.
     /// This ensures topological ordering and prevents phantom references.
     fn can_apply(&self, delta: &CausalDelta<T>) -> bool {
-        // NOTE: an empty parent list is NOT rejected here. In the unified-op
-        // layer a genesis op legitimately carries `parents: []` (it descends
-        // from the DAG root implicitly), and it must apply immediately as a
-        // root — pending it would strand the whole causal chain built on it.
-        // `all()` over an empty list is vacuously true, which is exactly the
-        // wanted behaviour for that genesis convention.
+        // An empty parent list is only legitimate for a declared root
+        // ([`DeltaKind::Genesis`]) — the unified-op layer's genesis convention.
+        // Anything else with no parents is malformed: `all()` over an empty list
+        // is vacuously true, so before this guard such a delta applied
+        // immediately as a disconnected head, bypassing missing-parent detection
+        // and polluting head computation (#3126).
+        //
+        // Checkpoints are excluded too, on purpose: they are constructed with a
+        // `[0; 32]` parent, so a parentless one is as malformed as a parentless
+        // regular delta.
+        if delta.parents.is_empty() {
+            if delta.kind == DeltaKind::Genesis {
+                return true;
+            }
+            // Loud on purpose. A delta rejected here does not fail, it PENDS —
+            // silently, and forever, since nothing will ever satisfy a parent it
+            // never named. That is indistinguishable from a stalled sync unless
+            // the rejection says so, and it is exactly the shape of failure that
+            // makes a missed genesis path expensive to diagnose.
+            tracing::warn!(
+                delta_id = ?delta.id,
+                "rejecting a parentless delta that does not declare DeltaKind::Genesis"
+            );
+            return false;
+        }
+
         delta.parents.iter().all(|p| {
             // Genesis (zero hash) is always considered applied
             if *p == [0; 32] {
