@@ -280,22 +280,39 @@ pub fn signed_namespace_op_to_delta(
     // delta would otherwise apply instantly as a disconnected head, skipping
     // missing-parent detection.
     //
-    // This is the layer that can make the call: it holds the op, so it can ask
-    // whether the op is even genesis-ELIGIBLE, which the DAG cannot. Only
-    // `NamespaceCreated` founds a namespace; every other op — including
-    // `GroupCreated`, which is born inside an already-established namespace —
-    // must arrive parented. So an op that is not `NamespaceCreated` and carries
-    // no parents stays `Regular` and gets rejected, which is the case that used
-    // to slip through.
+    // EVERY parentless op on this plane is marked, not just `NamespaceCreated`,
+    // and that is not laziness — it is what the head convention forces.
+    // `NamespaceGovernanceDag::read_head_record` returns an EMPTY `parent_hashes`
+    // whenever no `NamespaceGovHead` is persisted, so an op signed by a node that
+    // has not yet applied the namespace genesis is legitimately parentless while
+    // being any variant at all. "Empty parents" therefore does not mean "genesis"
+    // here; it means "signed against an empty local head", which a not-yet-caught-up
+    // node does routinely. Narrowing this to `NamespaceCreated` strands those ops
+    // and governance never converges — verified the hard way by the
+    // `group-join-mesh-not-ready` e2e, whose whole premise is a node joining before
+    // the mesh is ready.
     //
-    // Note what this does NOT do: it grants no authority. `parent_op_hashes`
-    // being empty remains exactly the founder-gate signal it always was in
-    // `namespace_created.rs` (checked before the signer, per #596), and a forged
-    // `NamespaceCreated` is still stopped there. This kind is a structural
-    // statement only, and it is derived locally from the op's own signed content
-    // rather than read off the wire, so a peer cannot assert it.
-    let is_genesis_eligible = matches!(op.op, NamespaceOp::Root(RootOp::NamespaceCreated { .. }));
-    if delta.parents.is_empty() && is_genesis_eligible {
+    // So the guard's real reach is the STATE plane, where the convention is
+    // unambiguous: that write path spells genesis as the `[0; 32]` sentinel and its
+    // receivers always build `DeltaKind::Regular`, so a parentless state delta is
+    // always malformed and is now rejected. That is also where the guard matters
+    // most — a state delta's parents are only bound by the content address, so
+    // stripping them was a live tampering vector (#3540), whereas a governance op's
+    // `parent_op_hashes` sit inside its signed content and cannot be altered by a
+    // peer at all. What remains open on this plane is a buggy or malicious
+    // *authorized signer*, which no structural check can catch.
+    //
+    // Closing that too means making a node with no head sign against an explicit
+    // `[0; 32]` root instead of an empty list — a wire change that also moves the
+    // founder-gate signal in `namespace_created.rs`, which is the trade #3126
+    // proposed and this PR declines. It stays open, deliberately and now visibly.
+    //
+    // No authority is granted either way: `parent_op_hashes` being empty remains
+    // the founder-gate signal it always was, checked before the signer per #596,
+    // and a forged `NamespaceCreated` is still stopped there. This kind is a
+    // structural statement only, derived locally from signed content rather than
+    // read off the wire.
+    if delta.parents.is_empty() {
         return Ok(delta.into_genesis());
     }
 

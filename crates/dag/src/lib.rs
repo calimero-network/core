@@ -675,7 +675,19 @@ impl<T: Clone> DagStore<T> {
         // `[0; 32]` parent, so a parentless one is as malformed as a parentless
         // regular delta.
         if delta.parents.is_empty() {
-            return delta.kind == DeltaKind::Genesis;
+            if delta.kind == DeltaKind::Genesis {
+                return true;
+            }
+            // Loud on purpose. A delta rejected here does not fail, it PENDS —
+            // silently, and forever, since nothing will ever satisfy a parent it
+            // never named. That is indistinguishable from a stalled sync unless
+            // the rejection says so, and it is exactly the shape of failure that
+            // makes a missed genesis path expensive to diagnose.
+            tracing::warn!(
+                delta_id = ?delta.id,
+                "rejecting a parentless delta that does not declare DeltaKind::Genesis"
+            );
+            return false;
         }
 
         delta.parents.iter().all(|p| {
