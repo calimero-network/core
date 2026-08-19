@@ -326,6 +326,58 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
+  # Publishes the kv-store demo app as a signed .mpk release asset, so a
+  # downstream SDK e2e (mero-js, mero-react) can fetch an app bundle from the
+  # SAME tag it fetches `merod` from, instead of committing a binary fixture
+  # that silently rots as the manifest schema moves. It also gives the release
+  # its only end-to-end exercise of `cargo-mero`: the toolchain is shipped as a
+  # binary below, but nothing else in this workflow actually runs `bundle`.
+  #
+  # Signed with the dev key on purpose. The dev seed is well-known and
+  # deterministic, so the bundle's ApplicationId -- hash(package, signer) -- is
+  # stable across every release, which is what makes it usable as a test
+  # fixture. The registry refuses dev-signed bundles, so this artifact
+  # structurally cannot escape into real distribution.
+  release-app-bundle:
+    name: Release App Bundle
+    if: needs.prepare.outputs.binary_release == 'true'
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: release-app-bundle
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build the kv-store bundle
+        run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
+
+      - name: Upload the bundle to the release
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/kv-store-test-fixture.mpk
+          tag: ${{ needs.prepare.outputs.version }}
+          release_name: ${{ needs.prepare.outputs.version }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          target_commit: ${{ needs.prepare.outputs.target_commit }}
+
   release-crates:
     name: Release Crates
     if: needs.prepare.outputs.crate_release == 'true'
