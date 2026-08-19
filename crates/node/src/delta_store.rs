@@ -243,7 +243,6 @@ enum ParentPlan {
     Restore {
         parent_id: [u8; 32],
         dag_delta: CausalDelta<Vec<Action>>,
-        expected_root_hash: [u8; 32],
     },
     /// Parent is persisted but not applied. Run through `add_delta` which
     /// executes WASM and may cascade children via `apply_pending`.
@@ -410,7 +409,6 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                 context_id = %self.context_id,
                 delta_id = %Hash::from(delta.id),
                 current_root_hash = %Hash::from(current_root_hash),
-                delta_expected_hash = %Hash::from(delta.expected_root_hash),
                 "Concurrent branch detected - applying with CRDT merge semantics"
             );
         }
@@ -585,37 +583,12 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         let computed_hash = outcome.root_hash;
 
-        // In a CRDT environment, hash mismatches are EXPECTED when there are concurrent writes.
-        // The delta's expected_root_hash is based on the sender's linear history, but we may have
-        // additional data from concurrent writes (our own or from other nodes).
-        //
-        // We NEVER reject deltas due to hash mismatch - CRDT merge semantics ensure eventual
-        // consistency. The hash mismatch just means we have concurrent state.
-        //
-        // Log the mismatch for debugging, but always accept the delta.
-        if *computed_hash != delta.expected_root_hash {
-            if is_merge_scenario {
-                info!(
-                    context_id = %self.context_id,
-                    delta_id = %Hash::from(delta.id),
-                    computed_hash = %computed_hash,
-                    delta_expected_hash = %Hash::from(delta.expected_root_hash),
-                    merge_wasm_ms = format!("{:.2}", wasm_elapsed_ms),
-                    "Merge produced new hash (expected - concurrent branches merged)"
-                );
-            } else {
-                // Even "sequential" applications can produce different hashes if we have
-                // concurrent state that the sender doesn't know about. This is normal in
-                // a distributed CRDT system.
-                debug!(
-                    context_id = %self.context_id,
-                    delta_id = %Hash::from(delta.id),
-                    computed_hash = %computed_hash,
-                    expected_hash = %Hash::from(delta.expected_root_hash),
-                    "Hash mismatch (concurrent state) - CRDT merge ensures consistency"
-                );
-            }
-        }
+        // The sender's declared post-apply root hash used to be compared against
+        // ours here and logged on mismatch. The comparison was never a gate — a
+        // mismatch is EXPECTED under concurrent writes, since CRDT merge means
+        // our state legitimately differs from the author's linear history — and
+        // the field it read has been removed as unverifiable sender input. The
+        // computed hash below is, and always was, the authoritative one.
 
         // #2266: record this delta's parent links into the applier's
         // topology mirror so cascaded children's `apply()` can resolve
@@ -642,9 +615,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // This is what OUR state actually is, not what the remote expected.
         // Child deltas will check if our current state matches the parent's result.
         //
-        // CRITICAL: We must store the computed hash, NOT delta.expected_root_hash!
-        // In merge scenarios, computed_hash differs from expected_root_hash.
-        // If we stored expected_root_hash, sequential child deltas would incorrectly
+        // CRITICAL: store the hash we COMPUTED. This was previously phrased as a
+        // warning against storing the sender's `expected_root_hash`; that field no
+        // longer exists, but the invariant it protected still holds and is what
+        // makes local merge detection trustworthy: sequential child deltas would
         // appear to be merge scenarios because our state wouldn't match.
         {
             let mut hashes = self.parent_hashes.write().await;
@@ -673,12 +647,27 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             }
         }
 
-        // Track if this delta was applied as a merge
-        // Child deltas of merged deltas need special handling because:
-        // - Our computed hash differs from what the delta author computed
-        // - Child deltas from other nodes are based on THEIR computed hash, not ours
-        // - So children of merged deltas should also be treated as merges
-        if is_merge_scenario || *computed_hash != delta.expected_root_hash {
+        // Track if this delta was applied as a merge, so children of a merged
+        // delta inherit merge treatment.
+        //
+        // This used to also mark a delta merged when our computed hash differed
+        // from the author's declared `expected_root_hash`. That term is gone with
+        // the field: it was the ONE input to this decision sourced from the
+        // sender, it was unverifiable (not in the `compute_id` preimage, and
+        // plaintext on the catchup paths), and `is_merge_scenario` already
+        // decides from local state — including a deliberately conservative
+        // "treat as merge" whenever a parent is untracked or our state has moved
+        // off the parent's computed hash, which covers the ordinary remote case.
+        //
+        // Direction of risk, for whoever revisits this: over-marking is free
+        // because CRDT merge is idempotent (identical states merge to the same
+        // result), while under-marking is not. If a case turns up where a child
+        // needed merge treatment and did not get it, the fix is to widen
+        // `is_merge_scenario` from LOCAL evidence — not to reintroduce a
+        // sender-supplied hash. Marking every remote delta unconditionally would
+        // also be sound, but it would put every delta and all its descendants on
+        // the merge path permanently, which is the hotspot #2238 exists to avoid.
+        if is_merge_scenario {
             let mut merged = self.merged_deltas.write().await;
             merged.insert(delta.id);
 
@@ -811,7 +800,7 @@ impl ContextStorageApplier {
                     // it's a merge scenario.
 
                     // Since we can't pre-compute what hash we'd get, use the heuristic:
-                    // If we're not the same as the delta's parent according to head_root_hashes,
+                    // If our state has moved off the parent's computed hash,
                     // treat as merge.
                     debug!(
                         context_id = %self.context_id,
@@ -828,9 +817,8 @@ impl ContextStorageApplier {
                     //
                     // We detect locally-created parents by checking if they were added
                     // through add_delta_internal (which sets a flag) vs loaded from storage.
-                    // For now, we use a simpler check: if parent is in head_root_hashes with
-                    // the same hash as parent_computed_hash, it was processed normally.
-                    // If not, it might have been created locally and needs merge treatment.
+                    // Left as-is deliberately: the only remaining signal here is
+                    // local, and widening it needs real data rather than a guess.
                 }
             } else {
                 // Parent was created by another node - we don't have its hash tracked
@@ -883,7 +871,6 @@ impl ContextStorageApplier {
             context_id = %self.context_id,
             delta_id = ?delta.id,
             current_root_hash = ?Hash::from(*current_root_hash),
-            delta_expected_hash = ?Hash::from(delta.expected_root_hash),
             "All parent checks passed and state matches — treating as sequential apply"
         );
         false
@@ -1325,9 +1312,20 @@ pub struct DeltaStore {
     /// Applier for applying deltas to WASM storage
     applier: Arc<ContextStorageApplier>,
 
-    /// Maps delta_id -> expected_root_hash for deterministic selection
+    /// Delta ids that have entered `add_delta_internal` but have not yet
+    /// finished — inserted BEFORE the `dag` write lock is requested and cleared
+    /// on the way out.
+    ///
+    /// This exists to make the lock handoff observable: a delta appearing here
+    /// while another is mid-apply means it is genuinely parked on the `dag` lock,
+    /// which is what `delta_store_lock_inversion_test` asserts instead of
+    /// sleeping and hoping. It replaces a `head_root_hashes` map that was
+    /// maintained for this purpose but named as though it tracked root hashes —
+    /// nothing in production ever read it.
+    inflight_deltas: Arc<RwLock<HashSet<[u8; 32]>>>,
+
+    /// Maps delta_id -> computed root hash for deterministic selection
     /// when multiple DAG heads exist (concurrent branches)
-    head_root_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 
     /// Orphaned member deltas (a `SharedMember` whose `anchor` hasn't synced
     /// yet), keyed by the missing anchor id. Re-injected when that anchor
@@ -1424,7 +1422,7 @@ impl DeltaStore {
         Self {
             dag: Arc::new(RwLock::new(CoreDagStore::new(root))),
             applier,
-            head_root_hashes: Arc::new(RwLock::new(HashMap::new())),
+            inflight_deltas: Arc::new(RwLock::new(HashSet::new())),
             anchor_pending: Arc::new(RwLock::new(AnchorPendingBuffer::default())),
         }
     }
@@ -1545,16 +1543,16 @@ impl DeltaStore {
             // must not pre-seed these maps; it is re-driven below, where the
             // apply path records the real post-apply hash.
             if stored_delta.applied {
-                {
-                    let mut head_hashes = self.head_root_hashes.write().await;
-                    let _ =
-                        head_hashes.insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-                }
-                {
-                    let mut parent_hashes = self.applier.parent_hashes.write().await;
-                    let _ = parent_hashes
-                        .insert(stored_delta.delta_id, stored_delta.expected_root_hash);
-                }
+                // `parent_hashes` is deliberately NOT seeded here any more. It is
+                // documented as holding the hash THIS node computed after applying
+                // a delta, and local merge detection reads it on that basis — but
+                // the restore path was seeding it from the delta row's
+                // sender-declared hash, so a local decision was resting on remote
+                // input. We do not persist our computed per-delta hash, so there is
+                // nothing honest to seed with; leaving the entry absent sends
+                // `is_merge_scenario` down its "parent not tracked -> treat as
+                // merge" branch, which is the safe direction (over-marking is free
+                // because CRDT merge is idempotent).
 
                 // Record parents only; the payload is lazy-loaded at restore
                 // time to avoid holding every delta's actions in RAM at once.
@@ -1583,9 +1581,10 @@ impl DeltaStore {
                     parents: stored_delta.parents,
                     payload: actions,
                     hlc: stored_delta.hlc,
-                    expected_root_hash: stored_delta.expected_root_hash,
                     kind: if is_checkpoint {
-                        calimero_dag::DeltaKind::Checkpoint
+                        calimero_dag::DeltaKind::Checkpoint {
+                            root_hash: stored_delta.checkpoint_root_hash.unwrap_or([0u8; 32]),
+                        }
                     } else {
                         calimero_dag::DeltaKind::Regular
                     },
@@ -1687,9 +1686,10 @@ impl DeltaStore {
                         parents: stored_delta.parents.clone(),
                         payload: actions,
                         hlc: stored_delta.hlc,
-                        expected_root_hash: stored_delta.expected_root_hash,
                         kind: if is_checkpoint {
-                            calimero_dag::DeltaKind::Checkpoint
+                            calimero_dag::DeltaKind::Checkpoint {
+                                root_hash: stored_delta.checkpoint_root_hash.unwrap_or([0u8; 32]),
+                            }
                         } else {
                             calimero_dag::DeltaKind::Regular
                         },
@@ -1752,7 +1752,7 @@ impl DeltaStore {
         // Each goes through the FULL single-delta path (`add_delta_internal`), the
         // same one a gossip-received delta takes: it executes the actions (or pends
         // the delta if a parent is still missing), re-verifies with the stored
-        // author/governance/signature, seeds `head_root_hashes`, buffers orphan
+        // author/governance/signature, buffers orphan
         // `SharedMember` deltas whose anchor hasn't synced, retains the per-context
         // apply lock across the heads commit, and — on success — atomically flips
         // the row to `applied: true` and advances `dag_heads`. That last step is
@@ -1924,7 +1924,7 @@ impl DeltaStore {
                             actions: serialized_actions,
                             hlc: input.delta.hlc,
                             applied: false,
-                            expected_root_hash: input.delta.expected_root_hash,
+                            checkpoint_root_hash: input.delta.checkpoint_root_hash(),
                             events: input.events.clone(),
                             author_id: input.author_id,
                             governance_position_blob: input.governance_position_blob.clone(),
@@ -1936,13 +1936,6 @@ impl DeltaStore {
         }
 
         // Phase 1: record head-root-hash mappings for every input, once.
-        {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            for input in &inputs {
-                let _ = head_hashes.insert(input.delta.id, input.delta.expected_root_hash);
-            }
-        }
-
         // `add_delta` consumes the delta, and we retain `inputs` to build the
         // applied records after the batch settles — so the DAG needs its own
         // copies. Clone them HERE, before taking the write lock, to keep the
@@ -2061,13 +2054,6 @@ impl DeltaStore {
         self.record_dag_write_lock_hold("add_deltas_batch", hold, None, cascaded_other_ids.len());
         crate::node_metrics::observe_dag_heads_count(heads_count);
 
-        // Prune head-root-hash tracking down to the actual current heads.
-        {
-            let heads_set: HashSet<[u8; 32]> = heads.iter().copied().collect();
-            let mut head_hashes = self.head_root_hashes.write().await;
-            head_hashes.retain(|id, _| heads_set.contains(id));
-        }
-
         // Build one fully-formed `applied: true` record per applied input so
         // each keeps its author/gov/sig envelope (so this node can in turn
         // serve verifiable catchup for them). Routed as `primaries`, NOT
@@ -2091,7 +2077,7 @@ impl DeltaStore {
                     actions: serialized_actions,
                     hlc: input.delta.hlc,
                     applied: true,
-                    expected_root_hash: input.delta.expected_root_hash,
+                    checkpoint_root_hash: input.delta.checkpoint_root_hash(),
                     events: input.events.clone(),
                     author_id: input.author_id,
                     governance_position_blob: input.governance_position_blob.clone(),
@@ -2175,7 +2161,6 @@ impl DeltaStore {
         delta: CausalDelta<Vec<Action>>,
     ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
         let delta_id = delta.id;
-        let expected_root_hash = delta.expected_root_hash;
 
         // Already known — nothing to do (handles the benign race where
         // the same delta arrives via sync before the local notify lands).
@@ -2191,15 +2176,8 @@ impl DeltaStore {
         // `self_log_own_rotations` during execute; no side-store
         // self-log is needed here — S2.3.)
 
-        // Mirror the hash-tracking writes load_persisted_deltas does.
-        {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            let _ = head_hashes.insert(delta_id, expected_root_hash);
-        }
-        {
-            let mut parent_hashes = self.applier.parent_hashes.write().await;
-            let _ = parent_hashes.insert(delta_id, expected_root_hash);
-        }
+        // No hash-tracking writes here: see the note in `load_persisted_deltas`
+        // about why `parent_hashes` is not seeded from row data.
 
         // Register topology, nudge cascades, collect cascaded IDs + heads
         // all under one write-lock scope (matches add_delta_internal).
@@ -2243,18 +2221,6 @@ impl DeltaStore {
             }
             (cascaded, dag.get_heads())
         };
-
-        // Prune head_root_hashes down to the actual current DAG heads.
-        // `add_delta_internal` does the same after its own add (line ~1063);
-        // without this mirror, ancestors accumulate here over the lifetime
-        // of a DeltaStore and head-state lookups by peers can return a
-        // non-head's root hash. Safe to run unconditionally: retain is a
-        // no-op when the map is already a subset of `heads`.
-        {
-            let heads_set: HashSet<[u8; 32]> = heads.iter().copied().collect();
-            let mut head_hashes = self.head_root_hashes.write().await;
-            head_hashes.retain(|id, _| heads_set.contains(id));
-        }
 
         // Persist cascaded children's DB state + updated dag_heads. Without
         // this, cascaded children that ran through WASM via the applier
@@ -2394,22 +2360,23 @@ impl DeltaStore {
             };
 
         let delta_id = delta.id;
-        let expected_root_hash = delta.expected_root_hash;
         let parents = delta.parents.clone();
         let actions_for_db = delta.payload.clone();
         let hlc = delta.hlc;
+
+        // Mark in-flight BEFORE contending for the `dag` write lock, and clear it
+        // once we hold it. That window is exactly what makes the lock handoff
+        // observable to `delta_store_lock_inversion_test` (see `inflight_deltas`).
+        {
+            let mut inflight = self.inflight_deltas.write().await;
+            let _ = inflight.insert(delta_id);
+        }
 
         // Borsh-serialize the actions at most once. Both the events pre-persist
         // (below) and the applied-record (further down) write the same bytes;
         // without this memo, a delta that has events AND applies would re-encode
         // the identical payload twice.
         let mut serialized_actions: Option<Vec<u8>> = None;
-
-        // Store the mapping before applying
-        {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            let _previous = head_hashes.insert(delta_id, expected_root_hash);
-        }
 
         // CRITICAL: If this delta has events, persist it BEFORE adding to DAG
         // This ensures events are available if the delta cascades during add_delta()
@@ -2428,7 +2395,7 @@ impl DeltaStore {
                         actions: encoded,
                         hlc,
                         applied: false, // Not applied yet, will update if it applies
-                        expected_root_hash,
+                        checkpoint_root_hash: None,
                         events: events.clone(), // Store events for potential cascade
                         author_id,
                         governance_position_blob: governance_position_blob.clone(),
@@ -2460,6 +2427,12 @@ impl DeltaStore {
         // measurement (#2196 review).
         let mut dag = self.dag.write().await;
         let lock_start = std::time::Instant::now();
+
+        // We hold the lock: the in-flight window is over.
+        {
+            let mut inflight = self.inflight_deltas.write().await;
+            let _ = inflight.remove(&delta_id);
+        }
 
         // Track which deltas are currently pending BEFORE we add the new delta
         // This lets us detect which pending deltas got applied during the cascade
@@ -2602,7 +2575,7 @@ impl DeltaStore {
                     actions: serialized_actions,
                     hlc,
                     applied: true,
-                    expected_root_hash,
+                    checkpoint_root_hash: None,
                     events,
                     author_id,
                     governance_position_blob,
@@ -2649,12 +2622,6 @@ impl DeltaStore {
                     );
                 }
             }
-        }
-
-        // Cleanup old head hashes that are no longer active
-        {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            head_hashes.retain(|head_id, _| heads.contains(head_id));
         }
 
         // Persist the primary delta (if applied) + cascaded deltas +
@@ -2828,7 +2795,6 @@ impl DeltaStore {
                         parents: stored_delta.parents,
                         payload: actions,
                         hlc: stored_delta.hlc,
-                        expected_root_hash: stored_delta.expected_root_hash,
                         kind: calimero_dag::DeltaKind::Regular,
                     };
 
@@ -2841,7 +2807,6 @@ impl DeltaStore {
                         plans.push(ParentPlan::Restore {
                             parent_id: *parent_id,
                             dag_delta,
-                            expected_root_hash: stored_delta.expected_root_hash,
                         });
                     } else {
                         plans.push(ParentPlan::Add {
@@ -2903,27 +2868,18 @@ impl DeltaStore {
         let mut hold: Option<Duration> = None;
         let (
             any_parent_added,
-            restored_head_hashes,
             cascaded_ids,
             cascaded_bodies,
             added_parent_bodies,
             heads_after_cascade,
         ) = if plans.is_empty() {
-            (
-                false,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            )
+            (false, Vec::new(), Vec::new(), Vec::new(), Vec::new())
         } else {
             let mut dag = self.dag.write().await;
             let lock_start = std::time::Instant::now();
             let pending_before: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
             let mut any_parent_added = false;
-            let mut restored_head_hashes: Vec<([u8; 32], [u8; 32])> = Vec::new();
             // Parents we just transitioned from `applied: false` → applied
             // in the DAG via `add_delta`. Their DB records still say
             // `applied: false`; phase 3 persists the update alongside any
@@ -2936,11 +2892,9 @@ impl DeltaStore {
                     ParentPlan::Restore {
                         parent_id,
                         dag_delta,
-                        expected_root_hash,
                     } => {
                         if dag.restore_applied_delta(dag_delta) {
                             any_parent_added = true;
-                            restored_head_hashes.push((parent_id, expected_root_hash));
                         } else {
                             tracing::debug!(
                                 context_id = %self.applier.context_id,
@@ -3045,7 +2999,6 @@ impl DeltaStore {
             hold = Some(lock_start.elapsed());
             (
                 any_parent_added,
-                restored_head_hashes,
                 cascaded_ids,
                 cascaded_bodies,
                 added_parent_bodies,
@@ -3061,15 +3014,8 @@ impl DeltaStore {
             );
         }
 
-        // Phase 3: post-DAG work — head-root-hash tracking + cascaded delta
-        // persistence + dag_heads write. Runs with no DAG lock held.
-        if !restored_head_hashes.is_empty() {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            for (parent_id, expected) in restored_head_hashes {
-                head_hashes.insert(parent_id, expected);
-            }
-        }
-
+        // Phase 3: post-DAG work — cascaded delta persistence + dag_heads write.
+        // Runs with no DAG lock held.
         if any_parent_added {
             // Persist cascaded deltas, newly-applied parents (Add path),
             // and push updated `dag_heads` via the shared helper. Helper
@@ -3274,7 +3220,7 @@ impl DeltaStore {
                     actions: serialized_actions,
                     hlc: applied_delta.hlc,
                     applied: true,
-                    expected_root_hash: applied_delta.expected_root_hash,
+                    checkpoint_root_hash: applied_delta.checkpoint_root_hash(),
                     events: stored_events,
                     author_id: None,
                     governance_position_blob: None,
@@ -3470,13 +3416,12 @@ impl DeltaStore {
         dag.get_heads()
     }
 
-    /// Snapshot of the `head_root_hashes` map keys. Test-only accessor for
-    /// asserting that the `add_local_applied_delta` path prunes non-head
-    /// ancestors, matching `add_delta_internal`'s `retain(...)` at the end.
+    /// Delta ids currently inside `add_delta_internal`. Test-only: used to
+    /// observe that a second delta has reached the `dag` write lock.
     #[cfg(test)]
-    pub async fn head_root_hash_ids(&self) -> Vec<[u8; 32]> {
-        let head_hashes = self.head_root_hashes.read().await;
-        head_hashes.keys().copied().collect()
+    pub async fn inflight_delta_ids(&self) -> Vec<[u8; 32]> {
+        let inflight = self.inflight_deltas.read().await;
+        inflight.iter().copied().collect()
     }
 
     /// Cleanup stale pending deltas (timeout eviction)
@@ -3585,7 +3530,7 @@ impl DeltaStore {
                     actions: serialized_actions,
                     hlc: checkpoint.hlc,
                     applied: true, // Checkpoints are always "applied"
-                    expected_root_hash: checkpoint.expected_root_hash,
+                    checkpoint_root_hash: checkpoint.checkpoint_root_hash(),
                     events: None,
                     // Snapshot checkpoints are receiver-side derived
                     // (boundary heads from a snapshot transfer), not
@@ -3650,12 +3595,9 @@ impl DeltaStore {
         //   (A restart clears the in-memory DAG, so a post-restart re-add is
         //   `added_count > 0` again and re-populates the maps.)
         if added_count > 0 {
-            let mut head_hashes = self.head_root_hashes.write().await;
-            for head_id in dag.get_heads().iter() {
-                let _previous = head_hashes.insert(*head_id, boundary_root_hash);
-            }
-
-            // Also update parent_hashes for merge detection
+            // Seed `parent_hashes` for merge detection. `boundary_root_hash` is
+            // this node's OWN snapshot root, not a peer's claim, so it is a
+            // legitimate source for a map that local merge decisions read.
             let mut parent_hashes = self.applier.parent_hashes.write().await;
             for head_id in dag.get_heads().iter() {
                 let _previous = parent_hashes.insert(*head_id, boundary_root_hash);
@@ -3816,7 +3758,6 @@ mod anchor_pending_tests {
                 parents: vec![],
                 payload: vec![],
                 hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-                expected_root_hash: [0u8; 32],
                 kind: calimero_dag::DeltaKind::Regular,
             },
             events: None,

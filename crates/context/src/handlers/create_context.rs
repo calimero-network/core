@@ -494,7 +494,9 @@ async fn create_context(
             actions: serialized_actions,
             hlc,
             applied: true,
-            expected_root_hash: root_hash,
+            // The genesis delta carries actions, so it is a regular delta, not a
+            // snapshot checkpoint — no locally-derived root hash to record.
+            checkpoint_root_hash: None,
             // Genesis delta has no events
             events: None,
             // Genesis predates any governance op; no author claim to
@@ -558,7 +560,6 @@ async fn create_context(
                 delta_id: delta.delta_id,
                 parents: delta.parents.clone(),
                 hlc: delta.hlc,
-                expected_root_hash: delta.expected_root_hash,
                 actions,
             },
         );

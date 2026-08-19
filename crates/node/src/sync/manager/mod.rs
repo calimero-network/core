@@ -2363,7 +2363,6 @@ impl SyncManager {
                                     parents: storage_delta.parents.clone(),
                                     payload: storage_delta.actions,
                                     hlc: storage_delta.hlc,
-                                    expected_root_hash: storage_delta.expected_root_hash,
                                     kind: calimero_dag::DeltaKind::Regular,
                                 };
                                 if let Err(e) =
@@ -2445,6 +2444,7 @@ impl SyncManager {
                                     storage_delta.id,
                                     author,
                                     pos.as_ref(),
+                                    storage_delta.hlc,
                                     &sig_for_head,
                                 )
                             {
@@ -2552,7 +2552,6 @@ impl SyncManager {
                                 parents: storage_delta.parents,
                                 payload: storage_delta.actions,
                                 hlc: storage_delta.hlc,
-                                expected_root_hash: storage_delta.expected_root_hash,
                                 kind: calimero_dag::DeltaKind::Regular,
                             };
 

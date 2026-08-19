@@ -296,7 +296,6 @@ fn delta_with_hlc(
         parents,
         payload,
         hlc: hlc(hlc_ns),
-        expected_root_hash: [0; 32],
         kind: DeltaKind::Regular,
     }
 }

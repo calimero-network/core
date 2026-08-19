@@ -134,7 +134,7 @@ mod tests {
     }
 
     fn delta(op: &Op) -> calimero_dag::CausalDelta<Op> {
-        calimero_dag::CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
+        calimero_dag::CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc)
     }
 
     /// Persist a causal chain of mixed-plane ops, reload it from a fresh handle,

@@ -52,9 +52,21 @@ pub enum DeltaKind {
     ///
     /// # Properties
     /// - `payload` is empty (no operations)
-    /// - `expected_root_hash` is the snapshot's root hash
+    /// - `root_hash` is the snapshot's root hash, computed LOCALLY by the node
+    ///   that took the snapshot — it is not a peer's assertion
     /// - Treated as "already applied" by the DAG
-    Checkpoint,
+    Checkpoint {
+        /// Root hash of the snapshot this checkpoint marks the boundary of.
+        ///
+        /// This lives inside the variant rather than on every `CausalDelta`
+        /// because a checkpoint is the ONLY delta for which a root hash is
+        /// meaningful. `CausalDelta` used to carry an `expected_root_hash` on
+        /// every delta for this one variant's benefit; a `Regular` delta's copy
+        /// was a sender-supplied hint no receiver could verify (it is not in the
+        /// `compute_id` preimage), so it was removed. Keeping it here makes the
+        /// one real meaning explicit and locally-sourced.
+        root_hash: [u8; 32],
+    },
 }
 
 impl Default for DeltaKind {
@@ -65,13 +77,17 @@ impl Default for DeltaKind {
 
 /// A causal delta with parent references
 ///
-/// `kind` is a trailing field: it was added after the original wire format, so
-/// both the serde and borsh decoders tolerate its absence and default it to
-/// [`DeltaKind::Regular`]. serde gets this from `#[serde(default)]`; borsh — whose
-/// derive has no trailing-field tolerance — gets it from the hand-written
-/// [`BorshDeserialize`] below (the derive is intentionally omitted). Keep the two
-/// in step: a new trailing field needs the same treatment in both.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, Serialize, Deserialize)]
+/// # No root hash here
+///
+/// This used to carry an `expected_root_hash` on every delta. It was a
+/// sender-asserted value: absent from the `compute_id` preimage, so no receiver
+/// could verify it, and on the DAG-catchup paths a responder could set it
+/// freely. Its only production consumer was a merge-classification heuristic
+/// that is now derived from local state, and the node has always stored the root
+/// hash it COMPUTED itself rather than this one. The single case where a root
+/// hash is genuinely meaningful — a snapshot boundary — now carries it inside
+/// [`DeltaKind::Checkpoint`], where the value is locally sourced.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct CausalDelta<T> {
     /// Unique delta ID (content hash)
     pub id: [u8; 32],
@@ -85,84 +101,9 @@ pub struct CausalDelta<T> {
     /// Hybrid Logical Clock timestamp for fine-grained causal ordering
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
 
-    /// Expected root hash after applying this delta
-    pub expected_root_hash: [u8; 32],
-
-    /// Kind of delta (regular or checkpoint). Trailing field — see the struct
-    /// docs; absent on deltas produced before it existed.
+    /// Kind of delta (regular or checkpoint).
     #[serde(default)]
     pub kind: DeltaKind,
-}
-
-impl<T: BorshDeserialize> BorshDeserialize for CausalDelta<T> {
-    /// # Framing requirement
-    ///
-    /// The trailing-`kind` detection depends on the reader ending exactly at the
-    /// delta's last byte: end-of-input means "no `kind` present" (legacy delta →
-    /// `Regular`). So this impl is only correct when the reader is bounded to
-    /// exactly one delta — i.e. `borsh::from_slice` / `try_from_slice` over one
-    /// delta's bytes, or a length-delimited frame. Do **not** decode a
-    /// `CausalDelta` embedded mid-stream in a larger borsh aggregate (a field of
-    /// another struct, or an element of a `Vec<CausalDelta<_>>` with more
-    /// elements after it): there, the bytes that follow would be misread as the
-    /// `kind` discriminant. Today this holds — production never whole-borsh's a
-    /// `CausalDelta<T>` (the payload is serialized on its own and the other
-    /// fields live in separate store columns); if that changes, length-frame the
-    /// delta or promote `kind` to a non-trailing field.
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        // Field order must match the derived `BorshSerialize` (declaration
-        // order). `kind` is a backward-compatible trailing field: a pre-`kind`
-        // delta stops cleanly after `expected_root_hash`, so a clean EOF at that
-        // boundary decodes as `DeltaKind::Regular`.
-        let id = <[u8; 32]>::deserialize_reader(reader)?;
-        let parents = Vec::<[u8; 32]>::deserialize_reader(reader)?;
-        let payload = T::deserialize_reader(reader)?;
-        let hlc = calimero_storage::logical_clock::HybridTimestamp::deserialize_reader(reader)?;
-        let expected_root_hash = <[u8; 32]>::deserialize_reader(reader)?;
-
-        // `DeltaKind` is a unit-variant enum, so its borsh encoding is a single
-        // discriminant byte: 0 = Regular, 1 = Checkpoint. A pre-`kind` delta
-        // omits it, so a clean EOF at this boundary must decode as Regular.
-        //
-        // We deliberately read the byte with a raw `read()` loop rather than
-        // `u8::deserialize_reader`: borsh's reader maps an at-EOF read to
-        // `ErrorKind::InvalidData` ("Unexpected length of input"), which is
-        // indistinguishable by kind from a genuine corrupt-data error — so it
-        // can't detect the trailing-field boundary. `read()` distinguishes them
-        // directly: `Ok(0)` is end-of-input (→ Regular), `Ok(1)` is a present
-        // discriminant, and `Interrupted` retries. This mirrors the existing
-        // `read_option_tag` helper used for the same trailing-field pattern in
-        // the sync types.
-        let mut tag = [0u8; 1];
-        let kind = loop {
-            match reader.read(&mut tag) {
-                Ok(0) => break DeltaKind::Regular, // end of input: legacy delta
-                Ok(_) => {
-                    break match tag[0] {
-                        0 => DeltaKind::Regular,
-                        1 => DeltaKind::Checkpoint,
-                        other => {
-                            return Err(borsh::io::Error::new(
-                                borsh::io::ErrorKind::InvalidData,
-                                format!("invalid DeltaKind discriminant {other}"),
-                            ))
-                        }
-                    }
-                }
-                Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        };
-
-        Ok(Self {
-            id,
-            parents,
-            payload,
-            hlc,
-            expected_root_hash,
-            kind,
-        })
-    }
 }
 
 impl<T> CausalDelta<T> {
@@ -171,14 +112,12 @@ impl<T> CausalDelta<T> {
         parents: Vec<[u8; 32]>,
         payload: T,
         hlc: calimero_storage::logical_clock::HybridTimestamp,
-        expected_root_hash: [u8; 32],
     ) -> Self {
         Self {
             id,
             parents,
             payload,
             hlc,
-            expected_root_hash,
             kind: DeltaKind::Regular,
         }
     }
@@ -189,8 +128,8 @@ impl<T> CausalDelta<T> {
     /// - The DAG head IDs from the snapshot as their ID
     /// - Genesis as parent (since we don't know actual history)
     /// - Empty payload (no operations to apply)
-    /// - The snapshot's root hash as expected_root_hash
-    pub fn checkpoint(id: [u8; 32], expected_root_hash: [u8; 32]) -> Self
+    /// - The snapshot's locally-computed root hash, inside the `Checkpoint` kind
+    pub fn checkpoint(id: [u8; 32], root_hash: [u8; 32]) -> Self
     where
         T: Default,
     {
@@ -199,14 +138,21 @@ impl<T> CausalDelta<T> {
             parents: vec![[0; 32]], // Genesis parent
             payload: T::default(),  // Empty payload
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-            expected_root_hash,
-            kind: DeltaKind::Checkpoint,
+            kind: DeltaKind::Checkpoint { root_hash },
         }
     }
 
     /// Returns true if this is a checkpoint (snapshot boundary) delta
     pub fn is_checkpoint(&self) -> bool {
-        self.kind == DeltaKind::Checkpoint
+        matches!(self.kind, DeltaKind::Checkpoint { .. })
+    }
+
+    /// The snapshot root hash, for a checkpoint delta; `None` for a regular one.
+    pub fn checkpoint_root_hash(&self) -> Option<[u8; 32]> {
+        match self.kind {
+            DeltaKind::Checkpoint { root_hash } => Some(root_hash),
+            DeltaKind::Regular => None,
+        }
     }
 
     /// Convenience constructor for tests that uses a default HLC
@@ -217,7 +163,6 @@ impl<T> CausalDelta<T> {
             parents,
             payload,
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-            expected_root_hash: [0; 32],
             kind: DeltaKind::Regular,
         }
     }
