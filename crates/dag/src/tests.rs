@@ -1353,4 +1353,79 @@ fn delta_kind_discriminants_are_pinned() {
     let checkpoint = borsh::to_vec(&DeltaKind::Checkpoint { root_hash: [7; 32] }).unwrap();
     assert_eq!(checkpoint[0], 1u8);
     assert_eq!(&checkpoint[1..], &[7u8; 32]);
+    // `Genesis` was appended rather than inserted, precisely so the two above
+    // keep their discriminants.
+    assert_eq!(borsh::to_vec(&DeltaKind::Genesis).unwrap(), vec![2u8]);
+}
+
+/// #3126: a delta with no parents that does NOT declare itself the root is
+/// malformed and must not apply.
+///
+/// This is the hole the `DeltaKind::Genesis` marker closes. `all()` over an empty
+/// list is vacuously true, so such a delta used to satisfy `can_apply` outright
+/// and land as a disconnected head — skipping missing-parent detection and
+/// polluting head computation. A bug that drops `parents`, or a peer that strips
+/// them, both arrive looking like this.
+#[tokio::test]
+async fn empty_parents_without_genesis_kind_is_not_applied() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let orphan = CausalDelta::new_test([9; 32], vec![], TestPayload { value: 1 });
+    assert_eq!(orphan.kind, DeltaKind::Regular);
+
+    let applied = dag
+        .add_delta(orphan, &applier)
+        .await
+        .expect("no hard error");
+    assert!(
+        !applied,
+        "a parentless non-genesis delta must not apply as a disconnected head"
+    );
+    assert!(
+        !dag.is_applied(&[9; 32]),
+        "and it must not be recorded as applied"
+    );
+    assert!(
+        applier.get_applied().await.is_empty(),
+        "nothing should have been handed to the applier"
+    );
+}
+
+/// The other half of #3126: a delta that DOES declare itself the root still
+/// applies immediately on an empty parent list. Without this the guard above
+/// would strand every unified-op genesis and take its whole causal chain with it
+/// — which is exactly why the naive "reject empty parents" fix was reverted in
+/// #3116.
+#[tokio::test]
+async fn empty_parents_with_genesis_kind_applies_immediately() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let genesis = CausalDelta::new_test([10; 32], vec![], TestPayload { value: 2 }).into_genesis();
+    assert!(genesis.is_genesis());
+
+    let applied = dag
+        .add_delta(genesis, &applier)
+        .await
+        .expect("genesis applies");
+    assert!(applied, "a declared genesis must apply on empty parents");
+    assert!(dag.is_applied(&[10; 32]));
+    assert_eq!(applier.get_applied().await, vec![[10; 32]]);
+}
+
+/// A child of a declared genesis still resolves normally — the marker licenses
+/// the root's own empty parent list, it does not make its descendants special.
+#[tokio::test]
+async fn child_of_genesis_applies_after_its_parent() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let genesis = CausalDelta::new_test([10; 32], vec![], TestPayload { value: 2 }).into_genesis();
+    let _ = dag.add_delta(genesis, &applier).await.expect("genesis");
+
+    let child = CausalDelta::new_test([11; 32], vec![[10; 32]], TestPayload { value: 3 });
+    let applied = dag.add_delta(child, &applier).await.expect("child");
+    assert!(applied, "child of an applied genesis must apply");
+    assert_eq!(applier.get_applied().await, vec![[10; 32], [11; 32]]);
 }

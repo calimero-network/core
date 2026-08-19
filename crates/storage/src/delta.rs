@@ -39,7 +39,13 @@ pub struct CausalDelta {
     /// Unique ID: SHA256(parents || actions) - deterministic, excludes timestamp
     pub id: [u8; 32],
 
-    /// Parent delta IDs (empty for root, 1 for sequential, 2+ for merges)
+    /// Parent delta IDs (1 for sequential, 2+ for merges).
+    ///
+    /// NOT empty for a root, despite what this said for a long time: the write
+    /// path spells genesis as the `[0; 32]` sentinel parent, and
+    /// `DagStore::can_apply` now rejects an empty parent list unless the delta
+    /// declares `DeltaKind::Genesis` (#3126). The empty-list spelling is the
+    /// unified-op layer's convention, not this one.
     pub parents: Vec<[u8; 32]>,
 
     /// CRDT actions in this delta

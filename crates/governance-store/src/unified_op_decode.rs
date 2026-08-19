@@ -267,10 +267,37 @@ pub fn signed_namespace_op_to_delta(
     let delta_id = op
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-    Ok(CausalDelta::new(
+    let delta = CausalDelta::new(
         delta_id,
         op.parent_op_hashes.clone(),
         op.clone(),
         HybridTimestamp::default(),
-    ))
+    );
+
+    // Mark a structural root so the DAG will accept its empty parent list
+    // (#3126). `DagStore::can_apply` treats no-parents-and-not-Genesis as
+    // malformed, because `all()` over an empty list is vacuously true and such a
+    // delta would otherwise apply instantly as a disconnected head, skipping
+    // missing-parent detection.
+    //
+    // This is the layer that can make the call: it holds the op, so it can ask
+    // whether the op is even genesis-ELIGIBLE, which the DAG cannot. Only
+    // `NamespaceCreated` founds a namespace; every other op — including
+    // `GroupCreated`, which is born inside an already-established namespace —
+    // must arrive parented. So an op that is not `NamespaceCreated` and carries
+    // no parents stays `Regular` and gets rejected, which is the case that used
+    // to slip through.
+    //
+    // Note what this does NOT do: it grants no authority. `parent_op_hashes`
+    // being empty remains exactly the founder-gate signal it always was in
+    // `namespace_created.rs` (checked before the signer, per #596), and a forged
+    // `NamespaceCreated` is still stopped there. This kind is a structural
+    // statement only, and it is derived locally from the op's own signed content
+    // rather than read off the wire, so a peer cannot assert it.
+    let is_genesis_eligible = matches!(op.op, NamespaceOp::Root(RootOp::NamespaceCreated { .. }));
+    if delta.parents.is_empty() && is_genesis_eligible {
+        return Ok(delta.into_genesis());
+    }
+
+    Ok(delta)
 }
