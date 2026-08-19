@@ -186,6 +186,7 @@ fn verify_fetched_parent(
         delta_id,
         fetched.author_id,
         pos.as_ref(),
+        fetched.delta.hlc,
         &sig,
     ) {
         warn!(
@@ -419,7 +420,6 @@ impl SyncManager {
                             parents: fetched.delta.parents.clone(),
                             payload: fetched.delta.actions.clone(),
                             hlc: fetched.delta.hlc,
-                            expected_root_hash: fetched.delta.expected_root_hash,
                             kind: calimero_dag::DeltaKind::Regular,
                         };
 
@@ -659,7 +659,6 @@ impl SyncManager {
                         parents: stored_delta.parents,
                         actions,
                         hlc: stored_delta.hlc,
-                        expected_root_hash: stored_delta.expected_root_hash,
                     };
 
                     let serialized = borsh::to_vec(&causal_delta)?;

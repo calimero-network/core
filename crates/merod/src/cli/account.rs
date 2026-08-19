@@ -152,12 +152,12 @@ impl RevokeProofCommand {
 
         let account = root.account();
         let revocation =
-            calimero_account::sign_device_revocation(root.signing_key(), account, device, 0)
+            calimero_account::DeviceRevocation::sign(root.signing_key(), account, device, 0)
                 .map_err(|err| eyre::eyre!("failed to sign the revocation: {err}"))?;
         let proof = calimero_account::SignedDeviceRevocation {
             genesis: root.genesis(),
             chain: vec![],
-            revocation,
+            statement: revocation,
         };
 
         let encoded = hex::encode(borsh::to_vec(&proof).wrap_err("Failed to encode the proof")?);
@@ -468,12 +468,12 @@ mod tests {
     fn minted(device: DeviceId) -> String {
         let root = root();
         let revocation =
-            calimero_account::sign_device_revocation(root.signing_key(), root.account(), device, 0)
+            calimero_account::DeviceRevocation::sign(root.signing_key(), root.account(), device, 0)
                 .expect("signing must succeed");
         let proof = calimero_account::SignedDeviceRevocation {
             genesis: root.genesis(),
             chain: vec![],
-            revocation,
+            statement: revocation,
         };
         hex::encode(borsh::to_vec(&proof).expect("borsh must encode"))
     }

@@ -426,7 +426,7 @@ pub async fn await_namespace_ready(
     let join_account = calimero_context::join_credential::build(store, &group_id, &my_pk)
         .map_err(|e| ReadyError::PublishMemberJoined(format!("join credential: {e}")))?;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        member: join_account.cert.account,
+        member: join_account.statement.account,
         signed_invitation: invitation,
         joined_at: now_secs,
         account: join_account,

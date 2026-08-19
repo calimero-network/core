@@ -2139,7 +2139,7 @@ mod tests {
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
         let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
         let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
             calimero_account::DeviceId::from([0x3E; 32]),
@@ -2153,7 +2153,7 @@ mod tests {
             calimero_context_client::local_governance::JoinAccountCredential {
                 genesis,
                 chain: vec![],
-                cert,
+                statement: cert,
             },
         )
     }
@@ -2261,7 +2261,7 @@ mod tests {
                     // The account the credential certifies. The decode pairs the
                     // two, and a member naming anything else folds as a Noop —
                     // it cannot tell whose device it is looking at.
-                    member: account.cert.account,
+                    member: account.statement.account,
                     group_id: group.into(),
                     account: account.clone(),
                 },
@@ -2284,7 +2284,7 @@ mod tests {
             OpPayload::DeviceLinked {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             },
             "open-subgroup inheritance join folds its credential and no membership"
         );
@@ -2316,7 +2316,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoined {
-                    member: account.cert.account,
+                    member: account.statement.account,
                     signed_invitation,
                     account: account.clone(),
                 },
@@ -2335,11 +2335,11 @@ mod tests {
             op.payload,
             OpPayload::MemberJoinedWithDevice {
                 group,
-                member: account.cert.account,
+                member: account.statement.account,
                 role: GroupMemberRole::Admin,
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             }
         );
     }

@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
 use calimero_context::scope_projection::{op_from_namespace_op, ScopeProjections};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, GroupOp, NamespaceOp, SignedNamespaceOp,
@@ -122,7 +122,7 @@ fn link_device(
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0xAB; 16]);
     let kem_secret = X25519SecretKey::from([0x33; 32]);
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &account_root,
         account,
         device,
@@ -254,7 +254,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
     let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
     let device_sign_pk = PrivateKey::from([0x77; 32]).public_key();
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &account_root,
         account,
         DeviceId::mint(account, [0xAB; 16]),
@@ -268,7 +268,7 @@ fn a_cut_containing_a_device_link_still_resolves_an_ordinary_member() {
         genesis,
         chain: vec![],
         cert,
-        endorsement: calimero_account::sign_account_endorsement(&member_sk, account).unwrap(),
+        endorsement: calimero_account::AccountMemberEndorsement::sign(&member_sk, account).unwrap(),
     };
     let ns_bytes = ns.to_bytes();
     let group_key = [0x5A; 32];
@@ -348,7 +348,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
     let account_root = PrivateKey::from([0x42; 32]);
     let genesis = AccountGenesis::new(account_root.public_key());
     let account = genesis.account_id();
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &account_root,
         account,
         DeviceId::mint(account, [0xAB; 16]),
@@ -362,7 +362,7 @@ fn a_member_who_enrols_a_device_is_still_a_member_at_later_cuts() {
         genesis,
         chain: vec![],
         cert,
-        endorsement: calimero_account::sign_account_endorsement(&member_sk, account).unwrap(),
+        endorsement: calimero_account::AccountMemberEndorsement::sign(&member_sk, account).unwrap(),
     };
     let ns_bytes = ns.to_bytes();
     let group_key = [0x5A; 32];
@@ -448,7 +448,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
     let genesis = AccountGenesis::new(account_root.public_key());
     let real_account = genesis.account_id();
     let kem_secret = X25519SecretKey::from([0x34; 32]);
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &account_root,
         real_account,
         DeviceId::mint(real_account, [0xCD; 16]),
@@ -462,7 +462,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         calimero_context_client::local_governance::JoinAccountCredential {
             genesis,
             chain: vec![],
-            cert,
+            statement: cert,
         },
     );
 
@@ -500,7 +500,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
                 // The account THIS credential certifies — the test builds its own
                 // rather than using the shared fixture, so the member must come
                 // off it and not from the fixture's derivation.
-                member: credential.cert.account,
+                member: credential.statement.account,
                 signed_invitation: invitation,
                 account: credential,
             },

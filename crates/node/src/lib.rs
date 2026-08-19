@@ -53,8 +53,6 @@ mod crash_recovery_test;
 #[cfg(test)]
 mod delta_store_batch_test;
 #[cfg(test)]
-mod delta_store_head_hashes_test;
-#[cfg(test)]
 mod delta_store_lock_inversion_test;
 #[cfg(test)]
 mod ephemeral_dispatch_e2e;

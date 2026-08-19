@@ -1330,10 +1330,12 @@ async fn test_prune_to_recent_never_prunes_pending() {
 
 #[test]
 fn causal_delta_kind_borsh_roundtrips_both_variants() {
-    for kind in [DeltaKind::Regular, DeltaKind::Checkpoint] {
+    for kind in [
+        DeltaKind::Regular,
+        DeltaKind::Checkpoint { root_hash: [3; 32] },
+    ] {
         let mut delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 7 });
         delta.kind = kind.clone();
-        delta.expected_root_hash = [3; 32];
 
         let bytes = borsh::to_vec(&delta).expect("serialize");
         let decoded: CausalDelta<TestPayload> = borsh::from_slice(&bytes).expect("deserialize");
@@ -1344,38 +1346,86 @@ fn causal_delta_kind_borsh_roundtrips_both_variants() {
 
 #[test]
 fn delta_kind_discriminants_are_pinned() {
-    // The trailing-field decode of `CausalDelta` relies on `DeltaKind` encoding
-    // to exactly one byte with `Regular == 0`. Pin both facts independently of
-    // the `CausalDelta` round-trip so a future variant reorder or encoding
-    // change fails here with a clear message.
+    // Pin the discriminants so a future variant reorder fails here with a clear
+    // message rather than as a silent decode change. `Checkpoint` now carries its
+    // snapshot root hash, so its encoding is the tag followed by those 32 bytes.
     assert_eq!(borsh::to_vec(&DeltaKind::Regular).unwrap(), vec![0u8]);
-    assert_eq!(borsh::to_vec(&DeltaKind::Checkpoint).unwrap(), vec![1u8]);
+    let checkpoint = borsh::to_vec(&DeltaKind::Checkpoint { root_hash: [7; 32] }).unwrap();
+    assert_eq!(checkpoint[0], 1u8);
+    assert_eq!(&checkpoint[1..], &[7u8; 32]);
+    // `Genesis` was appended rather than inserted, precisely so the two above
+    // keep their discriminants.
+    assert_eq!(borsh::to_vec(&DeltaKind::Genesis).unwrap(), vec![2u8]);
 }
 
-#[test]
-fn causal_delta_decodes_legacy_bytes_without_kind_as_regular() {
-    // A pre-`kind` peer serialized every field up to `expected_root_hash` and
-    // stopped. `kind` is a unit variant, so its encoding is a single trailing
-    // byte (0 for Regular); dropping it reproduces the legacy wire. The
-    // hand-written `BorshDeserialize` must tolerate that clean EOF and default
-    // `kind` to Regular rather than erroring.
-    let delta = CausalDelta::new_test([5; 32], vec![[4; 32]], TestPayload { value: 42 });
-    assert_eq!(delta.kind, DeltaKind::Regular);
+/// #3126: a delta with no parents that does NOT declare itself the root is
+/// malformed and must not apply.
+///
+/// This is the hole the `DeltaKind::Genesis` marker closes. `all()` over an empty
+/// list is vacuously true, so such a delta used to satisfy `can_apply` outright
+/// and land as a disconnected head — skipping missing-parent detection and
+/// polluting head computation. A bug that drops `parents`, or a peer that strips
+/// them, both arrive looking like this.
+#[tokio::test]
+async fn empty_parents_without_genesis_kind_is_not_applied() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
 
-    let full = borsh::to_vec(&delta).expect("serialize");
-    // `kind` must be exactly the one trailing byte we strip, and its Regular
-    // discriminant must be 0 — otherwise this test would strip the wrong byte.
-    assert_eq!(*full.last().unwrap(), 0);
-    let legacy = &full[..full.len() - 1];
-    assert_eq!(
-        full.len() - legacy.len(),
-        1,
-        "DeltaKind must be exactly 1 byte"
+    let orphan = CausalDelta::new_test([9; 32], vec![], TestPayload { value: 1 });
+    assert_eq!(orphan.kind, DeltaKind::Regular);
+
+    let applied = dag
+        .add_delta(orphan, &applier)
+        .await
+        .expect("no hard error");
+    assert!(
+        !applied,
+        "a parentless non-genesis delta must not apply as a disconnected head"
     );
+    assert!(
+        !dag.is_applied(&[9; 32]),
+        "and it must not be recorded as applied"
+    );
+    assert!(
+        applier.get_applied().await.is_empty(),
+        "nothing should have been handed to the applier"
+    );
+}
 
-    let decoded: CausalDelta<TestPayload> =
-        borsh::from_slice(legacy).expect("legacy bytes must decode");
-    assert_eq!(decoded.kind, DeltaKind::Regular);
-    assert_eq!(decoded.id, delta.id);
-    assert_eq!(decoded.payload, delta.payload);
+/// The other half of #3126: a delta that DOES declare itself the root still
+/// applies immediately on an empty parent list. Without this the guard above
+/// would strand every unified-op genesis and take its whole causal chain with it
+/// — which is exactly why the naive "reject empty parents" fix was reverted in
+/// #3116.
+#[tokio::test]
+async fn empty_parents_with_genesis_kind_applies_immediately() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let genesis = CausalDelta::new_test([10; 32], vec![], TestPayload { value: 2 }).into_genesis();
+    assert!(genesis.is_genesis());
+
+    let applied = dag
+        .add_delta(genesis, &applier)
+        .await
+        .expect("genesis applies");
+    assert!(applied, "a declared genesis must apply on empty parents");
+    assert!(dag.is_applied(&[10; 32]));
+    assert_eq!(applier.get_applied().await, vec![[10; 32]]);
+}
+
+/// A child of a declared genesis still resolves normally — the marker licenses
+/// the root's own empty parent list, it does not make its descendants special.
+#[tokio::test]
+async fn child_of_genesis_applies_after_its_parent() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let genesis = CausalDelta::new_test([10; 32], vec![], TestPayload { value: 2 }).into_genesis();
+    let _ = dag.add_delta(genesis, &applier).await.expect("genesis");
+
+    let child = CausalDelta::new_test([11; 32], vec![[10; 32]], TestPayload { value: 3 });
+    let applied = dag.add_delta(child, &applier).await.expect("child");
+    assert!(applied, "child of an applied genesis must apply");
+    assert_eq!(applier.get_applied().await, vec![[10; 32], [11; 32]]);
 }

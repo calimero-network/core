@@ -372,7 +372,6 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
                     parents: msg.parents,
                     payload: msg.actions,
                     hlc: msg.hlc,
-                    expected_root_hash: msg.expected_root_hash,
                     kind: calimero_dag::DeltaKind::Regular,
                 };
                 match store.add_local_applied_delta(delta).await {

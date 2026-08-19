@@ -396,7 +396,7 @@ fn parse_dag_delta(data: &[u8]) -> Result<Value> {
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,
                 "applied": delta.applied,
-                "expected_root_hash": hex::encode(delta.expected_root_hash)
+                "checkpoint_root_hash": delta.checkpoint_root_hash.map(hex::encode)
             }))
         }
         Err(e) => Ok(json!({
@@ -420,7 +420,7 @@ fn parse_generic_value(data: &[u8]) -> Result<Value> {
                 "timestamp": timestamp_raw,
                 "hlc": hlc_json,
                 "applied": delta.applied,
-                "expected_root_hash": hex::encode(delta.expected_root_hash)
+                "checkpoint_root_hash": delta.checkpoint_root_hash.map(hex::encode)
             }))
         }
         Err(e) => {

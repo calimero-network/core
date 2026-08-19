@@ -31,14 +31,21 @@ use crate::logical_clock::HybridTimestamp;
 /// The DAG provides coarse-grained ordering (delta-level), while HLC provides
 /// fine-grained ordering (action-level).
 ///
-/// **Note**: The delta ID does NOT include the HLC to ensure determinism.
-/// Nodes executing the same operations produce identical IDs regardless of physical time.
+/// **Note**: The delta ID does NOT include the HLC. It DOES include the
+/// per-action timestamps, which is what lets a receiver authenticate them via
+/// [`CausalDelta::content_address_matches`].
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize, PartialEq, Eq)]
 pub struct CausalDelta {
     /// Unique ID: SHA256(parents || actions) - deterministic, excludes timestamp
     pub id: [u8; 32],
 
-    /// Parent delta IDs (empty for root, 1 for sequential, 2+ for merges)
+    /// Parent delta IDs (1 for sequential, 2+ for merges).
+    ///
+    /// NOT empty for a root, despite what this said for a long time: the write
+    /// path spells genesis as the `[0; 32]` sentinel parent, and
+    /// `DagStore::can_apply` now rejects an empty parent list unless the delta
+    /// declares `DeltaKind::Genesis` (#3126). The empty-list spelling is the
+    /// unified-op layer's convention, not this one.
     pub parents: Vec<[u8; 32]>,
 
     /// CRDT actions in this delta
@@ -50,22 +57,40 @@ pub struct CausalDelta {
     /// - Causal ordering across deltas (logical clock)
     /// - Wall-clock semantics (physical time embedded in NTP64)
     pub hlc: HybridTimestamp,
-
-    /// Expected root hash after applying this delta.
-    ///
-    /// This ensures deterministic DAG structure across nodes even when
-    /// WASM execution produces different root hashes due to non-determinism.
-    /// During sync, receiving nodes MUST use this hash rather than their
-    /// computed hash to maintain DAG consistency.
-    pub expected_root_hash: [u8; 32],
 }
 
 impl CausalDelta {
     /// Compute the ID for a delta
     ///
-    /// The ID is deterministic based on parents and actions only.
-    /// Timestamps are excluded to ensure nodes computing the same
-    /// operations produce identical delta IDs regardless of physical time.
+    /// The ID content-addresses the delta's `parents` and the full content of
+    /// each action — id, data, `ancestors`, the per-action timestamp, and the
+    /// access-control triple.
+    ///
+    /// # What the preimage does NOT cover
+    ///
+    /// Not `hlc` (the parameter is unused), and not the action signature bytes
+    /// (zeroed by
+    /// `hash_metadata_storage_type_for_id`, so the id is stable across an
+    /// action's placeholder-signature and stamped-signature states). Anything
+    /// outside the preimage is NOT authenticated by
+    /// [`Self::content_address_matches`], so it must not be treated as trusted
+    /// input on a receive path — that is precisely how the `updated_at` hole
+    /// this preimage now closes came to exist.
+    ///
+    /// # Action variants are domain-separated
+    ///
+    /// `Add` and `Update` are tagged distinctly. They previously shared a match
+    /// arm and hashed identically, so a delta's `Add` could be relabelled an
+    /// `Update` (or vice versa) without changing its id.
+    ///
+    /// # Parents are order-sensitive here
+    ///
+    /// Parents are hashed in the order given, so reordering them changes the
+    /// id. This deliberately differs from `calimero_op::Op::compute_id`, which
+    /// SORTS parents so the id is independent of the order a builder listed
+    /// them in. Do not assume the two schemes agree: the order-sensitivity is
+    /// what lets `content_address_matches` detect a re-parented delta whose
+    /// parent SET is unchanged.
     pub fn compute_id(
         parents: &[[u8; 32]],
         actions: &[Action],
@@ -78,26 +103,73 @@ impl CausalDelta {
             hasher.update(parent);
         }
 
-        // Hash actions WITHOUT metadata timestamps to ensure determinism
-        // Serialize only the content-addressable parts: id, data, ancestors (without timestamps)
+        // Hash each action's content, INCLUDING the per-action timestamps.
+        //
+        // The timestamps used to be excluded here, on the reasoning that they
+        // are physical time and hashing them would stop two nodes executing the
+        // same operations from deriving the same id. That exclusion opened a
+        // hole once `content_address_matches` became a receive-path gate: the
+        // gate authenticates exactly the preimage and nothing else, so anything
+        // left out is unauthenticated. `metadata.updated_at` is the LWW
+        // comparison key and is signed by NOTHING for `Public` / `Frozen`
+        // entities (`sign_authorized_actions` covers only User/Shared/
+        // SharedMember), and on the DAG-catchup and parent-fetch paths the
+        // actions arrive as plaintext rather than sealed under the group key.
+        // A responder could therefore inflate `updated_at` on a `Public` action
+        // and win last-write-wins permanently — unbounded, unlike the HLC,
+        // which a drift guard caps at 5s.
+        //
+        // Including them costs the cross-node determinism property, which
+        // nothing actually relied on: a state delta has exactly one author, and
+        // receivers content-address the bytes they were sent rather than
+        // re-deriving an id from an independent execution. The HLC stays out
+        // (see below) — it is a separate field, bounded by the drift guard, and
+        // the `delta_id_deterministic_regardless_of_hlc` test still pins it.
+        //
+        // The signature bytes stay out of the preimage via
+        // `hash_metadata_storage_type_for_id`, which zeroes them. That is load
+        // bearing and must not be "simplified" into a full borsh hash of the
+        // action: the id has to be stable across the placeholder-signature and
+        // stamped-signature states of the same action.
         for action in actions {
             match action {
                 Action::Add {
-                    id, data, metadata, ..
-                }
-                | Action::Update {
-                    id, data, metadata, ..
+                    id,
+                    data,
+                    ancestors,
+                    metadata,
                 } => {
                     let id_bytes: [u8; 32] = (*id).into();
+                    hasher.update(b"add");
                     hasher.update(id_bytes);
                     hasher.update(data);
-                    // Metadata and ancestors excluded - they contain timestamps
+                    hasher.update(borsh::to_vec(ancestors).unwrap_or_default());
+                    hasher.update((*metadata.updated_at).to_le_bytes());
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
-                Action::DeleteRef { id, metadata, .. } => {
+                Action::Update {
+                    id,
+                    data,
+                    ancestors,
+                    metadata,
+                } => {
                     let id_bytes: [u8; 32] = (*id).into();
+                    hasher.update(b"update");
                     hasher.update(id_bytes);
-                    // deleted_at excluded - it's a timestamp
+                    hasher.update(data);
+                    hasher.update(borsh::to_vec(ancestors).unwrap_or_default());
+                    hasher.update((*metadata.updated_at).to_le_bytes());
+                    hash_metadata_storage_type_for_id(&mut hasher, metadata);
+                }
+                Action::DeleteRef {
+                    id,
+                    deleted_at,
+                    metadata,
+                } => {
+                    let id_bytes: [u8; 32] = (*id).into();
+                    hasher.update(b"delete");
+                    hasher.update(id_bytes);
+                    hasher.update(deleted_at.to_le_bytes());
                     hash_metadata_storage_type_for_id(&mut hasher, metadata);
                 }
             }
@@ -123,6 +195,15 @@ impl CausalDelta {
     /// the preimage changes. Note that this means `hlc` is NOT authenticated by
     /// this check today; it stays malleable on the wire and must not be relied
     /// on as a trusted input.
+    ///
+    /// A forged `hlc` is bounded rather than decisive, which is why closing it
+    /// was not folded in here: the only consumer that acts on a remote delta's
+    /// HLC is the local clock (`Root::sync` -> `env::update_hlc`), and
+    /// `LogicalClock::update` refuses a remote timestamp more than 5s ahead of
+    /// the local wall clock and takes a `max()` otherwise — so a past value is
+    /// inert and a future one buys at most the drift tolerance, which real time
+    /// then erases. Entity-level LWW keys off `metadata.updated_at`, not this
+    /// field.
     #[must_use]
     pub fn content_address_matches(
         delta_id: &[u8; 32],
@@ -410,7 +491,6 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
             parents,
             actions,
             hlc,
-            expected_root_hash: *root_hash,
         };
 
         // Update heads - this delta is now the new head
@@ -745,7 +825,6 @@ mod borsh_roundtrip_tests {
             parents,
             actions,
             hlc,
-            expected_root_hash: [0x11_u8; 32],
         }
     }
 
@@ -794,28 +873,17 @@ mod borsh_roundtrip_tests {
     }
 
     #[test]
-    fn content_address_survives_post_id_root_hash_mutation() {
-        // Guards the non-obvious way this check could start false-positiving on
-        // honest traffic. The rotation-log self-log leg of the local write path
-        // recomputes `expected_root_hash` AFTER `compute_id` has already run,
-        // so a check that folded the root hash into the preimage would reject
-        // every writer-set rotation. `expected_root_hash` is not in the
-        // preimage; pin that.
-        let mut delta = honest_delta(vec![[7_u8; 32]]);
-        delta.expected_root_hash = [0xEE_u8; 32];
-        assert!(
-            delta.id_matches_content(),
-            "expected_root_hash must stay outside the content address"
-        );
-    }
-
-    #[test]
     fn content_address_does_not_cover_hlc() {
         // Documents a KNOWN LIMIT rather than desired behaviour: `compute_id`
         // deliberately excludes the HLC for determinism, so this check leaves
         // `hlc` malleable on the wire. Anything that needs a trusted HLC needs
         // a separate binding. If the preimage ever starts covering the HLC,
         // this test failing is the intended signal to revisit that.
+        //
+        // The exposure was traced rather than assumed: the local clock is the
+        // only consumer of a remote delta's HLC, and its update rule rejects
+        // anything >5s ahead and otherwise takes a max(), so the field is
+        // bounded, not decisive. See `content_address_matches`.
         let mut delta = honest_delta(vec![[7_u8; 32]]);
         delta.hlc = make_hlc(9_999);
         assert!(delta.id_matches_content());

@@ -389,3 +389,58 @@ fn test_delete_range_drops_only_in_range_keys() {
         }
     }
 }
+
+#[test]
+fn flush_drains_every_column_family_not_only_default() {
+    // `DB::flush()` maps to the C API's `rocksdb_flush`, which flushes the
+    // DEFAULT column family only — and nothing in this store ever writes to
+    // `default`. A flush built on it therefore drained an always-empty family
+    // while every real one kept its memtable, and RocksDB retains every
+    // write-ahead log back to the oldest unflushed memtable. On a real node
+    // that left 19GB of WAL guarding 109MB of data, growing ~10GB/day.
+    //
+    // Asserting on the memtable rather than on disk size keeps this fast and
+    // deterministic: if the flush reaches this family, its active memtable is
+    // empty afterwards.
+    let dir = TempDir::with_prefix("_calimero_store_flush").expect("tempdir should be created");
+
+    let dir_path = dir
+        .path()
+        .to_owned()
+        .try_into()
+        .expect("path conversion should succeed");
+
+    let config = StoreConfig::new(dir_path);
+
+    let db = RocksDB::open(&config).expect("db should open");
+
+    let key = Slice::from(&b"key"[..]);
+    let value = Slice::from(&b"value"[..]);
+
+    db.put(Column::Identity, (&key).into(), (&value).into())
+        .expect("put should succeed");
+
+    let active_entries = |db: &RocksDB| {
+        let cf_handle = db
+            .try_cf_handle(Column::Identity)
+            .expect("cf handle should resolve");
+
+        db.db
+            .property_int_value_cf(cf_handle, "rocksdb.num-entries-active-mem-table")
+            .expect("property should be readable")
+            .expect("property should be reported")
+    };
+
+    assert!(
+        active_entries(&db) > 0,
+        "the write should still be buffered in Identity's memtable before the flush"
+    );
+
+    db.flush().expect("flush should succeed");
+
+    assert_eq!(
+        active_entries(&db),
+        0,
+        "flush must drain non-default column families, else their WAL is never released"
+    );
+}

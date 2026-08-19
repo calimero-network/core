@@ -135,14 +135,6 @@ pub struct DeltaPayload {
     pub expected_root_hash: [u8; 32],
 }
 
-impl DeltaPayload {
-    /// Check if this delta has no parents (genesis delta).
-    #[must_use]
-    pub fn is_genesis(&self) -> bool {
-        self.parents.is_empty()
-    }
-}
-
 // =============================================================================
 // Apply Result
 // =============================================================================
@@ -239,30 +231,6 @@ mod tests {
         let decoded: DeltaPayload = borsh::from_slice(&encoded).expect("deserialize");
 
         assert_eq!(payload, decoded);
-        assert!(!decoded.is_genesis());
-    }
-
-    #[test]
-    fn test_delta_payload_genesis() {
-        let genesis = DeltaPayload {
-            id: [1; 32],
-            parents: vec![], // No parents = genesis
-            payload: vec![1, 2, 3],
-            hlc_timestamp: 0,
-            expected_root_hash: [2; 32],
-        };
-
-        assert!(genesis.is_genesis());
-
-        let non_genesis = DeltaPayload {
-            id: [2; 32],
-            parents: vec![[1; 32]], // Has parent
-            payload: vec![4, 5, 6],
-            hlc_timestamp: 1,
-            expected_root_hash: [3; 32],
-        };
-
-        assert!(!non_genesis.is_genesis());
     }
 
     #[test]
