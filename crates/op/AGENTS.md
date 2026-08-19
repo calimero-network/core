@@ -5,7 +5,7 @@ The single `Op` envelope type carried by every scope's causal log, plus its cano
 ## Package Identity
 
 - **Crate**: `calimero-op`
-- **Entry**: `src/lib.rs` (single file, ~565 lines, about a third of it tests)
+- **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; the model lives in the modules below)
 - **Key deps**: `borsh` (canonical wire format, derives), `sha2` (`Sha256` for id/root hashing), `calimero-context-config` (`ContextGroupId`, `MemberCapabilities`), `calimero-primitives` (`GroupMemberRole`, `PublicKey`), `calimero-storage` (`address::Id`, `entities::OpMask`, `logical_clock::HybridTimestamp`)
 
 ## Commands
@@ -28,16 +28,20 @@ cargo test -p calimero-op op_payload_discriminants_are_pinned -- --nocapture
 | `ScopeId` | struct (`[u8; 32]`) | Stable id of a visibility scope (governance root, a context, a subgroup, ...); each scope is its own replication/encryption/convergence domain |
 | `ScopeId::as_bytes()` | fn | Borrow the raw 32 bytes |
 | `ScopeId::from([u8; 32])` | `From` impl | Construct from raw bytes |
-| `Op` | struct | The one envelope for every change: `scope`, `parents`, `author`, `hlc`, `payload`, `expected_scope_root`, `signature`, plus a private cached `id` |
-| `Op::new(scope, parents, author, hlc, payload, expected_scope_root, signature)` | fn | Builds an op and computes `id` from the content, so id and content can never disagree |
-| `Op::from_parts(id, scope, parents, author, hlc, payload, expected_scope_root, signature)` | fn | Builds an op from an **explicit** id, for the unified-op bridge (see Mental Model) - bypasses `verify` |
+| `Authorship` | struct | Who authored an op, as one indivisible triple: `account` (the authz subject), `device` (the CRDT replica), `device_key` (what signed it) |
+| `Authorship::unattributed(device_key)` | fn | Authorship for an op nothing can attribute - the account/device sentinels every gate already refuses |
+| `Authorship::UNATTRIBUTED_ACCOUNT` / `UNATTRIBUTED_DEVICE` | const | The all-zero ids no genesis can produce, so "unknown author" fails closed by construction |
+| `Op` | struct | The one envelope for every change: `scope`, `parents`, `authorship`, `hlc`, `payload`, `expected_scope_root`, `signature`, plus a private cached `id` |
+| `Op::new(scope, parents, authorship, hlc, payload, expected_scope_root, signature)` | fn | Builds an op and computes `id` from the content, so id and content can never disagree |
+| `Op::from_parts(id, scope, parents, authorship, hlc, payload, expected_scope_root, signature)` | fn | Builds an op from an **explicit** id, for the unified-op bridge (see Mental Model) - bypasses `verify` |
 | `Op::id()` | fn | Returns the cached content-address id |
-| `Op::verify()` | fn | Recomputes the id from content and checks the Ed25519 signature against `author`; MUST pass before any op is folded |
-| `Op::compute_id(scope, parents, author, hlc, payload)` | fn | The canonical hash function (see Mental Model) |
+| `Op::author()` / `Op::device()` / `Op::device_key()` | fn | The three halves of `authorship`, read individually |
+| `Op::verify()` | fn | Recomputes the id from content and checks the Ed25519 signature against `authorship.device_key`; MUST pass before any op is folded |
+| `Op::compute_id(scope, parents, authorship, hlc, payload)` | fn | The canonical hash function (see Mental Model) |
 | `OpPayload` | enum | The change itself, across four planes: data, access-control, membership, admin/namespace, plus a capability plane and a graph-only `Noop` - NOT `#[non_exhaustive]` |
 | `scope_root(entities_root, acl_hash, groups_root)` | fn | Combines the three projection component hashes into the one convergence root for a scope |
 
-`OpPayload` variants: `Put`, `Delete` (data); `SetWriters` (access-control); `MemberAdded`, `MemberRemoved` (membership); `AdminChanged`, `PolicyUpdated`, `SubgroupCreated`, `SubgroupReparented`, `SubgroupDeleted`, `SubgroupVisibilitySet` (admin/namespace); `DefaultCapabilitiesSet`, `MemberCapabilitySet` (capability); `Noop` (graph-only, no projection effect).
+`OpPayload` variants: `Put`, `Delete` (data); `SetWriters` (access-control); `MemberAdded`, `MemberRemoved` (membership); `AdminChanged`, `PolicyUpdated`, `SubgroupCreated`, `SubgroupReparented`, `SubgroupDeleted`, `SubgroupVisibilitySet` (admin/namespace); `DefaultCapabilitiesSet`, `MemberCapabilitySet` (capability); `Noop` (graph-only, no projection effect); `DeviceLinked`, `DeviceRevoked`, `AccountKeysRotated`, `MemberJoinedWithDevice` (account plane, appended after `Noop` - see the append-only rule below).
 
 ## Mental Model
 
@@ -59,11 +63,66 @@ Everything that can happen to a scope - a data write, a writer-set rotation, a m
 
 `OpPayload` is intentionally not `#[non_exhaustive]`: `calimero-authz` authorizes ops via an exhaustive match, so a new variant should fail to *compile* there until someone gives it an authorization rule, rather than silently falling into a catch-all arm.
 
+## How the pieces interact
+
+**What is signed, and what is deliberately not.** `Op::compute_id` *is* the authentication boundary: a field missing from the preimage is a field an attacker may edit without breaking the signature, so the list below is the one to check against `Op`'s fields whenever either changes.
+
+```text
+   Op::compute_id preimage, in order:
+     scope
+     len(parents) as u64 ‖ sorted(parents)   length-prefixed, so the boundary between
+     borsh(authorship)                       a variable-length parent list and the
+     borsh(hlc)                              authorship after it can never shift
+     borsh(payload)
+              │
+              ▼
+           Sha256 ──▶ Op::id ──Ed25519 by authorship.device_key──▶ Op::signature
+
+   NOT in the preimage, on purpose:
+     expected_scope_root   an assertion every peer recomputes and compares, never trusts
+     signature             it signs the id; hashing it back in would be circular
+```
+
+`Op::verify()` closes the loop in two steps - recompute the id from the content and compare, then check the signature against `authorship.device_key`. It proves the *device key* authored the op and nothing more. Whether that key currently speaks for `authorship.account` is an at-cut question only `calimero-authz` can answer, which is why the two live in different crates.
+
+**One root per scope, and it covers authorization too:**
+
+```text
+   ScopeState  (calimero-projection)
+     ├─ entities_root ─┐
+     ├─ acl_hash ──────┼─▶ scope_root() ─▶ the scope's only convergence signal
+     └─ groups_root ───┘         ▲
+                                 │  compared against, never trusted
+   op.expected_scope_root ───────┘
+```
+
+**Module map.** Dependencies run one way, so appending a payload variant touches neither the hashing nor the envelope:
+
+```text
+   op.rs ──▶ payload.rs ──▶ scope.rs
+     │        (the wire        (ScopeId + scope_root)
+     │         format)
+     └──────▶ authorship.rs
+              (account/device/key)
+```
+
+`op.rs` is the only file that hashes an `Op`, and `Op::id` is private to it, so the struct and its preimage cannot drift apart unnoticed: adding a field to `Op` without adding it to `compute_id` is a one-file review. `payload.rs` stands alone for the opposite reason - its variant *order* is a persisted consensus artifact, so a diff that appends a variant should touch that file and nothing else.
+
 ## Key Files
+
+Every public item is re-exported flat from `src/lib.rs`, so `calimero_op::OpPayload` works regardless of which module it lives in - the modules are private and exist for readability, not as API surface.
 
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | Everything: `ScopeId`, `Op`, `OpPayload`, `compute_id`, `scope_root`, and all tests |
+| `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
+| `src/scope.rs` | `ScopeId` and `scope_root` - the domain everything is scoped to, and the one hash that compares two copies of it |
+| `src/authorship.rs` | `Authorship` and the unattributed sentinels |
+| `src/payload.rs` | `OpPayload` - every variant, and the append-only rule its tags depend on |
+| `src/op.rs` | The `Op` envelope, its accessors, `verify`, and `compute_id` (the id preimage) |
+| `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
+| `src/tests/<module>.rs` | Tests for the module of the same name, reaching it through `crate::` paths |
+| `src/tests/wire.rs` | Cross-cutting: borsh round-trip plus every hostile decode (forward tag, truncation, trailing bytes) |
+| `src/tests/support.rs` | Seed-derived fixtures (`key`, `real_authorship`, `hlc0`) |
 
 ## Invariants and Gotchas
 
