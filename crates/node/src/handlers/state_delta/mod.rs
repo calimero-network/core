@@ -446,7 +446,6 @@ pub(crate) async fn apply_authorized_state_delta(
         parents: parent_ids,
         payload: actions,
         hlc,
-        expected_root_hash: *root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };
 
@@ -1533,7 +1532,6 @@ async fn request_missing_deltas(
                             parents: storage_delta.parents.clone(),
                             payload: storage_delta.actions,
                             hlc: storage_delta.hlc,
-                            expected_root_hash: storage_delta.expected_root_hash,
                             kind: calimero_dag::DeltaKind::Regular,
                         };
                         // Persist with `author_id: None` so when this
@@ -1713,7 +1711,6 @@ async fn request_missing_deltas(
                         parents: storage_delta.parents.clone(),
                         payload: storage_delta.actions,
                         hlc: storage_delta.hlc,
-                        expected_root_hash: storage_delta.expected_root_hash,
                         kind: calimero_dag::DeltaKind::Regular,
                     };
 
@@ -2211,7 +2208,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         parents: buffered.parents,
         payload: actions,
         hlc: buffered.hlc,
-        expected_root_hash: *root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };
 

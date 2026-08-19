@@ -132,7 +132,7 @@ mod tests {
     fn delta(op: &Op) -> CausalDelta<Op> {
         // The unified delta IS the op: mirror id/parents so the DAG's causal model
         // matches the op's own parent set.
-        CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
+        CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc)
     }
 
     /// Fold a causal chain of mixed-plane ops (admin → member → writers → data)

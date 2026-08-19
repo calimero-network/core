@@ -51,28 +51,6 @@ pub struct CausalDelta {
     /// - Causal ordering across deltas (logical clock)
     /// - Wall-clock semantics (physical time embedded in NTP64)
     pub hlc: HybridTimestamp,
-
-    /// Expected root hash after applying this delta.
-    ///
-    /// This ensures deterministic DAG structure across nodes even when
-    /// WASM execution produces different root hashes due to non-determinism.
-    ///
-    /// # This is advisory, NOT authoritative
-    ///
-    /// An earlier version of this doc said receivers MUST use this hash rather
-    /// than their computed hash. That is not what the node does, and following
-    /// it would be wrong. `DeltaStore` stores the hash it COMPUTED
-    /// (`CRITICAL: We must store the computed hash, NOT
-    /// delta.expected_root_hash!`) because in a merge the two legitimately
-    /// differ, and a mismatch NEVER rejects a delta — CRDT merge semantics make
-    /// divergence here expected under concurrent writes. The field's only
-    /// operational effect is classifying the delta as a merge (which changes how
-    /// its children are handled) and logging.
-    ///
-    /// It is also NOT in the `compute_id` preimage, and on the DAG-catchup /
-    /// parent-fetch paths it arrives as a plaintext field of the served delta,
-    /// so a responder can set it freely. Treat it as a sender-supplied hint.
-    pub expected_root_hash: [u8; 32],
 }
 
 impl CausalDelta {
@@ -84,8 +62,8 @@ impl CausalDelta {
     ///
     /// # What the preimage does NOT cover
     ///
-    /// Not `hlc` (the parameter is unused), not `expected_root_hash`, and not
-    /// the action signature bytes (zeroed by
+    /// Not `hlc` (the parameter is unused), and not the action signature bytes
+    /// (zeroed by
     /// `hash_metadata_storage_type_for_id`, so the id is stable across an
     /// action's placeholder-signature and stamped-signature states). Anything
     /// outside the preimage is NOT authenticated by
@@ -507,7 +485,6 @@ pub fn commit_causal_delta(root_hash: &[u8; 32]) -> eyre::Result<Option<CausalDe
             parents,
             actions,
             hlc,
-            expected_root_hash: *root_hash,
         };
 
         // Update heads - this delta is now the new head
@@ -842,7 +819,6 @@ mod borsh_roundtrip_tests {
             parents,
             actions,
             hlc,
-            expected_root_hash: [0x11_u8; 32],
         }
     }
 
@@ -887,89 +863,6 @@ mod borsh_roundtrip_tests {
     fn content_address_matches_rejects_swapped_actions() {
         let mut delta = honest_delta(vec![[7_u8; 32]]);
         delta.actions = vec![make_action(3)];
-        assert!(!delta.id_matches_content());
-    }
-
-    #[test]
-    fn content_address_survives_post_id_root_hash_mutation() {
-        // Guards the non-obvious way this check could start false-positiving on
-        // honest traffic. The rotation-log self-log leg of the local write path
-        // recomputes `expected_root_hash` AFTER `compute_id` has already run,
-        // so a check that folded the root hash into the preimage would reject
-        // every writer-set rotation. `expected_root_hash` is not in the
-        // preimage; pin that.
-        let mut delta = honest_delta(vec![[7_u8; 32]]);
-        delta.expected_root_hash = [0xEE_u8; 32];
-        assert!(
-            delta.id_matches_content(),
-            "expected_root_hash must stay outside the content address"
-        );
-    }
-
-    #[test]
-    fn content_address_rejects_inflated_updated_at() {
-        // #3556. `metadata.updated_at` is the LWW comparison key, and for
-        // `Public` / `Frozen` entities NOTHING signs it — `sign_authorized_actions`
-        // covers only User/Shared/SharedMember. On the DAG-catchup and
-        // parent-fetch paths the actions arrive as plaintext rather than sealed
-        // under the group key, so before this was in the preimage a responder
-        // could inflate the timestamp and win last-write-wins permanently.
-        // Unlike the HLC, no drift guard bounds it.
-        let mut delta = honest_delta(vec![[7_u8; 32]]);
-        match &mut delta.actions[0] {
-            Action::Add { metadata, .. } | Action::Update { metadata, .. } => {
-                *metadata = Metadata::new(100, u64::MAX);
-            }
-            Action::DeleteRef { .. } => panic!("fixture is an Add"),
-        }
-        assert!(
-            !delta.id_matches_content(),
-            "an inflated updated_at must not content-address the original id"
-        );
-    }
-
-    #[test]
-    fn content_address_rejects_relabelled_add_as_update() {
-        // `Add` and `Update` shared a match arm and hashed identically, so the
-        // variant itself was malleable. Domain-separating the tags closes it.
-        let delta = honest_delta(vec![[7_u8; 32]]);
-        let relabelled = match delta.actions[0].clone() {
-            Action::Add {
-                id,
-                data,
-                ancestors,
-                metadata,
-            } => Action::Update {
-                id,
-                data,
-                ancestors,
-                metadata,
-            },
-            other => panic!("fixture is an Add, got {other:?}"),
-        };
-        let mut tampered = delta.clone();
-        tampered.actions = vec![relabelled];
-        assert!(
-            !tampered.id_matches_content(),
-            "an Add relabelled as an Update must not keep the same content address"
-        );
-    }
-
-    #[test]
-    fn content_address_rejects_rewritten_ancestors() {
-        // `ancestors` was excluded from the preimage alongside the timestamps
-        // and is plaintext on the same paths.
-        let mut delta = honest_delta(vec![[7_u8; 32]]);
-        match &mut delta.actions[0] {
-            Action::Add { ancestors, .. } | Action::Update { ancestors, .. } => {
-                ancestors.push(crate::entities::ChildInfo::new(
-                    Id::from([0xC1_u8; 32]),
-                    [0xC2_u8; 32],
-                    Metadata::new(1, 2),
-                ));
-            }
-            Action::DeleteRef { .. } => panic!("fixture is an Add"),
-        }
         assert!(!delta.id_matches_content());
     }
 

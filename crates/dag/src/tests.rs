@@ -1330,10 +1330,12 @@ async fn test_prune_to_recent_never_prunes_pending() {
 
 #[test]
 fn causal_delta_kind_borsh_roundtrips_both_variants() {
-    for kind in [DeltaKind::Regular, DeltaKind::Checkpoint] {
+    for kind in [
+        DeltaKind::Regular,
+        DeltaKind::Checkpoint { root_hash: [3; 32] },
+    ] {
         let mut delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 7 });
         delta.kind = kind.clone();
-        delta.expected_root_hash = [3; 32];
 
         let bytes = borsh::to_vec(&delta).expect("serialize");
         let decoded: CausalDelta<TestPayload> = borsh::from_slice(&bytes).expect("deserialize");
@@ -1344,38 +1346,11 @@ fn causal_delta_kind_borsh_roundtrips_both_variants() {
 
 #[test]
 fn delta_kind_discriminants_are_pinned() {
-    // The trailing-field decode of `CausalDelta` relies on `DeltaKind` encoding
-    // to exactly one byte with `Regular == 0`. Pin both facts independently of
-    // the `CausalDelta` round-trip so a future variant reorder or encoding
-    // change fails here with a clear message.
+    // Pin the discriminants so a future variant reorder fails here with a clear
+    // message rather than as a silent decode change. `Checkpoint` now carries its
+    // snapshot root hash, so its encoding is the tag followed by those 32 bytes.
     assert_eq!(borsh::to_vec(&DeltaKind::Regular).unwrap(), vec![0u8]);
-    assert_eq!(borsh::to_vec(&DeltaKind::Checkpoint).unwrap(), vec![1u8]);
-}
-
-#[test]
-fn causal_delta_decodes_legacy_bytes_without_kind_as_regular() {
-    // A pre-`kind` peer serialized every field up to `expected_root_hash` and
-    // stopped. `kind` is a unit variant, so its encoding is a single trailing
-    // byte (0 for Regular); dropping it reproduces the legacy wire. The
-    // hand-written `BorshDeserialize` must tolerate that clean EOF and default
-    // `kind` to Regular rather than erroring.
-    let delta = CausalDelta::new_test([5; 32], vec![[4; 32]], TestPayload { value: 42 });
-    assert_eq!(delta.kind, DeltaKind::Regular);
-
-    let full = borsh::to_vec(&delta).expect("serialize");
-    // `kind` must be exactly the one trailing byte we strip, and its Regular
-    // discriminant must be 0 — otherwise this test would strip the wrong byte.
-    assert_eq!(*full.last().unwrap(), 0);
-    let legacy = &full[..full.len() - 1];
-    assert_eq!(
-        full.len() - legacy.len(),
-        1,
-        "DeltaKind must be exactly 1 byte"
-    );
-
-    let decoded: CausalDelta<TestPayload> =
-        borsh::from_slice(legacy).expect("legacy bytes must decode");
-    assert_eq!(decoded.kind, DeltaKind::Regular);
-    assert_eq!(decoded.id, delta.id);
-    assert_eq!(decoded.payload, delta.payload);
+    let checkpoint = borsh::to_vec(&DeltaKind::Checkpoint { root_hash: [7; 32] }).unwrap();
+    assert_eq!(checkpoint[0], 1u8);
+    assert_eq!(&checkpoint[1..], &[7u8; 32]);
 }

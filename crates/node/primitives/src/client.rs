@@ -179,7 +179,6 @@ pub struct LocalAppliedDelta {
     pub delta_id: [u8; 32],
     pub parents: Vec<[u8; 32]>,
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
-    pub expected_root_hash: [u8; 32],
     pub actions: Vec<calimero_storage::action::Action>,
 }
 

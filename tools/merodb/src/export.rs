@@ -1701,7 +1701,7 @@ pub fn parse_value_with_abi(
                             "timestamp": timestamp_raw,
                             "hlc": hlc_json,
                             "applied": delta.applied,
-                            "expected_root_hash": hex::encode(delta.expected_root_hash)
+                            "checkpoint_root_hash": delta.checkpoint_root_hash.map(hex::encode)
                         }));
                     }
                 }
@@ -1718,7 +1718,7 @@ pub fn parse_value_with_abi(
                     "timestamp": timestamp_raw,
                     "hlc": hlc_json,
                     "applied": delta.applied,
-                    "expected_root_hash": hex::encode(delta.expected_root_hash)
+                    "checkpoint_root_hash": delta.checkpoint_root_hash.map(hex::encode)
                 }));
             }
 
@@ -4167,7 +4167,7 @@ pub fn export_data_without_abi(
                         "timestamp": timestamp_raw,
                         "hlc": hlc_json,
                         "applied": delta.applied,
-                        "expected_root_hash": hex::encode(delta.expected_root_hash)
+                        "checkpoint_root_hash": delta.checkpoint_root_hash.map(hex::encode)
                     })
                 } else {
                     parse_value(*column, &value)

@@ -264,7 +264,7 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
                     "parents": parent_hashes.clone(),
                     "is_dag_head": is_dag_head,
                     "has_missing_parents": false,  // Will be updated later
-                    "expected_root_hash": hex::encode(delta.expected_root_hash)
+                    "checkpoint_root_hash": delta.checkpoint_root_hash.map(hex::encode)
                 });
 
                 nodes.push(node_json);

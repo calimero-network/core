@@ -2274,12 +2274,11 @@ async fn internal_execute(
             let hlc = calimero_storage::env::hlc_timestamp();
             let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
-            let mut delta = CausalDelta {
+            let delta = CausalDelta {
                 id: delta_id,
                 parents,
                 actions,
                 hlc,
-                expected_root_hash: root_hash,
             };
 
             // Leg 4 of rotation-log convergence (core#2716): the local write
@@ -2324,8 +2323,11 @@ async fn internal_execute(
                         Ok(Some(full_hash))
                     })?;
                 if let Some(full_hash) = recomputed_root {
+                    // Only the context's own root hash needs updating now. The
+                    // delta used to carry a mirrored copy for peers; that field
+                    // is gone — it was a sender assertion nobody could verify,
+                    // and each node computes its own root when it applies.
                     context.root_hash = full_hash.into();
-                    delta.expected_root_hash = full_hash;
                 }
             }
 
@@ -2417,7 +2419,7 @@ async fn internal_execute(
                     actions: serialized_actions,
                     hlc: delta.hlc,
                     applied: true,
-                    expected_root_hash: delta.expected_root_hash,
+                    checkpoint_root_hash: None,
                     events: None, // No events stored for locally created deltas
                     author_id: Some(executor),
                     governance_position_blob,
@@ -2442,7 +2444,6 @@ async fn internal_execute(
                     delta_id: delta.id,
                     parents: delta.parents.clone(),
                     hlc: delta.hlc,
-                    expected_root_hash: delta.expected_root_hash,
                     actions: delta.actions.clone(),
                 },
             );
