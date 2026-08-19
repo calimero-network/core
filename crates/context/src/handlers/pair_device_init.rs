@@ -26,7 +26,7 @@
 //! for. Since nothing is published here there is no encrypted op to gate on.
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{pairing_confirmation_code, sign_pairing_statement};
+use calimero_account::PairingOffer;
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
 use calimero_governance_store::NodeDeviceRepository;
 use calimero_primitives::identity::PrivateKey;
@@ -84,13 +84,16 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         // The signature cannot rule out an attacker replacing both keys and
         // re-signing with its own; that is what the confirmation code below is
         // for, and why it is derived here rather than left to callers.
-        let statement = match sign_pairing_statement(
+        // One offer, and both values derive from it. The statement and the code have
+        // to describe the SAME four values or the two checks at the other end are
+        // checking different things; building the offer once is what guarantees it.
+        let (offer, statement) = match PairingOffer::signed(
             &sign_sk,
             enrolled.account,
             enrolled.device(),
-            &enrolled.kem_public_key(),
+            enrolled.kem_public_key(),
         ) {
-            Ok(statement) => statement,
+            Ok(signed) => signed,
             Err(err) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "failed to sign the pairing statement: {err}"
@@ -98,12 +101,7 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
             }
         };
 
-        let confirmation_code = pairing_confirmation_code(
-            enrolled.account,
-            enrolled.device(),
-            &enrolled.kem_public_key(),
-            &sign_pk,
-        );
+        let confirmation_code = offer.confirmation_code();
 
         let response = PairDeviceInitResponse::new(
             enrolled.account,

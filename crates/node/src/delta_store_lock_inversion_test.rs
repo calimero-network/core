@@ -136,7 +136,6 @@ fn delta(id: [u8; 32], parents: Vec<[u8; 32]>) -> CausalDelta<Vec<Action>> {
         parents,
         payload: Vec::new(),
         hlc: HybridTimestamp::default(),
-        expected_root_hash: GENESIS,
         kind: DeltaKind::Regular,
     }
 }
@@ -221,7 +220,7 @@ async fn cascade_commit_does_not_hold_the_context_lock_across_a_dag_acquisition(
     // sleep long enough to "probably" get there.
     let mut queued = false;
     for _ in 0..10_000 {
-        if delta_store.head_root_hash_ids().await.contains(&DELTA_C) {
+        if delta_store.inflight_delta_ids().await.contains(&DELTA_C) {
             queued = true;
             break;
         }

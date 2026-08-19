@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::sign_device_revocation;
+use calimero_account::DeviceRevocation;
 use calimero_context_client::group::{
     RevocationOutcome, RevokeDeviceRequest, RevokeDeviceResponse,
 };
@@ -97,7 +97,7 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
         // reaches whoever can act on it.
         let supplied_proof = match supplied_proof {
             Some(proof) => match proof.authorises(account, device) {
-                Ok(()) => Some(proof),
+                Ok(_) => Some(proof),
                 Err(err) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "the supplied revocation proof does not authorise withdrawing \
@@ -141,13 +141,13 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
             match device_repo.account_root() {
                 Ok(Some(root)) => {
                     let genesis = root.genesis();
-                    match sign_device_revocation(root.signing_key(), account, device, 0) {
+                    match DeviceRevocation::sign(root.signing_key(), account, device, 0) {
                         Ok(revocation) => Some(calimero_account::SignedDeviceRevocation {
                             genesis,
                             // Epoch 0: the account root has not rotated, so there
                             // are no handoffs for a verifier to walk.
                             chain: vec![],
-                            revocation,
+                            statement: revocation,
                         }),
                         Err(err) => {
                             return ActorResponse::reply(Err(eyre::eyre!(

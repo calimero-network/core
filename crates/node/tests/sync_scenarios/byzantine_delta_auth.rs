@@ -77,6 +77,9 @@ fn gate_and_apply(
     apply_entity: EntityId,
     apply_data: Vec<u8>,
 ) -> bool {
+    // These fixtures predate the HLC being part of the signed payload; they are
+    // about authorship, so they all use the same fixed clock on both sides.
+    let hlc = fixture_hlc();
     // Gate step 1: a missing signature cannot prove authorship — reject.
     let sig = match signature {
         Some(s) => s,
@@ -86,7 +89,7 @@ fn gate_and_apply(
     // Gate step 2: verify the envelope signature against the CLAIMED author.
     // No governance position in these fixtures (non-group context), matching
     // the handler passing `governance_position.as_ref()` (here `None`).
-    if verify_delta_signature(context_id, delta_id, author_id, None, &sig).is_err() {
+    if verify_delta_signature(context_id, delta_id, author_id, None, hlc, &sig).is_err() {
         return false;
     }
 
@@ -96,6 +99,13 @@ fn gate_and_apply(
     // invariant needs to observe (root_hash advances only on a real apply).
     node.insert_entity(apply_entity, apply_data, CrdtType::lww_register("byz"));
     true
+}
+
+/// One fixed clock for every fixture, so the signed payload and the gate's
+/// reconstruction agree. The HLC is part of the signed payload now, so a
+/// mismatch here would look like a signature failure rather than a fixture bug.
+fn fixture_hlc() -> HybridTimestamp {
+    HybridTimestamp::default()
 }
 
 /// Deterministic identities for the fixtures.
@@ -133,8 +143,8 @@ fn forged_author_delta_rejected_no_state_mutation() {
     let delta_id = [0x99u8; 32];
 
     // Alice legitimately signs the envelope for author = Alice.
-    let payload =
-        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
+        .expect("payload serializes");
     let alice_sig = alice_sk.sign(&payload).expect("sign").to_bytes();
 
     let root_before = node.root_hash();
@@ -189,8 +199,9 @@ fn copied_signature_on_new_delta_id_rejected_no_state_mutation() {
     let (alice_sk, alice_pk) = alice();
 
     let signed_delta_id = [0x01u8; 32];
-    let payload = delta_signature_payload(context_id, signed_delta_id, alice_pk, None)
-        .expect("payload serializes");
+    let payload =
+        delta_signature_payload(context_id, signed_delta_id, alice_pk, None, fixture_hlc())
+            .expect("payload serializes");
     let alice_sig = alice_sk.sign(&payload).expect("sign").to_bytes();
 
     let root_before = node.root_hash();
@@ -289,7 +300,7 @@ fn content_gate_and_apply(
         Some(s) => s,
         None => return false,
     };
-    if verify_delta_signature(context_id, delta_id, author_id, None, &sig).is_err() {
+    if verify_delta_signature(context_id, delta_id, author_id, None, *hlc, &sig).is_err() {
         return false;
     }
 
@@ -313,11 +324,11 @@ fn honest_delta_passes_both_gates_and_mutates_state() {
 
     let parents = vec![[0x31_u8; 32]];
     let actions = fixture_actions();
-    let hlc = HybridTimestamp::default();
+    let hlc = fixture_hlc();
     let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
-    let payload =
-        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
+        .expect("payload serializes");
     let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
 
     let root_before = node.root_hash();
@@ -356,13 +367,13 @@ fn republished_delta_with_emptied_parents_rejected_no_state_mutation() {
 
     let parents = vec![[0x31_u8; 32]];
     let actions = fixture_actions();
-    let hlc = HybridTimestamp::default();
+    let hlc = fixture_hlc();
     let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
     // Alice's real signature over her real delta — the attacker does not forge
     // anything, it replays what Alice published.
-    let payload =
-        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
+        .expect("payload serializes");
     let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
 
     let root_before = node.root_hash();
@@ -400,11 +411,11 @@ fn republished_delta_with_swapped_parents_rejected_no_state_mutation() {
 
     let parents = vec![[0x31_u8; 32]];
     let actions = fixture_actions();
-    let hlc = HybridTimestamp::default();
+    let hlc = fixture_hlc();
     let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
 
-    let payload =
-        delta_signature_payload(context_id, delta_id, alice_pk, None).expect("payload serializes");
+    let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
+        .expect("payload serializes");
     let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
 
     let root_before = node.root_hash();

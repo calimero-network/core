@@ -42,9 +42,7 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{
-    pairing_code_matches, sign_account_endorsement, sign_device_cert, verify_pairing_statement,
-};
+use calimero_account::{AccountMemberEndorsement, DeviceCert, PairingOffer};
 use calimero_context_client::group::{PairDeviceCompleteRequest, PairDeviceCompleteResponse};
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_crypto::X25519PublicKey;
@@ -109,7 +107,8 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // them into the `DeviceId` is ruled out because the id must survive key
         // rotation. The confirmation code returned below is what closes that,
         // out of band and by a person.
-        if let Err(err) = verify_pairing_statement(account, device, &kem_pk, &sign_pk, &statement) {
+        let offer = PairingOffer::new(account, device, kem_pk, sign_pk);
+        if let Err(err) = offer.verify_statement(&statement) {
             // Logged, not just returned: this is the security-relevant event the
             // check exists for, and the error otherwise reaches only whoever made
             // the request — possibly the attacker rather than an operator reading
@@ -133,7 +132,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // cannot produce: the account holder was read it from the pairing
         // device's own output, so it describes the keys that device minted, and
         // here it is checked against the keys that actually arrived.
-        if !pairing_code_matches(&confirmation_code, account, device, &kem_pk, &sign_pk) {
+        if !offer.code_matches(&confirmation_code) {
             // Deliberately does not echo the expected code: an attacker that can
             // drive this endpoint would otherwise learn the value it needs.
             warn!(
@@ -199,7 +198,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // Epoch 0 on both counts: the account root has not rotated (rotation is
         // not implemented yet), so there are no handoffs to carry and the
         // certifying key is the genesis key itself.
-        let cert = match sign_device_cert(
+        let cert = match DeviceCert::sign(
             account_root.signing_key(),
             account,
             device,
@@ -218,7 +217,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
         // Only a member can endorse and only the root can certify; the gate needs
         // both. `self_pk` is the endorser and is inside the signed payload.
-        let endorsement = match sign_account_endorsement(&signer_sk, account) {
+        let endorsement = match AccountMemberEndorsement::sign(&signer_sk, account) {
             Ok(endorsement) => endorsement,
             Err(err) => {
                 return ActorResponse::reply(Err(eyre::eyre!(

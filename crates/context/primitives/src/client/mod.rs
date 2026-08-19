@@ -2335,7 +2335,7 @@ mod atomic_persist_tests {
             actions: vec![1, 2, 3],
             hlc: HybridTimestamp::zero(),
             applied: true,
-            expected_root_hash: [0u8; 32],
+            checkpoint_root_hash: None,
             events: None,
             author_id: None,
             governance_position_blob: None,

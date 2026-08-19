@@ -88,7 +88,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             (account, None)
         } else {
             match crate::join_credential::build(&self.datastore, &namespace_id, &admin_identity) {
-                Ok(credential) => (credential.cert.account, Some(credential)),
+                Ok(credential) => (credential.statement.account, Some(credential)),
                 Err(err) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "failed to mint this node's account credential: {err}"

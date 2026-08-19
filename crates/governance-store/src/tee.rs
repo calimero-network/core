@@ -223,7 +223,7 @@ fn tee_admission_from_root_op(
             // the op: the account comes from the credential, which the apply
             // refused unless it certifies this very key.
             return Some((
-                account.cert.account,
+                account.statement.account,
                 TeeAdmissionRecord {
                     quote_hash: *quote_hash,
                     mrtd: mrtd.clone(),

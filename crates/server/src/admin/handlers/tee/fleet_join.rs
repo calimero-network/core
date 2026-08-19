@@ -141,7 +141,7 @@ pub async fn handler(
     // key speaks for, so a caller holding only `public_key` has nothing it can
     // match a member listing against, and no endpoint maps one to the other from
     // outside the node that owns it.
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
 
     let broadcast = BroadcastMessage::TeeAttestationAnnounce {
         quote_bytes: attestation.quote_bytes,

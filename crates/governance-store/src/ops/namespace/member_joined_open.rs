@@ -50,13 +50,8 @@ pub(crate) fn join_op_proves_ownership(
     member: &AccountId,
     account: &JoinAccountCredential,
 ) -> bool {
-    *signer == account.cert.sign_pk
-        && calimero_op_adapter::join_credential_binds(
-            member,
-            &account.genesis,
-            &account.chain,
-            &account.cert,
-        )
+    *signer == account.statement.sign_pk
+        && calimero_op_adapter::join_credential_binds(member, account)
 }
 
 pub(crate) fn apply(
@@ -214,16 +209,11 @@ pub(super) fn record_join_credential(
     // Shared verbatim with the projection encoder, which has to reach the same
     // verdict or the two planes disagree about the same op in the opposite
     // direction: a credential refused a binding here and granted one in the fold.
-    if !calimero_op_adapter::join_credential_binds(
-        &member,
-        &account.genesis,
-        &account.chain,
-        &account.cert,
-    ) {
+    if !calimero_op_adapter::join_credential_binds(&member, account) {
         tracing::warn!(
             ?namespace,
             ?member,
-            cert_sign_pk = %account.cert.sign_pk,
+            cert_sign_pk = %account.statement.sign_pk,
             "member joined presenting a credential that is not its own or does not \
              verify; the credential is ignored and the member is recorded without a \
              binding"
@@ -232,8 +222,12 @@ pub(super) fn record_join_credential(
     }
 
     let bindings = crate::AccountBindingRepository::new(ctx.store());
-    let outcome =
-        bindings.apply_link(&namespace, &account.genesis, &account.chain, &account.cert)?;
+    let outcome = bindings.apply_link(
+        &namespace,
+        &account.genesis,
+        &account.chain,
+        &account.statement,
+    )?;
 
     // The endorsement, materialized. `AccountDeviceLinked` carries an explicit
     // `AccountMemberEndorsement` because an account root is a member nowhere, so
@@ -250,7 +244,7 @@ pub(super) fn record_join_credential(
         .err()
         .is_some_and(BindingRejected::is_permanent)
     {
-        bindings.record_endorser(&namespace, account.cert.account, &member)?;
+        bindings.record_endorser(&namespace, account.statement.account, &member)?;
     }
 
     if let Err(rejected) = outcome {

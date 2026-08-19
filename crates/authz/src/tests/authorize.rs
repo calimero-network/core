@@ -311,7 +311,7 @@ fn a_join_replayed_by_another_device_is_refused() {
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let joiner_key = calimero_primitives::identity::PrivateKey::from([0x22u8; 32]).public_key();
     let granted_device = DeviceId::from([0x4D; 32]);
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
         granted_device,

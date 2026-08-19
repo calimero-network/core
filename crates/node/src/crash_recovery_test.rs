@@ -40,7 +40,6 @@ fn persist_row(
     delta_id: [u8; 32],
     parents: Vec<[u8; 32]>,
     applied: bool,
-    expected_root_hash: [u8; 32],
     // Passed through verbatim. This is a per-call test convention, NOT an
     // enforced invariant: the B1 phase-0 row uses `Some(..)` (the event-carrying
     // pre-persist shape) and the B2 committed rows use `None` (a clean restart
@@ -67,7 +66,7 @@ fn persist_row(
                 // with empty actions would need a real HLC to stay a regular delta.
                 hlc: HybridTimestamp::default(),
                 applied,
-                expected_root_hash,
+                checkpoint_root_hash: None,
                 events,
                 author_id: Some(PublicKey::from([0xBB; 32])),
                 governance_position_blob: None,
@@ -105,14 +104,7 @@ async fn phase0_applied_false_row_not_promoted_on_restart() {
 
     // On-disk state at crash time: the standalone applied:false row, no heads
     // commit (nothing advanced the DAG heads past genesis).
-    persist_row(
-        &store,
-        delta_id,
-        vec![GENESIS],
-        false,
-        [0x11; 32],
-        Some(vec![1, 2, 3]),
-    );
+    persist_row(&store, delta_id, vec![GENESIS], false, Some(vec![1, 2, 3]));
 
     // Restart: fresh DeltaStore over the same store, then reload from disk.
     // Keep a clone so we can read the persisted row's flag after reload.
@@ -190,12 +182,11 @@ async fn phase0_applied_false_row_not_promoted_on_restart() {
 async fn merge_topology_and_root_hash_identical_across_restart() {
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     let (a, b, m) = ([0x0A; 32], [0x0B; 32], [0x0C; 32]);
-    let (root_a, root_b, root_m) = ([0xAA; 32], [0xBB; 32], [0xCC; 32]);
 
     // Concurrent branches off genesis, then a committed merge over both.
-    persist_row(&store, a, vec![GENESIS], true, root_a, None);
-    persist_row(&store, b, vec![GENESIS], true, root_b, None);
-    persist_row(&store, m, vec![a, b], true, root_m, None);
+    persist_row(&store, a, vec![GENESIS], true, None);
+    persist_row(&store, b, vec![GENESIS], true, None);
+    persist_row(&store, m, vec![a, b], true, None);
 
     // First restart.
     let (ds1, _tmp1, _rx1) = delta_store_over(store.clone()).await;
@@ -215,12 +206,10 @@ async fn merge_topology_and_root_hash_identical_across_restart() {
         "merge must leave exactly one head after restart"
     );
 
-    // The merge delta's persisted root hash and parents survive byte-identically.
+    // The merge delta's persisted parents survive byte-identically. The delta no
+    // longer carries a root hash to round-trip: each node computes its own on
+    // apply, so there is nothing sender-declared left to preserve here.
     let m_reloaded = ds1.get_delta(&m).await.expect("merge delta reloaded");
-    assert_eq!(
-        m_reloaded.expected_root_hash, root_m,
-        "merge root hash must round-trip byte-for-byte across restart"
-    );
     let mut parents = m_reloaded.parents.clone();
     parents.sort_unstable();
     let mut expected_parents = vec![a, b];
@@ -230,19 +219,22 @@ async fn merge_topology_and_root_hash_identical_across_restart() {
         "merge parent set must be preserved"
     );
 
-    // A second, independent restart reproduces the identical head and root hash
-    // — the reconstruction is deterministic, not order-dependent.
+    // A second, independent restart reproduces the identical head — the
+    // reconstruction is deterministic, not order-dependent.
     let (ds2, _tmp2, _rx2) = delta_store_over(store).await;
     let _ = ds2.load_persisted_deltas().await.expect("reload #2");
     let mut heads2 = ds2.get_heads().await;
     heads2.sort_unstable();
     assert_eq!(heads2, vec![m]);
+    let mut parents2 = ds2
+        .get_delta(&m)
+        .await
+        .expect("merge reloaded #2")
+        .parents
+        .clone();
+    parents2.sort_unstable();
     assert_eq!(
-        ds2.get_delta(&m)
-            .await
-            .expect("merge reloaded #2")
-            .expected_root_hash,
-        root_m,
-        "root hash must be identical across repeated restarts"
+        parents2, expected_parents,
+        "parent set must be identical across repeated restarts"
     );
 }

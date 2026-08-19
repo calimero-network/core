@@ -200,6 +200,7 @@ pub(crate) async fn apply_authorized_state_delta(
         delta_id,
         author_id,
         governance_position.as_ref(),
+        hlc,
         &sig,
     ) {
         warn!(
@@ -502,7 +503,6 @@ pub(crate) async fn apply_authorized_state_delta(
         parents: parent_ids,
         payload: actions,
         hlc,
-        expected_root_hash: *root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };
 
@@ -1564,7 +1564,6 @@ async fn request_missing_deltas(
                             parents: storage_delta.parents.clone(),
                             payload: storage_delta.actions,
                             hlc: storage_delta.hlc,
-                            expected_root_hash: storage_delta.expected_root_hash,
                             kind: calimero_dag::DeltaKind::Regular,
                         };
                         // Persist with `author_id: None` so when this
@@ -1631,6 +1630,7 @@ async fn request_missing_deltas(
                             storage_delta.id,
                             response_author,
                             governance_position.as_ref(),
+                            storage_delta.hlc,
                             &sig_for_parent,
                         )
                     {
@@ -1743,7 +1743,6 @@ async fn request_missing_deltas(
                         parents: storage_delta.parents.clone(),
                         payload: storage_delta.actions,
                         hlc: storage_delta.hlc,
-                        expected_root_hash: storage_delta.expected_root_hash,
                         kind: calimero_dag::DeltaKind::Regular,
                     };
 
@@ -1976,6 +1975,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         delta_id,
         buffered.author_id,
         buffered.governance_position.as_ref(),
+        buffered.hlc,
         &sig_for_replay,
     ) {
         warn!(
@@ -2197,7 +2197,6 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         parents: buffered.parents,
         payload: actions,
         hlc: buffered.hlc,
-        expected_root_hash: *root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };
 

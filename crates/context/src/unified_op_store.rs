@@ -134,7 +134,18 @@ mod tests {
     }
 
     fn delta(op: &Op) -> calimero_dag::CausalDelta<Op> {
-        calimero_dag::CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc, [0u8; 32])
+        let delta = calimero_dag::CausalDelta::new(op.id(), op.parents.clone(), op.clone(), op.hlc);
+        // A root op carries no parents, and `DagStore::can_apply` only accepts an
+        // empty parent list from a declared `Genesis` (#3126). This helper stands
+        // in for a production op -> delta adapter that does not exist yet for this
+        // plane; when one is written it must decide genesis ELIGIBILITY from the
+        // op's payload the way `signed_namespace_op_to_delta` does (only
+        // `NamespaceCreated` founds a namespace), not blanket-mark every
+        // parentless op the way this fixture does.
+        if delta.parents.is_empty() {
+            return delta.into_genesis();
+        }
+        delta
     }
 
     /// Persist a causal chain of mixed-plane ops, reload it from a fresh handle,

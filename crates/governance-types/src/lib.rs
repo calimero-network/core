@@ -25,8 +25,8 @@ use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
-    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, KemPublicKey,
-    RootKeyHandoff, SignedDeviceRevocation,
+    AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
+    KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -207,16 +207,16 @@ pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 10;
 /// `large_enum_variant` threshold, making every `NamespaceOp` that size on the
 /// stack. Borsh encodes `Box<T>` exactly as `T`, so the boxing is invisible on the
 /// wire and does not affect the schema version.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
-pub struct JoinAccountCredential {
-    /// The account's self-certifying root.
-    pub genesis: AccountGenesis,
-    /// Signed root-key rollovers, epoch 0 upward. Empty when the certificate was
-    /// signed by the genesis key.
-    pub chain: Vec<RootKeyHandoff>,
-    /// The root-signed grant for the device the joiner is joining with.
-    pub cert: DeviceCert,
-}
+/// Structurally identical to every other self-contained credential in the system,
+/// so it **is** one: `AccountProof` carries an anchor, the chain that reaches the
+/// signing epoch, and the statement that epoch signed. Defined once in
+/// `calimero-account` rather than re-declared per statement kind, which is how the
+/// same triple came to exist under two names in two crates.
+///
+/// The alias is kept because the name says which op carries it, and the wire
+/// encoding is unchanged — `AccountProof<DeviceCert>` serialises to the same bytes
+/// this struct always did (pinned by `calimero-account`'s recorded-bytes test).
+pub type JoinAccountCredential = AccountProof<DeviceCert>;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
