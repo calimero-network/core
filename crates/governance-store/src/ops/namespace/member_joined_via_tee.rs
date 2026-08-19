@@ -64,17 +64,12 @@ pub(crate) fn apply(
     // here and cannot be asked: a replica does not admit itself, so `op.signer`
     // is the verifying member. `require_tee_attestation_verifier_membership`
     // below is what stands in its place.
-    if !calimero_op_adapter::join_credential_certifies(
-        member,
-        &account.genesis,
-        &account.chain,
-        &account.cert,
-    ) {
+    if !calimero_op_adapter::join_credential_certifies(member, account) {
         bail!(MembershipError::TeeCredentialNotTheAttestedKey {
             member: format!("{member}"),
         });
     }
-    let member_account = account.cert.account;
+    let member_account = account.statement.account;
 
     let policy_gate = MembershipPolicy::new(store, group_id);
     // The verifier vouched for the quote, and vouching is a membership act, so

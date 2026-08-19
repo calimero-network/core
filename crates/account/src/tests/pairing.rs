@@ -6,25 +6,17 @@ use calimero_primitives::identity::{DeviceId, PrivateKey};
 use super::support::pairing_fixture;
 use crate::account::AccountGenesis;
 use crate::device::KemPublicKey;
+use crate::domain::PAIRING_CONFIRMATION_HEX_LEN;
 use crate::error::AccountError;
-use crate::pairing::{
-    pairing_code_matches, pairing_confirmation_code, sign_pairing_statement,
-    verify_pairing_statement, PAIRING_CONFIRMATION_HEX_LEN,
-};
+use crate::pairing::PairingOffer;
 
 #[test]
 fn a_pairing_statement_verifies_against_the_key_that_signed_it() {
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
+    let (offer, statement) =
+        PairingOffer::signed(&device_sk, account, device, kem_pk).expect("sign");
 
-    assert!(verify_pairing_statement(
-        account,
-        device,
-        &kem_pk,
-        &device_sk.public_key(),
-        &statement
-    )
-    .is_ok());
+    assert!(offer.verify_statement(&statement).is_ok());
 }
 
 #[test]
@@ -34,17 +26,12 @@ fn substituted_key_material_under_a_valid_device_id_is_refused() {
     // key beneath it — which is what the certificate would then name as the
     // recipient of every scope key the account can read.
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
+    let (_, statement) = PairingOffer::signed(&device_sk, account, device, kem_pk).expect("sign");
 
     let attacker_kem = KemPublicKey::from([0xAA; 32]);
     assert!(matches!(
-        verify_pairing_statement(
-            account,
-            device,
-            &attacker_kem,
-            &device_sk.public_key(),
-            &statement
-        ),
+        PairingOffer::new(account, device, attacker_kem, device_sk.public_key())
+            .verify_statement(&statement),
         Err(AccountError::PairingStatementInvalid),
     ));
 
@@ -52,13 +39,8 @@ fn substituted_key_material_under_a_valid_device_id_is_refused() {
     // which would make it the author of the device's ops.
     let attacker_sk = PrivateKey::from([0xBB; 32]);
     assert!(matches!(
-        verify_pairing_statement(
-            account,
-            device,
-            &kem_pk,
-            &attacker_sk.public_key(),
-            &statement
-        ),
+        PairingOffer::new(account, device, kem_pk, attacker_sk.public_key())
+            .verify_statement(&statement),
         Err(AccountError::PairingStatementInvalid),
     ));
 }
@@ -66,11 +48,12 @@ fn substituted_key_material_under_a_valid_device_id_is_refused() {
 #[test]
 fn a_statement_does_not_carry_to_another_account() {
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let statement = sign_pairing_statement(&device_sk, account, device, &kem_pk).expect("sign");
+    let (_, statement) = PairingOffer::signed(&device_sk, account, device, kem_pk).expect("sign");
 
     let other = AccountGenesis::new(PrivateKey::from([8u8; 32]).public_key()).account_id();
     assert!(matches!(
-        verify_pairing_statement(other, device, &kem_pk, &device_sk.public_key(), &statement),
+        PairingOffer::new(other, device, kem_pk, device_sk.public_key())
+            .verify_statement(&statement),
         Err(AccountError::PairingStatementInvalid),
     ));
 }
@@ -83,26 +66,29 @@ fn the_confirmation_code_changes_when_any_certified_value_does() {
     // names moves.
     let (account, device, device_sk, kem_pk) = pairing_fixture();
     let sign_pk = device_sk.public_key();
-    let honest = pairing_confirmation_code(account, device, &kem_pk, &sign_pk);
+    let honest = PairingOffer::new(account, device, kem_pk, sign_pk).confirmation_code();
 
     let attacker_sk = PrivateKey::from([0xBB; 32]);
     for (label, code) in [
         (
             "substituted KEM key",
-            pairing_confirmation_code(account, device, &KemPublicKey::from([0xAA; 32]), &sign_pk),
+            PairingOffer::new(account, device, KemPublicKey::from([0xAA; 32]), sign_pk)
+                .confirmation_code(),
         ),
         (
             "substituted signing key",
-            pairing_confirmation_code(account, device, &kem_pk, &attacker_sk.public_key()),
+            PairingOffer::new(account, device, kem_pk, attacker_sk.public_key())
+                .confirmation_code(),
         ),
         (
             "different device",
-            pairing_confirmation_code(
+            PairingOffer::new(
                 account,
                 DeviceId::mint(account, [0x44; 16]),
-                &kem_pk,
-                &sign_pk,
-            ),
+                kem_pk,
+                sign_pk,
+            )
+            .confirmation_code(),
         ),
     ] {
         assert_ne!(honest, code, "code must move: {label}");
@@ -111,7 +97,7 @@ fn the_confirmation_code_changes_when_any_certified_value_does() {
     // Same inputs on both ends must agree, or there is nothing to compare.
     assert_eq!(
         honest,
-        pairing_confirmation_code(account, device, &kem_pk, &sign_pk)
+        PairingOffer::new(account, device, kem_pk, sign_pk).confirmation_code()
     );
 }
 
@@ -121,7 +107,8 @@ fn the_confirmation_code_is_wide_enough_to_resist_grinding() {
     // one matches, so the code's width IS the work factor. Anything short
     // enough to be comfortable to read aloud (six digits, say) is instant.
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let code = pairing_confirmation_code(account, device, &kem_pk, &device_sk.public_key());
+    let code =
+        PairingOffer::new(account, device, kem_pk, device_sk.public_key()).confirmation_code();
 
     let hex: String = code.chars().filter(|c| *c != '-').collect();
     assert_eq!(
@@ -142,7 +129,7 @@ fn the_confirmation_code_is_wide_enough_to_resist_grinding() {
 fn the_confirmation_code_matches_however_a_person_typed_it() {
     let (account, device, device_sk, kem_pk) = pairing_fixture();
     let sign_pk = device_sk.public_key();
-    let code = pairing_confirmation_code(account, device, &kem_pk, &sign_pk);
+    let code = PairingOffer::new(account, device, kem_pk, sign_pk).confirmation_code();
 
     for variant in [
         code.clone(),
@@ -152,7 +139,7 @@ fn the_confirmation_code_matches_however_a_person_typed_it() {
         format!("  {code}  "),
     ] {
         assert!(
-            pairing_code_matches(&variant, account, device, &kem_pk, &sign_pk),
+            PairingOffer::new(account, device, kem_pk, sign_pk).code_matches(&variant),
             "grouping and case must not decide this: {variant}"
         );
     }
@@ -165,25 +152,21 @@ fn a_code_for_other_key_material_is_refused() {
     // it, because the code the account holder was read came from the real
     // device and does not describe the attacker's keys.
     let (account, device, device_sk, kem_pk) = pairing_fixture();
-    let honest_code = pairing_confirmation_code(account, device, &kem_pk, &device_sk.public_key());
+    let honest_code =
+        PairingOffer::new(account, device, kem_pk, device_sk.public_key()).confirmation_code();
 
     let attacker_sk = PrivateKey::from([0xBB; 32]);
     let attacker_kem = KemPublicKey::from([0xAA; 32]);
     assert!(
-        !pairing_code_matches(
-            &honest_code,
-            account,
-            device,
-            &attacker_kem,
-            &attacker_sk.public_key()
-        ),
+        !PairingOffer::new(account, device, attacker_kem, attacker_sk.public_key())
+            .code_matches(&honest_code),
         "a code that describes the honest keys must not match substituted ones"
     );
 
     // And nothing empty-ish slips through.
     for junk in ["", "   ", "----", "not-hex-at-all"] {
         assert!(
-            !pairing_code_matches(junk, account, device, &kem_pk, &device_sk.public_key()),
+            !PairingOffer::new(account, device, kem_pk, device_sk.public_key()).code_matches(junk),
             "must refuse: {junk:?}"
         );
     }

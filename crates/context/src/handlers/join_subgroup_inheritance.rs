@@ -155,7 +155,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &joiner_identity,
                 )?;
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
-                    member: join_account.cert.account,
+                    member: join_account.statement.account,
                     group_id: group_id.to_bytes().into(),
                     account: join_account,
                 });

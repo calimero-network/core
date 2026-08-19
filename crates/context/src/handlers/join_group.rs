@@ -383,7 +383,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &namespace_id.into(),
                     &joiner_identity,
                 )?;
-                let joiner_account = joiner_credential.cert.account;
+                let joiner_account = joiner_credential.statement.account;
 
                 // Bind the joiner's own key to that account locally, now, rather
                 // than waiting for the `MemberJoined` op below to apply.
@@ -407,7 +407,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &namespace_id.into(),
                     &joiner_credential.genesis,
                     &joiner_credential.chain,
-                    &joiner_credential.cert,
+                    &joiner_credential.statement,
                 )? {
                     warn!(
                         ?group_id,
@@ -485,7 +485,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // `AccountDeviceLinked` left open.
                 let join_account = crate::join_credential::build(&datastore, &namespace_id.into(), &joiner_identity)?;
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-                    member: join_account.cert.account,
+                    member: join_account.statement.account,
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,

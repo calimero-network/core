@@ -174,7 +174,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         // Without one, the admission is an already-bound namespace member moving
         // inward, so the rows are the answer.
         let member_account = match account.as_ref() {
-            Some(credential) => credential.cert.account,
+            Some(credential) => credential.statement.account,
             None => match crate::member_account::require(&self.datastore, &group_id, &member) {
                 Ok(account) => account,
                 Err(err) => return ActorResponse::reply(Err(err)),

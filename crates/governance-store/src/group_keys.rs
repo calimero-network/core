@@ -938,7 +938,7 @@ mod recipient_tests {
     use calimero_primitives::context::GroupMemberRole;
 
     use crate::AccountBindingRepository;
-    use calimero_account::{sign_device_cert, AccountGenesis, KemPublicKey};
+    use calimero_account::{AccountGenesis, DeviceCert, KemPublicKey};
     use calimero_store::Store;
 
     fn member(seed: u8) -> PublicKey {
@@ -970,7 +970,7 @@ mod recipient_tests {
     ) -> (DeviceId, AccountId) {
         let genesis = AccountGenesis::new(member_sk.public_key());
         let account = genesis.account_id();
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             member_sk,
             account,
             DeviceId::mint(account, [device_seed; 16]),
@@ -1106,7 +1106,7 @@ mod recipient_tests {
     ) -> (DeviceId, AccountId) {
         let genesis = AccountGenesis::new(account_root_sk.public_key());
         let account = genesis.account_id();
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             account_root_sk,
             account,
             DeviceId::mint(account, [device_seed; 16]),
@@ -1232,7 +1232,7 @@ mod recipient_tests {
         // Rotate the account root onto a key that is NOT a member of the group.
         let genesis = AccountGenesis::new(member_sk.public_key());
         let offline_root = PrivateKey::from([0x77u8; 32]);
-        let handoff = calimero_account::sign_root_key_handoff(
+        let handoff = calimero_account::RootKeyHandoff::sign(
             &member_sk,
             genesis.account_id(),
             0,

@@ -5,7 +5,7 @@
 use super::support::{genesis_for, key, sign_handoff};
 use crate::account::{AccountGenesis, ACCOUNT_GENESIS_VERSION};
 use crate::error::AccountError;
-use crate::root_key::{root_key_at_epoch, sign_root_key_handoff, MAX_ROOT_KEY_HANDOFFS};
+use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
 
 #[test]
 fn empty_chain_resolves_to_the_genesis_key() {
@@ -130,7 +130,7 @@ fn an_overlong_handoff_chain_is_refused_before_any_verification() {
     // than relying on every caller to bound the field first.
     let g = genesis_for(&key(1));
     let bogus =
-        sign_root_key_handoff(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
+        RootKeyHandoff::sign(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
     let chain = vec![bogus; MAX_ROOT_KEY_HANDOFFS + 1];
     assert_eq!(
         root_key_at_epoch(&g, &chain, 0),
@@ -157,8 +157,8 @@ fn a_minted_handoff_chain_verifies() {
     let account = g.account_id();
 
     let chain = [
-        sign_root_key_handoff(&r0, account, 0, &r1.public_key()).expect("sign"),
-        sign_root_key_handoff(&r1, account, 1, &r2.public_key()).expect("sign"),
+        RootKeyHandoff::sign(&r0, account, 0, &r1.public_key()).expect("sign"),
+        RootKeyHandoff::sign(&r1, account, 1, &r2.public_key()).expect("sign"),
     ];
 
     for (epoch, expected) in [&r0, &r1, &r2].into_iter().enumerate() {

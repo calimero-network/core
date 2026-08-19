@@ -509,15 +509,15 @@ impl SyncManager {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
-        if credential.genesis.account_id() != credential.cert.account {
+        if credential.genesis.account_id() != credential.statement.account {
             return Err("genesis does not derive the account the certificate claims".to_owned());
         }
 
         let verified = calimero_account::verify_device_cert(
-            credential.cert.account,
+            credential.statement.account,
             &credential.genesis,
             &credential.chain,
-            &credential.cert,
+            &credential.statement,
         )
         .map_err(|e| format!("{e}"))?;
 
@@ -527,7 +527,7 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok(credential.cert.account)
+        Ok(credential.statement.account)
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -2456,7 +2456,7 @@ mod open_subgroup_key_tests {
 /// the deny-list gate downstream has an account to read its rows under.
 #[cfg(test)]
 mod joiner_credential_tests {
-    use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use rand::rngs::OsRng;
@@ -2467,7 +2467,7 @@ mod joiner_credential_tests {
     fn credential_for(sign_pk: &PublicKey) -> (JoinAccountCredential, AccountGenesis) {
         let root_sk = PrivateKey::random(&mut OsRng);
         let genesis = AccountGenesis::new(root_sk.public_key());
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
             DeviceId::from([0xD1; 32]),
@@ -2481,7 +2481,7 @@ mod joiner_credential_tests {
             JoinAccountCredential {
                 genesis,
                 chain: vec![],
-                cert,
+                statement: cert,
             },
             genesis,
         )

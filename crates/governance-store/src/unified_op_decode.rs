@@ -148,7 +148,7 @@ fn carried_authorship(
             | RootOp::MemberJoinedAt { account, .. }
             | RootOp::NamespaceCreated { account, .. }
             | RootOp::MemberJoinedViaTeeAttestation { account, .. },
-        ) => &account.cert,
+        ) => &account.statement,
         // A device link rides an ENCRYPTED group op, so its certificate is only
         // legible once the op decrypts. An undecryptable one folds to a `Noop`
         // and keeps the stand-in — it carries no readable claim to attribute to.

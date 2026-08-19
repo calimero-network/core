@@ -846,7 +846,7 @@ impl<'a> AccountBindingRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
-    use calimero_account::{sign_device_cert, sign_root_key_handoff, KemPublicKey};
+    use calimero_account::{DeviceCert, KemPublicKey, RootKeyHandoff};
     use calimero_primitives::identity::PrivateKey;
 
     fn key(seed: u8) -> PrivateKey {
@@ -865,7 +865,7 @@ mod tests {
         device_epoch: u32,
     ) -> DeviceCert {
         let account = genesis.account_id();
-        sign_device_cert(
+        DeviceCert::sign(
             signer,
             account,
             DeviceId::mint(account, [device_seed; 16]),
@@ -1039,7 +1039,7 @@ mod tests {
         assert!(low < high);
 
         let cert_for_device = |device: DeviceId, seed: u8| {
-            sign_device_cert(
+            DeviceCert::sign(
                 &key(1),
                 account,
                 device,
@@ -1105,7 +1105,7 @@ mod tests {
         let (low, high) = (DeviceId::from(low), DeviceId::from(high));
 
         let cert_at = |device: DeviceId, seed: u8, key_epoch: u32| {
-            sign_device_cert(
+            DeviceCert::sign(
                 &key(if key_epoch == 0 { 1 } else { 2 }),
                 account,
                 device,
@@ -1117,7 +1117,7 @@ mod tests {
             .expect("sign")
         };
         let handoff =
-            sign_root_key_handoff(&key(1), account, 0, &key(2).public_key()).expect("sign");
+            RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
 
         // Certified at epoch 1 so the rotation does not supersede them and mask
         // the collision property.
@@ -1224,7 +1224,7 @@ mod tests {
             .expect("store")
             .expect("admitted");
         let handoff =
-            sign_root_key_handoff(&key(1), account, 0, &key(2).public_key()).expect("sign");
+            RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
         repo.apply_rotation(&gid, &handoff)
             .expect("store")
             .expect("rotated");
@@ -1299,7 +1299,7 @@ mod tests {
         let repo = AccountBindingRepository::new(&store);
         let g = genesis_for(1);
         let handoff =
-            sign_root_key_handoff(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
+            RootKeyHandoff::sign(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
         assert_eq!(
             repo.apply_rotation(&gid, &handoff).expect("store"),
             Err(BindingRejected::RotationNotContinuous)
@@ -1331,7 +1331,7 @@ mod tests {
         let _ = repo.apply_link(&gid, &g, &[], &v0).expect("store");
 
         // Same device id, fresh keypair, higher epoch — accepted.
-        let v1 = sign_device_cert(
+        let v1 = DeviceCert::sign(
             &key(1),
             g.account_id(),
             v0.device,
@@ -1368,7 +1368,7 @@ mod tests {
         let _ = repo.apply_link(&gid, &alice, &[], &cert).expect("store");
 
         // Mallory certifies the same device id under his own account.
-        let hijack = sign_device_cert(
+        let hijack = DeviceCert::sign(
             &key(2),
             mallory.account_id(),
             cert.device,
@@ -1405,7 +1405,7 @@ mod tests {
         let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device_sign_pk = key(3).public_key();
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &root,
             account,
             DeviceId::mint(account, [0xAB; 16]),
@@ -1480,7 +1480,7 @@ mod tests {
             .apply_link(&gid, &c, &[], &cert_for(&c, &key(3), 8, 0, 0))
             .expect("store")
             .expect("admitted");
-        let handoff = sign_root_key_handoff(&key(3), c.account_id(), 0, &key(4).public_key())
+        let handoff = RootKeyHandoff::sign(&key(3), c.account_id(), 0, &key(4).public_key())
             .expect("sign handoff");
         repo.apply_rotation(&gid, &handoff)
             .expect("store")
@@ -1521,7 +1521,7 @@ mod tests {
         assert!(low < high);
 
         let cert_for_device = |device: DeviceId, seed: u8| {
-            sign_device_cert(
+            DeviceCert::sign(
                 &key(1),
                 account,
                 device,

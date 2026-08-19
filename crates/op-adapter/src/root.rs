@@ -85,7 +85,7 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
                     role,
                     genesis: account.genesis,
                     chain: account.chain.clone(),
-                    cert: account.cert,
+                    cert: account.statement,
                 }
             } else {
                 // Membership stands, the device does not — the same verdict the
@@ -106,7 +106,7 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
             OpPayload::DeviceLinked {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             }
         } else {
             OpPayload::Noop
@@ -126,11 +126,11 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
                 // The op names the attested KEY, so the account comes from the
                 // credential — which the branch condition has just confirmed
                 // certifies that key.
-                member: account.cert.account,
+                member: account.statement.account,
                 role: role.clone(),
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             }
         } else {
             // A credential that does not certify the attested key names no
@@ -182,7 +182,7 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
             OpPayload::DeviceLinked {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             }
         } else {
             OpPayload::Noop

@@ -2,7 +2,7 @@
 
 use thiserror::Error as ThisError;
 
-use calimero_primitives::identity::AccountId;
+use calimero_primitives::identity::{AccountId, DeviceId};
 
 /// Why a credential failed verification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ThisError)]
@@ -85,4 +85,17 @@ pub enum AccountError {
     /// epoch.
     #[error("revocation has an invalid signature for its claimed key epoch")]
     RevocationSignatureInvalid,
+    /// The revocation names a different device than the caller is withdrawing.
+    ///
+    /// Distinct from [`Self::RevocationAccountMismatch`] because it sends whoever
+    /// reads it somewhere different: the account matched and the *device* did not,
+    /// so the proof is a valid one presented against the wrong subject rather
+    /// than a proof for the wrong account.
+    #[error("revocation is for device {named}, not the {expected} being withdrawn")]
+    RevocationDeviceMismatch {
+        /// The device the proof actually names.
+        named: DeviceId,
+        /// The device the caller is withdrawing.
+        expected: DeviceId,
+    },
 }
