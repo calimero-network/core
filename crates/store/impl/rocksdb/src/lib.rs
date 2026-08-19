@@ -45,6 +45,7 @@
 //! method:
 //! - `max_open_files`: Controls file descriptor usage (default: 256)
 //! - Block cache: 128MB LRU cache for frequently accessed blocks
+//! - `max_total_wal_size`: Bounds write-ahead log retention (default: 256MB)
 //!
 //! If you need to adjust these settings, modify the `Options` in `RocksDB::open()`.
 
@@ -73,6 +74,23 @@ const DEFAULT_MAX_OPEN_FILES: i32 = 256;
 /// The block cache stores frequently accessed data blocks in memory,
 /// reducing disk I/O for hot data.
 const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024;
+
+/// Cap on the total size of write-ahead logs kept on disk (256MB).
+///
+/// RocksDB retains every WAL back to the oldest UNFLUSHED memtable across all
+/// column families, so a family that is written to rarely pins every log
+/// written since it last flushed — however much that is. With the per-family
+/// `write_buffer_size` at its 64MB default and 20+ families, cold ones such as
+/// `Meta` or `Generic` can go days without reaching that threshold while `State`
+/// flushes thousands of times, so the WAL grows without bound.
+///
+/// Observed on a real node before this cap: 19GB of WAL guarding 109MB of SST
+/// data, growing ~10GB/day, pinned by two families that had last flushed two
+/// days earlier. Setting this makes RocksDB flush whichever family holds the
+/// oldest log once the total crosses the cap, which lets the old logs be
+/// deleted. 256MB is far above normal steady-state need here and still bounds
+/// the directory.
+const DEFAULT_MAX_TOTAL_WAL_SIZE: u64 = 256 * 1024 * 1024;
 
 /// RocksDB database wrapper implementing the `Database` trait.
 ///
@@ -128,6 +146,11 @@ impl Database<'_> for RocksDB {
 
         // Configure block cache for better read performance.
         // This cache stores frequently accessed data blocks in memory.
+        // Bound the write-ahead log. Without this RocksDB keeps every WAL back
+        // to the oldest unflushed memtable, so one rarely-written column family
+        // pins them all (see DEFAULT_MAX_TOTAL_WAL_SIZE).
+        options.set_max_total_wal_size(DEFAULT_MAX_TOTAL_WAL_SIZE);
+
         let cache = rocksdb::Cache::new_lru_cache(DEFAULT_BLOCK_CACHE_SIZE);
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         block_opts.set_block_cache(&cache);
@@ -264,7 +287,18 @@ impl Database<'_> for RocksDB {
         // durable WAL still covers every write. Called on controlled shutdown;
         // `Drop` runs the same sequence for the abrupt path.
         self.db.flush_wal(true)?;
-        self.db.flush()?;
+
+        // Every column family, not `self.db.flush()`. That maps to the C API's
+        // `rocksdb_flush`, which flushes the DEFAULT family only — and nothing
+        // in this store writes to `default`. So the previous call flushed an
+        // always-empty family while every real one (State, Delta, Blobs, ...)
+        // kept its memtable, and with it the WALs those memtables pin.
+        let handles = Column::iter()
+            .map(|column| self.try_cf_handle(column))
+            .collect::<EyreResult<Vec<_>>>()?;
+        self.db
+            .flush_cfs_opt(&handles, &rocksdb::FlushOptions::default())?;
+
         Ok(())
     }
 
