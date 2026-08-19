@@ -56,7 +56,7 @@ fn a_genesis_whose_founder_credential_can_never_bind_is_refused() {
         panic!("the fixture builds a NamespaceCreated");
     };
     let mut account = account;
-    account.cert.signature = [0xFFu8; 64];
+    account.statement.signature = [0xFFu8; 64];
     let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder, account });
 
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, forged)
@@ -6029,7 +6029,7 @@ fn responder_refuses_delivery_to_non_member() {
 /// rotation had just enforced.
 #[test]
 fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
-    use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
     use calimero_crypto::X25519SecretKey;
     use calimero_governance_types::{EnvelopeRecipient, KeyEnvelope};
 
@@ -6081,7 +6081,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
         "a key bound to no account here speaks for nobody and must be served nothing"
     );
 
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &member_sk,
         account,
         device,
@@ -6801,7 +6801,7 @@ fn apply_open_join_with(
     // credential names the member it admits.
     let gov = NamespaceGovernance::new(store, namespace_id.into());
     let head = gov.read_head_record().expect("read head");
-    let joiner_account = account.cert.account;
+    let joiner_account = account.statement.account;
     let join = SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
@@ -6868,7 +6868,7 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     );
 
     let account = crate::test_fixtures::real_join_account(&joiner);
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
         .expect("the join applies");
 
@@ -6920,7 +6920,12 @@ fn a_refused_credential_leaves_the_membership_intact() {
         0,
     );
     let _ = crate::AccountBindingRepository::new(&store)
-        .apply_link(&ns_gid, &squatter.genesis, &squatter.chain, &squatter.cert)
+        .apply_link(
+            &ns_gid,
+            &squatter.genesis,
+            &squatter.chain,
+            &squatter.statement,
+        )
         .expect("seed the conflicting device claim");
 
     apply_open_join_with(
@@ -6969,7 +6974,7 @@ fn a_credential_certified_for_another_key_is_refused() {
     // one costs an attacker nothing.
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
-    let victim_account = stolen.cert.account;
+    let victim_account = stolen.statement.account;
 
     // Refused OUTRIGHT — not "admitted without a binding". A member names an
     // account, so presenting the victim's credential is claiming to be the
@@ -7014,7 +7019,7 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     let (root_sk, genesis) = crate::test_fixtures::test_account_root();
     let device = [0x7C; 32];
     let first = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
-    let account_id = first.cert.account;
+    let account_id = first.statement.account;
     namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &account_id);
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, first)
         .expect("first join applies");
@@ -7072,7 +7077,7 @@ fn a_tee_admission_binds_the_replicas_device() {
     let replica = replica_sk.public_key();
     let replica_account = enrol_member(&store, &ns_gid, &replica);
     let account = crate::test_fixtures::real_join_account(&replica);
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
 
     // Authored by the VERIFIER, not the replica — a replica cannot admit itself.
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
@@ -7175,7 +7180,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
     let replica_account = enrol_member(&store, &ns_gid, &replica);
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
-    let victim_account = stolen.cert.account;
+    let victim_account = stolen.statement.account;
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
@@ -7301,11 +7306,16 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
     let member_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let member = member_sk.public_key();
     let account = crate::test_fixtures::real_join_account(&member);
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
 
     // Bound at the namespace, exactly as a join records it.
     crate::AccountBindingRepository::new(&store)
-        .apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)
+        .apply_link(
+            &ns_gid,
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+        )
         .expect("store")
         .expect("admitted");
 
@@ -7355,7 +7365,12 @@ fn a_revoked_device_resolves_to_nothing() {
 
     let bindings = crate::AccountBindingRepository::new(&store);
     let binding = bindings
-        .apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)
+        .apply_link(
+            &ns_gid,
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+        )
         .expect("store")
         .expect("admitted");
     assert!(crate::member_account_in_namespace(&store, &ns_gid, &member)

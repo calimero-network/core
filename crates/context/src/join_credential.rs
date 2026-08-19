@@ -22,7 +22,7 @@
 //! signed by the namespace identity still serializes, and is refused by every peer
 //! while the local enrolment looks fine.
 
-use calimero_account::sign_device_cert;
+use calimero_account::DeviceCert;
 use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::NodeDeviceRepository;
@@ -66,7 +66,7 @@ pub fn build(
         .ensure_enrolled(namespace_id)
         .wrap_err("join credential: could not mint this node's device")?;
 
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         root.signing_key(),
         enrolled.account,
         enrolled.device(),
@@ -92,6 +92,6 @@ pub fn build(
         // device epoch) — a first join has no such rows to read, so that is a
         // different function, not a bigger one.
         chain: vec![],
-        cert,
+        statement: cert,
     }))
 }

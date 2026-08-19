@@ -77,14 +77,17 @@ pub(crate) fn apply_device_linked(
     // ...and be validly signed by the key it names. Cheap, self-contained, and
     // checked before the at-cut membership question so a forged endorsement costs
     // no fold work.
-    if calimero_account::verify_account_endorsement(endorsement).is_err() {
+    // Shadowed by the verified form deliberately: the membership question below
+    // reads the endorser's key, and reading it off the wrapper means it cannot be
+    // read off a struct whose signature was never checked.
+    let Ok(endorsement) = endorsement.verify() else {
         log_refusal(
             &group_id,
             "device link",
             &BindingRejected::EndorsementInvalid,
         );
         return Ok(());
-    }
+    };
     if !endorser_is_member(ctx, &endorsement.member)? {
         log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
         return Ok(());
@@ -205,7 +208,7 @@ pub(crate) fn apply_device_unlinked(
             false
         }
         Some(proof) => match proof.authorises(*account, *device) {
-            Ok(()) => true,
+            Ok(_) => true,
             Err(err) => {
                 // A proof that does not verify is a deterministic refusal, not an
                 // error: every replica reaches it identically from the op alone.

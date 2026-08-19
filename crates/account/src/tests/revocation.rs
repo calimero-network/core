@@ -6,7 +6,7 @@ use calimero_primitives::identity::{DeviceId, PrivateKey};
 use super::support::{key, rotated};
 use crate::account::AccountGenesis;
 use crate::error::AccountError;
-use crate::revocation::{sign_device_revocation, verify_device_revocation};
+use crate::revocation::{verify_device_revocation, DeviceRevocation};
 
 #[test]
 fn a_root_signed_revocation_verifies_from_the_account_id_alone() {
@@ -15,7 +15,7 @@ fn a_root_signed_revocation_verifies_from_the_account_id_alone() {
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0x22; 16]);
 
-    let revocation = sign_device_revocation(&root, account, device, 0).expect("sign");
+    let revocation = DeviceRevocation::sign(&root, account, device, 0).expect("sign");
     assert!(verify_device_revocation(account, &genesis, &[], &revocation).is_ok());
 }
 
@@ -33,7 +33,7 @@ fn a_revocation_survives_a_later_root_key_rotation() {
     let device = DeviceId::mint(account, [0x22; 16]);
 
     // Signed by the OLD root, before the rotation.
-    let revocation = sign_device_revocation(&root, account, device, 0).expect("sign");
+    let revocation = DeviceRevocation::sign(&root, account, device, 0).expect("sign");
 
     assert!(
         verify_device_revocation(account, &genesis, &[handoff], &revocation).is_ok(),
@@ -49,7 +49,7 @@ fn the_new_root_may_also_revoke() {
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0x22; 16]);
 
-    let revocation = sign_device_revocation(&next, account, device, 1).expect("sign");
+    let revocation = DeviceRevocation::sign(&next, account, device, 1).expect("sign");
     assert!(verify_device_revocation(account, &genesis, &[handoff], &revocation).is_ok());
 }
 
@@ -63,7 +63,7 @@ fn a_revocation_signed_by_a_stranger_is_refused() {
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0x22; 16]);
 
-    let forged = sign_device_revocation(&stranger, account, device, 0).expect("sign");
+    let forged = DeviceRevocation::sign(&stranger, account, device, 0).expect("sign");
     assert!(matches!(
         verify_device_revocation(account, &genesis, &[], &forged),
         Err(AccountError::RevocationSignatureInvalid)
@@ -78,7 +78,7 @@ fn a_revocation_cannot_be_replayed_onto_another_device_or_account() {
     let device = DeviceId::mint(account, [0x22; 16]);
     let other_device = DeviceId::mint(account, [0x23; 16]);
 
-    let mut revocation = sign_device_revocation(&root, account, device, 0).expect("sign");
+    let mut revocation = DeviceRevocation::sign(&root, account, device, 0).expect("sign");
     revocation.device = other_device;
     assert!(
         matches!(
@@ -89,7 +89,7 @@ fn a_revocation_cannot_be_replayed_onto_another_device_or_account() {
     );
 
     let elsewhere = AccountGenesis::new(key(2).public_key());
-    let honest = sign_device_revocation(&root, account, device, 0).expect("sign");
+    let honest = DeviceRevocation::sign(&root, account, device, 0).expect("sign");
     assert!(
         matches!(
             verify_device_revocation(elsewhere.account_id(), &elsewhere, &[], &honest),
@@ -106,7 +106,7 @@ fn a_revocation_claiming_an_unreachable_epoch_is_refused() {
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [0x22; 16]);
 
-    let revocation = sign_device_revocation(&root, account, device, 5).expect("sign");
+    let revocation = DeviceRevocation::sign(&root, account, device, 5).expect("sign");
     assert!(matches!(
         verify_device_revocation(account, &genesis, &[], &revocation),
         Err(AccountError::EpochOutOfRange { .. })

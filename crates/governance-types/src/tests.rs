@@ -1506,7 +1506,7 @@ mod governance_op_storage_roundtrip {
         let genesis = calimero_account::AccountGenesis::new(root);
 
         Box::new(JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
+            statement: calimero_account::DeviceCert {
                 account: genesis.account_id(),
 
                 device: calimero_account::DeviceId::from([0x3E; 32]),

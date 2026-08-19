@@ -775,7 +775,7 @@ fn real_join_account_for(
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let root_sk = PrivateKey::random(&mut OsRng);
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
         calimero_account::DeviceId::from(device),
@@ -789,7 +789,7 @@ fn real_join_account_for(
         calimero_context_client::local_governance::JoinAccountCredential {
             genesis,
             chain: vec![],
-            cert,
+            statement: cert,
         },
     )
 }
@@ -824,7 +824,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     // bare key resolved to — the two agreed only because they were the same
     // derivation, which no production namespace reproduces.
     let admin_credential = real_join_account_for(&admin, [0x6C; 32]);
-    let admin_account = admin_credential.cert.account;
+    let admin_account = admin_credential.statement.account;
     MetaRepository::new(&store)
         .save(&ns, &meta(admin_account))
         .unwrap();
@@ -968,7 +968,7 @@ fn the_founder_is_admin_at_the_cut_on_a_node_that_only_synced_genesis() {
 
     let credential = calimero_context::test_support::credential(&founder_key);
     let genesis = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: credential.cert.account,
+        founder: credential.statement.account,
         account: credential,
     });
     let signed = SignedNamespaceOp::sign(&founder_sk, (*founder_key).into(), vec![], 0, genesis)
@@ -1049,7 +1049,7 @@ fn both_planes_resolve_the_founder_identically_at_every_cut() {
     let ns = ContextGroupId::from(*founder_key);
 
     let credential = calimero_context::test_support::credential(&founder_key);
-    let founder_account = credential.cert.account;
+    let founder_account = credential.statement.account;
     let signed_genesis = SignedNamespaceOp::sign(
         &founder_sk,
         (*founder_key).into(),
@@ -1141,7 +1141,7 @@ fn an_explicit_binding_outranks_the_key_derived_stand_in() {
     let ns = ContextGroupId::from(*founder_key);
 
     let credential = calimero_context::test_support::credential(&founder_key);
-    let founder_account = credential.cert.account;
+    let founder_account = credential.statement.account;
     // The two ids for one key. They are different by construction, which is the
     // whole reason the precedence matters.
     assert_ne!(
@@ -1232,8 +1232,8 @@ fn a_join_is_attributed_to_the_account_its_certificate_names() {
     let group = ContextGroupId::from([0x22; 32]);
 
     let credential = real_join_account_for(&joiner, [0x4D; 32]);
-    let certified_account = credential.cert.account;
-    let certified_device = credential.cert.device;
+    let certified_account = credential.statement.account;
+    let certified_device = credential.statement.device;
 
     let join = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -1302,7 +1302,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
     let account = genesis.account_id();
     let device_sk = PrivateKey::from([0x62u8; 32]);
     let device_key = device_sk.public_key();
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         account,
         calimero_account::DeviceId::from([0x63; 32]),
@@ -1321,7 +1321,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
         genesis,
         chain: vec![],
         cert,
-        endorsement: calimero_account::sign_account_endorsement(&device_sk, account)
+        endorsement: calimero_account::AccountMemberEndorsement::sign(&device_sk, account)
             .expect("endorse"),
     };
     let link_id = [0xC1; 32];
@@ -1334,7 +1334,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
     ));
 
     // That device now rotates its account's root key.
-    let handoff = calimero_account::sign_root_key_handoff(
+    let handoff = calimero_account::RootKeyHandoff::sign(
         &root_sk,
         account,
         0,

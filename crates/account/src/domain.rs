@@ -1,12 +1,16 @@
 //! Every signing and content-address domain this crate uses, in one place.
 //!
+//! # Why it is shaped this way
+//!
 //! They are collected here rather than declared beside their users because the
 //! property that matters is a property of the *set*: any two that collide would
 //! let a signature minted for one purpose be replayed as another. Keeping them
 //! together is what makes `signing_domains_are_pairwise_distinct` a check over
 //! the whole crate instead of over whichever module happened to be in view.
-
-use borsh::BorshSerialize;
+//!
+//! [`PAIRING_CONFIRMATION_HEX_LEN`] is the one non-domain here, and it sits
+//! beside the domain it belongs to: the confirmation code's length is the work
+//! factor its separated domain exists to protect.
 
 /// Domain separator for the [`crate::AccountId`] content address.
 pub(crate) const ACCOUNT_ID_DOMAIN: &[u8] = b"calimero.account.genesis.v1";
@@ -32,6 +36,10 @@ pub(crate) const PAIRING_STATEMENT_SIGN_DOMAIN: &[u8] = b"calimero.device.pairin
 /// disclosure of bytes something signs over.
 pub(crate) const PAIRING_CONFIRMATION_DOMAIN: &[u8] = b"calimero.device.pairing.confirm.v1";
 
+/// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
+/// excluding its separators. Eight bytes of digest.
+pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -46,21 +54,3 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_STATEMENT_SIGN_DOMAIN,
     PAIRING_CONFIRMATION_DOMAIN,
 ];
-
-/// Serialize with borsh into a `Vec<u8>`.
-///
-/// **Deliberately not fallible, even though the signing helpers that call it
-/// return `Result`.** Its other callers are the content addresses —
-/// [`crate::AccountGenesis::account_id`], [`crate::DeviceId::mint`], every
-/// `payload()` — and an id computation that can fail is a worse API than a panic
-/// that cannot happen: it would put a `Result` on the most-called function in
-/// this crate to model an outcome no input can produce. The failure the signing
-/// helpers *can* have is the signer refusing, and that is what
-/// [`crate::AccountError::SigningFailed`] is.
-///
-/// # Panics
-/// Never: every type passed here is fixed-size plain data, and a `Vec` writer has
-/// no failure mode, so `borsh::to_vec` has nothing to fail on.
-pub(crate) fn borsh_bytes<T: BorshSerialize>(value: &T) -> Vec<u8> {
-    borsh::to_vec(value).expect("borsh serialization of a plain-data type is infallible")
-}

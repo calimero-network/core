@@ -2,9 +2,7 @@
 //! endorsement commits to exactly the (account, member) pair.
 
 use super::support::{genesis_for, key};
-use crate::account::{
-    sign_account_endorsement, verify_account_endorsement, AccountGenesis, ACCOUNT_GENESIS_VERSION,
-};
+use crate::account::{AccountGenesis, AccountMemberEndorsement, ACCOUNT_GENESIS_VERSION};
 use crate::error::AccountError;
 
 // ---- the account id ----
@@ -69,23 +67,23 @@ fn an_endorsement_round_trips_and_rejects_forgery() {
     let member = key(1);
     let account = genesis_for(&key(9)).account_id();
 
-    let endorsement = sign_account_endorsement(&member, account).expect("sign");
-    assert_eq!(verify_account_endorsement(&endorsement), Ok(()));
+    let endorsement = AccountMemberEndorsement::sign(&member, account).expect("sign");
+    assert!(endorsement.verify().is_ok());
 
     // A flipped signature byte fails.
     let mut tampered = endorsement;
     tampered.signature[0] ^= 0xFF;
     assert_eq!(
-        verify_account_endorsement(&tampered),
-        Err(AccountError::EndorsementSignatureInvalid)
+        tampered.verify().err(),
+        Some(AccountError::EndorsementSignatureInvalid)
     );
 
     // Naming a different account fails: the account is inside the payload.
     let mut moved = endorsement;
     moved.account = genesis_for(&key(8)).account_id();
     assert_eq!(
-        verify_account_endorsement(&moved),
-        Err(AccountError::EndorsementSignatureInvalid)
+        moved.verify().err(),
+        Some(AccountError::EndorsementSignatureInvalid)
     );
 }
 
@@ -99,11 +97,11 @@ fn an_endorsement_cannot_be_re_presented_as_another_members() {
     let other = key(2);
     let account = genesis_for(&key(9)).account_id();
 
-    let mut stolen = sign_account_endorsement(&real, account).expect("sign");
+    let mut stolen = AccountMemberEndorsement::sign(&real, account).expect("sign");
     stolen.member = other.public_key();
     assert_eq!(
-        verify_account_endorsement(&stolen),
-        Err(AccountError::EndorsementSignatureInvalid)
+        stolen.verify().err(),
+        Some(AccountError::EndorsementSignatureInvalid)
     );
 }
 
@@ -117,11 +115,12 @@ fn endorsing_someone_elses_account_is_harmless() {
     let stranger = key(7);
     let someone_elses = genesis_for(&key(9)).account_id();
 
-    let endorsement = sign_account_endorsement(&stranger, someone_elses).expect("sign");
-    assert_eq!(
-        verify_account_endorsement(&endorsement),
-        Ok(()),
+    let endorsement = AccountMemberEndorsement::sign(&stranger, someone_elses).expect("sign");
+    let verified = endorsement.verify().expect(
         "an endorsement is internally valid regardless of who made it; whether \
-         the endorser is a member is a separate at-cut question"
+         the endorser is a member is a separate at-cut question",
     );
+    // The wrapper is what a gate reads the endorser out of, so it cannot reach
+    // the key without having checked the signature over it first.
+    assert_eq!(verified.member, stranger.public_key());
 }

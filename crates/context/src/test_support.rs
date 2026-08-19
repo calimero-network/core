@@ -27,7 +27,7 @@ fn credential_for(
 ) {
     let root_sk = PrivateKey::from(*(*sign_pk));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
         // The device id is derived from the signing key rather than fixed: a
@@ -57,7 +57,7 @@ pub fn credential(
         calimero_context_client::local_governance::JoinAccountCredential {
             genesis,
             chain: vec![],
-            cert,
+            statement: cert,
         },
     )
 }
