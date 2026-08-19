@@ -340,7 +340,6 @@ jobs:
   # structurally cannot escape into real distribution.
   release-app-bundle:
     name: Release App Bundle
-    if: needs.prepare.outputs.binary_release == 'true'
     runs-on: ubuntu-latest
     needs: [prepare]
     concurrency:
@@ -368,7 +367,10 @@ jobs:
       - name: Build the kv-store bundle
         run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
 
+      # Gated like `release-binaries`: a PR builds the bundle (so a break in
+      # `cargo mero bundle` fails the PR that caused it) but publishes nothing.
       - name: Upload the bundle to the release
+        if: needs.prepare.outputs.binary_release == 'true'
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
