@@ -4,14 +4,50 @@
 //! for the account it claims, and does that account hold the authority the
 //! payload needs. Everything else in the crate exists to answer one of those two
 //! questions.
+//!
+//! # Why it is shaped this way
+//!
+//! **Stage one is resolved from the cut, never from live store.** `Op::verify`
+//! already proved the signature genuine; that is integrity, not authority. Only
+//! the cut knows which links and revocations are in force, and a verdict that
+//! depended on receiver state would let two nodes disagree about the same op and
+//! diverge on `scope_root`.
+//!
+//! **Two payloads skip stage one, and only those two.** `DeviceLinked` is the op
+//! that *establishes* a binding, so it cannot be asked to present one; its own
+//! admission rules stand in. `MemberJoinedWithDevice` carries its credential for
+//! the same reason, at the one cut where the binding provably cannot have folded
+//! yet — the op establishing it is this one. Both then make the possession check
+//! in [`check_op_is_the_certified_device`], which is the part that keeps the
+//! exemption from becoming a hole.
+//!
+//! **The data arms inline their masks instead of calling
+//! [`required_mask_for`].** Each arm carries its literal required mask, so there
+//! is no `Option` to unwrap and no fallback arm that could silently deny — or
+//! panic — if the arms ever drift. The cost is that the payload→mask mapping
+//! exists twice; `required_mask_for_agrees_with_the_mask_authorize_enforces` is
+//! what keeps the copies honest, since a comment cannot.
+//!
+//! **The `MemberJoinedWithDevice` arm fails closed for an ordinary self-service
+//! join, on purpose.** A join's real warrant is the admin-signed invitation, and
+//! `OpPayload` has nowhere to put one — so this gate cannot decide a join in the
+//! affirmative, and a gate that cannot decide must refuse rather than guess. A
+//! genuine non-admin joiner is therefore rejected. That is survivable only
+//! because the live governance apply is what actually gates a join today;
+//! `authorize` has no caller on the join path.
+//!
+//! **Do not wire `authorize` into the join path until the invitation is carried
+//! in the payload** — doing so would refuse every self-service join. The
+//! credential half IS decidable from the op alone, so it is decided here rather
+//! than deferred: without it the arm would accept whatever bytes the payload
+//! carried, which is a worse trap than refusing.
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, VerifiedDeviceCert};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Op, OpPayload};
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
-use crate::admission::{admit_device_link, admit_key_rotation};
 use crate::error::Rejected;
 use crate::view::AclView;
 
@@ -22,6 +58,9 @@ use crate::view::AclView;
 /// contained by *every* mask, so a `NONE` requirement fed to [`AclView::may`]
 /// would authorize anyone — a footgun if a non-data payload ever reached a
 /// `may` check. `None` makes that misuse impossible to express.
+///
+/// `authorize` does not call this — see the module docs — so it is a helper for
+/// callers outside the decision, held to the same answer by test.
 #[must_use]
 pub fn required_mask_for(payload: &OpPayload) -> Option<OpMask> {
     match payload {
@@ -41,8 +80,38 @@ fn check_data(
     if acl_at_cut.may(author, entity, required) {
         Ok(())
     } else {
-        Err(Rejected::NotPermitted { required })
+        Err(Rejected::NotPermitted { entity, required })
     }
+}
+
+/// The possession half of a credential-bearing op: was it authored by the very
+/// device the certificate grants, on behalf of the very account it grants to?
+///
+/// Both credential arms need exactly this, and needed it identically — written
+/// out twice, the two could come to disagree about which of `device`, `device_key`
+/// and `account` must match, and the weaker copy would be the one an attacker
+/// used. Without it, anyone who observed a certificate could replay it and act on
+/// the real device's behalf; requiring possession makes the op an act OF the
+/// device rather than an assertion about it.
+fn check_op_is_the_certified_device(
+    op: &Op,
+    verified: &VerifiedDeviceCert,
+) -> Result<(), Rejected> {
+    if op.authorship.device_key != verified.sign_pk || op.authorship.device != verified.device {
+        return Err(Rejected::DeviceKeyStale {
+            device: verified.device,
+        });
+    }
+    // And that the account it acts as is the one the certificate grants to,
+    // rather than any account the payload cared to name.
+    if op.author() != verified.account {
+        return Err(Rejected::DeviceAccountMismatch {
+            device: verified.device,
+            bound: verified.account,
+            claimed: op.author(),
+        });
+    }
+    Ok(())
 }
 
 /// Authorize `op` against `acl_at_cut` — the [`AclView`] resolved at
@@ -52,18 +121,7 @@ fn check_data(
 /// Returns the plane-specific [`Rejected`] reason when the author lacks the
 /// authority the op's payload requires.
 pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
-    // Stage one: does the key that signed this op currently speak for the
-    // account the op claims? `Op::verify` already proved the signature genuine;
-    // that is integrity, not authority. Only the cut knows which links and
-    // revocations are in force, which is why the binding is resolved here and
-    // never from live store — a verdict that depended on receiver state would
-    // let two nodes disagree about the same op and diverge on `scope_root`.
-    //
-    // `DeviceLinked` is exempt because it is the op that *establishes* a
-    // binding; its own admission rules stand in for this check.
-    // A join carries its own credential for the same reason, and carries it at
-    // the one cut where the binding provably cannot have folded yet — the op
-    // establishing it is this one.
+    // Stage one — see the module docs for why these two payloads are exempt.
     if !matches!(
         op.payload,
         OpPayload::DeviceLinked { .. } | OpPayload::MemberJoinedWithDevice { .. }
@@ -73,10 +131,6 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
 
     // Stage two: does that account hold the authority this payload needs?
     match &op.payload {
-        // Split per data op so each carries its literal required mask — no
-        // `Option` to unwrap, so there is no unreachable fallback that could
-        // silently deny (or panic) if the arms ever drift. `required_mask_for`
-        // remains the public helper for external callers.
         OpPayload::Put { entity, .. } => {
             check_data(acl_at_cut, &op.author(), *entity, OpMask::WRITE)
         }
@@ -97,24 +151,8 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                 Err(Rejected::NotGroupAdmin)
             }
         }
-        // **This arm FAILS CLOSED for an ordinary self-service join, on purpose.**
-        //
-        // A join's real warrant is the admin-signed invitation, and `OpPayload`
-        // has nowhere to put one — so this gate cannot decide a join in the
-        // affirmative, and a gate that cannot decide must refuse rather than
-        // guess. A genuine non-admin joiner is therefore rejected here. That is
-        // survivable only because the live governance apply is what actually
-        // gates a join today; `authorize` has no caller on the join path.
-        //
-        // **Do not wire `authorize` into the join path until the invitation is
-        // carried in the payload** — doing so would refuse every self-service
-        // join. Giving it a home, and with it a rule that can succeed for a
-        // non-admin joiner, belongs with moving the principal fields to
-        // `AccountId`.
-        //
-        // The credential half IS decidable from the op alone, so it is decided
-        // here rather than deferred: without it this arm would accept whatever
-        // bytes the payload carried, which is a worse trap than refusing.
+        // FAILS CLOSED for an ordinary self-service join — see the module docs
+        // before giving this arm a caller.
         OpPayload::MemberJoinedWithDevice {
             group,
             genesis,
@@ -122,37 +160,12 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             cert,
             ..
         } => {
-            let verified = admit_device_link(
-                &acl_at_cut.accounts,
-                &acl_at_cut.devices,
-                &acl_at_cut.revoked_devices,
-                genesis,
-                chain,
-                cert,
-            )?;
-            // The same possession check the `DeviceLinked` arm makes, which a
-            // join could not carry while its authorship was derived from the
-            // signing key: the device it names was fiction, so comparing against
-            // it refused every honest join. The op now names the device its
-            // certificate grants, so requiring the join to be signed BY that
-            // device is decidable — and without it, anyone who observed a
-            // certificate could replay it and join on the real device's behalf.
-            if op.authorship.device_key != verified.sign_pk
-                || op.authorship.device != verified.device
-            {
-                return Err(Rejected::DeviceKeyStale {
-                    device: verified.device,
-                });
-            }
-            // And that the account it joins as is the one the certificate
-            // grants to, rather than any account the payload cared to name.
-            if op.author() != verified.account {
-                return Err(Rejected::DeviceAccountMismatch {
-                    device: verified.device,
-                    bound: verified.account,
-                    claimed: op.author(),
-                });
-            }
+            let verified = acl_at_cut.admit_device_link(genesis, chain, cert)?;
+            // A join could not make this check while its authorship was derived
+            // from the signing key: the device it named was fiction, so comparing
+            // against it refused every honest join. The op now names the device its
+            // certificate grants, which makes the question decidable here.
+            check_op_is_the_certified_device(op, &verified)?;
             // `is_scope_member(verified.account)` still cannot be required — the
             // whole point of a join is that the account is not a member yet.
             if acl_at_cut.is_group_admin(&op.author(), *group) {
@@ -198,32 +211,8 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             chain,
             cert,
         } => {
-            let verified = admit_device_link(
-                &acl_at_cut.accounts,
-                &acl_at_cut.devices,
-                &acl_at_cut.revoked_devices,
-                genesis,
-                chain,
-                cert,
-            )?;
-            // The op must be signed by the very key it enrolls. Without this,
-            // anyone who observed a certificate could replay it and mint a
-            // binding on the real device's behalf; requiring possession makes a
-            // link an act of the device rather than an assertion about it.
-            if op.authorship.device_key != verified.sign_pk
-                || op.authorship.device != verified.device
-            {
-                return Err(Rejected::DeviceKeyStale {
-                    device: verified.device,
-                });
-            }
-            if op.author() != verified.account {
-                return Err(Rejected::DeviceAccountMismatch {
-                    device: verified.device,
-                    bound: verified.account,
-                    claimed: op.author(),
-                });
-            }
+            let verified = acl_at_cut.admit_device_link(genesis, chain, cert)?;
+            check_op_is_the_certified_device(op, &verified)?;
             // The one policy gate: a device may only link itself into a scope
             // its account already belongs to. This is what makes linking cheap
             // and safe at once — the account already holds every right the
@@ -291,7 +280,7 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
                     author: op.author(),
                 });
             }
-            admit_key_rotation(&acl_at_cut.accounts, handoff)
+            acl_at_cut.admit_key_rotation(handoff)
         }
     }
 }
