@@ -54,6 +54,14 @@ runs:
         #            scenario logic runs — every scenario that joins a namespace
         #            fails at the join step (#3485). 0.6.56 also drops the
         #            `requester` step field with the DTOs that lost it (#3492).
+        #   0.6.58 - the bundled `calimero-client-py` is >= 0.6.30, the first
+        #            release whose `add_group_members` reads `identity` as a
+        #            `MemberIdentity`. Below it the binding ran
+        #            `.parse::<PublicKey>().expect(...)`, so an account - the only
+        #            id `list_group_members` returns - panicked the extension
+        #            module before any request was sent, which no
+        #            `expected_failure` can catch. group-add-member-by-account
+        #            cannot express its central call below this floor.
         # UPGRADE_POLICY_COMPAT: the previous note here said to delete it once the
         # bundled client-py stopped requiring `upgradePolicy`. It has — nothing in
         # client-py master sends or reads the field — but deleting the shim is a
@@ -64,7 +72,7 @@ runs:
         # bump. Core's own struct has carried `#[serde(default)]` on the field
         # since before rc.21, so a client compiled from core survives its
         # removal; the two hand-written SDKs are what need the coordination.
-        MIN_MEROBOX="0.6.56"
+        MIN_MEROBOX="0.6.58"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
