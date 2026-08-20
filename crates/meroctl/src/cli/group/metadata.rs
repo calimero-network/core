@@ -1,8 +1,8 @@
 //! `meroctl group metadata ...` — manage generic [`MetadataRecord`]s on a
 //! group, a group member, or a group-registered context.
 
+use calimero_account::AccountId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::SetMetadataApiRequest;
 use clap::{Args, Parser, Subcommand};
 use eyre::{bail, Result};
@@ -166,8 +166,8 @@ pub enum MemberMetadataSubCommands {
             help = "Hex-encoded group ID"
         )]
         group_id: String,
-        #[clap(name = "MEMBER", help = "Member public key")]
-        member: PublicKey,
+        #[clap(name = "MEMBER", help = "Member account (64 hex characters)")]
+        member: AccountId,
     },
     #[command(about = "Update a member's metadata record (read-modify-write)")]
     Set {
@@ -177,8 +177,8 @@ pub enum MemberMetadataSubCommands {
             help = "Hex-encoded group ID"
         )]
         group_id: String,
-        #[clap(name = "MEMBER", help = "Member public key")]
-        member: PublicKey,
+        #[clap(name = "MEMBER", help = "Member account (64 hex characters)")]
+        member: AccountId,
         #[command(flatten)]
         opts: SetOpts,
     },
@@ -189,8 +189,8 @@ impl MemberMetadataCommand {
         let client = environment.client()?;
         match self.subcommand {
             MemberMetadataSubCommands::Get { group_id, member } => {
-                let identity_hex = hex::encode(member.digest());
-                let response = client.get_member_metadata(&group_id, &identity_hex).await?;
+                let account = member.to_string();
+                let response = client.get_member_metadata(&group_id, &account).await?;
                 environment.output.write(&response);
             }
             MemberMetadataSubCommands::Set {
@@ -198,13 +198,10 @@ impl MemberMetadataCommand {
                 member,
                 opts,
             } => {
-                let identity_hex = hex::encode(member.digest());
-                let current = client
-                    .get_member_metadata(&group_id, &identity_hex)
-                    .await?
-                    .data;
+                let account = member.to_string();
+                let current = client.get_member_metadata(&group_id, &account).await?.data;
                 let response = client
-                    .set_member_metadata(&group_id, &identity_hex, opts.into_request(current))
+                    .set_member_metadata(&group_id, &account, opts.into_request(current))
                     .await?;
                 environment.output.write(&response);
             }

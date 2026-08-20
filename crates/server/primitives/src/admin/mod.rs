@@ -5,7 +5,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{AccountId, PublicKey};
+use calimero_primitives::identity::{AccountId, MemberPrincipal, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -1326,25 +1326,27 @@ impl Validate for AddGroupMembersApiRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberApiInput {
-    /// The only KEY-typed principal left on `/groups/:id/members`: every other
-    /// verb on this resource — the GET listing, remove, and the role /
-    /// capabilities / metadata / auto-follow updates — names members by
-    /// [`AccountId`]. A caller therefore has to know which encoding each
-    /// endpoint wants, and the two are rendered differently (bs58 vs 64-hex)
-    /// specifically so a mix-up fails loudly instead of resolving to the wrong
-    /// principal.
+    /// Who to add, named either way round — by ACCOUNT, as a member listing
+    /// renders one, or by one signing KEY that person holds. The encoding says
+    /// which, and the two cannot be confused: see [`MemberPrincipal`].
     ///
-    /// It is a key because an add is the one call whose subject may not have an
-    /// account here yet. An operator adding someone holds the key that person
-    /// signs with; the account is a hash of a genesis this node learns only once
-    /// they have joined, so requiring one would make the endpoint uncallable in
-    /// exactly the case it exists for. The apply resolves this key to the
-    /// account the row is keyed by, and the listing is where the caller reads
-    /// that account back.
+    /// **Prefer the account.** It is the principal the membership row is keyed
+    /// by, it is what `GET .../members` hands back, and it is what a key is
+    /// resolved to before anything is written — so naming it directly skips a
+    /// lookup that can only fail. It is also the only form that can name
+    /// somebody whose key this caller has never seen, which is the ordinary case
+    /// for adding an existing namespace member to a subgroup: a listing shows
+    /// accounts, and no endpoint discloses the keys behind one.
     ///
-    /// This converges on accounts once an add can name an account that does not
-    /// exist locally yet.
-    pub identity: PublicKey,
+    /// Naming an account additionally makes the group key reach every device
+    /// that person currently holds, under the same revocation rules the rest of
+    /// the key plane enforces. A key names one device's worth of that person, so
+    /// a key-named add delivers to that one and leaves any others to recover the
+    /// key by pull.
+    ///
+    /// The key form stays for the case it exists for — a subject with no account
+    /// here yet — and for callers written before the account form existed.
+    pub identity: MemberPrincipal,
     pub role: GroupMemberRole,
 }
 
@@ -2608,6 +2610,56 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The request an add of an existing member has to be able to express.
+    ///
+    /// A caller adding somebody to a subgroup knows them from a member listing,
+    /// which renders accounts and never discloses the keys behind one. Before
+    /// this field took a principal there was nothing they could put here: the
+    /// account parsed as no key, and the key it wanted was not theirs to know.
+    #[test]
+    fn an_add_may_name_the_account_a_member_listing_prints() {
+        let account = AccountId::from([0xA1; 32]);
+        let json = serde_json::json!({
+            "members": [{ "identity": account.to_string(), "role": "Member" }],
+        });
+
+        let req: AddGroupMembersApiRequest = serde_json::from_value(json).unwrap();
+
+        assert_eq!(req.members[0].identity, MemberPrincipal::Account(account));
+        assert!(req.validate().is_empty());
+    }
+
+    /// The form that predates the account one, still on the wire.
+    #[test]
+    fn an_add_may_still_name_a_signing_key() {
+        let key = PublicKey::from([0xB2; 32]);
+        let json = serde_json::json!({
+            "members": [{ "identity": key.to_string(), "role": "Member" }],
+        });
+
+        let req: AddGroupMembersApiRequest = serde_json::from_value(json).unwrap();
+
+        assert_eq!(req.members[0].identity, MemberPrincipal::Key(key));
+    }
+
+    /// A principal that is neither encoding is refused at the boundary, so a
+    /// typo cannot travel inward as a member nobody is.
+    #[test]
+    fn an_add_refuses_a_principal_in_no_recognized_encoding() {
+        let json = serde_json::json!({
+            "members": [{ "identity": "definitely-not-an-id", "role": "Member" }],
+        });
+
+        let err = serde_json::from_value::<AddGroupMembersApiRequest>(json)
+            .expect_err("neither an account nor a key");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("account") && message.contains("key"),
+            "the refusal must name both encodings, got: {message}"
+        );
+    }
 
     #[test]
     fn join_response_ignores_a_governance_op_from_an_older_node() {

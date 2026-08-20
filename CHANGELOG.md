@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`POST admin-api/groups/:group_id/members` accepts an account.** The
+  `identity` field now takes either an account (64 hex characters, exactly what
+  `GET .../members` returns) or a signing key (base58) — the encoding says
+  which, and no string is valid as both, so a mix-up is still a parse error
+  rather than a different principal. Key-named adds are unchanged on the wire.
+
+  Adding an existing namespace member to a Restricted subgroup was previously
+  not expressible: the caller knows that person from a member listing, which
+  renders accounts and never discloses the keys behind one, while the endpoint
+  demanded a key and then refused any key not already bound here. The field's
+  own documentation claimed the key existed to serve subjects with no account
+  yet, which the handler had made unreachable.
+
+  Naming an account also delivers the group key to **every live device** that
+  person holds, sealed to each device's certified X25519 key, under the same
+  revocation rules the rotation fan-out enforces. A key names one device, so a
+  key-named add still delivers to that one and leaves any others to pull.
+
 ### Removed
 
 - **`upgradePolicy`** from the namespace and group-info responses (`GET
@@ -41,6 +61,18 @@
   bundles that client — so `MIN_MEROBOX` moves to 0.6.56 here, the floor at
   which a join against a node without the field still decodes ([#3485],
   [#3528])
+
+### Fixed
+
+- **`meroctl group members set-role` / `set-caps` and `meroctl group metadata
+  member get` / `set` took a signing key where the route names an account.**
+  Each hex-encoded the key's raw bytes into the `:account` path segment, which
+  parses cleanly and names a principal that exists nowhere, so the commands
+  addressed no member and reported success or a confusing miss. They now take
+  the account, as the routes and the member listing do. **Breaking** for anyone
+  scripting those four commands: pass the 64-hex account rather than the base58
+  key. There is no input that worked before and stops working — the previous one
+  could not reach a real member.
 
 ### Changed
 

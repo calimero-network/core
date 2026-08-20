@@ -354,11 +354,200 @@ impl DeviceId {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Naming a member
+// ---------------------------------------------------------------------------
+
+/// Who a membership call names: a **person**, or one **key** that person signs
+/// with.
+///
+/// Membership rows are keyed by [`AccountId`], and every verb that reads or
+/// changes one takes an account. An *add* is the exception, because the caller
+/// may hold nothing but a key — an operator adding an outsider knows the key
+/// that person signs with long before this node has learned their account. So
+/// both are accepted, in the same JSON string field, and the encoding alone
+/// decides which was meant.
+///
+/// That is unambiguous by construction rather than by luck. An account renders
+/// as exactly 64 hex characters; [`crate::hash::Hash`] — the parser behind every
+/// key — refuses any string longer than the widest base58 a 32-byte key can
+/// produce, which is 45 characters. No account string can therefore be read as
+/// a key, and no key string is 64 characters long. A caller who confuses the two
+/// gets a parse error rather than a different principal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemberPrincipal {
+    /// The person, named directly — the principal the row is keyed by. Prefer
+    /// this: it is what a member listing hands back, and it is what the key
+    /// resolves to anyway.
+    Account(AccountId),
+    /// One signing key the person holds.
+    ///
+    /// A person may hold several, so this names strictly less than an account
+    /// does. It is here for the one caller that has no choice: the subject is
+    /// not known here as an account yet.
+    Key(PublicKey),
+}
+
+impl MemberPrincipal {
+    /// The account, when that is what was named.
+    #[must_use]
+    pub const fn account(&self) -> Option<AccountId> {
+        match *self {
+            Self::Account(account) => Some(account),
+            Self::Key(_) => None,
+        }
+    }
+
+    /// The key, when that is what was named.
+    #[must_use]
+    pub const fn key(&self) -> Option<PublicKey> {
+        match *self {
+            Self::Key(key) => Some(key),
+            Self::Account(_) => None,
+        }
+    }
+}
+
+impl From<AccountId> for MemberPrincipal {
+    fn from(account: AccountId) -> Self {
+        Self::Account(account)
+    }
+}
+
+impl From<PublicKey> for MemberPrincipal {
+    fn from(key: PublicKey) -> Self {
+        Self::Key(key)
+    }
+}
+
+impl fmt::Display for MemberPrincipal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Account(account) => fmt::Display::fmt(account, f),
+            Self::Key(key) => fmt::Display::fmt(key, f),
+        }
+    }
+}
+
+/// A string was neither encoding, so it names no member.
+#[derive(Clone, Copy, Debug, Error)]
+#[error(
+    "expected an account (64 hex characters, as a member listing renders one) \
+     or a signing key (base58)"
+)]
+pub struct InvalidMemberPrincipal;
+
+impl FromStr for MemberPrincipal {
+    type Err = InvalidMemberPrincipal;
+
+    /// Accounts are tried first, so the wider parser never gets to claim one.
+    /// The orderings agree here — a 64-character string is too long for the key
+    /// parser — but relying on that would make the disambiguation a property of
+    /// two parsers instead of a property of this function.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(account) = s.parse::<AccountId>() {
+            return Ok(Self::Account(account));
+        }
+        s.parse::<PublicKey>()
+            .map(Self::Key)
+            .map_err(|_| InvalidMemberPrincipal)
+    }
+}
+
+/// Serializes as the string form of whichever principal it holds, so a value
+/// read back from a listing round-trips unchanged.
+impl Serialize for MemberPrincipal {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for MemberPrincipal {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str> as Deserialize>::deserialize(d)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::mem::ManuallyDrop;
 
     use super::*;
+
+    /// The disambiguation the whole two-in-one-field design rests on.
+    #[test]
+    fn an_account_and_a_key_each_parse_back_to_what_they_are() {
+        let account = AccountId::from([0xA1; 32]);
+        let key = PublicKey::from([0xB2; 32]);
+
+        assert_eq!(
+            account.to_string().parse::<MemberPrincipal>().unwrap(),
+            MemberPrincipal::Account(account),
+            "64 hex characters is an account"
+        );
+        assert_eq!(
+            key.to_string().parse::<MemberPrincipal>().unwrap(),
+            MemberPrincipal::Key(key),
+            "base58 is a key"
+        );
+    }
+
+    /// Neither encoding may be read as the other principal.
+    ///
+    /// Both are 32 bytes, so a shared encoding would let one be pasted where the
+    /// other belongs and silently name somebody who exists nowhere. What rules
+    /// that out is a length: a key parses through `Hash`, which refuses anything
+    /// longer than the widest base58 32 bytes can produce, and an account is
+    /// always longer than that.
+    #[test]
+    fn neither_encoding_can_be_mistaken_for_the_other() {
+        let account = AccountId::from([0xA1; 32]).to_string();
+        let key = PublicKey::from([0xB2; 32]).to_string();
+
+        assert_eq!(account.len(), 64, "an account is always 64 characters");
+        assert!(
+            key.len() < 64,
+            "and base58 of 32 bytes is always shorter than that"
+        );
+        assert!(
+            account.parse::<PublicKey>().is_err(),
+            "an account string must not parse as a key"
+        );
+        assert!(
+            key.parse::<AccountId>().is_err(),
+            "a key string must not parse as an account"
+        );
+    }
+
+    #[test]
+    fn a_string_that_is_neither_names_no_member() {
+        for bad in ["", "not-an-id", "0xdeadbeef"] {
+            assert!(
+                bad.parse::<MemberPrincipal>().is_err(),
+                "{bad:?} names no member"
+            );
+        }
+    }
+
+    /// A value read out of a listing and handed straight back must survive the
+    /// round trip, or a caller could not use one endpoint's output as another's
+    /// input.
+    #[test]
+    fn a_principal_serializes_as_the_string_it_parses_from() {
+        for principal in [
+            MemberPrincipal::Account(AccountId::from([0xA1; 32])),
+            MemberPrincipal::Key(PublicKey::from([0xB2; 32])),
+        ] {
+            let json = serde_json::to_value(principal).unwrap();
+
+            assert_eq!(json, serde_json::json!(principal.to_string()));
+            assert_eq!(
+                serde_json::from_value::<MemberPrincipal>(json).unwrap(),
+                principal
+            );
+        }
+    }
 
     #[test]
     fn test_private_key_zeroize_on_drop() {

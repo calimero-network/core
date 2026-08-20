@@ -6,7 +6,7 @@ use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvi
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{MemberPrincipal, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use calimero_storage::logical_clock::HybridTimestamp;
 use thiserror::Error as ThisError;
@@ -97,7 +97,9 @@ pub struct DeleteNamespaceResponse {
 #[derive(Debug)]
 pub struct AddGroupMembersRequest {
     pub group_id: ContextGroupId,
-    pub members: Vec<(PublicKey, GroupMemberRole)>,
+    /// Each member named either way round: by account, or by one key they sign
+    /// with. See [`MemberPrincipal`] for which the handler prefers and why.
+    pub members: Vec<(MemberPrincipal, GroupMemberRole)>,
 }
 
 impl Message for AddGroupMembersRequest {

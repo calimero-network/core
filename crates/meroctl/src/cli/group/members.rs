@@ -1,6 +1,7 @@
+use calimero_account::AccountId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::MemberPrincipal;
 use calimero_server_primitives::admin::{
     AddGroupMembersApiRequest, GroupMemberApiInput, RemoveGroupMembersApiRequest,
     SetMemberCapabilitiesApiRequest, UpdateMemberRoleApiRequest,
@@ -105,8 +106,11 @@ pub struct AddMembersCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the identity to add")]
-    pub identity: PublicKey,
+    #[clap(
+        name = "MEMBER",
+        help = "Account (64 hex chars, as `list-members` prints) or signing key (base58) to add"
+    )]
+    pub identity: MemberPrincipal,
 
     #[clap(
         name = "ROLE",
@@ -195,10 +199,10 @@ pub struct SetRoleCommand {
     pub group_id: String,
 
     #[clap(
-        name = "IDENTITY",
-        help = "Public key of the member whose role to update"
+        name = "MEMBER",
+        help = "Account of the member whose role to update (64 hex chars)"
     )]
-    pub identity: PublicKey,
+    pub identity: AccountId,
 
     #[clap(name = "ROLE", value_enum, help = "New role to assign")]
     pub role: MemberRoleArg,
@@ -206,7 +210,7 @@ pub struct SetRoleCommand {
 
 impl SetRoleCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let identity_hex = hex::encode(self.identity.digest());
+        let account = self.identity.to_string();
 
         let request = UpdateMemberRoleApiRequest {
             role: self.role.into(),
@@ -214,7 +218,7 @@ impl SetRoleCommand {
 
         let client = environment.client()?;
         let response = client
-            .update_member_role(&self.group_id, &identity_hex, request)
+            .update_member_role(&self.group_id, &account, request)
             .await?;
 
         environment.output.write(&response);
@@ -233,8 +237,8 @@ pub struct SetCapabilitiesCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the member")]
-    pub identity: PublicKey,
+    #[clap(name = "MEMBER", help = "Account of the member (64 hex chars)")]
+    pub identity: AccountId,
 
     #[clap(long, help = "Allow member to create contexts in the group")]
     pub can_create_context: bool,
@@ -282,13 +286,13 @@ impl SetCapabilitiesCommand {
             self.can_manage_metadata,
         );
 
-        let identity_hex = hex::encode(self.identity.digest());
+        let account = self.identity.to_string();
 
         let request = SetMemberCapabilitiesApiRequest { capabilities };
 
         let client = environment.client()?;
         let response = client
-            .set_member_capabilities(&self.group_id, &identity_hex, request)
+            .set_member_capabilities(&self.group_id, &account, request)
             .await?;
 
         environment.output.write(&response);
@@ -313,11 +317,11 @@ pub struct GetCapabilitiesCommand {
 
 impl GetCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let identity_hex = self.identity.to_string();
+        let account = self.identity.to_string();
 
         let client = environment.client()?;
         let response = client
-            .get_member_capabilities(&self.group_id, &identity_hex)
+            .get_member_capabilities(&self.group_id, &account)
             .await?;
 
         environment.output.write(&response);
@@ -342,12 +346,12 @@ pub struct CheckAccessCommand {
 
 impl CheckAccessCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let identity_hex = self.identity.to_string();
+        let account = self.identity.to_string();
 
         let client = environment.client()?;
 
         let caps_response = client
-            .get_member_capabilities(&self.group_id, &identity_hex)
+            .get_member_capabilities(&self.group_id, &account)
             .await?;
         let members_response = client.list_group_members(&self.group_id).await?;
 

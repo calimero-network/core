@@ -23,7 +23,7 @@ use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{MemberPrincipal, PublicKey};
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
 use calimero_server_primitives::admin::CreateNamespaceApiRequest;
@@ -231,6 +231,12 @@ async fn add_group_members() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/members")))
+        // Asserted on the wire, not just in the type: the account has to reach
+        // the node as the hex a member listing prints, since that encoding is
+        // what tells it apart from a signing key.
+        .and(body_json(serde_json::json!({
+            "members": [{ "identity": ZERO_HEX_ACCOUNT, "role": "Member" }],
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
         .mount(&server)
@@ -242,7 +248,7 @@ async fn add_group_members() {
             GID,
             AddGroupMembersApiRequest {
                 members: vec![GroupMemberApiInput {
-                    identity: PublicKey::from([0u8; 32]),
+                    identity: MemberPrincipal::Account(ZERO_HEX_ACCOUNT.parse().unwrap()),
                     role: GroupMemberRole::Member,
                 }],
             },
