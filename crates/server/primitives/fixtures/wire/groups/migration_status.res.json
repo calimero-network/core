@@ -1,0 +1,49 @@
+{
+  "cohortPinnedAtHlc": "1700000000000000-0",
+  "expectedMembers": 3,
+  "fleetCompletedAt": 1700000200,
+  "members": [
+    {
+      "account": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+      "peer": "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw",
+      "report": {
+        "authoredRemaining": 0,
+        "reportedAt": 1700000150,
+        "residueAuto": 0,
+        "residueIdentity": 0,
+        "schemaVersion": 2,
+        "syncedUpToHlc": 1700000100
+      },
+      "state": "migrated"
+    },
+    {
+      "account": "bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899aa11",
+      "peer": "8Rn4pQyVzL7cWtT3sVvGkHqFyJ2mBdXeA5uNhPzRc6wY",
+      "report": {
+        "authoredRemaining": 2,
+        "migrationFailed": "apply_failed",
+        "reportedAt": 1700000140,
+        "residueAuto": 4,
+        "residueIdentity": 0,
+        "schemaVersion": 1,
+        "syncedUpToHlc": 1700000090
+      },
+      "state": "failed"
+    },
+    {
+      "account": "cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899aa11bb22",
+      "peer": "Gk9wR2tYqZ3mNbVcXsLdFhJ5uPaEyT7oW4iSzQrB8vDn",
+      "state": "unknown"
+    }
+  ],
+  "rollup": {
+    "allMigrated": false,
+    "failed": 1,
+    "inProgress": 0,
+    "membersPendingSignature": 1,
+    "migrated": 1,
+    "total": 3,
+    "unknown": 1
+  },
+  "targetVersion": 2
+}

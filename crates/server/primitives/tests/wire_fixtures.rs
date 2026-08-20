@@ -17,8 +17,8 @@ use serde_json::Value;
 
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
-    JoinGroupApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
-    UpgradeGroupApiResponse,
+    GetMigrationStatusApiResponse, JoinGroupApiResponse, ReparentGroupApiRequest,
+    ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -93,6 +93,7 @@ wire_fixtures! {
     // field still deserializes and only a value proves the key survived.
     upgrade_res: UpgradeGroupApiResponse => "groups/upgrade.res.json",
     upgrade_status_res: GetGroupUpgradeStatusApiResponse => "groups/upgrade_status.res.json",
+    migration_status_res: GetMigrationStatusApiResponse => "groups/migration_status.res.json",
     execute_req: ExecutionRequest => "jsonrpc/execute.req.json",
     execute_res: ExecutionResponse => "jsonrpc/execute.res.json",
 }
