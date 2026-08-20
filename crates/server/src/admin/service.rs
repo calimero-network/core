@@ -206,6 +206,10 @@ pub(crate) fn setup(
             post(groups::remove_group_members::handler),
         )
         .route(
+            "/groups/:group_id/member-devices",
+            get(groups::list_member_devices::handler),
+        )
+        .route(
             "/groups/:group_id/leave",
             post(groups::leave_group::handler),
         )
