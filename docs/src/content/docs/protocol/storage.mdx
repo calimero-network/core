@@ -59,7 +59,7 @@ struct ContextMeta { // Meta column
 struct ContextDagDelta { // Delta column (legacy data DAG)
   delta_id: [u8; 32], parents: Vec<[u8; 32]>,
   actions: Vec<u8>, hlc: HybridTimestamp, applied: bool,
-  expected_root_hash: [u8; 32],
+  checkpoint_root_hash: Option<[u8; 32]>, // snapshot boundary only
   events: Option<Vec<u8>>, author_id: Option<PublicKey>,
   governance_position_blob: Option<Vec<u8>>,
   delta_signature: Option<[u8; 64]>,

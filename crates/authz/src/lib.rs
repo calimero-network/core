@@ -19,7 +19,7 @@
 //! | `authorize` | The decision itself: [`authorize`], [`required_mask_for`], and the device-binding precondition every op but a link must pass |
 //! | `view` | [`AclView`] — the at-cut state the decision reads — plus [`AccountBinding`], [`DeviceBinding`], [`SubgroupEdge`] and the flat predicates |
 //! | `inheritance` | The subgroup-tree walk shared by three questions, and [`MemberPathAtCut`] |
-//! | `admission` | Credential admission: [`admit_device_link`], [`fold_device_link`], [`admit_key_rotation`] — the rules `authorize` and the projection's fold must agree on |
+//! | `admission` | Credential admission: [`AclView::admit_device_link`], [`AclView::admit_key_rotation`], and [`fold_device_link`] — the rules `authorize` and the projection's fold must agree on |
 //! | `error` | [`Rejected`] — one rejection type for every plane |
 //!
 //! Every public item is re-exported here, so `calimero_authz::AclView` keeps
@@ -34,7 +34,7 @@ mod view;
 #[cfg(test)]
 mod tests;
 
-pub use crate::admission::{admit_device_link, admit_key_rotation, fold_device_link};
+pub use crate::admission::fold_device_link;
 pub use crate::authorize::{authorize, required_mask_for};
 pub use crate::error::Rejected;
 pub use crate::inheritance::MemberPathAtCut;

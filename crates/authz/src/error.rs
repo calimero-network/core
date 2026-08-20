@@ -7,6 +7,7 @@
 use thiserror::Error as ThisError;
 
 use calimero_account::{AccountId, DeviceId};
+use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 
 /// Why an op was refused. One rejection type for every plane — the caller
@@ -14,8 +15,18 @@ use calimero_storage::entities::OpMask;
 #[derive(Clone, Debug, PartialEq, Eq, ThisError)]
 pub enum Rejected {
     /// Author lacks the required capability on a data entity.
-    #[error("author not permitted to write entity (needs {required:?})")]
-    NotPermitted { required: OpMask },
+    ///
+    /// Names the entity, not only the mask: a scope holds many entities and only
+    /// some carry an explicit ACL, so "needs WRITE" alone does not say whether the
+    /// author was refused by a per-object writer set or by not being a member at
+    /// all — which are different problems with different fixes.
+    #[error("author not permitted on entity {entity:?} (needs {required:?})")]
+    NotPermitted {
+        /// The entity the author was refused on.
+        entity: Id,
+        /// The capability the op required.
+        required: OpMask,
+    },
     /// Author is not the owner of the object whose writers are being set.
     #[error("author is not the owner of the object")]
     NotOwner,
@@ -98,10 +109,26 @@ pub enum Rejected {
     /// themselves in.
     #[error("account is not a member of this scope at the cut")]
     AccountNotMember,
-    /// A key rotation for an account this scope has never seen, or one that
-    /// does not continue the established chain.
-    #[error("key rotation does not continue this account's chain at the cut")]
-    RotationNotContinuous,
+    /// A key rotation for an account this scope has never seen.
+    ///
+    /// Distinct from [`Self::RotationNotContinuous`], which the two used to share:
+    /// they send whoever reads one somewhere different. This means the scope
+    /// learned no genesis for the account — nothing has linked a device of it here
+    /// — whereas a non-contiguous rotation means the account IS known and the
+    /// handoff simply starts at the wrong epoch.
+    #[error("no key chain known for account {account} at this cut")]
+    RotationAccountUnknown {
+        /// The account the handoff would roll.
+        account: AccountId,
+    },
+    /// A key rotation that does not continue the chain in force at the cut.
+    #[error("key rotation starts at epoch {found}, but epoch {expected} is in force")]
+    RotationNotContinuous {
+        /// The epoch currently established at the cut.
+        expected: u32,
+        /// The epoch the handoff declares it rolls from.
+        found: u32,
+    },
     /// A key rotation not signed by the outgoing root key.
     #[error("key rotation is not signed by the outgoing root key")]
     RotationSignatureInvalid,
