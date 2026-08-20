@@ -30,6 +30,8 @@ on:
       - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
       - ".github/workflows/build-merod-image.yml"
+      - ".github/actions/setup-merobox/**"
+      - ".github/actions/build-local-merod/**"
 
   pull_request:
     branches: [master]
@@ -52,6 +54,8 @@ on:
       - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
       - ".github/workflows/build-merod-image.yml"
+      - ".github/actions/setup-merobox/**"
+      - ".github/actions/build-local-merod/**"
 
   workflow_dispatch:
 
