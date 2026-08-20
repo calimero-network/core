@@ -1408,6 +1408,12 @@ pub struct ListMemberDevicesApiResponse {
     pub members: Vec<MemberDevicesApiEntry>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListMemberDevicesQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupContextEntryResponse {

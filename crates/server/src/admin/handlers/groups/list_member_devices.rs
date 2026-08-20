@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::AccountId;
@@ -11,13 +11,14 @@ use calimero_governance_store::{
     AccountBindingRepository, DeviceBinding, MembershipRepository, NamespaceRepository,
 };
 use calimero_server_primitives::admin::{
-    ListMemberDevicesApiResponse, MemberDeviceApiEntry, MemberDevicesApiEntry,
+    ListMemberDevicesApiResponse, ListMemberDevicesQuery, MemberDeviceApiEntry,
+    MemberDevicesApiEntry,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::{error, info};
 
-use super::parse_group_id;
+use super::{parse_group_id, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -64,7 +65,12 @@ fn entry(account: AccountId, bindings: Vec<DeviceBinding>) -> MemberDevicesApiEn
 ///
 /// Read from the namespace because that is where binding rows are keyed - a
 /// subgroup owns none - then filtered back to the group that was asked about.
-fn collect(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<MemberDevicesApiEntry>> {
+fn collect(
+    store: &Store,
+    group_id: &ContextGroupId,
+    offset: usize,
+    limit: usize,
+) -> EyreResult<Vec<MemberDevicesApiEntry>> {
     let namespace = NamespaceRepository::new(store).resolve(group_id)?;
     let caller = caller_account(store, group_id)?;
     let membership = MembershipRepository::new(store);
@@ -84,12 +90,20 @@ fn collect(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<MemberDev
             .live_devices_by_account(&namespace)?
             .into_iter()
             .filter(|(account, _)| visible.contains(account))
+            .skip(offset)
+            .take(limit)
             .map(|(account, devices)| entry(account, devices))
             .collect());
     }
 
     if !membership.is_member(group_id, &caller)? {
         return Err(not_a_group_member(group_id));
+    }
+
+    // One entry, so any page past the first is empty - a client walking pages
+    // until one comes back empty would otherwise never stop.
+    if offset > 0 || limit == 0 {
+        return Ok(Vec::new());
     }
 
     // `devices_of` filters the same scan `live_devices_by_account` groups, so the
@@ -108,6 +122,7 @@ fn collect(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<MemberDev
 /// arbitrary authors, which a per-account route would answer in N calls.
 pub async fn handler(
     Path(group_id_str): Path<String>,
+    Query(query): Query<ListMemberDevicesQuery>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
@@ -115,9 +130,15 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    match collect(&state.store, &group_id) {
+    let offset = query.offset.unwrap_or(0);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIST_LIMIT)
+        .min(MAX_LIST_LIMIT);
+
+    match collect(&state.store, &group_id, offset, limit) {
         Ok(members) => {
-            info!(group_id=%group_id_str, count=%members.len(), "Member devices retrieved");
+            info!(group_id=%group_id_str, %offset, %limit, count=%members.len(), "Member devices retrieved");
             ApiResponse {
                 payload: ListMemberDevicesApiResponse { members },
             }
@@ -233,7 +254,7 @@ mod tests {
     fn admin_caller_sees_every_account() {
         let (store, node_account, peer_account) = seed(GroupMemberRole::Admin);
 
-        let members = collect(&store, &namespace()).expect("collect");
+        let members = collect(&store, &namespace(), 0, usize::MAX).expect("collect");
 
         let mut want = vec![node_account, peer_account];
         want.sort_by_key(|account| *account.as_bytes());
@@ -245,7 +266,7 @@ mod tests {
     fn plain_member_caller_sees_only_its_own_devices() {
         let (store, node_account, peer_account) = seed(GroupMemberRole::Member);
 
-        let members = collect(&store, &namespace()).expect("collect");
+        let members = collect(&store, &namespace(), 0, usize::MAX).expect("collect");
 
         assert_eq!(accounts(&members), vec![node_account]);
         assert!(
@@ -270,7 +291,8 @@ mod tests {
             .store_identity(&namespace(), &stranger.public_key(), stranger.as_bytes())
             .expect("store the node identity");
 
-        let err = collect(&store, &namespace()).expect_err("an unbound identity names nobody");
+        let err = collect(&store, &namespace(), 0, usize::MAX)
+            .expect_err("an unbound identity names nobody");
 
         assert!(matches!(
             err.downcast_ref::<ContextError>(),
@@ -291,7 +313,7 @@ mod tests {
             .add_member(&subgroup, &node_account, GroupMemberRole::Member)
             .expect("add this node to the subgroup");
 
-        let members = collect(&store, &subgroup).expect("collect");
+        let members = collect(&store, &subgroup, 0, usize::MAX).expect("collect");
 
         assert_eq!(accounts(&members), vec![node_account]);
         assert_eq!(members[0].devices.len(), 2);
@@ -327,12 +349,44 @@ mod tests {
             .add_member(&sibling, &outsider, GroupMemberRole::Member)
             .expect("add the outsider to the sibling subgroup");
 
-        let members = collect(&store, &mine).expect("collect");
+        let members = collect(&store, &mine, 0, usize::MAX).expect("collect");
 
         assert!(
             !accounts(&members).contains(&outsider),
             "a subgroup admin must not see a sibling subgroup's member"
         );
         assert_eq!(accounts(&members), vec![node_account]);
+    }
+
+    #[test]
+    fn offset_and_limit_page_the_admin_answer() {
+        let (store, _node, _peer) = seed(GroupMemberRole::Admin);
+
+        let all = collect(&store, &namespace(), 0, usize::MAX).expect("every account");
+        assert_eq!(all.len(), 2);
+
+        let first = collect(&store, &namespace(), 0, 1).expect("first page");
+        let second = collect(&store, &namespace(), 1, 1).expect("second page");
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(first[0].account, second[0].account);
+        assert!(collect(&store, &namespace(), 2, 1)
+            .expect("past the end")
+            .is_empty());
+    }
+
+    /// The self-scoped branch pages too, or a client walking to the first empty
+    /// page never reaches it.
+    #[test]
+    fn a_page_past_the_self_scoped_entry_is_empty() {
+        let (store, node_account, _peer) = seed(GroupMemberRole::Member);
+
+        let first = collect(&store, &namespace(), 0, 1).expect("first page");
+
+        assert_eq!(accounts(&first), vec![node_account]);
+        assert!(collect(&store, &namespace(), 1, 1)
+            .expect("past the end")
+            .is_empty());
     }
 }
