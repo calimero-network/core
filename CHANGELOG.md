@@ -20,7 +20,8 @@
   Naming an account also delivers the group key to **every live device** that
   person holds, sealed to each device's certified X25519 key, under the same
   revocation rules the rotation fan-out enforces. A key names one device, so a
-  key-named add still delivers to that one and leaves any others to pull.
+  key-named add still delivers to that one and leaves any others to pull
+  ([#3574])
 
 ### Removed
 
@@ -72,7 +73,7 @@
   the account, as the routes and the member listing do. **Breaking** for anyone
   scripting those four commands: pass the 64-hex account rather than the base58
   key. There is no input that worked before and stops working — the previous one
-  could not reach a real member.
+  could not reach a real member ([#3574])
 
 ### Changed
 
@@ -850,3 +851,4 @@ Integrations:
 [#3485]: https://github.com/calimero-network/core/issues/3485
 [#3528]: https://github.com/calimero-network/core/pull/3528
 [#3530]: https://github.com/calimero-network/core/pull/3530
+[#3574]: https://github.com/calimero-network/core/pull/3574
