@@ -19,7 +19,7 @@ on:
     branches: [main, master]
     # Doc-only merges — including this workflow's OWN auto-doc PRs — must not
     # trigger another run, else the bot generates docs for its own doc PRs in an
-    # infinite loop. Mirrors the paths-ignore in ai-review.yaml.
+    # infinite loop.
     paths-ignore:
       - 'docs/**'
       - 'docs-static/**'
