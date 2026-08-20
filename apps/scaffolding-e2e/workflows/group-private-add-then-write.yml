@@ -360,9 +360,12 @@ steps:
       - "contains({{subgroup_members}}, {{account_node3}})"
       - "not_contains({{subgroup_members}}, {{identity_node3}})"
 
+  # Barriered on the namespace, not the subgroup: all groups in a namespace
+  # share one governance DAG, and node-3's subgroup hash cannot match peers that
+  # applied the subgroup's history it was never able to replay.
   - name: Settle the membership op onto node-3
     type: wait_for_sync
-    group_id: '{{subgroup_id}}'
+    group_id: '{{namespace_id}}'
     nodes:
       - private-add-node-1
       - private-add-node-2
