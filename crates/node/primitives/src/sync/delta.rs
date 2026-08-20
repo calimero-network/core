@@ -104,6 +104,22 @@ impl DeltaSyncResponse {
 /// A delta payload for transport.
 ///
 /// Contains the delta data and metadata needed for application.
+///
+/// # UNUSED — not the live delta-sync path
+///
+/// Nothing outside this module constructs or reads this type, nor
+/// [`DeltaSyncRequest`], [`DeltaSyncResponse`], or [`DeltaApplyResult`]; they are
+/// only re-exported from `sync.rs`. The delta paths that actually run are
+/// `BroadcastMessage::StateDelta` (gossip) and `MessagePayload::DeltaResponse`
+/// (DAG-catchup / parent-fetch), and the delta types they carry are
+/// `calimero_storage::delta::CausalDelta` and `calimero_dag::CausalDelta`.
+///
+/// Worth knowing before editing: this type still carries an
+/// `expected_root_hash`, which the LIVE types no longer do (#3557 removed it as
+/// an unverifiable sender assertion). So a change made here to "fix" delta
+/// authentication would land nowhere. Retiring the cluster is tracked
+/// separately; it is left in place here rather than deleted inside a docs
+/// change.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct DeltaPayload {
     /// Unique delta ID (content hash).

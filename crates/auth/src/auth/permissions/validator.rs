@@ -476,6 +476,17 @@ impl PermissionValidator {
             ("/admin-api/identity/context", HttpMethod::POST) => vec![Permission::Context(
                 ContextPermission::Execute(ResourceScope::Global, UserScope::Any, None),
             )],
+            // Reading who this node is. It supersedes the per-namespace identity
+            // reads, which are `namespace:list`, and a client must reach it to
+            // find itself in a member listing - that listing carries no
+            // self-field, so this is the only answer to "which member am I".
+            ("/admin-api/identity", HttpMethod::GET) => vec![Permission::Namespace(
+                NamespacePermission::List(ResourceScope::Global),
+            )],
+            // Reading who this node is. It supersedes the per-namespace identity
+            // reads, which are `namespace:list`, and a client must reach it to
+            // find itself in a member listing - that listing carries no
+            // self-field, so this is the only answer to "which member am I".
 
             // Admin API - Namespaces
             ("/admin-api/namespaces", HttpMethod::GET) => vec![Permission::Namespace(
@@ -1249,6 +1260,9 @@ mod tests {
             (Method::GET, "/admin-api/namespaces/ns-1"),
             (Method::DELETE, "/admin-api/namespaces/ns-1"),
             (Method::GET, "/admin-api/namespaces/ns-1/identity"),
+            // Supersedes the per-namespace identity read above, and is the only
+            // way a client can tell which member listing row is itself.
+            (Method::GET, "/admin-api/identity"),
             (Method::GET, "/admin-api/namespaces/ns-1/groups"),
             (Method::POST, "/admin-api/namespaces/ns-1/groups"),
             (Method::POST, "/admin-api/namespaces/ns-1/invite"),
