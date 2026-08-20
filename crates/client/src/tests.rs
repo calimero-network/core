@@ -23,7 +23,7 @@ use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
 use calimero_server_primitives::admin::CreateNamespaceApiRequest;
@@ -242,7 +242,7 @@ async fn add_group_members() {
             GID,
             AddGroupMembersApiRequest {
                 members: vec![GroupMemberApiInput {
-                    identity: PublicKey::from([0u8; 32]),
+                    identity: MemberIdentity::Key(PublicKey::from([0u8; 32])),
                     role: GroupMemberRole::Member,
                 }],
             },

@@ -16,9 +16,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use calimero_server_primitives::admin::{
-    CreateContextRequest, CreateContextResponseData, GetGroupUpgradeStatusApiResponse,
-    GetMigrationStatusApiResponse, JoinGroupApiResponse, ReparentGroupApiRequest,
-    ReparentGroupApiResponse, UpgradeGroupApiResponse,
+    AddGroupMembersApiRequest, CreateContextRequest, CreateContextResponseData,
+    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, JoinGroupApiResponse,
+    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -87,6 +87,9 @@ wire_fixtures! {
     // different alphabets, so a field crossed between the two spaces shows up as a
     // diff rather than round-tripping cleanly.
     join_res: JoinGroupApiResponse => "groups/join.res.json",
+    // Both id spaces in one request, so a field that stops accepting either
+    // shows up here.
+    add_members_req: AddGroupMembersApiRequest => "groups/add_members.req.json",
     reparent_req: ReparentGroupApiRequest => "groups/reparent.req.json",
     reparent_res: ReparentGroupApiResponse => "groups/reparent.res.json",
     // Populated counters, not nulls: these three are `Option`, so a renamed
