@@ -4,6 +4,33 @@
 //! The three questions that walk the subgroup tree live in
 //! [`crate::inheritance`] instead; everything here answers from a single map
 //! lookup.
+//!
+//! # Why it is shaped this way
+//!
+//! **Two-tier data authorization.** A *restricted* entity — one with an explicit
+//! per-object ACL entry — is authoritative: only listed writers with a sufficient
+//! mask pass, even scope members. A *non-restricted* entity has no explicit ACL,
+//! so `default-write = membership`. That gives "members can write" for ordinary
+//! contexts, such as a key-value store, without enumerating a per-entity writer
+//! set for every key, while still letting an app narrow specific objects behind an
+//! explicit grant.
+//!
+//! **`DEFAULT_MEMBER_MASK` excludes `ADMIN` deliberately.** Any scope member can
+//! write **and delete** any non-restricted entity — so a single compromised member
+//! can wipe default data, which is the accepted cost of membership being the write
+//! boundary. What they cannot do is rotate an object's writer set: that always
+//! needs an explicit ownership grant, so a member can't lock everyone else out of
+//! default data.
+//!
+//! **Ownership is holding `ADMIN`.** [`AclView::is_owner`] is literally
+//! [`AclView::may`] with `OpMask::ADMIN`. If owner ever needs to diverge from
+//! admin/writer capability, that method is the one place to change.
+//!
+//! **`revoked_devices` is separate from `devices`, and grow-only.** That is what
+//! makes revocation order-independent: a revocation that folds *before* the link
+//! it withdraws still wins, because every link consults the set. Were revocation
+//! merely a flag on the binding, a revoke-then-link arrival order would silently
+//! resurrect the device.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,11 +83,8 @@ pub struct AclView {
     /// Devices whose binding has been withdrawn, and the account they were
     /// withdrawn from.
     ///
-    /// Separate from [`devices`](Self::devices) and **grow-only**, which is
-    /// what makes revocation order-independent: a revocation that folds
-    /// *before* the link it withdraws still wins, because every link consults
-    /// this set. Were revocation merely a flag on the binding, a
-    /// revoke-then-link arrival order would silently resurrect the device.
+    /// Separate from [`devices`](Self::devices) and **grow-only** — see the
+    /// module docs.
     pub revoked_devices: BTreeSet<DeviceId>,
 }
 
@@ -104,17 +128,9 @@ pub struct SubgroupEdge {
     pub restricted: bool,
 }
 
-/// Capabilities a scope **member** implicitly holds on a non-restricted
-/// entity (`default-write = membership`): `WRITE` + `DELETE`, but **not**
-/// `ADMIN` — rotating an object's writer set still requires an explicit ACL
-/// grant (ownership), so a plain member can't lock others out of a default
-/// entity.
-///
-/// Implication, by design: any member can write **and delete** any
-/// non-restricted entity in the scope (a single compromised member can wipe
-/// default data) — this matches a shared key-value store, where membership is
-/// the write boundary. Data that needs a narrower writer/deleter set must be a
-/// restricted object with an explicit ACL.
+/// Capabilities a scope **member** implicitly holds on a non-restricted entity
+/// (`default-write = membership`): `WRITE` + `DELETE`, but **not** `ADMIN`. See
+/// the module docs for why `ADMIN` is excluded.
 const DEFAULT_MEMBER_MASK: OpMask = OpMask::WRITE.union(OpMask::DELETE);
 
 impl AclView {
@@ -166,9 +182,7 @@ impl AclView {
 
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
     ///
-    /// The `ADMIN` bit on the object confers ownership (owner = capability
-    /// holder). Refine here if `owner` ever becomes distinct from
-    /// `writer`/`admin`.
+    /// The `ADMIN` bit on the object confers ownership; see the module docs.
     #[must_use]
     pub fn is_owner(&self, author: &AccountId, object: Id) -> bool {
         self.may(author, object, OpMask::ADMIN)
