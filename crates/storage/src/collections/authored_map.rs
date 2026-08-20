@@ -551,18 +551,15 @@ mod tests {
         assert_eq!(map.get(&"alice_key".to_owned()).unwrap(), Some(1));
     }
 
-    /// **Two devices of one account own their entries separately.**
+    /// **Two devices of one account share ownership of its entries.**
     ///
-    /// Authorization moved onto accounts so that one grant covers every device a
-    /// person holds. The owner stamp deliberately did not: it is per-writer
-    /// state, and two devices of one account writing concurrently must stay
-    /// distinguishable or they overwrite each other.
+    /// The owner stamp moved onto accounts along with every other gate, so a
+    /// laptop's entry and a phone's entry both resolve to the same owning
+    /// account and either device may edit either one.
     ///
-    /// The sharp assertion is the last one. Equal owners would fail visibly, but
-    /// an account-keyed stamp also makes the phone the *owner* of the laptop's
-    /// entry — so `update` starts succeeding, and one person's devices silently
-    /// clobber each other's entries. Both ids are 32 bytes, so that change
-    /// compiles and every other test in this file still passes.
+    /// The sharp assertion is the last one: a *different* account is still
+    /// refused, which is what tells an account-keyed stamp apart from "any
+    /// device may edit" — the latter would pass every assertion before it too.
     #[test]
     #[serial]
     fn two_devices_of_one_account_share_ownership_of_its_entries() {

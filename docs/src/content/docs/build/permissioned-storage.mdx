@@ -32,9 +32,11 @@ past `only_owner()?`.
 
 The **merge plane** is what makes the rule hold. When a remote action arrives,
 `apply_action` does not trust the writer set the action *claims*. It re-derives
-the **authoritative** writer set from stored / causal state and verifies the
-action's Ed25519 signature against *that* set. A forged write signed by a
-non-writer fails verification and is dropped — on every honest node,
+the **authoritative** writer set — accounts, not keys — from stored / causal
+state, verifies the action's Ed25519 signature against the device key that
+signed it, and checks that key's account — resolved to it at the write's causal
+cut — against that set. A forged write, or a genuine one from a device whose
+account was never granted, fails and is dropped — on every honest node,
 independently, with no coordination.
 
 ```rust
@@ -43,15 +45,16 @@ let authoritative_writers = match ctx.effective_writers.as_ref() {
     Some(effective) => effective.clone(),       // causal writer set from the DAG
     None => stored_writers.unwrap_or(claimed),  // else the entity's stored set
 };
-// Find a writer whose key actually signed this action — NOT the claimed signer.
-let signer = authoritative_writers.keys().copied().find(|w| {
-    crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
-});
-let Some(signer) = signer else {
+// `resolve_signer` answers two questions: does the signature verify against the
+// signing device's key, and is that device's account (`ctx.signer_account`,
+// resolved at this write's causal cut) in the writer set.
+let Some(signer_account) = Self::resolve_signer(
+    &authoritative_writers, sig_data, &payload, ctx.signer_account,
+) else {
     return Err(StorageError::InvalidSignature); // forged / non-writer → dropped
 };
 // Then a per-operation capability gate (WRITE vs DELETE vs ADMIN):
-Self::enforce_op_mask(&signer, Self::required_op_mask(&action), &authoritative_writers)?;
+Self::enforce_op_mask(&signer_account, Self::required_op_mask(&action), &authoritative_writers)?;
 ```
 
 :::tip[The mental model]
@@ -69,9 +72,9 @@ wrappers below are ergonomic front-ends that set the right stamp for you.
 | `StorageType` | Who may write | How it's enforced at merge |
 |---------------|---------------|----------------------------|
 | `Public` *(default)* | Any context member | Membership only — no signature. A member's `WRITE`+`DELETE` is implied by `DEFAULT_MEMBER_MASK` |
-| `User { owner }` | Only `owner` | `ed25519_verify` vs the `owner` key + a monotonic per-entity nonce (replay protection) |
+| `User { owner: AccountId }` | Only `owner`'s account | `ed25519_verify` vs the signing device's key, then that device's account checked against `owner` + a monotonic per-entity nonce (replay protection) |
 | `Frozen` | The first writer, once | Write-once: a delete is unconditionally rejected, and the content cannot be modified |
-| `Shared { writers: BTreeMap<PublicKey, OpMask> }` | Any key in `writers`, masked | `ed25519_verify` vs the authoritative `writers` set; the signer must also hold the op's `OpMask` bit |
+| `Shared { writers: BTreeMap<AccountId, OpMask> }` | Any account in `writers`, masked | `ed25519_verify` vs the signing device's key, then that device's account checked against `writers`; it must also hold the op's `OpMask` bit |
 | `SharedMember { anchor }` | Writer set resolved from `anchor` | Member carries no writer set of its own — writers are read from the anchor's rotation log, so rotating the anchor revokes the whole subtree in O(1) |
 
 ### Operation masks
@@ -133,7 +136,7 @@ pub struct KvStore {
 impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
-        let initializer: PublicKey = calimero_sdk::env::device_id().into();
+        let initializer: AccountId = calimero_sdk::env::account_id().into();
         let mut writers = BTreeSet::new();
         writers.insert(initializer);
         KvStore {
@@ -150,8 +153,8 @@ impl KvStore {
     }
 
     // Rotate the writer set. Caller must be a current writer; rejected if frozen.
-    pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
-        let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
+    pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
+        let set: BTreeSet<AccountId> = new_writers.into_iter().collect();
         self.shared_value.rotate_writers(set)?;
         Ok(())
     }
@@ -161,7 +164,7 @@ impl KvStore {
 ## User-owned and write-once storage
 
 From `apps/kv-store-with-user-and-frozen-storage`. `UserStorage<T>` gives each
-identity its own slot keyed by `device_id()`; `FrozenStorage<T>` is
+identity its own slot keyed by `account_id()`; `FrozenStorage<T>` is
 content-addressed and immutable.
 
 ```rust
@@ -174,8 +177,8 @@ pub struct KvStore {
 
 #[app::logic]
 impl KvStore {
-    // Writes to the CURRENT user's slot (env::device_id()). Another user's
-    // slot is `User { owner }`-stamped and only that owner's signature verifies.
+    // Writes to the CURRENT user's slot (env::account_id()). Another user's
+    // slot is `User { owner }`-stamped and only that owner's account may edit it.
     pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
         self.user_items_simple.insert(value.into())?;
         Ok(())
@@ -196,7 +199,7 @@ Both attach an identity to data, but they answer different questions.
 
 | | `AuthoredMap<K, V>` | `UserStorage<T>` |
 |---|---|---|
-| Keyspace | One **shared** keyspace; keys are app-chosen | One slot **per user**, keyed by `device_id()` |
+| Keyspace | One **shared** keyspace; keys are app-chosen | One slot **per user**, keyed by `account_id()` |
 | Who inserts | Anyone may insert a *new* key (stamped with their identity) | Each user writes only their own slot |
 | Who updates / removes | Only the entry's recorded **author** | Only the slot owner |
 | Use it when | A collaborative collection where each row has an owner (posts, listings, claims) | Per-user private data (a profile, a personal sub-store) |
@@ -234,14 +237,14 @@ the registry entries inherit the admin writer set. The fail-fast guards
 
 | Call | Signature | Who may call | Effect |
 |------|-----------|--------------|--------|
-| `AccessControl::new(admin)` | `(admin: PublicKey) -> Self` | — | Create with `admin` as the sole initial admin |
+| `AccessControl::new(admin)` | `(admin: AccountId) -> Self` | — | Create with `admin` as the sole initial admin |
 | `AccessControl::new_admin_caller()` | `() -> Self` | — | Same, with the current executor as admin (the `init` case) |
-| `grant(role, who)` | `(&mut self, role: &str, who: PublicKey)` | an admin | Give `who` the role |
-| `revoke(role, who)` | `(&mut self, role: &str, who: &PublicKey)` | an admin | Take the role from `who` |
-| `has_role(role, who)` | `(&self, role: &str, who: &PublicKey) -> Result<bool>` | anyone | Whether `who` currently holds `role` |
+| `grant(role, who)` | `(&mut self, role: &str, who: AccountId)` | an admin | Give `who` the role |
+| `revoke(role, who)` | `(&mut self, role: &str, who: &AccountId)` | an admin | Take the role from `who` |
+| `has_role(role, who)` | `(&self, role: &str, who: &AccountId) -> Result<bool>` | anyone | Whether `who` currently holds `role` |
 | `only_role(role)` | `(&self, role: &str) -> Result<()>` | — | Fail-fast: the current executor must hold `role` |
 | `only_admin()` | `(&self) -> Result<()>` | — | Fail-fast: the current executor must be an admin |
-| `is_admin(who)` / `admins()` | `(&self, who: &PublicKey) -> bool` / `(&self) -> BTreeSet<PublicKey>` | anyone | Query the admin tier |
+| `is_admin(who)` / `admins()` | `(&self, who: &AccountId) -> bool` / `(&self) -> BTreeSet<AccountId>` | anyone | Query the admin tier |
 | `grant_admin(who)` / `revoke_admin(who)` | `(&mut self, who: …) -> Result<()>` | an admin | Add / remove an admin — an **authenticated writer-set rotation** (cannot remove the last admin) |
 
 To gate a mutation on a role, call `only_role("editor")?` (fail-fast UX) before
@@ -252,7 +255,7 @@ also projected onto that data (next paragraph). Admin changes go through
 signed way `Ownable::transfer_ownership` does.
 
 ```rust
-use calimero_sdk::{app, env, PublicKey};
+use calimero_sdk::{app, env, AccountId};
 use calimero_storage::collections::{AccessControl, LwwRegister, PermissionedStorage};
 
 #[app::state]
@@ -267,7 +270,7 @@ pub struct Docs {
 impl Docs {
     #[app::init]
     pub fn init() -> Docs {
-        let me: PublicKey = env::device_id().into();
+        let me: AccountId = env::account_id().into();
         Docs {
             roles: AccessControl::new(me),
             body: PermissionedStorage::new([me].into(), false),
@@ -276,7 +279,7 @@ impl Docs {
 
     // Admin-only: grant the "editor" role. Fail-fast here, enforced at merge
     // (a forged grant delta is rejected — the registry inherits the admin set).
-    pub fn grant_editor(&mut self, who: PublicKey) -> app::Result<()> {
+    pub fn grant_editor(&mut self, who: AccountId) -> app::Result<()> {
         self.roles.grant("editor", who)?;
         Ok(())
     }
@@ -372,9 +375,9 @@ not retroactively trusted:
   steps={[
     { from: 0, to: 1, label: 'rotate_writers — signed ADMIN, removes W' },
     { from: 1, to: 1, label: 're-stamp anchor; subtree writer set updated O(1)', color: '#39d0d8' },
-    { from: 2, to: 1, label: 'Put alice = v — signed by removed key W', color: '#f0883e' },
+    { from: 2, to: 1, label: 'Put alice = v — signed by removed writer\'s device key', color: '#f0883e' },
     { from: 1, to: 1, label: 'apply_action: re-derive authoritative writers', color: '#39d0d8' },
-    { from: 1, to: 1, label: 'ed25519_verify vs writers ⇒ no match', color: '#f0883e' },
+    { from: 1, to: 1, label: 'signature verifies, but the signer\'s account is no longer in writers', color: '#f0883e' },
     { from: 1, to: 2, label: 'InvalidSignature — write dropped', dashed: true, color: '#f0883e' },
     { type: 'divider', label: 'rotation revokes the subtree at merge' },
   ]}

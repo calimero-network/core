@@ -1,11 +1,11 @@
 //! One person, many devices — the invariant a careless account flip breaks.
 //!
 //! Moving authorization onto accounts is the point of the account plane: grant a
-//! person once and every device they hold may write. But **per-writer state must
-//! stay per device.** Counter slots, owner stamps and HLC seeds are not
-//! authorization — they are the bookkeeping that keeps two concurrent writers
-//! from overwriting each other. Key them by account and two devices of one person
-//! share a slot, so a merge keeps one write and silently drops the other.
+//! person once and every device they hold may write. But **per-writer CRDT state
+//! must stay per device.** A counter slot and an HLC seed are not authorization —
+//! they are the bookkeeping that keeps two concurrent writers from overwriting
+//! each other. Key them by account and two devices of one person share a slot,
+//! so a merge keeps one write and silently drops the other.
 //!
 //! That mistake compiles. `AccountId` and `PublicKey` are both 32 bytes, so a
 //! blanket rename type-checks and nearly every existing test still passes — the
