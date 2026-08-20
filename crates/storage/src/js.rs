@@ -1366,7 +1366,7 @@ impl Default for JsSortedSet {
 /// context member may [`insert`](Self::insert) a new key, which stamps the
 /// current executor as the entry's owner; only that owner may later
 /// [`update`](Self::update) or [`remove`](Self::remove) the entry. Reads are
-/// unrestricted. Ownership is resolved from `env::device_id()`, which the
+/// unrestricted. Ownership is resolved from `env::account_id()`, which the
 /// runtime installs per-execution — no identity argument is threaded through
 /// the byte API.
 #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
@@ -1534,7 +1534,7 @@ impl Default for JsAuthoredMap {
 /// may later [`update`](Self::update) or [`tombstone`](Self::tombstone) the
 /// slot. There is intentionally no physical remove — `tombstone` overwrites the
 /// slot with an empty value while preserving its position and owner. Ownership
-/// is resolved from `env::device_id()`, which the runtime installs
+/// is resolved from `env::account_id()`, which the runtime installs
 /// per-execution — no identity argument is threaded through the byte API.
 #[derive(Debug, AtomicUnit, BorshSerialize, BorshDeserialize)]
 pub struct JsAuthoredVector {
