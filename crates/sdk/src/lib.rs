@@ -51,8 +51,8 @@ pub mod abi {
 /// The authorization principal an app names: one person, however many devices.
 ///
 /// Re-exported because app APIs now take accounts wherever they used to take a
-/// key — a writer set, a role grant, an owner. `PublicKey` stays exported for
-/// the places that genuinely mean a KEY: an owner stamp, a signature's signer.
+/// key — a writer set, a role grant, an owner stamp. `PublicKey` stays exported
+/// for the places that genuinely mean a KEY: a signature's signer, a device cert.
 pub use calimero_account::AccountId;
 pub use calimero_primitives::blobs::BlobId;
 pub use calimero_primitives::context::ContextId;

@@ -437,9 +437,9 @@ There is deliberately no `executor_id()` any more. It returned a device-shaped v
 | --- | --- | --- |
 | per person — a vote, a profile, a balance, a role | `account_id()` | two devices of one person must agree |
 | per replica — a counter slot, an HLC seed, "which machine wrote this" | `device_id()` | two devices of one person must differ |
-| an owner stamp read back from a storage collection | `device_id()` | `UserStorage` / `AuthoredMap` / `SharedStorage` stamp the device, so a lookup has to match |
+| an owner or writer-set entry read back from a storage collection | `account_id()` | `UserStorage`, `AuthoredMap`, `AuthoredVector`, `SharedStorage` and `AccessControl` all gate on the account, so a lookup has to match it |
 
-The third row is the one that bites: those collections record the writer at write time, and that writer is the device. Handing them an account id produces a gate that never matches. Per-person aggregation over them belongs **above** storage.
+The third row used to bite the other way: those collections once stamped the writer's *device*, so handing them an account id produced a gate that never matched. They moved onto `AccountId` for the reason this page opens with — a person's second device is not a stranger to their own data. What is still device-keyed on the same entry is the *signer* recorded alongside the owner (`signature_data.signer`, which device actually wrote the bytes) and the CRDT mechanics underneath it — an LWW tiebreak, a counter slot, an HLC seed. Neither of those is what a lookup matches against.
 
 ## Recovery, and what it does not cover
 
@@ -473,7 +473,7 @@ Recovery means *prove who you are, then enrol fresh* — not *restore the old ma
 | `crates/governance-store/src/account_bindings.rs` | The replicated view: device bindings, revocation tombstones, per-account root keys, and the endorser set. |
 | `crates/governance-store/src/ops/group/account_ops.rs` | Apply handlers for link, revoke, and rotate — the authorization gates. |
 | `crates/governance-store/src/group_keys.rs` | Both wrap modes, the device-first recipient resolution, and the pull-path equivalent. |
-| `crates/context/src/handlers/` | The operations a user drives: `create_account`, `pair_device_init`, `pair_device_complete`, `revoke_device`. |
+| `crates/context/src/handlers/` | The operations a user drives: `pair_device_init`, `pair_device_complete`, `revoke_device`. |
 | `crates/context/src/scope_projection.rs` | `member_at_cut`, including the per-device fallthrough. |
 | `crates/projection`, `crates/authz`, `crates/op` | The unified-log account plane. Correct and tested, and the specification the governance path was built against — but not yet fed on the live path. |
 
@@ -533,8 +533,11 @@ legal winner thank year wave sausage worth useful legal winner thank year wave
 sausage worth useful legal winner thank year wave sausage worth title
 
 Account root public key: D2RGSD4paRbDANmHeUC2L9Ljaon7vXy6HzaNeHnoQ7Tg
+Account:                 03944a72253996cf87a2ac0680ff52b75143333ea21605e0dd1877dc1b16ecaa
 
-Keep the phrase AND the list of namespaces you use it in. …
+The phrase is the whole backup. The account is the content address of this
+root, so recovering the phrase recovers the account — the same one in every
+namespace, with nothing to keep beside the words.
 ```
 
 Three things, and only the first is secret:
@@ -543,25 +546,13 @@ Three things, and only the first is secret:
 | --- | --- |
 | the 24 words, on the **first line** | the backup. This *is* the account — anyone holding it can certify a device into every account this root owns |
 | the account root **public key** | identifies which root you are holding, so you can tell two backups apart without revealing either |
-| the advisory | a reminder that the namespace list matters too |
+| the **account id** | the same content address in every namespace — nothing to derive, and nothing extra to keep beside the words |
 
-`--namespace` is **optional and repeatable**. Pass it to have export derive and
-print the account ids for those namespaces:
-
-```bash
-merod --node node1 account export \
-  --namespace abab…abab \
-  --namespace cdcd…cdcd
-```
-
-```
-  namespace abab…abab -> account 03944a72253996cf87a2ac0680ff52b75143333ea21605e0dd1877dc1b16ecaa
-  namespace cdcd…cdcd -> account b7ba2620ea2b69e81a9b6ffe03e2432f22b9358a94836501e1500240298e37c7
-```
-
-Those ids are not secrets — they are what writer sets and membership rows already
-name — and they are the half of the backup that stops recovery being a guessing
-game about which accounts you had.
+There is no `--namespace` flag. It existed when the account id was
+per-namespace-derived; now that one root is one account everywhere, there is
+nothing left for it to select. `export` takes only `--out` (write the phrase to
+a file instead of stdout) and `--allow-plaintext-file` (required to acknowledge
+that).
 
 By default the phrase goes to **stdout only**, so it need never touch a disk.
 `--out PATH` writes it to a file and is refused without `--allow-plaintext-file`,
@@ -679,7 +670,7 @@ than just the key round trip.
 - **Key-delivery fan-out is quadratic in group size.** `current_key_recipients` resolves devices per member, and each resolution scans the group's bindings, so a rotation costs on the order of members × devices. It runs at rotation and join time — never per operation — and each recipient already needs a KEM wrap, which dominates. Hoisting one binding scan out of the loop collapses it when group sizes justify the change.
 - **A member with no live device cannot self-recover.** Enrolment-at-join does not help here, because they are *already* a member — there is no join operation left to carry a credential. Linking a replacement means `AccountDeviceLinked`, which is encrypted and so needs the key they no longer have, leaving them dependent on an admin to re-deliver it or to publish the replacement link. If they could re-key themselves, revocation would mean nothing.
 - **Member-addressed delivery remains reachable by admin action.** Re-admission and an explicit key delivery both wrap to a member identity, so an admin can hand a key to a node still running a revoked device. An explicit privileged act, not an automatic path.
-- **Storage gates take accounts; storage stamps keep devices.** `AccessControl`'s admins *are* the backing `SharedStorage`'s writer set, and `PermissionedStorage`'s capability map is keyed the same way — both now name **accounts**, so one grant covers every device a person holds. Owner stamps in `UserStorage`, `AuthoredMap` and `AuthoredVector` still name the **device**, and must: they are per-writer state, and two devices sharing a counter slot or an HLC seed lose each other's writes. The rule for any change here is the one this page opens with — if correctness depends on two devices of one account being distinct, it stays device-keyed.
+- **Storage gates take accounts, and so do storage owner stamps.** `AccessControl`'s admins *are* the backing `SharedStorage`'s writer set, and `PermissionedStorage`'s capability map is keyed the same way — both name **accounts**, so one grant covers every device a person holds. The owner stamp in `UserStorage`, `AuthoredMap` and `AuthoredVector` names an **account** too, for the same reason: a person's second device has to be able to edit their own slot or entry, not be refused as a stranger to it. What stays device-keyed on those same entries is the *signer* recorded alongside the owner (`signature_data.signer`) and the CRDT mechanics underneath — an LWW tiebreak, a counter slot, an HLC seed — because those are per-writer state and two devices sharing one would lose each other's writes. The rule for any change here is the one this page opens with — if correctness depends on two devices of one account being distinct, it stays device-keyed.
 
   A writer set names accounts while a signature can only name a key, so the two are bridged by `ApplyContext.signer_account`: the account the signing key speaks for, resolved by the applying node at the governance cut the delta cites, through the same at-cut fold the membership check uses. `None` means "cannot resolve yet" and the write is deferred, not refused — a not-yet-folded device binding is a timing gap, and collapsing it into "that key speaks for nobody" would turn it into permanent data loss.
 
