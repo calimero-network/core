@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -61,8 +62,8 @@ fn entry(account: AccountId, bindings: Vec<DeviceBinding>) -> MemberDevicesApiEn
 /// Account -> devices, scoped to what the caller may see: an admin gets every
 /// account in the group, a plain member only its own entry.
 ///
-/// Read from the namespace because that is where binding rows are keyed, so a
-/// subgroup asked directly would answer empty rather than wrong.
+/// Read from the namespace because that is where binding rows are keyed - a
+/// subgroup owns none - then filtered back to the group that was asked about.
 fn collect(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<MemberDevicesApiEntry>> {
     let namespace = NamespaceRepository::new(store).resolve(group_id)?;
     let caller = caller_account(store, group_id)?;
@@ -70,9 +71,19 @@ fn collect(store: &Store, group_id: &ContextGroupId) -> EyreResult<Vec<MemberDev
     let bindings = AccountBindingRepository::new(store);
 
     if membership.is_admin(group_id, &caller)? {
+        let mut visible: BTreeSet<AccountId> = membership
+            .list(group_id, 0, usize::MAX)?
+            .into_iter()
+            .chain(membership.enumerate_inherited(group_id)?)
+            .map(|(account, _)| account)
+            .collect();
+        // A meta-row admin holds no member row, so it is not in `visible` yet.
+        visible.insert(caller);
+
         return Ok(bindings
             .live_devices_by_account(&namespace)?
             .into_iter()
+            .filter(|(account, _)| visible.contains(account))
             .map(|(account, devices)| entry(account, devices))
             .collect());
     }
@@ -143,6 +154,7 @@ mod tests {
     const LAPTOP: DeviceId = DeviceId::from_raw([0xA1; 32]);
     const PHONE: DeviceId = DeviceId::from_raw([0xB2; 32]);
     const PEER_DEVICE: DeviceId = DeviceId::from_raw([0xC3; 32]);
+    const OUTSIDER_DEVICE: DeviceId = DeviceId::from_raw([0xD4; 32]);
     const NODE_ROOT: [u8; 32] = [0x33; 32];
     const LAPTOP_KEY: [u8; 32] = [0x44; 32];
 
@@ -283,5 +295,44 @@ mod tests {
 
         assert_eq!(accounts(&members), vec![node_account]);
         assert_eq!(members[0].devices.len(), 2);
+    }
+
+    /// Symmetric with `/groups/:group_id/members`: an admin of a subgroup sees
+    /// that subgroup's members, not an account whose only row is a sibling's.
+    #[test]
+    fn subgroup_admin_caller_does_not_see_a_sibling_subgroup() {
+        let (store, node_account, _peer) = seed(GroupMemberRole::Member);
+        let namespaces = NamespaceRepository::new(&store);
+        let membership = MembershipRepository::new(&store);
+
+        let mine = ContextGroupId::from([0x22; 32]);
+        let sibling = ContextGroupId::from([0x23; 32]);
+        namespaces.nest(&namespace(), &mine).expect("nest mine");
+        namespaces
+            .nest(&namespace(), &sibling)
+            .expect("nest the sibling");
+        membership
+            .add_member(&mine, &node_account, GroupMemberRole::Admin)
+            .expect("admin of its own subgroup only");
+
+        let outsider_sk = PrivateKey::from([0xAA; 32]);
+        let outsider = AccountGenesis::new(outsider_sk.public_key()).account_id();
+        link(
+            &store,
+            &outsider_sk,
+            OUTSIDER_DEVICE,
+            &PrivateKey::from([0xBB; 32]).public_key(),
+        );
+        membership
+            .add_member(&sibling, &outsider, GroupMemberRole::Member)
+            .expect("add the outsider to the sibling subgroup");
+
+        let members = collect(&store, &mine).expect("collect");
+
+        assert!(
+            !accounts(&members).contains(&outsider),
+            "a subgroup admin must not see a sibling subgroup's member"
+        );
+        assert_eq!(accounts(&members), vec![node_account]);
     }
 }
