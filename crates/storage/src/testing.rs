@@ -319,10 +319,11 @@ where
     ///
     /// The default is one account per replica — N unrelated people — which is
     /// the right model for most convergence questions. Reach for this one to test
-    /// what the account plane added: a grant covers every device its holder
-    /// owns, while per-writer state (counter slots, owner stamps, HLC seeds) must
-    /// stay per device. Those two pull in opposite directions, and a harness
-    /// where each replica is its own account cannot exercise the tension at all.
+    /// what the account plane added: a grant or an owner stamp covers every
+    /// device its holder owns, while per-writer CRDT state (counter slots, HLC
+    /// seeds) must stay per device. Those two pull in opposite directions, and a
+    /// harness where each replica is its own account cannot exercise the tension
+    /// at all.
     pub fn one_account(mut self) -> Self {
         self.shared_account = true;
         self

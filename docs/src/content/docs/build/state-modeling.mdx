@@ -207,7 +207,7 @@ its own slot; reads are open:
 
 ```rust
 let mut profiles: UserStorage<LwwRegister<String>> = UserStorage::new();
-profiles.insert("Alice".into())?;                     // writes env::device_id()'s slot
+profiles.insert("Alice".into())?;                     // writes env::account_id()'s slot
 let mine = profiles.get()?;                            // my slot
 let theirs = profiles.get_for_user(&bob_key)?;         // anyone's slot, read-only
 ```
