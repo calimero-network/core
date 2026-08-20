@@ -180,7 +180,7 @@ impl<T: RootSigned + Copy> AccountProof<T> {
 /// account; whatever [`root_key_at_epoch`] reports for an unusable chain; and
 /// `T::SIGNATURE_INVALID` if the signature does not verify under the key at the
 /// claimed epoch.
-pub fn verify_root_signed<T: RootSigned>(
+pub(crate) fn verify_root_signed<T: RootSigned>(
     claimed_account: AccountId,
     genesis: &AccountGenesis,
     chain: &[RootKeyHandoff],

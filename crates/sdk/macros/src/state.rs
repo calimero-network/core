@@ -10,6 +10,7 @@ use crate::errors::{Errors, ParseError, Pretty};
 use crate::forbidden_types::validate_fields;
 use crate::items::StructOrEnumItem;
 use crate::macros::infallible;
+use crate::rekey::generate_struct_rekey;
 use crate::reserved::idents;
 use crate::sanitizer::{Action, Case, Func, Sanitizer};
 
@@ -911,43 +912,6 @@ fn generate_rekey_target_impl(
                 #register_body
             }
         }
-    }
-}
-
-/// Emit the per-field re-key cascade for a struct's `rekey_relative_to`, mirroring
-/// `#[derive(Mergeable)]`: each field is re-keyed under a field-namespaced child id
-/// (`rekey_field_if_supported!` autoref-dispatches — real re-key for `RekeyTarget`
-/// fields, no-op for leaves). Each expansion stays in its own block (the macro
-/// defines per-invocation helper traits).
-fn generate_struct_rekey(fields: &syn::Fields) -> TokenStream {
-    match fields {
-        syn::Fields::Named(named) => {
-            let calls = named.named.iter().map(|f| {
-                let name = f.ident.as_ref().expect("named field has ident");
-                let name_str = name.to_string();
-                quote! {
-                    ::calimero_storage::rekey_field_if_supported!(
-                        &mut self.#name,
-                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
-                    );
-                }
-            });
-            quote! { #(#calls)* }
-        }
-        syn::Fields::Unnamed(unnamed) => {
-            let calls = unnamed.unnamed.iter().enumerate().map(|(i, _)| {
-                let idx = syn::Index::from(i);
-                let name_str = i.to_string();
-                quote! {
-                    ::calimero_storage::rekey_field_if_supported!(
-                        &mut self.#idx,
-                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
-                    );
-                }
-            });
-            quote! { #(#calls)* }
-        }
-        syn::Fields::Unit => quote! {},
     }
 }
 

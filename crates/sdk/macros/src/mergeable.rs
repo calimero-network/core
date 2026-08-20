@@ -15,6 +15,7 @@ use syn::{Data, DeriveInput, Fields};
 
 use crate::errors::Errors;
 use crate::forbidden_types::validate_fields;
+use crate::rekey::generate_struct_rekey;
 
 pub fn derive(input: DeriveInput) -> TokenStream {
     let errors = Errors::default();
@@ -113,38 +114,6 @@ pub fn derive(input: DeriveInput) -> TokenStream {
                 #rekey_register_body
             }
         }
-    }
-}
-
-fn generate_struct_rekey(fields: &Fields) -> TokenStream {
-    match fields {
-        Fields::Named(named) => {
-            let calls = named.named.iter().map(|f| {
-                let name = f.ident.as_ref().expect("named field has ident");
-                let name_str = name.to_string();
-                quote! {
-                    ::calimero_storage::rekey_field_if_supported!(
-                        &mut self.#name,
-                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
-                    );
-                }
-            });
-            quote! { #(#calls)* }
-        }
-        Fields::Unnamed(unnamed) => {
-            let calls = unnamed.unnamed.iter().enumerate().map(|(i, _)| {
-                let idx = syn::Index::from(i);
-                let name_str = i.to_string();
-                quote! {
-                    ::calimero_storage::rekey_field_if_supported!(
-                        &mut self.#idx,
-                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
-                    );
-                }
-            });
-            quote! { #(#calls)* }
-        }
-        Fields::Unit => quote! {},
     }
 }
 
