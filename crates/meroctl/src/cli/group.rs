@@ -65,18 +65,14 @@ pub enum GroupSubCommands {
     Members(members::MembersCommand),
     Contexts(contexts::ContextsCommand),
     Metadata(metadata::MetadataCommand),
-    #[command(alias = "member-metadata")]
     MemberMetadata(metadata::MemberMetadataCommand),
-    #[command(alias = "context-metadata")]
     ContextMetadata(metadata::ContextMetadataCommand),
     Reparent(reparent::ReparentCommand),
     Subgroups(subgroups::SubgroupsCommand),
     Upgrade(upgrade::UpgradeCommand),
     Sync(sync::SyncCommand),
-    #[command(alias = "join-context")]
     JoinContext(join_context::JoinContextCommand),
     /// Leave a context locally (no DAG op published).
-    #[command(alias = "leave-context")]
     LeaveContext(leave_context::LeaveContextCommand),
     /// Voluntarily leave a group (publishes MemberLeft).
     Leave(leave::LeaveCommand),
