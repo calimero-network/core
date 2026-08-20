@@ -1,11 +1,41 @@
 //! The subgroup-tree walk, and the three questions that share it.
 //!
-//! `is_member_at_cut`, `is_authorized_admin` and `member_path_at_cut` all climb
-//! the same `subgroups` parent chain and stop at the same restricted wall; they
-//! differ only in what counts as success and what they report. Keeping them in
-//! one file is what makes the differences (documented on each) legible as
-//! deliberate rather than accidental drift — they answer three different
-//! questions and their walk order is *not* interchangeable.
+//! # Why it is shaped this way
+//!
+//! **One climb, three success conditions.** `is_member_at_cut`,
+//! `is_authorized_admin` and `member_path_at_cut` all follow the same
+//! `subgroups` parent chain and stop at the same restricted wall. That shape is
+//! now [`AclView::open_ancestors`], written once, so the three questions differ
+//! only in what they treat as success — which is the part that is genuinely
+//! load-bearing. Three hand-written copies of the climb meant three places a
+//! bound, a wall check, or a parent lookup could drift, and a drift there is not
+//! a bug in one question: it is one question granting what another refuses,
+//! about the same author and the same group.
+//!
+//! **`is_member_at_cut` is `member_path_at_cut` with the role discarded.** The
+//! two walks differed in one respect — the path checks the direct row before the
+//! admin carve-out so a stored role wins over the genesis admin's implied one,
+//! matching live's `list` semantics. That ordering decides which *role* is
+//! reported and cannot change *whether* the author is a member, so the predicate
+//! is now defined in terms of the path. `is_member_defined_by_the_path_walk`
+//! pins the equivalence exhaustively over every small tree rather than leaving it
+//! asserted.
+//!
+//! This matters beyond tidiness: `calimero-context` filters its candidate set
+//! with `is_member_at_cut` and then resolves each survivor's role with
+//! `member_path_at_cut`. If the two ever disagreed, the projection would emit a
+//! member with no role or a role for a non-member. That agreement used to rest on
+//! two implementations being kept in step by comment; it is now the same code.
+//!
+//! **A restricted edge is a hard wall.** Hitting one stops the climb
+//! immediately, even when an admin sits further up past it — visibility is not
+//! something an ancestor's authority reaches through.
+//!
+//! **`root` is the one un-folded fact.** The namespace's genesis admin has no
+//! governance op (it is set at backfill), so it arrives as an explicit parameter
+//! rather than from the view. Every *mutable* input — memberships, caps,
+//! visibility, the subgroup tree, the subgroup-creator admin — comes from the
+//! view, which is what makes the result honor the cut.
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -43,17 +73,85 @@ pub enum MemberPathAtCut {
 }
 
 impl AclView {
-    /// Is `author` a member of `group` **at this cut** — direct, group admin, or
-    /// inherited through an open-subgroup chain — resolved entirely from the
-    /// folded view (no live-store reads). Faithful port of the live
-    /// `MembershipRepository::check_path` + the `acl_view_at` admin carve-out,
-    /// but over the at-cut state, so a membership the cut revoked is not granted.
+    /// The ancestors of `group` reachable while every edge crossed is **Open**,
+    /// nearest first — the climb all three inheritance questions share.
     ///
-    /// `root` is the immutable `(namespace_root_group, genesis_admin)` — the one
-    /// admin fact with no governance op (it lives in `GroupMeta` at namespace
-    /// genesis); pass `None` if unknown. Every *mutable* input (memberships,
-    /// caps, visibility, subgroup tree, subgroup-creator admin) comes from the
-    /// view, so the result honors the cut.
+    /// Ends at the first group with no subgroup edge (the namespace root) or at
+    /// the first `restricted` edge, and is bounded by `MAX_NAMESPACE_DEPTH` so a
+    /// cyclic or adversarial tree cannot spin. Yields parents only; `group`
+    /// itself is the caller's to check, because each question treats it
+    /// differently.
+    fn open_ancestors(&self, group: ContextGroupId) -> impl Iterator<Item = ContextGroupId> + '_ {
+        let mut current = Some(group);
+        core::iter::from_fn(move || {
+            let edge = self.subgroups.get(&ScopeId::from(current?.to_bytes()))?;
+            if edge.restricted {
+                current = None;
+                return None;
+            }
+            let parent = ContextGroupId::from(*edge.parent.as_bytes());
+            current = Some(parent);
+            Some(parent)
+        })
+        // One more than the depth limit, matching the bound the three
+        // hand-written climbs used.
+        .take(MAX_NAMESPACE_DEPTH + 1)
+    }
+
+    /// Does `author` hold a direct membership row in `group`?
+    fn has_direct_row(&self, group: ContextGroupId, author: &AccountId) -> bool {
+        self.groups
+            .get(&group)
+            .is_some_and(|members| members.contains_key(author))
+    }
+
+    /// Admin of `g` for **membership** purposes: a folded group admin (subgroup
+    /// creator / `Admin`-role holder) or the immutable namespace-root genesis
+    /// admin.
+    ///
+    /// Deliberately **not** the global [`AclView::is_root_admin`]: the root admin
+    /// is a member of a *subgroup* only over the open chain, never of a Restricted
+    /// one. Using the global predicate here would make the root admin a direct
+    /// member of every group, diverging from the membership set these walks must
+    /// mirror. [`AclView::is_authorized_admin`] does include it, because admin
+    /// *authority* is global in a way membership is not.
+    fn is_membership_admin(
+        &self,
+        group: ContextGroupId,
+        author: &AccountId,
+        root: Option<(ContextGroupId, AccountId)>,
+    ) -> bool {
+        self.is_group_admin(author, group)
+            || root.is_some_and(|(root_g, root_admin)| group == root_g && *author == root_admin)
+    }
+
+    /// `author`'s effective capability at `group`, falling back to
+    /// `default_cap_base`.
+    ///
+    /// The projection folds explicit `DefaultCapabilitiesSet` / `MemberCapabilitySet`
+    /// ops, but a group's CREATION default cap is a store write rather than an op —
+    /// so when nothing is folded we fall back to the materialized default the
+    /// caller passes. Mirrors live's `member_capability` = override.or(default).
+    fn effective_cap(
+        &self,
+        group: ContextGroupId,
+        author: &AccountId,
+        default_cap_base: u32,
+    ) -> u32 {
+        let folded = self.capability(&group, author);
+        if folded == 0 {
+            default_cap_base
+        } else {
+            folded
+        }
+    }
+
+    /// Is `author` a member of `group` **at this cut** — direct, group admin, or
+    /// inherited through an open-subgroup chain?
+    ///
+    /// Exactly [`AclView::member_path_at_cut`] with the role discarded; see the
+    /// module docs for why that is safe despite the two walks having once
+    /// differed in order.
     #[must_use]
     pub fn is_member_at_cut(
         &self,
@@ -62,86 +160,24 @@ impl AclView {
         root: Option<(ContextGroupId, AccountId)>,
         default_cap_base: u32,
     ) -> bool {
-        // Admin of `g` at the cut: a folded group admin (subgroup creator / an
-        // `Admin`-role holder) OR the immutable namespace-root genesis admin.
-        let is_admin = |g: ContextGroupId| -> bool {
-            self.is_group_admin(author, g)
-                || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
-        };
-
-        // Direct member or admin of the target group. NOTE: an open-subgroup
-        // inheritance self-join (`MemberJoinedOpen`) is deliberately NOT folded as
-        // a direct membership (it carries no persistent direct row in the live
-        // model — its apply requires `check_path == Inherited` and creates no
-        // row); such membership is re-derived by the inheritance walk below, so it
-        // is correctly revoked when the anchor is removed.
-        if is_admin(group)
-            || self
-                .groups
-                .get(&group)
-                .is_some_and(|m| m.contains_key(author))
-        {
-            return true;
-        }
-
-        // Inherited: walk parents while the chain stays Open, mirroring
-        // `check_path`. The first direct-membership ancestor decides via its
-        // `CAN_JOIN_OPEN_SUBGROUPS` cap (recorded, not returned); an admin
-        // ancestor reached over the open chain grants immediately.
-        //
-        // `effective_cap`: the projection folds explicit `DefaultCapabilitiesSet`
-        // / `MemberCapabilitySet` ops, but a group's CREATION default cap is a
-        // store write, not an op — so when nothing is folded for the anchor we
-        // fall back to `default_cap_base` (the materialized default, immutable
-        // base state, passed by the caller). This mirrors live's
-        // `member_capability` = override.or(default).
-        let effective_cap = |g: &ContextGroupId| -> u32 {
-            let folded = self.capability(g, author);
-            if folded != 0 {
-                folded
-            } else {
-                default_cap_base
-            }
-        };
-
-        let mut anchor_is_member: Option<bool> = None;
-        let mut current = group;
-        for _ in 0..=MAX_NAMESPACE_DEPTH {
-            // `current` must be Open for inheritance to pass up through it.
-            let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
-                return anchor_is_member.unwrap_or(false);
-            };
-            if edge.restricted {
-                return anchor_is_member.unwrap_or(false);
-            }
-            let parent = ContextGroupId::from(*edge.parent.as_bytes());
-            if is_admin(parent) {
-                return true;
-            }
-            if anchor_is_member.is_none()
-                && self
-                    .groups
-                    .get(&parent)
-                    .is_some_and(|m| m.contains_key(author))
-            {
-                anchor_is_member = Some(effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0);
-            }
-            current = parent;
-        }
-        anchor_is_member.unwrap_or(false)
+        !matches!(
+            self.member_path_at_cut(group, author, root, default_cap_base),
+            MemberPathAtCut::None
+        )
     }
 
     /// Is `author` authorized as an ADMIN of `group` at the cut — the apply-gate
-    /// admin authority. Mirrors live's `is_authorized_with_capability` admin path:
-    /// a direct group admin (subgroup creator / `Admin`-role holder), the
-    /// namespace ROOT admin (who administers every group — folded, so it tracks
-    /// `AdminChanged`, with the genesis `root` carve-out as the un-folded base), OR
-    /// an admin of an ANCESTOR reached over the open-subgroup chain (an admin of an
-    /// Open parent administers its children). Restricted edges stop the walk.
+    /// admin authority?
     ///
-    /// Admin-only — unlike [`is_member_at_cut`](Self::is_member_at_cut), a plain
-    /// inherited MEMBER is not authorized. Capability holders are checked
-    /// separately by the caller.
+    /// A direct group admin (subgroup creator / `Admin`-role holder), the
+    /// namespace ROOT admin (who administers every group — folded, so it tracks
+    /// `AdminChanged`, with the genesis `root` carve-out as the un-folded base),
+    /// or an admin of an ANCESTOR reached over the open chain (an admin of an Open
+    /// parent administers its children).
+    ///
+    /// Admin-only — unlike [`AclView::is_member_at_cut`], a plain inherited MEMBER
+    /// is not authorized, and no capability bit grants admin authority. Capability
+    /// holders are checked separately by the caller.
     #[must_use]
     pub fn is_authorized_admin(
         &self,
@@ -149,39 +185,27 @@ impl AclView {
         author: &AccountId,
         root: Option<(ContextGroupId, AccountId)>,
     ) -> bool {
-        let is_admin = |g: ContextGroupId| -> bool {
-            self.is_group_admin(author, g)
-                || self.is_root_admin(author)
-                || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
+        // The one place the GLOBAL root admin counts: admin authority reaches
+        // every group, where membership does not.
+        let is_admin = |g: ContextGroupId| {
+            self.is_membership_admin(g, author, root) || self.is_root_admin(author)
         };
-        if is_admin(group) {
-            return true;
-        }
-        let mut current = group;
-        for _ in 0..=MAX_NAMESPACE_DEPTH {
-            let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
-                return false;
-            };
-            if edge.restricted {
-                return false;
-            }
-            let parent = ContextGroupId::from(*edge.parent.as_bytes());
-            if is_admin(parent) {
-                return true;
-            }
-            current = parent;
-        }
-        false
+        is_admin(group) || self.open_ancestors(group).any(is_admin)
     }
 
-    /// `author`'s membership PATH to `group` at the cut — the at-cut analogue of
-    /// live `check_path`, returning the role-bearing [`MemberPathAtCut`] for the
-    /// enumeration consumers. Mirrors the `is_member_at_cut` walk: direct row first
-    /// (with its folded role), then an admin of the group with no row (genesis root
-    /// admin), then up the open chain — an admin ancestor yields
-    /// `Inherited{via_admin:true}`, the first direct-member ancestor yields
-    /// `Inherited{via_admin:false}` iff it holds `CAN_JOIN_OPEN_SUBGROUPS` (else the
-    /// recorded decision is `None`, but the walk continues for an admin higher up).
+    /// `author`'s membership PATH to `group` at the cut — the role-bearing
+    /// verdict the enumeration consumers need.
+    ///
+    /// The direct row is checked **first**, before the admin carve-out: when an
+    /// identity is both a stored member and the genesis admin, live's `list`
+    /// returns the stored row's role, so the row is authoritative. The carve-out
+    /// only supplies a role (`Admin`) when there is no row to read.
+    ///
+    /// Then up the open chain: an admin ancestor yields
+    /// `Inherited { via_admin: true }` immediately; the **first** direct-member
+    /// ancestor yields `Inherited { via_admin: false }` iff it holds
+    /// `CAN_JOIN_OPEN_SUBGROUPS`. If it does not, that records a `None` verdict but
+    /// does **not** stop the climb — an admin further up still grants.
     #[must_use]
     pub fn member_path_at_cut(
         &self,
@@ -190,69 +214,38 @@ impl AclView {
         root: Option<(ContextGroupId, AccountId)>,
         default_cap_base: u32,
     ) -> MemberPathAtCut {
-        // Narrow admin, IDENTICAL to `is_member_at_cut`'s: a folded group admin or
-        // the genesis root admin OF THIS GROUP ONLY. Deliberately NOT the global
-        // `is_root_admin` — the root admin is a member of a *subgroup* only over
-        // the open-subgroup chain (the walk below), never of a Restricted subgroup.
-        // Using the global predicate here would mark the root admin a direct member
-        // of every group, diverging from the membership set this path must mirror.
-        let is_admin = |g: ContextGroupId| -> bool {
-            self.is_group_admin(author, g)
-                || root.is_some_and(|(root_g, root_admin)| g == root_g && *author == root_admin)
-        };
-        // Direct row FIRST (the reverse of `is_member_at_cut`, which only needs a
-        // bool so its order is immaterial): when an identity is BOTH a stored
-        // member and the genesis admin, live's `list` returns the stored row's
-        // role, so the row is authoritative. The `is_admin` carve-out below only
-        // supplies a role (`Admin`) when there is NO row to read.
         if let Some(role) = self.groups.get(&group).and_then(|m| m.get(author)) {
             return MemberPathAtCut::Direct { role: role.clone() };
         }
-        if is_admin(group) {
+        if self.is_membership_admin(group, author, root) {
             return MemberPathAtCut::Direct {
                 role: GroupMemberRole::Admin,
             };
         }
-        let effective_cap = |g: &ContextGroupId| -> u32 {
-            let folded = self.capability(g, author);
-            if folded != 0 {
-                folded
-            } else {
-                default_cap_base
-            }
-        };
+
         let mut anchor_decision: Option<MemberPathAtCut> = None;
-        let mut current = group;
-        for _ in 0..=MAX_NAMESPACE_DEPTH {
-            let Some(edge) = self.subgroups.get(&ScopeId::from(current.to_bytes())) else {
-                return anchor_decision.unwrap_or(MemberPathAtCut::None);
-            };
-            if edge.restricted {
-                return anchor_decision.unwrap_or(MemberPathAtCut::None);
-            }
-            let parent = ContextGroupId::from(*edge.parent.as_bytes());
-            if is_admin(parent) {
+        for parent in self.open_ancestors(group) {
+            if self.is_membership_admin(parent, author, root) {
                 return MemberPathAtCut::Inherited {
                     anchor: parent,
                     via_admin: true,
                 };
             }
-            if anchor_decision.is_none()
-                && self
-                    .groups
-                    .get(&parent)
-                    .is_some_and(|m| m.contains_key(author))
-            {
-                anchor_decision = Some(if effective_cap(&parent) & CAN_JOIN_OPEN_SUBGROUPS != 0 {
-                    MemberPathAtCut::Inherited {
-                        anchor: parent,
-                        via_admin: false,
-                    }
-                } else {
-                    MemberPathAtCut::None
-                });
+            if anchor_decision.is_none() && self.has_direct_row(parent, author) {
+                anchor_decision = Some(
+                    if self.effective_cap(parent, author, default_cap_base)
+                        & CAN_JOIN_OPEN_SUBGROUPS
+                        != 0
+                    {
+                        MemberPathAtCut::Inherited {
+                            anchor: parent,
+                            via_admin: false,
+                        }
+                    } else {
+                        MemberPathAtCut::None
+                    },
+                );
             }
-            current = parent;
         }
         anchor_decision.unwrap_or(MemberPathAtCut::None)
     }
