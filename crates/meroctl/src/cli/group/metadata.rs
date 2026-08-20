@@ -2,7 +2,6 @@
 //! group, a group member, or a group-registered context.
 
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::SetMetadataApiRequest;
 use clap::{Args, Parser, Subcommand};
 use eyre::{bail, Result};
@@ -166,8 +165,8 @@ pub enum MemberMetadataSubCommands {
             help = "Hex-encoded group ID"
         )]
         group_id: String,
-        #[clap(name = "MEMBER", help = "Member public key")]
-        member: PublicKey,
+        #[clap(name = "MEMBER", help = "Member account (64 hex characters)")]
+        member: calimero_account::AccountId,
     },
     #[command(about = "Update a member's metadata record (read-modify-write)")]
     Set {
@@ -177,8 +176,8 @@ pub enum MemberMetadataSubCommands {
             help = "Hex-encoded group ID"
         )]
         group_id: String,
-        #[clap(name = "MEMBER", help = "Member public key")]
-        member: PublicKey,
+        #[clap(name = "MEMBER", help = "Member account (64 hex characters)")]
+        member: calimero_account::AccountId,
         #[command(flatten)]
         opts: SetOpts,
     },
@@ -189,7 +188,7 @@ impl MemberMetadataCommand {
         let client = environment.client()?;
         match self.subcommand {
             MemberMetadataSubCommands::Get { group_id, member } => {
-                let identity_hex = hex::encode(member.digest());
+                let identity_hex = member.to_string();
                 let response = client.get_member_metadata(&group_id, &identity_hex).await?;
                 environment.output.write(&response);
             }
@@ -198,7 +197,7 @@ impl MemberMetadataCommand {
                 member,
                 opts,
             } => {
-                let identity_hex = hex::encode(member.digest());
+                let identity_hex = member.to_string();
                 let current = client
                     .get_member_metadata(&group_id, &identity_hex)
                     .await?
