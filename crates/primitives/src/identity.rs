@@ -354,6 +354,54 @@ impl DeviceId {
     }
 }
 
+/// A member named either by the ACCOUNT it is, or by a KEY it signs with.
+///
+/// The two cannot be confused: an account is 64 hex characters, and bs58 over
+/// 32 bytes is at most 44.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemberIdentity {
+    Account(AccountId),
+    Key(PublicKey),
+}
+
+/// A string was neither a 64-hex account id nor a bs58 public key.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("expected a 64-hex account id or a bs58 public key")]
+pub struct InvalidMemberIdentity;
+
+impl fmt::Display for MemberIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Account(account) => fmt::Display::fmt(account, f),
+            Self::Key(key) => fmt::Display::fmt(key, f),
+        }
+    }
+}
+
+impl FromStr for MemberIdentity {
+    type Err = InvalidMemberIdentity;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse()
+            .map(Self::Account)
+            .or_else(|_| s.parse().map(Self::Key))
+            .map_err(|_: InvalidPublicKey| InvalidMemberIdentity)
+    }
+}
+
+impl Serialize for MemberIdentity {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for MemberIdentity {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str> as Deserialize>::deserialize(d)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use core::mem::ManuallyDrop;
@@ -419,5 +467,57 @@ mod tests {
         // Signature should verify with the public key
         let sig = signature.unwrap();
         assert!(public_key.verify(message, &sig).is_ok());
+    }
+
+    #[test]
+    fn member_identity_reads_both_encodings() {
+        let account = AccountId::from([0x11; 32]);
+        let key = PublicKey::from([0x11; 32]);
+
+        assert_eq!(
+            account.to_string().parse::<MemberIdentity>().unwrap(),
+            MemberIdentity::Account(account)
+        );
+        assert_eq!(
+            key.to_string().parse::<MemberIdentity>().unwrap(),
+            MemberIdentity::Key(key)
+        );
+        assert!("not-an-id".parse::<MemberIdentity>().is_err());
+    }
+
+    #[test]
+    fn member_identity_encodings_do_not_collide() {
+        // Whatever the 32 bytes are, the hex form is 64 characters and the
+        // bs58 form cannot reach that length.
+        for byte in [0x00_u8, 0x01, 0x7f, 0xff] {
+            let bytes = [byte; 32];
+            let hex = AccountId::from(bytes).to_string();
+            let bs58 = PublicKey::from(bytes).to_string();
+
+            assert_eq!(hex.len(), 64);
+            assert!(bs58.len() < 64);
+            assert!(matches!(
+                hex.parse::<MemberIdentity>().unwrap(),
+                MemberIdentity::Account(_)
+            ));
+            assert!(matches!(
+                bs58.parse::<MemberIdentity>().unwrap(),
+                MemberIdentity::Key(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn member_identity_serializes_as_the_string_it_parses() {
+        let account = MemberIdentity::Account(AccountId::from([0x22; 32]));
+        let key = MemberIdentity::Key(PublicKey::from([0x22; 32]));
+
+        for identity in [account, key] {
+            let json = serde_json::to_string(&identity).unwrap();
+            assert_eq!(
+                serde_json::from_str::<MemberIdentity>(&json).unwrap(),
+                identity
+            );
+        }
     }
 }

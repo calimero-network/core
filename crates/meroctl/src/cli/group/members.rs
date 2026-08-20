@@ -1,6 +1,6 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use calimero_server_primitives::admin::{
     AddGroupMembersApiRequest, GroupMemberApiInput, RemoveGroupMembersApiRequest,
     SetMemberCapabilitiesApiRequest, UpdateMemberRoleApiRequest,
@@ -105,8 +105,11 @@ pub struct AddMembersCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the identity to add")]
-    pub identity: PublicKey,
+    #[clap(
+        name = "IDENTITY",
+        help = "Account (64 hex) or public key (bs58) of the member to add"
+    )]
+    pub identity: MemberIdentity,
 
     #[clap(
         name = "ROLE",
