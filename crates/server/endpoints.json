@@ -22,6 +22,7 @@
   "GET /admin-api/groups/:group_id",
   "GET /admin-api/groups/:group_id/contexts",
   "GET /admin-api/groups/:group_id/contexts/:context_id/metadata",
+  "GET /admin-api/groups/:group_id/member-devices",
   "GET /admin-api/groups/:group_id/members",
   "GET /admin-api/groups/:group_id/members/:account/capabilities",
   "GET /admin-api/groups/:group_id/members/:account/metadata",

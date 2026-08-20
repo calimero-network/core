@@ -17,6 +17,7 @@ pub mod join_subgroup_inheritance;
 pub mod leave_group;
 pub mod list_group_contexts;
 pub mod list_group_members;
+pub mod list_member_devices;
 pub mod list_subgroups;
 pub mod remove_group_members;
 pub mod reparent_group;

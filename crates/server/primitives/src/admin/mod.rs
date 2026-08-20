@@ -5,7 +5,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{AccountId, MemberIdentity, PublicKey};
+use calimero_primitives::identity::{AccountId, DeviceId, MemberIdentity, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -1382,6 +1382,30 @@ pub struct GroupMemberApiEntry {
 pub struct ListGroupMembersQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberDeviceApiEntry {
+    /// Renders as 64 hex characters - the form
+    /// `POST /namespaces/:namespace_id/account/revoke` takes.
+    pub device_id: DeviceId,
+    /// The key this device's signatures carry, in the bs58 a context identity
+    /// renders as. This is the join column against `GET /contexts/:id/identities`.
+    pub signing_key: PublicKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberDevicesApiEntry {
+    pub account: AccountId,
+    pub devices: Vec<MemberDeviceApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListMemberDevicesApiResponse {
+    pub members: Vec<MemberDevicesApiEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
