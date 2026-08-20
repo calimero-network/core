@@ -15,6 +15,8 @@ description: >
       inheritance endpoint. Same direction problem as above.
     * `group-membership.yml` — adds then removes; doesn't
       bidirectionally read after add.
+  Phase 5 additionally pins the ACCOUNT-addressed add and
+  `update_member_role`, neither of which any other workflow covers.
   This workflow exercises the admin-issued direct-add path
   (`add_group_members`), which publishes a regular `MemberJoined`
   governance op carrying the wrapped subgroup key. The receiver's
@@ -24,7 +26,9 @@ description: >
 
   Default subgroup visibility is `Restricted`, so no
   `set_subgroup_visibility` step is needed — relying on the default
-  also catches a future regression that flipped the default.
+  also catches a future regression that flipped the default. The
+  default is an absent key collapsing to `Restricted`, so it is read
+  back and asserted rather than merely assumed.
 
   Mero-chat user-visible failure mode this guards against: "I
   added someone to a private channel via Members → Add, they
@@ -74,18 +78,6 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Install application on node-2
-    type: install_application
-    node: private-add-node-2
-    path: res/scaffolding_e2e.wasm
-    dev: true
-
-  - name: Install application on node-3
-    type: install_application
-    node: private-add-node-3
-    path: res/scaffolding_e2e.wasm
-    dev: true
-
   - name: Node-1 creates namespace
     type: create_namespace
     node: private-add-node-1
@@ -124,6 +116,7 @@ steps:
     invitation: '{{invite_node2}}'
     outputs:
       identity_node2: memberIdentity
+      account_node2: memberAccount
 
   - name: Node-3 joins namespace
     type: join_namespace
@@ -132,6 +125,7 @@ steps:
     invitation: '{{invite_node3}}'
     outputs:
       identity_node3: memberIdentity
+      account_node3: memberAccount
 
   # Default visibility is Restricted; intentional that this test
   # does NOT call `set_subgroup_visibility`. A regression that
@@ -142,9 +136,21 @@ steps:
     type: create_group_in_namespace
     node: private-add-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: private-channel
+    group_name: private-channel
     outputs:
       subgroup_id: groupId
+
+  - name: Read the subgroup back
+    type: get_group_info
+    node: private-add-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      subgroup_info: group_info
+
+  - name: Assert the subgroup was born Restricted
+    type: assert
+    statements:
+      - "contains({{subgroup_info}}, restricted)"
 
   # Add ONLY node-2. node-3 stays a namespace member without
   # subgroup access — used as a negative control to confirm the
@@ -165,9 +171,14 @@ steps:
     outputs:
       ctx_id: contextId
 
-  - name: Wait for MemberJoined + ContextRegistered to propagate
-    type: wait
-    seconds: 10
+  - name: Settle the subgroup governance DAG onto node-2
+    type: wait_for_sync
+    group_id: '{{subgroup_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+    timeout: 60
+    check_interval: 2
 
   - name: Node-2 joins context
     type: join_context
@@ -195,13 +206,17 @@ steps:
   # `ContextRegistered` op before we make the negative-control call,
   # otherwise `expected_failure: true` would pass for the wrong
   # reason — node-3 simply hasn't seen the context yet, not because
-  # the subgroup is Restricted. Wait an additional fixed interval
-  # for namespace-DAG propagation to node-3 (which was excluded from
-  # the context-id-keyed sync above because it has no
-  # ContextIdentity for `ctx_id` yet).
-  - name: Wait for ContextRegistered to propagate to node-3
-    type: wait
-    seconds: 10
+  # the subgroup is Restricted. Barriered on the namespace DAG, not
+  # the context: node-3 holds no ContextIdentity for `ctx_id` yet.
+  - name: Settle the namespace governance DAG onto node-3
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+      - private-add-node-3
+    timeout: 60
+    check_interval: 2
 
   - name: Negative control — node-3 (namespace-only) cannot join context
     type: join_context
@@ -291,6 +306,104 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{admin_read_node2}}, {"output": "node2_msg"})'
+
+  # ── Phase 5: the same add, named by ACCOUNT ───────────────────────
+  # `GET /groups/:id/members` returns accounts and every verb on that
+  # resource except the add took one; the add took a bs58 key. The two
+  # are not interchangeable internally: a key is wrapped for that one
+  # key, while an account resolves to the account's live devices and is
+  # wrapped for each. Phases 1-4 pin the key; this pins the account.
+
+  - name: Promote node-2 to Admin of the subgroup, named by account
+    type: update_member_role
+    node: private-add-node-1
+    group_id: '{{subgroup_id}}'
+    member_id: '{{account_node2}}'
+    role: Admin
+
+  - name: Settle the role change onto node-2's own replica
+    type: wait_for_sync
+    group_id: '{{subgroup_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+    timeout: 60
+    check_interval: 2
+
+  # Only an admin of this subgroup may add to it, so node-3 landing in
+  # the listing is what proves the promotion took effect on node-2,
+  # rather than merely being recorded by node-1.
+  - name: Node-2 exercises its new grant, adding node-3 by account
+    type: add_group_members
+    node: private-add-node-2
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{account_node3}}'
+        role: Member
+
+  - name: List subgroup members
+    type: list_group_members
+    node: private-add-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      subgroup_members: members
+
+  # Asserted by content, not `is_set`: a listing asserted only for
+  # presence passes just as happily when it names the wrong principal,
+  # which is exactly the failure this endpoint had. Rows are keyed by
+  # account, so the key node-3 was resolved from must not appear.
+  - name: Assert the listing names the accounts, not the keys
+    type: assert
+    statements:
+      - "contains({{subgroup_members}}, {{account_node2}})"
+      - "contains({{subgroup_members}}, {{account_node3}})"
+      - "not_contains({{subgroup_members}}, {{identity_node3}})"
+
+  - name: Settle the membership op onto node-3
+    type: wait_for_sync
+    group_id: '{{subgroup_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+      - private-add-node-3
+    timeout: 60
+    check_interval: 2
+
+  # node-3 was refused this exact call in Phase 2. It succeeding now is
+  # the account-addressed add having delivered a usable group key, not
+  # merely having written a membership row.
+  - name: Node-3 joins the context it was refused in Phase 2
+    type: join_context
+    node: private-add-node-3
+    context_id: '{{ctx_id}}'
+    outputs:
+      node3_key: memberPublicKey
+
+  - name: Settle context state onto node-3
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+      - private-add-node-3
+    timeout: 60
+    check_interval: 2
+
+  - name: Node-3 reads the write authored by the key-added member
+    type: call
+    node: private-add-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_member"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      node3_read: result
+
+  - name: Assert the account-added member decrypts the subgroup
+    type: json_assert
+    statements:
+      - 'json_equal({{node3_read}}, {"output": "node2_msg"})'
 
 stop_all_nodes: false
 restart: false
