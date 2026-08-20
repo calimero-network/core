@@ -140,17 +140,18 @@ steps:
     outputs:
       subgroup_id: groupId
 
-  - name: Read the subgroup back
+  # A field, not the envelope: the step unwraps `data` before the capture runs.
+  - name: Read the subgroup's visibility back
     type: get_group_info
     node: private-add-node-1
     group_id: '{{subgroup_id}}'
     outputs:
-      subgroup_info: group_info
+      subgroup_visibility: subgroupVisibility
 
   - name: Assert the subgroup was born Restricted
     type: assert
     statements:
-      - "contains({{subgroup_info}}, restricted)"
+      - "equals({{subgroup_visibility}}, restricted)"
 
   # Add ONLY node-2. node-3 stays a namespace member without
   # subgroup access — used as a negative control to confirm the
