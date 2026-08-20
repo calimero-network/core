@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -7,14 +8,14 @@ use calimero_context_client::local_governance::{GroupOp, KeyEnvelope, NamespaceO
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
 use calimero_primitives::identity::{MemberIdentity, PrivateKey, PublicKey};
-use calimero_store::Store;
-use eyre::Result as EyreResult;
 use tracing::{info, warn};
 
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
-use calimero_governance_store::{AccountBindingRepository, GroupKeyring, NamespaceRepository};
+use calimero_governance_store::{
+    AccountBindingRepository, DeviceBinding, GroupKeyring, NamespaceRepository,
+};
 
 impl Handler<AddGroupMembersRequest> for ContextManager {
     type Result = ActorResponse<Self, <AddGroupMembersRequest as Message>::Result>;
@@ -38,11 +39,18 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
+                let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
+                // One scan for the whole batch: `devices_of` per member rescans
+                // the binding column once per member, and the batch is unbounded.
+                let devices =
+                    AccountBindingRepository::new(&datastore).live_devices_by_account(&ns_id)?;
+
                 for (identity, role) in &members {
-                    // Resolution runs at the NAMESPACE: a direct add targets a
-                    // subgroup and names somebody who joined the namespace
-                    // earlier, so asking the subgroup would refuse every
-                    // legitimate add.
+                    // An account is taken as given - deliberately, since the
+                    // point of naming one is to name somebody this node may not
+                    // have converged on yet. A key must resolve: resolution runs
+                    // at the NAMESPACE, because a direct add targets a subgroup
+                    // and names somebody who joined the namespace earlier.
                     let member_account = match identity {
                         MemberIdentity::Account(account) => *account,
                         MemberIdentity::Key(key) => {
@@ -73,41 +81,38 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     if let Some((_key_id, group_key)) =
                         GroupKeyring::new(&datastore, group_id).load_current_key()?
                     {
-                        let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
-                        match key_deliveries(
-                            &datastore, &ns_id, identity, member_account, &sk, &group_id,
+                        let deliveries = key_deliveries(
+                            identity,
+                            member_account,
+                            &devices,
+                            &sk,
+                            &group_id,
                             &group_key,
-                        ) {
-                            Ok(deliveries) => {
-                                if deliveries.is_empty() {
-                                    warn!(%member_account, "added member has no live device; it must pull the group key itself");
-                                }
-                                for (envelope, recipient) in deliveries {
-                                    let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
-                                        group_id: group_id.to_bytes().into(),
-                                        envelope,
-                                    });
-                                    // Recipient-specific: pass
-                                    // `required_signers = Some([recipient])` so
-                                    // the report's `acked_by` cleanly reflects
-                                    // whether the recipient applied and acked.
-                                    if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
-                                        &datastore,
-                                        &node_client,
-                                        &ack_router,
-                                        ns_id.to_bytes().into(),
-                                        &sk,
-                                        delivery_op,
-                                        Some(vec![recipient]),
-                                    )
-                                    .await
-                                    {
-                                        warn!(?e, %recipient, "failed to publish KeyDelivery for added member");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(?e, %identity, "failed to wrap group key for added member");
+                        );
+                        if deliveries.is_empty() {
+                            warn!(%member_account, "no group key was delivered to the added member; it must pull the key itself");
+                        }
+                        for (envelope, recipient) in deliveries {
+                            let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
+                                group_id: group_id.to_bytes().into(),
+                                envelope,
+                            });
+                            // Recipient-specific: pass
+                            // `required_signers = Some([recipient])` so the
+                            // report's `acked_by` cleanly reflects whether the
+                            // recipient applied and acked.
+                            if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
+                                &datastore,
+                                &node_client,
+                                &ack_router,
+                                ns_id.to_bytes().into(),
+                                &sk,
+                                delivery_op,
+                                Some(vec![recipient]),
+                            )
+                            .await
+                            {
+                                warn!(?e, %recipient, "failed to publish KeyDelivery for added member");
                             }
                         }
                     }
@@ -130,34 +135,48 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 ///
 /// An account is addressed through its live devices, the same device-first rule
 /// the scope-key fan-out follows, so a revoked device cannot be handed the key.
+///
+/// A recipient whose wrap fails is dropped with a warning rather than failing
+/// the batch: one stale `kem_pk` must not cost a member every other device it
+/// has, since the joiner-side pull is a far slower way to get the key.
 fn key_deliveries(
-    datastore: &Store,
-    ns_id: &ContextGroupId,
     identity: &MemberIdentity,
     member_account: AccountId,
+    devices: &BTreeMap<AccountId, Vec<DeviceBinding>>,
     sk: &PrivateKey,
     group_id: &ContextGroupId,
     group_key: &[u8; 32],
-) -> EyreResult<Vec<(KeyEnvelope, PublicKey)>> {
+) -> Vec<(KeyEnvelope, PublicKey)> {
     match identity {
-        MemberIdentity::Key(key) => Ok(vec![(
-            GroupKeyring::wrap_for_member(sk, key, &group_id.to_bytes(), group_key)?,
-            *key,
-        )]),
-        MemberIdentity::Account(_) => AccountBindingRepository::new(datastore)
-            .devices_of(ns_id, member_account)?
-            .into_iter()
-            .map(|binding| {
-                Ok((
-                    GroupKeyring::wrap_for_device(
-                        sk,
-                        binding.device,
-                        &X25519PublicKey::from(binding.kem_pk),
-                        &group_id.to_bytes(),
-                        group_key,
-                    )?,
-                    binding.sign_pk,
-                ))
+        MemberIdentity::Key(key) => {
+            match GroupKeyring::wrap_for_member(sk, key, &group_id.to_bytes(), group_key) {
+                Ok(envelope) => vec![(envelope, *key)],
+                Err(e) => {
+                    warn!(?e, %key, "failed to wrap the group key for the added member");
+                    vec![]
+                }
+            }
+        }
+        MemberIdentity::Account(_) => devices
+            .get(&member_account)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|binding| {
+                match GroupKeyring::wrap_for_device(
+                    sk,
+                    binding.device,
+                    &X25519PublicKey::from(binding.kem_pk),
+                    &group_id.to_bytes(),
+                    group_key,
+                ) {
+                    Ok(envelope) => Some((envelope, binding.sign_pk)),
+                    Err(e) => {
+                        warn!(?e, device = %hex::encode(binding.device.as_bytes()),
+                              "failed to wrap the group key for a device of the added member");
+                        None
+                    }
+                }
             })
             .collect(),
     }
@@ -169,12 +188,20 @@ mod tests {
 
     use calimero_context_client::local_governance::EnvelopeRecipient;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
     use rand::rngs::OsRng;
 
     use super::*;
     use crate::test_support::{account_for, enrol};
 
     const GROUP_KEY: [u8; 32] = [0x5A; 32];
+
+    /// The device map the handler builds once per batch.
+    fn devices_in(store: &Store, ns: &ContextGroupId) -> BTreeMap<AccountId, Vec<DeviceBinding>> {
+        AccountBindingRepository::new(store)
+            .live_devices_by_account(ns)
+            .expect("scan the binding column")
+    }
 
     #[test]
     fn an_account_is_addressed_through_its_live_devices() {
@@ -188,15 +215,13 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
-            &store,
-            &ns,
             &MemberIdentity::Account(account),
             account,
+            &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        )
-        .expect("wrap for the enrolled device");
+        );
 
         assert_eq!(deliveries.len(), 1);
         let (envelope, recipient) = &deliveries[0];
@@ -222,15 +247,37 @@ mod tests {
         let account = account_for(&PrivateKey::random(&mut rng).public_key());
 
         let deliveries = key_deliveries(
-            &store,
-            &ns,
             &MemberIdentity::Account(account),
             account,
+            &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        )
-        .expect("an empty device set is not an error");
+        );
+
+        assert!(deliveries.is_empty());
+    }
+
+    #[test]
+    fn a_recipient_that_cannot_be_wrapped_for_is_dropped_not_propagated() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x01; 32]);
+        let group = ContextGroupId::from([0x02; 32]);
+        let mut rng = OsRng;
+
+        let admin_sk = PrivateKey::random(&mut rng);
+        // A small-order point: the identity agreement refuses it, because a
+        // shared secret derived from one does not depend on our scalar.
+        let unusable = PublicKey::from([0u8; 32]);
+
+        let deliveries = key_deliveries(
+            &MemberIdentity::Key(unusable),
+            account_for(&unusable),
+            &devices_in(&store, &ns),
+            &admin_sk,
+            &group,
+            &GROUP_KEY,
+        );
 
         assert!(deliveries.is_empty());
     }
@@ -247,15 +294,13 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
-            &store,
-            &ns,
             &MemberIdentity::Key(member),
             account,
+            &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        )
-        .expect("wrap for the named key");
+        );
 
         assert_eq!(deliveries.len(), 1);
         let (envelope, recipient) = &deliveries[0];

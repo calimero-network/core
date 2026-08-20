@@ -1332,6 +1332,13 @@ pub struct GroupMemberApiInput {
     /// A bs58 KEY is still accepted, for callers written against the older
     /// shape; it is resolved to its account on apply, and refused if bound to
     /// none.
+    ///
+    /// An ACCOUNT is taken as given - no local existence check. That asymmetry
+    /// is the point: an account this node has not converged on yet is exactly
+    /// what a key could never name, and refusing it would put back the case the
+    /// key typing claimed to serve and could not. The cost is that a mistyped
+    /// account writes a membership row nobody holds, which an admin removes the
+    /// same way it was added.
     pub identity: MemberIdentity,
     pub role: GroupMemberRole,
 }
