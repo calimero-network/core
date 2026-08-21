@@ -95,6 +95,22 @@ pub(crate) struct ProtocolSelector {
     context_client: ContextClient,
 }
 
+/// The two root hashes a sync compares, named so they cannot be swapped.
+///
+/// They were adjacent `&Hash` parameters. Transposing them compiled, and the
+/// consequence was silent: the local hash would be forwarded as
+/// `remote_root_hash` into the HashComparison / LevelWise initiator config, so
+/// the protocol would reconcile against this node's own state and conclude there
+/// was nothing to fetch. Nothing downstream can tell the two apart afterwards —
+/// they are the same type and both are legitimate values.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RootHashPair<'a> {
+    /// This node's root hash for the context.
+    pub(crate) local: &'a Hash,
+    /// The peer's root hash, as it reported it.
+    pub(crate) peer: &'a Hash,
+}
+
 impl ProtocolSelector {
     pub(crate) fn new(context_client: ContextClient) -> Self {
         Self { context_client }
@@ -108,9 +124,9 @@ impl ProtocolSelector {
     /// selection was `SyncProtocol::None` (already converged), or
     /// `Err(_)` if every protocol in the chain failed.
     ///
-    /// `local_root_hash` is included in the `None` arm's debug log
+    /// `roots.local` is included in the `None` arm's debug log
     /// so operators can correlate "no sync needed" entries with the
-    /// state of the local context. `peer_root_hash` is the deref'd
+    /// state of the local context. `roots.peer` is the deref'd
     /// `[u8; 32]` of the peer's root — needed by `LevelWiseConfig`.
     ///
     /// ## Stream postconditions
@@ -148,8 +164,7 @@ impl ProtocolSelector {
         context_id: ContextId,
         chosen_peer: PeerId,
         our_identity: PublicKey,
-        local_root_hash: &Hash,
-        peer_root_hash: &Hash,
+        roots: RootHashPair<'_>,
         // Remote peer's attributable member identity, forwarded to the
         // HC / LevelWise initiator configs to gate authorless leaves.
         session_peer: Option<PublicKey>,
@@ -160,7 +175,7 @@ impl ProtocolSelector {
                 debug!(
                     %context_id,
                     %chosen_peer,
-                    root_hash = %local_root_hash,
+                    root_hash = %roots.local,
                     reason = %selection.reason,
                     "No sync needed: {}",
                     selection.reason
@@ -378,7 +393,7 @@ impl ProtocolSelector {
                 // Get store for protocol execution
                 let store = self.context_client.datastore_handle().into_inner();
                 let config = LevelWiseConfig {
-                    remote_root_hash: **peer_root_hash,
+                    remote_root_hash: **roots.peer,
                     max_depth,
                     context_client: Some(self.context_client.clone()),
                     session_peer,

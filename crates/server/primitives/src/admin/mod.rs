@@ -2127,11 +2127,6 @@ pub struct JoinGroupApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct JoinNamespaceApiResponseData {
     pub namespace_id: String,
-    /// The same value as `namespace_id`, under the name this response used to
-    /// carry. A client deserializes into this DTO rather than reading the JSON
-    /// loosely, so dropping the old name outright fails every already-released
-    /// one; both ship until they have moved.
-    pub group_id: String,
     /// The key the joiner signs with, bs58.
     pub member_identity: PublicKey,
     /// The account that key joined as, 64 hex characters — the id every

@@ -44,17 +44,18 @@
 
 ### Changed
 
-- **`POST admin-api/namespaces/:namespace_id/join`** returns the id it joined as
-  `namespaceId`, beside the `groupId` it has always sent. The endpoint shared its
-  response DTO with `POST admin-api/groups/join`, so it leaked the internal noun -
-  a namespace is a root group underneath, and `POST admin-api/namespaces` was the
-  only namespace endpoint that translated that on the way out. A client reading
-  the namespace endpoints could not use one spelling across them; merobox's
+- **`POST admin-api/namespaces/:namespace_id/join`** names the id it returns
+  `namespaceId`, not `groupId`. The endpoint shared its response DTO with
+  `POST admin-api/groups/join`, so it leaked the internal noun - a namespace is
+  a root group underneath, and `POST admin-api/namespaces` was the only
+  namespace endpoint that translated that on the way out. A client reading the
+  namespace endpoints could not use one spelling across them; merobox's
   `join_namespace` step has declared a `namespaceId` export all along, which
-  silently captured nothing. `groups/join` is unchanged. Both names ship for now:
-  a client deserializes into the DTO rather than reading the JSON loosely, so
-  removing `groupId` fails every already-released one, and it goes once they have
-  moved. **Breaking** for `calimero-client` only: `join_namespace` now returns
+  silently captured nothing. `groups/join` is unchanged and still returns
+  `groupId`. **Breaking**: a client deserializes into the DTO rather than
+  reading the JSON loosely, so one built before this rejects the response until
+  it is rebuilt - `calimero-client-py` tracks core's master and needs no source
+  change, only a release, and `calimero-client`'s `join_namespace` now returns
   `JoinNamespaceApiResponse`
 
 - **`governanceOp` on both join responses is now optional on deserialization.**

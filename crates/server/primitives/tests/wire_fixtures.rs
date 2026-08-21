@@ -87,9 +87,8 @@ wire_fixtures! {
     // alphabets, so a field crossed between the two spaces shows up as a diff
     // rather than round-tripping cleanly.
     join_res: JoinGroupApiResponse => "groups/join.res.json",
-    // The namespace endpoint names the id `namespaceId` and still carries the
-    // old `groupId` beside it for clients built before the rename. Pinned
-    // separately from the group join so the two cannot drift back together.
+    // Same values as the group join, but the namespace endpoint names the id
+    // `namespaceId`. Pinned separately so the two cannot drift back together.
     join_namespace_res: JoinNamespaceApiResponse => "namespaces/join.res.json",
     // Both id spaces in one request, so a field that stops accepting either
     // shows up here.

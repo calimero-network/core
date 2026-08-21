@@ -72,8 +72,7 @@ pub async fn handler(
             ApiResponse {
                 payload: JoinNamespaceApiResponse {
                     data: JoinNamespaceApiResponseData {
-                        namespace_id: namespace_id_hex.clone(),
-                        group_id: namespace_id_hex,
+                        namespace_id: namespace_id_hex,
                         member_identity: resp.member_identity,
                         member_account: resp.member_account.to_string(),
                     },

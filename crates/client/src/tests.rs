@@ -551,9 +551,6 @@ async fn join_namespace() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "namespaceId": GID,
-                // Both names, as the endpoint sends them: a client built before
-                // the rename deserializes `groupId` and ignores the new one.
-                "groupId": GID,
                 "memberIdentity": ZERO_BS58,
                 // The account the joiner joined as, beside the key it signs
                 // with. Both, because a caller needs the account to address the
