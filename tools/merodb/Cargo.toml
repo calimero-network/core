@@ -31,7 +31,6 @@ sha2 = "0.10"
 once_cell = "1.19"
 jaq-interpret = "1.2"
 jaq-parse = "1.0"
-jaq-syn = "1.1"
 
 # GUI dependencies (optional)
 axum = { version = "0.7", optional = true, features = ["multipart"] }
