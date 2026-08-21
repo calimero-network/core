@@ -590,6 +590,15 @@ impl<'a> NamespaceGovernance<'a> {
         // `notify_namespace_op_applied` for the cross-crate plumbing.
         node_client.notify_namespace_op_applied(self.namespace_id.to_bytes());
 
+        // And feed the op to our own apply feed, the same as the publish-only
+        // path does — `apply_signed_op` above wrote the live store, the
+        // persisted head and the op-log, none of which is the in-memory
+        // governance DAG or the unified-op projection. Before the publish, not
+        // after: the publish awaits acks, and the local DAG should not wait on
+        // the network to learn about an op this node just authored. See
+        // `NodeClient::feed_local_namespace_op`.
+        node_client.feed_local_namespace_op(signed_for_caller.clone());
+
         let mesh = node_client
             .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
             .await;
@@ -794,6 +803,14 @@ impl<'a> NamespaceGovernance<'a> {
         // to be told. Both paths converge at `Handler<NamespaceOpApplied>`
         // on `ReadinessManager`, mirroring the gossipsub-receive route.
         node_client.notify_namespace_op_applied(self.namespace_id.to_bytes());
+
+        // And hand the op to our OWN apply feed. The two writes above cover the
+        // live store — the persisted head and the op-log — and neither reaches
+        // the in-memory governance DAG or the unified-op projection, which only
+        // that feed maintains. Before the publish for the same reason as on the
+        // apply-and-publish path: it awaits acks. See
+        // `NodeClient::feed_local_namespace_op` for what the gap costs.
+        node_client.feed_local_namespace_op(signed.clone());
 
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
