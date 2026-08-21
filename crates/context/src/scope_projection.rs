@@ -615,6 +615,24 @@ impl ScopeProjections {
             .is_some_and(|log| ScopeState::cut_ancestry_complete(log, parents))
     }
 
+    /// The cut's ancestry state in ONE walk: `(complete, decoded)`.
+    ///
+    /// The two questions have different answers and different remedies — a gap
+    /// needs a fetch, an opaque op needs a key — and a caller that collapses them
+    /// into one boolean cannot tell "sync is behind" from "this node cannot read
+    /// that op". Both are needed together on the shadow path, so walking once and
+    /// returning both keeps them consistent as well as cheap. `(false, false)` for
+    /// an unfed scope.
+    ///
+    /// `decoded` implies `complete`: an absent ancestor is not decoded either.
+    #[must_use]
+    pub fn cut_ancestry_state(&self, scope: &ScopeId, parents: &[[u8; 32]]) -> (bool, bool) {
+        self.logs.get(scope).map_or((false, false), |log| {
+            let ancestry = ScopeState::cut_ancestry(log, parents);
+            (ancestry.is_complete(), ancestry.is_decoded())
+        })
+    }
+
     /// Whether the cut's ancestry is both present AND fully decoded (no `Noop`
     /// placeholders for ops this node can't yet decrypt). See
     /// [`ScopeState::cut_ancestry_decoded`]. `false` for an unknown scope.

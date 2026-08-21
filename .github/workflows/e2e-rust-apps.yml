@@ -834,6 +834,10 @@ jobs:
           echo "membership comparisons:"
           if [ -n "${compares}" ]; then
               echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
+              # By op kind too: adds, removes and joins are separate planes of
+              # coverage, and a gate that only ever concludes on one of them is
+              # thinner than its total suggests.
+              echo "${compares}" | grep -oE 'op_kind="[a-z]+"' | sort | uniq -c
           else
               echo "  (none — this scenario folded no membership op)"
           fi
@@ -1058,6 +1062,11 @@ jobs:
           echo "suite-wide membership comparisons:"
           if [ -n "${compares}" ]; then
               echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
+              echo "by op kind:"
+              echo "${compares}" | grep -oE 'op_kind="[a-z]+"' | sort | uniq -c
+              echo "conclusive by op kind:"
+              echo "${compares}" | grep -E 'result="(agree|diverged)"' \
+                | grep -oE 'op_kind="[a-z]+"' | sort | uniq -c || true
           else
               echo "  (none)"
           fi
