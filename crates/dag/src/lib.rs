@@ -281,10 +281,23 @@ pub struct PendingStats {
 /// `Duplicate` into `Ok(false)`. Callers that need to distinguish the two —
 /// e.g. to avoid triggering a network backfill on a duplicate gossip op —
 /// should use the `_with_outcome` variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddDeltaOutcome {
     /// The delta was applied immediately (all parents present).
-    Applied,
+    ///
+    /// `cascaded` names the deltas that were **unblocked by this one** and
+    /// applied in the same call, in the order they were applied — the delta's
+    /// own id is not among them. It is empty in the common case (nothing was
+    /// waiting).
+    ///
+    /// A caller that maintains a view alongside the applier — a projection, an
+    /// index, a metric — has to fold these too, or its view silently lags the
+    /// applier's by however much was buffered. That is not hypothetical: the
+    /// unified-op projection folded only the delta passed in, so a drained
+    /// child reached the live store and never the projection, and every later
+    /// at-cut read of that scope was answered from a log missing an op the
+    /// store had.
+    Applied { cascaded: Vec<[u8; 32]> },
     /// The delta was stored as pending (at least one parent missing).
     Pending,
     /// The delta was already present in the DAG; no work performed.
@@ -294,7 +307,17 @@ pub enum AddDeltaOutcome {
 impl AddDeltaOutcome {
     /// `true` when the outcome is [`AddDeltaOutcome::Applied`].
     pub fn is_applied(&self) -> bool {
-        matches!(self, Self::Applied)
+        matches!(self, Self::Applied { .. })
+    }
+
+    /// The deltas this apply unblocked and applied, in apply order — see
+    /// [`AddDeltaOutcome::Applied`]. Empty for every other outcome.
+    #[must_use]
+    pub fn cascaded(&self) -> &[[u8; 32]] {
+        match self {
+            Self::Applied { cascaded } => cascaded,
+            Self::Pending | Self::Duplicate => &[],
+        }
     }
 
     /// `true` when the outcome is [`AddDeltaOutcome::Pending`] — i.e. the
@@ -478,7 +501,7 @@ impl<T: Clone> DagStore<T> {
         T: Send + Sync,
     {
         let seed: Vec<[u8; 32]> = self.pending.keys().copied().collect();
-        self.cascade_ready(seed, applier).await
+        Ok(self.cascade_ready(seed, applier).await?.len())
     }
 
     /// Add a delta to the DAG.
@@ -499,10 +522,10 @@ impl<T: Clone> DagStore<T> {
     where
         T: Send + Sync,
     {
-        Ok(matches!(
-            self.add_delta_with_outcome(delta, applier).await?,
-            AddDeltaOutcome::Applied
-        ))
+        Ok(self
+            .add_delta_with_outcome(delta, applier)
+            .await?
+            .is_applied())
     }
 
     /// Add a delta to the DAG and return the detailed outcome.
@@ -564,8 +587,8 @@ impl<T: Clone> DagStore<T> {
             // by this index. Removing (vs. cloning) also keeps the bucket
             // from lingering until its children drain.
             let seed = self.pending_children.remove(&delta_id).unwrap_or_default();
-            let _ = self.cascade_ready(seed, applier).await?;
-            Ok(AddDeltaOutcome::Applied)
+            let cascaded = self.cascade_ready(seed, applier).await?;
+            Ok(AddDeltaOutcome::Applied { cascaded })
         } else {
             // Missing parents - store as pending. Cap the pending map so a
             // flood of out-of-order deltas arriving faster than the time-based
@@ -759,14 +782,16 @@ impl<T: Clone> DagStore<T> {
         &mut self,
         seed: Vec<[u8; 32]>,
         applier: &A,
-    ) -> Result<usize, DagError>
+    ) -> Result<Vec<[u8; 32]>, DagError>
     where
         T: Send + Sync,
     {
         use std::collections::VecDeque;
         let mut queue: VecDeque<[u8; 32]> = seed.into_iter().collect();
         let mut queued: std::collections::HashSet<[u8; 32]> = queue.iter().copied().collect();
-        let mut applied = 0usize;
+        // The ids, not just how many: a caller folding these into a view of its
+        // own needs to know WHICH deltas applied, and in what order.
+        let mut applied: Vec<[u8; 32]> = Vec::new();
 
         while let Some(id) = queue.pop_front() {
             let _ = queued.remove(&id);
@@ -782,7 +807,7 @@ impl<T: Clone> DagStore<T> {
                 continue;
             };
             self.apply_delta(pending.delta, applier).await?;
-            applied += 1;
+            applied.push(id);
 
             // Enqueue the deltas that were waiting on `id`.
             if let Some(children) = self.pending_children.get(&id) {
@@ -1623,7 +1648,7 @@ mod basic_tests {
             .add_delta_with_outcome(delta, &working)
             .await
             .expect("retry should evict the zombie and succeed");
-        assert!(matches!(outcome, AddDeltaOutcome::Applied));
+        assert!(outcome.is_applied());
         assert!(dag.applied.contains(&delta_id));
     }
 
@@ -1657,7 +1682,7 @@ mod basic_tests {
             .add_delta_with_outcome(delta, &working)
             .await
             .expect("retry should succeed after rollback");
-        assert!(matches!(outcome, AddDeltaOutcome::Applied));
+        assert!(outcome.is_applied());
         assert!(dag.applied.contains(&delta_id));
     }
 

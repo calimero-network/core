@@ -625,6 +625,17 @@ impl ScopeProjections {
             .is_some_and(|log| ScopeState::cut_ancestry_decoded(log, parents))
     }
 
+    /// Has `scope`'s projection folded `id`?
+    ///
+    /// The direct question behind [`Self::cut_covers_frontier`]'s walk, exposed
+    /// for callers that need to check one op rather than a cut's reach — and for
+    /// tests that have to distinguish "folded" from "merely cited by something
+    /// folded", which the coverage walk deliberately conflates.
+    #[must_use]
+    pub fn has_folded(&self, scope: &ScopeId, id: &[u8; 32]) -> bool {
+        self.seen.get(scope).is_some_and(|seen| seen.contains(id))
+    }
+
     /// Does the cut at `parents` cover `frontier` in `scope` — the precondition
     /// for comparing an at-cut projection answer against a live row?
     ///
