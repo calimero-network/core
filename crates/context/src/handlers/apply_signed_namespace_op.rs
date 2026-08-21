@@ -188,6 +188,41 @@ fn apply_auth_requirement(
     }
 }
 
+/// The `(group, member)` a folded op moves, and which kind of op moved it — or
+/// `None` for an op that touches no direct membership row.
+///
+/// A JOIN belongs here as much as an admin-push add does. `MemberJoinedWithDevice`
+/// is what every invitation join folds to (membership and the joiner's device
+/// credential as one indivisible fact), and the projection folds its membership
+/// through the same `fold_member_added` an add uses — so the two planes are just
+/// as comparable. Leaving this arm out meant no invitation join was ever compared,
+/// on any scenario, for as long as the shadow has existed: the gate has been
+/// checking admin-push adds and removals only, which is why a whole e2e suite
+/// concluded 15 comparisons.
+///
+/// `MemberJoinedOpen` is deliberately absent and is not the same omission: an
+/// open-subgroup self-join is a PROOF of inheritance, live writes no direct row
+/// for it, and the projection models it as inherited too. There is nothing to
+/// compare.
+fn membership_touched(
+    payload: &calimero_op::OpPayload,
+) -> Option<(
+    calimero_context_config::types::ContextGroupId,
+    calimero_account::AccountId,
+    &'static str,
+)> {
+    match payload {
+        calimero_op::OpPayload::MemberAdded { group, member, .. } => Some((*group, *member, "add")),
+        calimero_op::OpPayload::MemberJoinedWithDevice { group, member, .. } => {
+            Some((*group, *member, "join"))
+        }
+        calimero_op::OpPayload::MemberRemoved { group, member } => {
+            Some((*group, *member, "remove"))
+        }
+        _ => None,
+    }
+}
+
 /// Everything a membership comparison needed to be conclusive, as the fold found
 /// it.
 struct ComparePremise {
@@ -387,11 +422,7 @@ fn shadow_fold_and_compare(
     {
         // The member this op touches (for the per-member
         // shadow-compare), if it's a membership op.
-        let membership = match &shadow_op.payload {
-            calimero_op::OpPayload::MemberAdded { group, member, .. }
-            | calimero_op::OpPayload::MemberRemoved { group, member } => Some((*group, *member)),
-            _ => None,
-        };
+        let membership = membership_touched(&shadow_op.payload);
 
         // ONE lock acquisition: ingest, then read the just-applied
         // member's projected role so the compare reflects exactly
@@ -413,7 +444,7 @@ fn shadow_fold_and_compare(
                 // so a re-add after a remove reflects the
                 // causally-latest state rather than the non-causal
                 // `states` snapshot (governance ops share hlc=0).
-                let role = membership.and_then(|(g, m)| {
+                let role = membership.and_then(|(g, m, _)| {
                     projections.role_at_cut(&shadow_op.scope, &g, &m, &[shadow_op.id()])
                 });
                 // Is this cut's whole history present AND decoded?
@@ -467,7 +498,7 @@ fn shadow_fold_and_compare(
         // correct, a divergence for neither. Folding more ops does
         // not fix it — the cut is what excludes the promotion — so
         // this is a real precondition, not a lag to wait out.
-        if let Some((group, member)) = membership {
+        if let Some((group, member, op_kind)) = membership {
             // Both sides now name the same principal: `member`
             // comes off the op payload as an account, and the
             // live rows are keyed by account. This used to
@@ -511,6 +542,7 @@ fn shadow_fold_and_compare(
                 marker = "unified_projection_compare",
                 plane = "membership",
                 result,
+                op_kind,
                 ?group,
                 %member,
                 ?projected,
@@ -525,6 +557,7 @@ fn shadow_fold_and_compare(
                 tracing::warn!(
                     marker = "unified_projection_divergence",
                     plane = "membership",
+                    op_kind,
                     ?group,
                     %member,
                     ?projected,
@@ -612,7 +645,9 @@ mod tests {
     use calimero_store::Store;
     use core::num::NonZeroU128;
 
-    use super::{compare_result, shadow_fold_applied, AppliedOp, ComparePremise};
+    use super::{
+        compare_result, membership_touched, shadow_fold_applied, AppliedOp, ComparePremise,
+    };
     use crate::scope_projection::ScopeProjections;
 
     /// Drives the DAG's ordering machinery without a governance apply: this test
@@ -648,6 +683,56 @@ mod tests {
             }),
             signature: [0u8; 64],
         }
+    }
+
+    /// Which payloads the gate can compare, pinned — because the answer was
+    /// silently wrong for as long as the shadow existed. A join carries
+    /// membership exactly as an add does and folds through the same
+    /// `fold_member_added`, so omitting it did not make joins unfoldable, only
+    /// unchecked: an entire e2e suite concluded 15 comparisons, none of them a
+    /// join.
+    #[test]
+    fn a_join_is_as_comparable_as_an_add() {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_op::OpPayload;
+        use calimero_primitives::context::GroupMemberRole;
+
+        let group = ContextGroupId::from([3u8; 32]);
+        let member = AccountId::from([9u8; 32]);
+
+        let add = OpPayload::MemberAdded {
+            group,
+            member,
+            role: GroupMemberRole::Member,
+        };
+        assert_eq!(membership_touched(&add), Some((group, member, "add")));
+
+        let remove = OpPayload::MemberRemoved { group, member };
+        assert_eq!(membership_touched(&remove), Some((group, member, "remove")));
+
+        // The arm that was missing. Built through the same helper the fold uses,
+        // so a change to the payload's shape shows up here rather than silently
+        // dropping the arm again.
+        let genesis = crate::test_support::credential(&PublicKey::from([4u8; 32]));
+        let join = OpPayload::MemberJoinedWithDevice {
+            group,
+            member,
+            role: GroupMemberRole::Member,
+            genesis: genesis.genesis,
+            chain: genesis.chain.clone(),
+            cert: genesis.statement,
+        };
+        assert_eq!(
+            membership_touched(&join),
+            Some((group, member, "join")),
+            "an invitation join moves a direct membership row and must be compared",
+        );
+
+        // An op that moves no direct row stays out: a `Noop` carries nothing, and
+        // an open-subgroup self-join is a proof of inheritance that live writes no
+        // row for, so there is nothing to compare against.
+        assert_eq!(membership_touched(&OpPayload::Noop), None);
     }
 
     /// Exhaustive over the premise, because the property that matters is a
