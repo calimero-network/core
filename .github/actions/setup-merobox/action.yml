@@ -8,21 +8,22 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        MIN_MEROBOX="0.6.59"
+
+        # An exact pin, not a floor. This used to install whatever merobox had
+        # published most recently, so a merobox release reached every core CI run
+        # within minutes of being cut, with nothing gating it: when 0.6.59 turned
+        # unknown scenario-YAML keys from ignored into fatal, every open PR went
+        # red at once and none of them had touched a scenario. Bumping is now a
+        # deliberate edit here, and the PR that makes it runs the full e2e suite
+        # against the new version before it becomes everyone's problem.
+        MEROBOX_VERSION="0.6.59"
+        TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
           aarch64 | arm64) MEROBOX_ARCH="linux-aarch64" ;;
           *) echo "::error::no merobox release binary for $(uname -m)"; exit 1 ;;
         esac
-
-        TAG="$(timeout 60 curl -fsSLI -o /dev/null -w '%{url_effective}' \
-          --retry 3 --retry-all-errors \
-          https://github.com/calimero-network/merobox/releases/latest | sed 's#.*/tag/##')"
-        if [ -z "$TAG" ]; then
-          echo "::error::could not resolve the latest merobox release tag"
-          exit 1
-        fi
 
         ASSET="https://github.com/calimero-network/merobox/releases/download/${TAG}/merobox-${TAG}-${MEROBOX_ARCH}"
         timeout 180 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox "$ASSET"
@@ -41,7 +42,7 @@ runs:
         export PATH="$HOME/.local/bin:$PATH"
         merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-        if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX}"
+        if [ "$HAVE_MEROBOX" != "$MEROBOX_VERSION" ]; then
+          echo "::error::merobox reports ${HAVE_MEROBOX} but ${MEROBOX_VERSION} is pinned — the ${TAG} asset does not carry the version it is named for"
           exit 1
         fi
