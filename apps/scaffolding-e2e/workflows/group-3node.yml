@@ -49,25 +49,22 @@ steps:
     statements:
       - "is_set({{app_id}})"
 
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
+  - name: Create the mesh - namespace, context and every joiner
+    type: create_mesh
+    context_node: e2e-node-1
     application_id: '{{app_id}}'
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - e2e-node-2
+      - e2e-node-3
     outputs:
       namespace_id: namespaceId
+      ctx_id: contextId
 
   - name: Assert namespace created
     type: assert
     statements:
       - "is_set({{namespace_id}})"
-
-  - name: Create context in namespace on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{namespace_id}}'
-    outputs:
-      ctx_id: contextId
 
   - name: Assert context created
     type: assert
@@ -76,43 +73,7 @@ steps:
 
   # --- Node-2 joins ---
 
-  - name: Create namespace invitation for node-2
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invite_node2: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invite_node2}}'
-
-  - name: Node-2 joins context via group membership
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx_id}}'
-
   # --- Node-3 joins ---
-
-  - name: Create namespace invitation for node-3
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invite_node3: invitation
-
-  - name: Node-3 joins namespace
-    type: join_namespace
-    node: e2e-node-3
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invite_node3}}'
-
-  - name: Node-3 joins context via group membership
-    type: join_context
-    node: e2e-node-3
-    context_id: '{{ctx_id}}'
 
   # --- SCENARIO 1: node-1 writes, all three converge ---
 
