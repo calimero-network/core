@@ -5,7 +5,6 @@ description: >
   apply-side checks: direct-row required, last-admin protection.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

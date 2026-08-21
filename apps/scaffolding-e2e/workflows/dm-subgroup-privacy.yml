@@ -30,7 +30,6 @@ description: >
   and `collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in`.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

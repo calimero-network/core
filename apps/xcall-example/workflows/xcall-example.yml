@@ -10,7 +10,6 @@ description: >
   namespace so the calls are permitted.
 
 force_pull_image: false
-near_devnet: false
 
 nodes:
   count: 1

@@ -11,7 +11,6 @@ description: >
   Spec: docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

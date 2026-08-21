@@ -36,7 +36,6 @@ description: >
   succeed.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

@@ -49,7 +49,6 @@ description: >
   namespace and the descendant access was purely inherited.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

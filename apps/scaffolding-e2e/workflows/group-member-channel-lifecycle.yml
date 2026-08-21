@@ -24,7 +24,6 @@ description: >
   covered by the `calimero-context` unit tests.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

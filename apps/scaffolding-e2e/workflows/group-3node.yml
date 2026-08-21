@@ -5,7 +5,6 @@ description: >
   write — covering the multi-party sync path that the 2-node test misses.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

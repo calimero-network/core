@@ -39,7 +39,6 @@ description: >
 # imports the `xcall_origin` host function added by this change, so it requires
 # a merod built from this branch (or a release that includes it).
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
