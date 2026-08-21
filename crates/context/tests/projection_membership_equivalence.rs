@@ -1390,3 +1390,128 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
          real account against the converter's stand-in and dropped the rotation."
     );
 }
+
+/// The CI failure this gate produced, reduced: an author promotes a member, then
+/// its OWN earlier add lands in the DAG afterwards (the publisher path writes
+/// live directly, so an author's ops reach its DAG only through the apply feed).
+/// The projection answers about the add's cut — `Member`, correctly, the
+/// promotion is not an ancestor — while live answers about now — `Admin`, also
+/// correctly. Neither plane is wrong, so the shadow must not call it a
+/// divergence; the frontier gate (`has_folded_all` over live's governance head)
+/// is what tells the two situations apart.
+#[test]
+fn a_late_applied_add_after_a_promotion_is_not_a_divergence() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut OsRng);
+    let member = member_sk.public_key();
+
+    let ns = ContextGroupId::from([0x31; 32]);
+    let subgroup = ContextGroupId::from([0x32; 32]);
+    let scope = ScopeId::from(ns.to_bytes());
+
+    // Genesis seeds, as `create_group` writes them: both groups exist, the admin
+    // is Admin of both, the subgroup is nested under the root.
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    let member_account = calimero_context::test_support::enrol(&store, &ns, &member);
+    for g in [&ns, &subgroup] {
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns, &subgroup)
+        .unwrap();
+
+    let add = GroupOp::MemberAdded {
+        member: member_account,
+        role: GroupMemberRole::Member,
+    };
+    let promote = GroupOp::MemberRoleSet {
+        member: member_account,
+        role: GroupMemberRole::Admin,
+    };
+    let add_id = [0xD1; 32];
+    let promote_id = [0xD2; 32];
+
+    // The publisher path, twice: each op mutates the live store and advances the
+    // persisted governance head, and neither touches the DAG or the projection.
+    // (`advance_dag_head` + the live write is exactly what `publish_post_gate`
+    // does; the encrypted group op cannot go through `apply_signed_namespace_op`
+    // here because that needs the group key.)
+    let gov = calimero_governance_store::NamespaceDagService::new(&store, ns.to_bytes().into());
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_account, GroupMemberRole::Member)
+        .unwrap();
+    gov.advance_dag_head(add_id, &[], 1).unwrap();
+    MembershipRepository::new(&store)
+        .set_role(&subgroup, &member_account, GroupMemberRole::Admin)
+        .unwrap();
+    gov.advance_dag_head(promote_id, &[add_id], 2).unwrap();
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .role_of(&subgroup, &member_account)
+            .unwrap(),
+        Some(GroupMemberRole::Admin),
+        "live holds the promotion — it applied at publish time",
+    );
+
+    // Now the author's own ADD arrives through the apply feed, after the
+    // promotion has already published. This is the only op the projection has.
+    let mut proj = ScopeProjections::new();
+    let env = ns_group_envelope(ns.to_bytes(), admin, subgroup);
+    proj.ingest_op(&op_from_namespace_op(&env, Some(&add), add_id, hlc(1), &[]));
+
+    let live_heads = gov.read_head_record().unwrap().parent_hashes;
+    assert_eq!(
+        live_heads,
+        vec![promote_id],
+        "live's frontier is the promotion, the newest op it applied",
+    );
+    assert_eq!(
+        proj.role_at_cut(&scope, &subgroup, &member_account, &[add_id]),
+        Some(GroupMemberRole::Member),
+        "at the add's own cut the member IS a Member — the promotion comes after it",
+    );
+    assert!(
+        !proj.cut_covers_frontier(&scope, &[add_id], &live_heads),
+        "the add's cut does not reach the promotion live already applied, so its \
+         at-cut answer and live's row are answers to different questions and the \
+         shadow compare must stay quiet",
+    );
+
+    // The promotion then folds too — through the same feed, one op later — and
+    // the compare it triggers runs at a cut live has caught up with.
+    proj.ingest_op(&op_from_namespace_op(
+        &env,
+        Some(&promote),
+        promote_id,
+        hlc(2),
+        &[add_id],
+    ));
+    let live_heads = gov.read_head_record().unwrap().parent_hashes;
+    assert!(
+        proj.cut_covers_frontier(&scope, &[promote_id], &live_heads),
+        "the promotion's own cut reaches live's frontier — it IS live's frontier — \
+         so the compare its apply triggers is a real one",
+    );
+    // And the add's cut is STILL not comparable, now that the log holds both ops:
+    // the gate is the cut, not how much has been folded. A log-completeness check
+    // would have re-opened the false positive here.
+    assert!(
+        !proj.cut_covers_frontier(&scope, &[add_id], &live_heads),
+        "folding the promotion cannot put it inside a cut that precedes it",
+    );
+    assert_eq!(
+        proj.role_at_cut(&scope, &subgroup, &member_account, &[promote_id]),
+        MembershipRepository::new(&store)
+            .role_of(&subgroup, &member_account)
+            .unwrap(),
+        "and then they agree: Admin at the promotion's cut, Admin in the live row",
+    );
+}

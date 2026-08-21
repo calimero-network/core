@@ -594,6 +594,32 @@ impl ScopeProjections {
             .is_some_and(|log| ScopeState::cut_ancestry_decoded(log, parents))
     }
 
+    /// Does the cut at `parents` cover `frontier` in `scope` — the precondition
+    /// for comparing an at-cut projection answer against a live row?
+    ///
+    /// `frontier` is live's governance head set. When the cut reaches it, both
+    /// planes are describing the same history and a disagreement is a real one.
+    /// When it does not, the op being folded is behind live: an author's own op
+    /// arriving through the apply feed after it has already published a newer
+    /// one, or a partition heal replaying old history. The projection then
+    /// answers about the older cut, live answers about now, and the difference
+    /// is the ordering, not the fold. `false` for an unfed scope, and for a
+    /// frontier the walk cannot reach — including one sitting behind a gap in
+    /// the log, which errs toward suppressing the comparison.
+    ///
+    /// See [`ScopeState::cut_covers`].
+    #[must_use]
+    pub fn cut_covers_frontier(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+        frontier: &[[u8; 32]],
+    ) -> bool {
+        self.logs
+            .get(scope)
+            .is_some_and(|log| ScopeState::cut_covers(log, parents, frontier))
+    }
+
     /// Rebuild this namespace's governance scopes from **persisted** source
     /// state — the startup/backfill path, so a just-restarted node's projection
     /// isn't empty (an empty projection can't be authoritative). The projection
@@ -2611,6 +2637,66 @@ mod tests {
             LIVE_LOG_LOW_WATER,
             "eviction trims to the low-water mark",
         );
+    }
+
+    /// The gate the shadow compare stands on: an at-cut answer is only
+    /// comparable to a live row while the cut reaches everything live has
+    /// applied. Live's governance head set is what "everything" means, and
+    /// folding more ops is no substitute — a cut that excludes a later op still
+    /// excludes it once that op is in the log.
+    #[test]
+    fn cut_covers_frontier_gates_on_the_cut_not_the_log() {
+        let scope = ScopeId::from([7u8; 32]);
+        let signer = PublicKey::from([2u8; 32]);
+        let build = |ns: u64, parents: Vec<[u8; 32]>| -> Op {
+            Op::new(
+                scope,
+                parents,
+                calimero_op::Authorship::unattributed(signer),
+                hlc(ns),
+                OpPayload::Noop,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+        let add = build(1, vec![]);
+        let promote = build(2, vec![add.id()]);
+
+        // Unfed scope: nothing to walk, so no coverage can be shown.
+        let empty = ScopeProjections::new();
+        assert!(!empty.cut_covers_frontier(&scope, &[add.id()], &[add.id()]));
+
+        let mut proj = ScopeProjections::new();
+        proj.ingest_op(&add);
+        proj.ingest_op(&promote);
+
+        // In-order apply: the op being folded IS live's head, so its cut covers
+        // the frontier and the compare must run.
+        assert!(proj.cut_covers_frontier(&scope, &[promote.id()], &[promote.id()]));
+
+        // The CI failure: the add applies after the promotion it precedes. Both
+        // ops are folded — the log is complete — and the cut still excludes the
+        // promotion live already applied, so the compare must stay quiet. This is
+        // the case a log-completeness check would wave through.
+        assert!(
+            !proj.cut_covers_frontier(&scope, &[add.id()], &[promote.id()]),
+            "a cut that predates live's newest op does not cover it, however much \
+             else has been folded",
+        );
+
+        // A forked live frontier needs every head reached, not either.
+        let sibling = build(3, vec![add.id()]);
+        proj.ingest_op(&sibling);
+        assert!(!proj.cut_covers_frontier(&scope, &[promote.id()], &[promote.id(), sibling.id()]));
+
+        // An empty frontier — a namespace with no governance head yet — is
+        // covered vacuously: there is nothing live holds to be behind on.
+        assert!(proj.cut_covers_frontier(&scope, &[add.id()], &[]));
+
+        // A cut whose ancestry the log cannot walk proves nothing.
+        let orphan = build(4, vec![[0xEE; 32]]);
+        proj.ingest_op(&orphan);
+        assert!(!proj.cut_covers_frontier(&scope, &[orphan.id()], &[promote.id()]));
     }
 
     #[test]

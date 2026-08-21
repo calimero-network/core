@@ -808,6 +808,48 @@ impl ScopeState {
         true
     }
 
+    /// Does the cut at `parents` **cover** `frontier` — is every id in
+    /// `frontier` the cut itself or one of its ancestors, as far as `log` can
+    /// show?
+    ///
+    /// The question a shadow comparison has to ask before trusting an at-cut
+    /// answer against a materialized one. An at-cut read answers about the
+    /// history behind that cut; a live row answers about everything applied so
+    /// far. They are the same question only while the cut reaches every op live
+    /// has, which is what `frontier` (live's governance head set) names.
+    ///
+    /// A cut that does NOT cover the frontier is not stale bookkeeping to be
+    /// repaired: no amount of extra folding changes what the cut excludes. An op
+    /// applied out of causal order — an author's own op returning after it
+    /// published a newer one, a partition heal replaying old history — is
+    /// permanently behind live, and comparing the two is comparing different
+    /// questions.
+    ///
+    /// The walk decides coverage on the CITATION graph, not on what the log
+    /// holds: an id cited as a parent is an ancestor whether or not its own
+    /// record is present, so it counts as reached. What a gap does cost is
+    /// reach BEYOND it — the walk cannot follow an absent op's parents — which
+    /// errs toward `false`, and a comparison suppressed for a gap is the safe
+    /// direction. An empty `frontier` (nothing applied) is covered vacuously.
+    #[must_use]
+    pub fn cut_covers(log: &[Op], parents: &[[u8; 32]], frontier: &[[u8; 32]]) -> bool {
+        if frontier.is_empty() {
+            return true;
+        }
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(op) = by_id.get(&id) {
+                queue.extend(op.parents.iter().copied());
+            }
+        }
+        frontier.iter().all(|id| visited.contains(id))
+    }
+
     /// Like [`Self::cut_ancestry_complete`], but ALSO requires every op in the
     /// cut's ancestry to be **decoded** — i.e. carry a real payload, not
     /// `OpPayload::Noop`.

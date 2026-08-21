@@ -45,6 +45,25 @@ pub enum NodeMessage {
         namespace_id: [u8; 32],
         op: Box<SignedNamespaceOp>,
     },
+    /// Hand a governance op this node just PUBLISHED to its own namespace
+    /// governance DAG, by the same route a peer's op takes.
+    ///
+    /// The publisher path commits the live mutation, advances the persisted
+    /// governance head and writes the op-log directly — it never touches the
+    /// in-memory `DagStore` or the unified-op projection that the apply feed
+    /// maintains. So without this signal an author's own ops reach its own DAG
+    /// only when some peer echoes them back: until then the DAG holds every
+    /// child op a peer sends as `Pending` (its parents are the author's own
+    /// unfed ops), which costs a backfill round-trip per op, and the projection
+    /// lags the live store it is supposed to mirror.
+    ///
+    /// Routed `NodeClient -> NodeManager -> ContextClient` because
+    /// `crates/governance-store` holds a `NodeClient` and cannot name the
+    /// context actor. Fire-and-forget by design: the apply must not be awaited
+    /// from inside the context handler that published (the actor is blocked on
+    /// that handler's future, so awaiting its own message would deadlock), and
+    /// a dropped signal only restores the old peer-echo behaviour.
+    ApplyLocalNamespaceOp { op: Box<SignedNamespaceOp> },
     /// Edge-trigger the migration-heartbeat emitter to recompute and re-publish
     /// this node's facts for a namespace, out of band of the periodic tick.
     /// Routed `NodeClient -> NodeManager` (the emitter address lives on
