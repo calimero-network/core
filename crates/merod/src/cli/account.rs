@@ -7,12 +7,10 @@
 //! the key survives a namespace-identity rotation and does not survive losing the
 //! disk, which is the case the whole story is about.
 //!
-//! A backup is **one secret plus a non-secret list**. The per-namespace nonce is
-//! derived (`KDF(root_secret, namespace_id)`), so the words below recover every
-//! account this node owns in every namespace it ever joined — provided the
-//! operator still knows which namespaces those were. `export` prints the ids it
-//! can derive for any namespace named on the command line, precisely so that list
-//! can be kept somewhere ordinary.
+//! A backup is **one secret**. The account id is `H(genesis(root_pk))` — a pure
+//! function of the root key, with no per-namespace nonce — so it is the same
+//! account in every namespace, and the phrase alone recovers all of it. `export`
+//! prints that phrase alongside the root's public key and the account id it names.
 //!
 //! Both subcommands open the node's store directly, so the node must be **stopped**
 //! — RocksDB holds an exclusive lock while `merod run` is up.

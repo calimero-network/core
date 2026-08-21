@@ -353,3 +353,17 @@ where
 {
     serializer.collect_seq(report.chain().map(|e| e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::RootCommand;
+
+    // Walks the whole command tree, so a duplicate alias or a conflicting arg
+    // anywhere fails here rather than panicking on first use in a debug build.
+    #[test]
+    fn cli_definition_is_well_formed() {
+        RootCommand::command().debug_assert();
+    }
+}

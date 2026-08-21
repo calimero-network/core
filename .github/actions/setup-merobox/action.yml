@@ -1,16 +1,6 @@
 name: Setup Merobox
 description: "Install the merobox release binary (Linux only)"
 
-# There is deliberately no "install a prebuilt artifact instead" input. Pointing
-# the suite at an unreleased merobox is occasionally useful while a fix is in
-# flight, but an artifact installed by name is a binary every downstream step
-# then executes with full access to node data dirs, and a same-repo artifact name
-# is not an authenticated identity — any job that can upload under that name
-# substitutes it. The release path below is verified against its published
-# `.sha256`, and that guarantee is the reason this is the only path. Testing
-# against an unshipped merobox means shipping it first, to a pre-release if need
-# be; the floor below is a floor precisely so that is cheap.
-
 runs:
   using: "composite"
   steps:
@@ -18,53 +8,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # Floor, not a pin. What the suite actually needs from it:
-        #   0.6.43 — forwards MERO_AUTH_ADMIN_* into the node and auth
-        #            containers, without which every fresh-node login fails.
-        #   0.6.44 — the `download_blob` step, used by
-        #            apps/blobs/workflows/blob-cross-node-{transfer,sizes}.yml to
-        #            read bytes back off a node and assert size + sha256.
-        #   0.6.50 — `node_exec` runs its one-shot container as root, like node
-        #            containers do, so it can traverse the node's 0700 home. Below
-        #            this, `account export` reports the node as uninitialised —
-        #            account-root-backup-restore needs it.
-        #   0.6.51 — `account_revoke` takes a `proof:`, so a revocation signed from
-        #            the account root elsewhere can be published by a node holding
-        #            no authority of its own.
-        #   0.6.52 — `json_not_equal`, and a fix to the statement argument splitter.
-        #            account-revoke-lost-device asserts that a re-enrolled device
-        #            does NOT reuse the revoked id, which has no literal to compare
-        #            against; below this the statement is unrecognised, which reads
-        #            as a failing assertion rather than an unsupported one.
-        #   0.6.55 — the bundled `calimero-client-py` is finally >= 0.6.28. The
-        #            binary is built with `pip install -r requirements.txt` then
-        #            PyInstaller, so requirements.txt decides what ships —
-        #            pyproject.toml does not. At 0.6.54 the two had drifted
-        #            (pyproject >=0.6.27, requirements >=0.6.24,<0.6.26), so the
-        #            released binary carried a client-py too old for the
-        #            `node_identity` step and every account scenario failed inside
-        #            the typed binding with "node identity read failed" — before
-        #            any HTTP call, which is why the node logs showed no request
-        #            at all. merobox#337 stopped the two pins drifting.
-        #   0.6.56 — the bundled `calimero-client-py` is >= 0.6.29, which is the
-        #            first release compiled against a core that made
-        #            `governanceOp` optional on the join responses. Below this the
-        #            bundled client rejects a join from a node that has retired
-        #            the field, with a serde `missing field` error before any
-        #            scenario logic runs — every scenario that joins a namespace
-        #            fails at the join step (#3485). 0.6.56 also drops the
-        #            `requester` step field with the DTOs that lost it (#3492).
-        # UPGRADE_POLICY_COMPAT: the previous note here said to delete it once the
-        # bundled client-py stopped requiring `upgradePolicy`. It has — nothing in
-        # client-py master sends or reads the field — but deleting the shim is a
-        # response-shape change of exactly the class #3485 turned out to be:
-        # `mero-js` types `upgradePolicy: string` and `swift-sdk` declares it
-        # non-optional on a synthesized `Codable`, so removing it needs the same
-        # SDK-then-client-py-then-merobox sequence rather than a rider on this
-        # bump. Core's own struct has carried `#[serde(default)]` on the field
-        # since before rc.21, so a client compiled from core survives its
-        # removal; the two hand-written SDKs are what need the coordination.
-        MIN_MEROBOX="0.6.56"
+        MIN_MEROBOX="0.6.58"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
@@ -72,8 +16,6 @@ runs:
           *) echo "::error::no merobox release binary for $(uname -m)"; exit 1 ;;
         esac
 
-        # Resolve the tag from the releases redirect, not the API: no token to
-        # plumb through a composite action and no shared rate limit to hit.
         TAG="$(timeout 60 curl -fsSLI -o /dev/null -w '%{url_effective}' \
           --retry 3 --retry-all-errors \
           https://github.com/calimero-network/merobox/releases/latest | sed 's#.*/tag/##')"
@@ -86,8 +28,6 @@ runs:
         timeout 180 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox "$ASSET"
         timeout 60 curl -fsSL --retry 3 --retry-all-errors -o /tmp/merobox.sha256 "${ASSET}.sha256"
 
-        # The published checksum names a build-relative path, so compare the
-        # digest itself rather than feeding the file to `sha256sum -c`.
         EXPECTED_SHA="$(awk '{print $1}' /tmp/merobox.sha256)"
         ACTUAL_SHA="$(sha256sum /tmp/merobox | awk '{print $1}')"
         if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
@@ -102,6 +42,6 @@ runs:
         merobox --version
         HAVE_MEROBOX="$(merobox --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ "$(printf '%s\n%s\n' "$MIN_MEROBOX" "$HAVE_MEROBOX" | sort -V | head -1)" != "$MIN_MEROBOX" ]; then
-          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX} (node_exec runs as root, so it can read the node's 0700 data dir)"
+          echo "::error::merobox ${HAVE_MEROBOX} is older than the required ${MIN_MEROBOX}"
           exit 1
         fi

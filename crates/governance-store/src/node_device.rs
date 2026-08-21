@@ -224,7 +224,7 @@ pub struct NodeDevice {
     /// The account this device speaks for.
     pub account: AccountId,
     /// The genesis that addresses [`Self::account`], reconstructed from the
-    /// stored nonce and the account root key that roots it.
+    /// stored account root key alone — the id carries no per-namespace nonce.
     ///
     /// Carried because a device link has to put the genesis on the wire, and
     /// pairing a second device means publishing another link naming this same

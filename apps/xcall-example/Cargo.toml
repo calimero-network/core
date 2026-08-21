@@ -13,7 +13,6 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
-thiserror.workspace = true
 
 [package.metadata.workspaces]
 independent = true

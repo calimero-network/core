@@ -363,7 +363,7 @@ fn endorser_is_member(
 /// Deliberately ungated, unlike its two siblings, and for a reason rather than by
 /// omission: the handoff is self-certifying against state the group already holds.
 /// A rotation for an account this group has never learned is refused outright
-/// (`RotationNotContinuous`, since there is no root key to continue from), and the
+/// (`RotationAccountUnknown` — there is no chain to be discontinuous with), and the
 /// only way the group learns an account is through a link that already passed the
 /// membership gate. So relaying someone else's rotation writes nothing an
 /// attacker chose, and gating it on the relayer would only break legitimate

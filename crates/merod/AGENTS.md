@@ -49,9 +49,8 @@ and `import` open the datastore directly, which means the node must be **stopped
 misread; `revoke-proof` needs no store at all when given `--from`.
 
 ```bash
-# Print the 24-word phrase to stdout. Add --namespace (repeatable, optional) to
-# also print the account id derived for that namespace.
-merod --node node1 account export [--namespace <NAMESPACE_ID>]…
+# Print the 24-word phrase to stdout.
+merod --node node1 account export
 
 # Write it to a file instead. Refused without the second flag; created 0600.
 merod --node node1 account export --out backup.txt --allow-plaintext-file
@@ -62,8 +61,9 @@ merod --node node1 account import [--from backup.txt] [--force]
 ```
 
 Export prints the phrase on the **first line** (so `head -1` is the secret),
-then the root's public key, then any derived account ids. Only the first line is
-sensitive; the account ids are what writer sets already name.
+then the root's public key, then the account id — the same one in every
+namespace, since the id carries no per-namespace nonce. Only the first line is
+sensitive.
 
 `--force` **drops the device rows belonging to the root it replaces**, and reports
 which namespaces they were in. Not housekeeping: a device row is keyed by namespace

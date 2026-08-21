@@ -51,17 +51,19 @@ use tracing::warn;
 /// * `store` - The underlying store (works with both RocksDB and InMemoryDB)
 /// * `context_id` - The context being accessed
 /// * `executor_id` - The DEVICE identity executing operations (the replica id,
-///   and what owner stamps record)
-/// * `account_id` - The ACCOUNT that device speaks for here (the principal a
-///   writer set grants). Callers in `calimero-node` get it from
-///   `calimero_governance_store::account_for_context`, which is the same
+///   and what a signed write's `signature_data.signer` records)
+/// * `account_id` - The ACCOUNT that device speaks for here (the principal both
+///   a writer set and an owner stamp gate on). Callers in `calimero-node` get it
+///   from `calimero_governance_store::account_for_context`, which is the same
 ///   resolution the execute path uses, so a native storage operation and a
 ///   guest one agree about who this node is.
 ///
 /// Both are required, and passing the device for both is a bug rather than a
-/// shortcut: gates read the account and stamps read the device, so collapsing
-/// them re-creates the "your second device is a stranger" behaviour the account
-/// plane exists to remove — and silently, because both are 32 bytes.
+/// shortcut: gates and owner stamps read the account while the signer and the
+/// CRDT internals underneath (a counter slot, an HLC seed) read the device, so
+/// collapsing one into the other re-creates the "your second device is a
+/// stranger" behaviour the account plane exists to remove — and silently,
+/// because both are 32 bytes.
 ///
 /// # Example
 ///

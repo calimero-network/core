@@ -17,7 +17,6 @@ thiserror.workspace = true
 # `tracing_logs` integration test.
 calimero-sdk = { workspace = true, features = ["tracing"] }
 calimero-storage.workspace = true
-calimero-storage-macros.workspace = true
 sha2.workspace = true
 hex.workspace = true
 bs58.workspace = true
