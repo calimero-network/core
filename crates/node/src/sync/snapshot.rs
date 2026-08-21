@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use borsh::BorshDeserialize;
+use calimero_context_client::client::ContextRegistry;
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::snapshot::{SnapshotRecord, MAX_SNAPSHOT_PAGE_SIZE};
@@ -24,6 +25,7 @@ use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
 use calimero_store::slice::Slice;
 use calimero_store::types::ContextState as ContextStateValue;
+use calimero_store::Store;
 use eyre::Result;
 use hex;
 use tracing::{debug, info, warn};
@@ -151,19 +153,44 @@ impl SyncManager {
         let page_limit = page_limit.clamp(1, MAX_PAGE_LIMIT);
         let byte_limit = byte_limit.clamp(1, MAX_SNAPSHOT_PAGE_SIZE);
 
-        // Verify boundary is still valid
-        let context = match self.context_client.get_context(&context_id)? {
-            Some(ctx) => ctx,
-            None => {
-                warn!(%context_id, "Context not found for snapshot stream");
-                return self
-                    .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
-                    .await;
-            }
-        };
+        // The context must exist before its state means anything.
+        if self.context_client.get_context(&context_id)?.is_none() {
+            warn!(%context_id, "Context not found for snapshot stream");
+            return self
+                .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
+                .await;
+        }
 
-        if context.root_hash != boundary_root_hash {
-            warn!(%context_id, "Boundary mismatch - state changed during sync");
+        // Compare the *state* root, not `ContextMeta.root_hash`.
+        //
+        // `ContextMeta.root_hash` is not a safe stand-in for the state this
+        // snapshot is about to read. A local execution commits context state
+        // (`storage.commit()`) well before it persists the new root hash into
+        // `ContextMeta` — see `crates/context/src/handlers/execute/mod.rs` —
+        // so for the duration of that window the metadata still reports the
+        // pre-write hash while every entity `generate_snapshot_pages` will
+        // read has already moved. Gating on the metadata there accepts the
+        // boundary as intact and streams post-boundary state under a
+        // pre-boundary hash.
+        //
+        // The receiver cannot recover from that on its own: it recomputes the
+        // root from the state it received, finds it disagrees with the hash it
+        // was promised, and adopts the mismatching hash anyway (see
+        // `request_snapshot_sync`). It then advertises a root whose state it
+        // does not hold, which satisfies every root-hash equality check —
+        // including the one in `protocol_selector` — so no repair is ever
+        // triggered.
+        //
+        // The ROOT `Index` entry moves in the same write batch as the entities,
+        // so reading through it observes exactly the state that will be served.
+        let state_root = served_state_root(self.context_client.datastore(), context_id)?;
+        if state_root != boundary_root_hash {
+            warn!(
+                %context_id,
+                expected = %boundary_root_hash,
+                actual = %state_root,
+                "Boundary mismatch - state changed during sync"
+            );
             return self
                 .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
                 .await;
@@ -224,21 +251,23 @@ impl SyncManager {
             schema_app_key,
         )?;
 
-        // Post-iteration recheck: verify root hash hasn't changed during page generation.
-        // This is a safety guardrail in addition to the RocksDB snapshot iterator.
-        let current_context = self.context_client.get_context(&context_id)?;
-        if let Some(ctx) = current_context {
-            if ctx.root_hash != boundary_root_hash {
-                warn!(
-                    %context_id,
-                    expected = %boundary_root_hash,
-                    actual = %ctx.root_hash,
-                    "Root hash changed during snapshot generation"
-                );
-                return self
-                    .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
-                    .await;
-            }
+        // Post-iteration recheck: verify the state hasn't moved during page
+        // generation. A safety guardrail in addition to the point-in-time
+        // iterator above. Reads the state root for the same reason the
+        // pre-generation check does: `ContextMeta.root_hash` lags a committed
+        // state write, so it cannot see the very change this recheck exists to
+        // catch.
+        let state_root = served_state_root(self.context_client.datastore(), context_id)?;
+        if state_root != boundary_root_hash {
+            warn!(
+                %context_id,
+                expected = %boundary_root_hash,
+                actual = %state_root,
+                "Root hash changed during snapshot generation"
+            );
+            return self
+                .send_snapshot_error(stream, SnapshotError::InvalidBoundary)
+                .await;
         }
 
         info!(%context_id, pages = pages.len(), total_entries, "Streaming snapshot");
@@ -1397,6 +1426,35 @@ struct SnapshotBoundary {
     dag_heads: Vec<[u8; 32]>,
 }
 
+/// The hash a snapshot boundary is validated against: the root of the state
+/// [`generate_snapshot_pages`] will actually read.
+///
+/// Reads the context's ROOT `Index` entry, **not** `ContextMeta.root_hash`.
+/// The two agree whenever no write is in flight, but they are not
+/// interchangeable: a local execution commits context state
+/// (`storage.commit()`) well before it persists the new root hash into
+/// `ContextMeta` — see `crates/context/src/handlers/execute/mod.rs` — so for
+/// the duration of that window the metadata still reports the pre-write hash
+/// while every entity a snapshot would read has already moved. A boundary
+/// check reading the metadata there sees nothing wrong and streams
+/// post-boundary state under a pre-boundary hash.
+///
+/// The receiver cannot recover from that on its own. It recomputes the root
+/// from the state it received, finds it disagrees with the hash it was
+/// promised, and adopts the mismatching hash anyway (see
+/// [`SyncManager::request_snapshot_sync`]). It then advertises a root whose
+/// state it does not hold, which satisfies every root-hash equality check —
+/// including the one in `protocol_selector` — so no repair is ever triggered.
+///
+/// The ROOT `Index` entry is rewritten in the same batch as the entities it
+/// covers, so reading through it observes exactly the state that will be
+/// served.
+fn served_state_root(store: &Store, context_id: ContextId) -> Result<Hash> {
+    Ok(Hash::from(
+        ContextRegistry::new(store.clone()).compute_root_hash(&context_id)?,
+    ))
+}
+
 /// Generate snapshot pages. Returns `(pages, next_cursor, total_entries)`,
 /// where `total_entries` is the grand total of shippable `Entity` records at
 /// this boundary — every entity with both an `Index` and an `Entry`, counted
@@ -1439,10 +1497,13 @@ struct SnapshotBoundary {
 ///
 /// **Read consistency:** the discovery scan uses a snapshot
 /// iterator, but the per-bundle value lookups in step 3 hit the
-/// live store. That is safe because `stream_snapshot_pages`
-/// re-reads `root_hash` after generation and rejects the snapshot
-/// with `InvalidBoundary` if the context mutated in the meantime, so
-/// a torn read can never be shipped to a peer.
+/// live store. What makes that safe is that `stream_snapshot_pages`
+/// re-checks the boundary after generation via [`served_state_root`]
+/// and rejects the snapshot with `InvalidBoundary` if the state moved
+/// in the meantime. The re-check has to read the *state* root: it used
+/// to compare `ContextMeta.root_hash`, which lags a committed state
+/// write, so it could not see the very mutation it existed to catch
+/// and a torn read did reach peers.
 fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     handle: &calimero_store::Handle<L>,
     context_id: ContextId,
@@ -2151,9 +2212,13 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
     use calimero_storage::index::EntityIndex;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::key::ApplicationMeta as ApplicationMetaKey;
+    use calimero_store::key::ContextMeta as ContextMetaKey;
+    use calimero_store::types::ContextMeta as ContextMetaValue;
     use calimero_store::Store;
 
     use super::*;
@@ -2452,6 +2517,114 @@ mod tests {
         assert!(
             totals.iter().all(|&t| t == 4),
             "total_entries drifted: {totals:?}"
+        );
+    }
+
+    /// Seed the `ContextMeta` row, whose `root_hash` the serve path used to
+    /// gate on.
+    fn put_context_meta(store: &Store, ctx: ContextId, root_hash: [u8; 32]) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &ContextMetaKey::new(ctx),
+                &ContextMetaValue::new(
+                    ApplicationMetaKey::new(ApplicationId::from([9u8; 32])),
+                    root_hash,
+                    vec![],
+                    None,
+                ),
+            )
+            .unwrap();
+    }
+
+    /// Write the context's ROOT `Index` entry carrying `full_hash`.
+    ///
+    /// This is the entry `compute_root_hash` reads, and in production it is
+    /// rewritten in the same batch as the entities it covers — which is why
+    /// reading through it sees the state a snapshot will actually serve.
+    fn put_root_index(store: &Store, ctx: ContextId, full_hash: [u8; 32]) {
+        let root = Id::new(*ctx);
+        let index_bytes = borsh::to_vec(&EntityIndex::minimal_for_test_with_full_hash(
+            root, full_hash,
+        ))
+        .unwrap();
+        store
+            .handle()
+            .put(
+                &ContextStateKey::new(ctx, StorageKey::Index(root).to_bytes()),
+                &ContextStateValue::from(Slice::from(index_bytes)),
+            )
+            .unwrap();
+    }
+
+    /// The hash the serve path validates a requested boundary against — the
+    /// same function both guard sites call, so a regression that points them
+    /// back at `ContextMeta.root_hash` fails this test.
+    fn boundary_guard_hash(store: &Store, ctx: ContextId) -> Hash {
+        served_state_root(store, ctx).unwrap()
+    }
+
+    /// Two snapshots generated under the same boundary hash must carry the
+    /// same state. If the payload can move while the boundary hash sits
+    /// still, the sender streams state its announced boundary does not
+    /// describe — and the receiver has no way to tell.
+    ///
+    /// Two checks on the serve path exist to prevent exactly that:
+    /// `handle_snapshot_stream_request` before page generation, and the
+    /// recheck in `stream_snapshot_pages` after it. Both used to compare
+    /// `ContextMeta.root_hash`, and neither could see a write that had
+    /// committed its *state* but not yet its *metadata* — a window a local
+    /// execution leaves open on every call, because
+    /// `crates/context/src/handlers/execute/mod.rs` commits context state
+    /// roughly 250us before it persists the new root hash into `ContextMeta`.
+    /// A snapshot generated inside it read post-write state and validated
+    /// against a pre-write hash.
+    #[test]
+    fn same_boundary_hash_must_mean_same_snapshot_payload() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([7u8; 32]);
+
+        // State as of the announced boundary. The ROOT index and the metadata
+        // agree on the hash that describes it, as they do whenever no write is
+        // in flight.
+        let boundary = [0xB1_u8; 32];
+        for id in [[1u8; 32], [2u8; 32], [3u8; 32]] {
+            put_entity(&store, ctx, id, 64);
+        }
+        put_root_index(&store, ctx, boundary);
+        put_context_meta(&store, ctx, boundary);
+
+        let guard_before = boundary_guard_hash(&store, ctx);
+        let (payload_before, _) =
+            drain_all_pages(&store, ctx, DEFAULT_PAGE_LIMIT, DEFAULT_PAGE_BYTE_LIMIT);
+        assert_eq!(
+            guard_before,
+            Hash::from(boundary),
+            "precondition: with no write in flight the guard must agree with \
+             the announced boundary, or the sender could never serve at all"
+        );
+
+        // The concurrent local write, caught mid-execution: the entity and the
+        // ROOT index it updates are committed together, while the `ContextMeta`
+        // root-hash write has not landed yet.
+        put_entity(&store, ctx, [4u8; 32], 64);
+        put_root_index(&store, ctx, [0xB2_u8; 32]);
+
+        let guard_after = boundary_guard_hash(&store, ctx);
+        let (payload_after, _) =
+            drain_all_pages(&store, ctx, DEFAULT_PAGE_LIMIT, DEFAULT_PAGE_BYTE_LIMIT);
+
+        assert_ne!(
+            payload_before, payload_after,
+            "sanity check: a committed state write must be visible to the \
+             snapshot reader, otherwise this test proves nothing"
+        );
+        assert_ne!(
+            guard_before, guard_after,
+            "the snapshot payload moved while the hash the serve path \
+             validates the boundary against did not: the guards accept the \
+             boundary as intact and stream post-boundary state under a \
+             pre-boundary hash"
         );
     }
 
