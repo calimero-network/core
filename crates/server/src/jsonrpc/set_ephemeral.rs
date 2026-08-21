@@ -49,11 +49,13 @@ impl Request for SetEphemeralRequest {
 
         if !crate::execute::caller_authorized_for_context(&state.ctx_client, &context_id, &caller)
             .map_err(|err| {
-            error!(%err, %context_id, "Membership lookup failed during set_ephemeral");
-            RpcError::MethodCallError(SetEphemeralError::InternalError(
-                "internal error during membership verification".to_owned(),
-            ))
-        })? {
+                error!(%err, %context_id, "Membership lookup failed during set_ephemeral");
+                RpcError::MethodCallError(SetEphemeralError::InternalError(
+                    "internal error during membership verification".to_owned(),
+                ))
+            })?
+            .authorized
+        {
             return Err(RpcError::MethodCallError(SetEphemeralError::Unauthorized));
         }
 

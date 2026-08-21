@@ -89,6 +89,16 @@ pub struct VMContext<'a> {
     /// for direct/RPC calls. Set by the node, never from guest memory, so the
     /// target can trust it. Exposed to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<[u8; DIGEST_SIZE]>,
+    /// The account the transport authorized this call as; `None` when no direct
+    /// caller names one. Set by the node, never from guest memory. Exposed via
+    /// `env::caller_account()`.
+    ///
+    /// The only one of the three identities here that describes **who asked**;
+    /// [`Self::account_id`] and [`Self::executor_public_key`] both describe this
+    /// node. `None` must stay absent rather than widening to either of them — an
+    /// app testing per-member permissions has to be able to tell "nobody in
+    /// particular" from "the node owner".
+    pub caller_account: Option<[u8; DIGEST_SIZE]>,
 }
 
 impl<'a> VMContext<'a> {
@@ -119,6 +129,7 @@ impl<'a> VMContext<'a> {
             executor_public_key,
             governance_position: None,
             xcall_origin: None,
+            caller_account: None,
         }
     }
 }

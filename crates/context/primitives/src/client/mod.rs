@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use borsh::BorshDeserialize;
+use calimero_account::AccountId;
 use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -1603,6 +1604,11 @@ impl ContextClient {
     /// # Returns
     ///
     /// A `Result` containing the `ExecuteResponse` on success, or an `ExecuteError` on failure.
+    ///
+    /// Attributes **no caller**: the guest reads `env::caller_account()` as absent. Every caller
+    /// here is system-initiated (delta apply, sync, cascade, event dispatch). A transport that
+    /// authorized a real principal must call [`execute_with_origin`](Self::execute_with_origin)
+    /// and pass it, or the account it checked is silently dropped.
     pub async fn execute(
         &self,
         context_id: &ContextId,
@@ -1611,14 +1617,18 @@ impl ContextClient {
         payload: Vec<u8>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        self.execute_with_origin(context_id, executor, method, payload, atomic, None, 0)
+        self.execute_with_origin(context_id, executor, method, payload, atomic, None, None, 0)
             .await
     }
 
-    /// Like [`execute`](Self::execute), but tags the run with the source
-    /// context that dispatched it via `xcall`, surfaced to the guest as
-    /// `env::xcall_origin()`. Pass `None`/`0` for a direct/RPC call; the xcall
-    /// dispatch loop passes `Some(source)` and `parent_depth + 1`.
+    /// Like [`execute`](Self::execute), but carries the two provenance values the
+    /// convenience form leaves absent: `caller_account`, the account the transport
+    /// authorized this call as, and `xcall_origin`, the context that dispatched it.
+    ///
+    /// The xcall dispatch loop passes `None` for `caller_account` deliberately — a
+    /// relayed hop has no direct caller to attribute, and propagating the outer one
+    /// would let any context in the namespace act under a principal that never
+    /// addressed it.
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub async fn execute_with_origin(
         &self,
@@ -1627,6 +1637,7 @@ impl ContextClient {
         method: String,
         payload: Vec<u8>,
         atomic: Option<ContextAtomic>,
+        caller_account: Option<AccountId>,
         xcall_origin: Option<ContextId>,
         xcall_depth: u32,
     ) -> Result<ExecuteResponse, ExecuteError> {
@@ -1640,6 +1651,7 @@ impl ContextClient {
                     method,
                     payload,
                     atomic,
+                    caller_account,
                     xcall_origin,
                     xcall_depth,
                 },

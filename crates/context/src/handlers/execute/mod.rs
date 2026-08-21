@@ -95,6 +95,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             method,
             payload,
             atomic,
+            caller_account,
             xcall_origin,
             xcall_depth,
         }: ExecuteRequest,
@@ -873,6 +874,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         is_read_only_call,
                         block_writes_for_group,
                         &private_key,
+                        caller_account,
                         xcall_origin,
                     )
                     .await?;
@@ -1258,6 +1260,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         &target_executor,
                                         function.clone(),
                                         params.clone(),
+                                        None,
+                                        // A relayed hop has no direct caller.
+                                        // Forwarding the outer one would let any
+                                        // context in the namespace act under a
+                                        // principal that never addressed it.
                                         None,
                                         Some(context_id),
                                         // Child runs one level deeper. The depth
@@ -1938,6 +1945,11 @@ async fn internal_execute(
     // post-exec gate then serves reads but refuses writes (see `handle()`).
     block_writes_for_group: Option<ContextGroupId>,
     identity_private_key: &PrivateKey,
+    // The account the transport authorized this call as, for the guest's
+    // `env::caller_account()`. `None` when no direct caller names one; it is
+    // never widened to this node's own account, which the guest already reads
+    // as `env::account_id()`.
+    caller_account: Option<AccountId>,
     // Source context when this run was dispatched via `xcall`; threaded to the
     // runtime so the guest can read `env::xcall_origin()`. `None` for direct
     // calls.
@@ -2009,6 +2021,7 @@ async fn internal_execute(
         private_storage,
         node_client.clone(),
         is_read_only_call,
+        caller_account,
         xcall_origin,
     )
     .await?;
@@ -2504,6 +2517,7 @@ pub async fn execute(
     mut private_storage: ContextPrivateStorage,
     node_client: NodeClient,
     is_read_only_call: bool,
+    caller_account: Option<AccountId>,
     xcall_origin: Option<ContextId>,
 ) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
     let context_id = **context;
@@ -2526,6 +2540,7 @@ pub async fn execute(
                     &mut ro_storage,
                     Some(&mut ro_private),
                     Some(node_client),
+                    caller_account,
                     xcall_origin,
                 )?
             } else {
@@ -2538,6 +2553,7 @@ pub async fn execute(
                     &mut storage,
                     Some(&mut private_storage),
                     Some(node_client),
+                    caller_account,
                     xcall_origin,
                 )?
             };

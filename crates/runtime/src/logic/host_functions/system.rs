@@ -575,6 +575,39 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    /// Writes the account this call was **authorized as** into `dest_register_id`
+    /// and returns `1`, or returns `0` and leaves the register untouched when no
+    /// direct caller names one.
+    ///
+    /// The only identity here that answers *who asked*. [`account_id`](Self::account_id)
+    /// and [`device_id`](Self::device_id) both describe the node that ran the
+    /// call, so an app gating per-member permissions wants this one.
+    ///
+    /// `0` means "nobody in particular" — an xcall hop, or a caller authorized by
+    /// a route naming no account — and is never the node standing in for a
+    /// caller. Treat it as "do not authorize", not as a reason to fall back.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if the register operation fails.
+    pub fn caller_account(&mut self, dest_register_id: u64) -> VMLogicResult<u32> {
+        let caller = self.borrow_logic().context.caller_account;
+        let Some(caller) = caller else {
+            return Ok(0);
+        };
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
+            logic.registers.set(logic.limits, dest_register_id, caller)
+        })?;
+
+        trace!(
+            target: "runtime::host::system",
+            dest_register_id,
+            "caller_account written"
+        );
+
+        Ok(1)
+    }
+
     /// Copies the executing **device**'s public key into a register.
     ///
     /// The replica this node speaks as: unique per installation, and what signs
@@ -1718,6 +1751,85 @@ mod tests {
             host.borrow_logic().registers.get(2).unwrap(),
             &device,
             "device_id must still be the device"
+        );
+    }
+
+    /// `caller_account()` answers with the CALLER, not the node.
+    ///
+    /// The regression gate for the bug this import exists to close: the account
+    /// the transport authorized and the account the node runs as are different
+    /// values, and before this existed only the node's reached the guest. All
+    /// three identities are distinct here, so a host function returning the wrong
+    /// one cannot pass.
+    #[test]
+    fn caller_account_is_the_caller_not_the_node_or_the_device() {
+        let context_id = [3u8; DIGEST_SIZE];
+        let device = [5u8; DIGEST_SIZE];
+        let node_account = calimero_account::AccountId::from([7u8; DIGEST_SIZE]);
+        let caller = calimero_account::AccountId::from([11u8; DIGEST_SIZE]);
+        assert!(
+            [device, *node_account.as_bytes()]
+                .iter()
+                .all(|other| other != caller.as_bytes()),
+            "precondition: all three must differ, or this proves nothing"
+        );
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let mut context = VMContext::new(Cow::Owned(vec![]), context_id, device, node_account);
+        context.caller_account = Some(*caller.as_bytes());
+        let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+        let mut store = Store::default();
+        let memory =
+            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+        let _ = logic.with_memory(memory);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        assert_eq!(host.caller_account(1).unwrap(), 1, "a caller is present");
+        assert_eq!(
+            host.borrow_logic().registers.get(1).unwrap(),
+            caller.as_bytes(),
+            "the guest must be told who asked, not who ran it"
+        );
+
+        // The other two still answer about this node, so the split is intact
+        // rather than caller_account having displaced them.
+        host.account_id(2).unwrap();
+        assert_eq!(
+            host.borrow_logic().registers.get(2).unwrap(),
+            node_account.as_bytes()
+        );
+        host.device_id(3).unwrap();
+        assert_eq!(host.borrow_logic().registers.get(3).unwrap(), &device);
+    }
+
+    /// No direct caller ⇒ `0` and an untouched register, never the node standing
+    /// in. An app that falls back on absence would re-create the original bug,
+    /// so absence has to be distinguishable from any real account.
+    #[test]
+    fn caller_account_is_absent_rather_than_the_node_when_nobody_asked() {
+        let node_account = calimero_account::AccountId::from([7u8; DIGEST_SIZE]);
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        // Left as constructed: `VMContext::new` defaults `caller_account` to
+        // `None`, which is the xcall / no-binding case.
+        let context = VMContext::new(
+            Cow::Owned(vec![]),
+            [3u8; DIGEST_SIZE],
+            [5u8; DIGEST_SIZE],
+            node_account,
+        );
+        let mut logic = VMLogic::new(&mut storage, None, context, &limits, None);
+        let mut store = Store::default();
+        let memory =
+            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+        let _ = logic.with_memory(memory);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        assert_eq!(host.caller_account(1).unwrap(), 0, "nobody asked");
+        assert!(
+            host.borrow_logic().registers.get(1).is_err(),
+            "the register must be untouched, not filled with the node's account"
         );
     }
 

@@ -373,6 +373,7 @@ async fn create_context(
         private_storage,
         node_client.clone(),
         false, // init always writes state
+        None,  // creation runs as the node, so `init` has no caller to attribute
         None,  // context init is never an xcall
     )
     .await?;

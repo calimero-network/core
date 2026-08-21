@@ -1,4 +1,5 @@
 use actix::Message;
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -76,6 +77,12 @@ pub struct ExecuteRequest {
     pub method: String,
     pub payload: Vec<u8>,
     pub atomic: Option<ContextAtomic>,
+    /// The account this call was authorized as, surfaced to the guest via
+    /// `env::caller_account()`. `None` means no direct caller to attribute (an
+    /// xcall hop, or a caller authorized by a route naming no account) and must
+    /// never fall back to the node's own account — that is the value the guest
+    /// already reads as `env::account_id()`.
+    pub caller_account: Option<AccountId>,
     /// Source context when this execution is dispatched via `xcall`; `None`
     /// for direct/RPC calls. Surfaced to the guest via `env::xcall_origin()`.
     pub xcall_origin: Option<ContextId>,

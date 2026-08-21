@@ -2065,3 +2065,52 @@ mod tests {
         assert_eq!(listed, want);
     }
 }
+
+#[cfg(test)]
+mod caller_vs_node_account {
+    use super::*;
+    use crate::test_fixtures::{enrolled, test_group_id, test_store};
+    use crate::{member_account_in_namespace, register_context_in_group};
+    use calimero_primitives::context::ContextId;
+
+    /// The account a call is AUTHORIZED as and the account this node RUNS as are
+    /// different values, and both are real.
+    ///
+    /// Why the guest needs `env::caller_account()` as well as `env::account_id()`:
+    /// the second answers a question about this node and cannot stand in for the
+    /// first. Anything gating per-member permissions on `account_id` grants every
+    /// caller the node's own rights.
+    #[test]
+    fn the_authorized_account_is_not_the_account_this_node_runs_as() {
+        let store = test_store();
+        let ns = test_group_id();
+        let context = ContextId::from([0x77; 32]);
+        register_context_in_group(&store, &ns, &context).expect("register context");
+
+        // This node enrols in the namespace, so it speaks for an account of its own.
+        let own = NodeDeviceRepository::new(&store)
+            .ensure_enrolled(&ns)
+            .expect("enrol this node");
+
+        // A second member of the same group whose binding this node holds — the
+        // ordinary result of applying that member's join op.
+        let (caller_key, caller_account) = enrolled(&store, &ns, 0x42);
+
+        // What the server's membership gate resolves for a call by `caller_key`,
+        // and now carries through to the guest.
+        let authorized_as = member_account_in_namespace(&store, &ns, &caller_key)
+            .expect("read binding")
+            .expect("the caller's key is bound");
+        assert_eq!(authorized_as, caller_account);
+
+        // What the guest reads as `env::account_id()` — this node, positively,
+        // not merely something that happens to differ.
+        let runs_as = account_for_context(&store, &context).expect("node account");
+        assert_eq!(runs_as, own.account);
+
+        assert_ne!(
+            authorized_as, runs_as,
+            "the two identities must stay distinct, or the split buys nothing"
+        );
+    }
+}

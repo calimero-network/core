@@ -226,6 +226,12 @@ pub(crate) fn xcall_origin() -> Option<[u8; 32]> {
     None
 }
 
+pub(crate) fn caller_account() -> Option<[u8; 32]> {
+    // `TestHost` drives methods directly rather than through a transport that
+    // authorizes anyone, so a hosted call has no caller to attribute.
+    None
+}
+
 pub(crate) fn input() -> Option<Vec<u8>> {
     // `TestHost` drives methods directly via closures rather than through the
     // JSON-input WASM entrypoint, so there is no input buffer to serve.

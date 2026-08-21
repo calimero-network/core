@@ -20,6 +20,9 @@ wasm_imports! {
         // Source context of an xcall dispatch; writes the register and returns
         // true only when this execution was invoked via `xcall`.
         fn xcall_origin(register_id: RegisterId) -> Bool;
+        // Account this call was authorized as; writes the register and returns
+        // true only when a direct caller names one.
+        fn caller_account(register_id: RegisterId) -> Bool;
         // --
         fn input(register_id: RegisterId);
         fn value_return(value: Ref<ValueReturn<'_>>);

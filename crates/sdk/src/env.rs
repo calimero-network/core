@@ -356,6 +356,32 @@ pub fn xcall_origin() -> Option<[u8; 32]> {
     host::xcall_origin()
 }
 
+/// The account this call was **authorized as** — who asked — or `None` when no
+/// direct caller names one.
+///
+/// This is the value to test for per-member permissions. [`account_id`] and
+/// [`device_id`] both describe the node that ran the call, not the requester, so
+/// gating on either grants everyone the node's own rights.
+///
+/// The node sets this from an authenticated key, through the same binding lookup
+/// it uses for itself; it cannot be asserted by the caller. `None` means an xcall
+/// hop or a caller authorized by a route naming no account — treat it as "do not
+/// authorize", never as a reason to fall back to [`account_id`].
+#[must_use]
+pub fn caller_account() -> Option<[u8; 32]> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let present: bool = unsafe {
+            sys::caller_account(DATA_REGISTER)
+                .try_into()
+                .unwrap_or_else(expected_boolean)
+        };
+        present.then(|| read_register_sized(DATA_REGISTER).expect("caller account present"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::caller_account()
+}
+
 #[inline]
 #[must_use]
 pub fn input() -> Option<Vec<u8>> {

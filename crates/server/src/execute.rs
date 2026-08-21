@@ -8,6 +8,7 @@
 
 use std::pin::pin;
 
+use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -32,7 +33,19 @@ pub(crate) enum CallerIdentity<'a> {
     NodeOwner,
 }
 
-/// Whether `caller` may act on `context_id`.
+/// The outcome of the membership gate: whether `caller` may act, and the account
+/// they were authorized as.
+///
+/// The account is carried out rather than dropped because the guest needs it
+/// (`env::caller_account()`). It is `None` whenever no account names this caller
+/// — a `NodeOwner`, or a key authorized by `has_member`'s key-keyed arm without a
+/// binding — and `None` must never be widened into the node's own account.
+pub(crate) struct Authorization {
+    pub authorized: bool,
+    pub account: Option<AccountId>,
+}
+
+/// Whether `caller` may act on `context_id`, and as which account.
 ///
 /// `CallerIdentity::Key` is checked against context membership (resolving the
 /// account the key acts as first, since membership rows are account-keyed).
@@ -47,13 +60,19 @@ pub(crate) fn caller_authorized_for_context(
     ctx_client: &ContextClient,
     context_id: &ContextId,
     caller: &CallerIdentity<'_>,
-) -> eyre::Result<bool> {
+) -> eyre::Result<Authorization> {
     match *caller {
         CallerIdentity::Key(key) => {
             let account = crate::caller_account::for_context(ctx_client, context_id, key);
-            ctx_client.has_member(context_id, key, account)
+            Ok(Authorization {
+                authorized: ctx_client.has_member(context_id, key, account)?,
+                account,
+            })
         }
-        CallerIdentity::NodeOwner => Ok(true),
+        CallerIdentity::NodeOwner => Ok(Authorization {
+            authorized: true,
+            account: None,
+        }),
     }
 }
 
@@ -68,16 +87,18 @@ pub(crate) fn caller_authorized_for_context(
 /// each node owns exactly one identity per context (the namespace identity),
 /// so callers never specify it.
 ///
-/// # Security note — caller vs executor identity
+/// # Security note — three identities, deliberately distinct
 ///
-/// When `CallerIdentity::Key` is used, the **caller's key** gates access (the
-/// membership check). However, the **executor identity** passed to the WASM
-/// runtime is the node's owned key for the context, not the caller's key.
-/// Applications that inspect `executor` inside WASM will see the node's owned
-/// identity, which may have different in-application permissions than the
-/// caller's identity. This is an intentional design: the node always executes
-/// on behalf of its own namespace identity; the caller's key is used only to
-/// authorise the call.
+/// The **executor** passed to the runtime is this node's owned key for the
+/// context, never the caller's: the node holds no private key but its own, and
+/// the executor doubles as the replica id seeding CRDT slots. The **account**
+/// the guest reads as `env::account_id()` is likewise this node's, since a delta
+/// is attributed by its signer. Neither may be substituted for the caller.
+///
+/// The caller is surfaced as a third value, `env::caller_account()`, carried
+/// here from the membership gate that already resolved it. It is what an app
+/// should test for per-member permissions; the other two answer questions about
+/// this node, not about who asked.
 pub(crate) async fn execute_request(
     ctx_client: &ContextClient,
     caller: CallerIdentity<'_>,
@@ -86,8 +107,8 @@ pub(crate) async fn execute_request(
     // Verify the caller is a member of the target context before doing
     // anything else. This prevents a valid token from being used to execute
     // against contexts the caller has no membership in.
-    if matches!(caller, CallerIdentity::Key(_)) {
-        let is_member = caller_authorized_for_context(ctx_client, &request.context_id, &caller)
+    let caller_account = if matches!(caller, CallerIdentity::Key(_)) {
+        let authorization = caller_authorized_for_context(ctx_client, &request.context_id, &caller)
             .map_err(|err| {
                 error!(%err, "Membership lookup failed during execute");
                 ExecutionError::FunctionCallError(
@@ -95,14 +116,16 @@ pub(crate) async fn execute_request(
                 )
             })?;
 
-        if !is_member {
+        if !authorization.authorized {
             return Err(ExecutionError::FunctionCallError(
                 "Caller is not a member of this context".to_owned(),
             ));
         }
+        authorization.account
     } else {
         debug!(context_id=%request.context_id, method=%request.method, "NodeOwner-privileged execute: membership check skipped");
-    }
+        None
+    };
 
     let args =
         serde_json::to_vec(&request.args_json).map_err(|err| ExecutionError::SerdeError {
@@ -111,12 +134,9 @@ pub(crate) async fn execute_request(
 
     // Always auto-resolve the executor identity. Each node has exactly one
     // owned identity per context (the namespace identity). The caller should
-    // not need to specify it.
-    // TODO: pass the caller's key as the executor identity so that WASM
-    // applications that enforce per-member permissions see the actual caller
-    // rather than the node's owned key. Until then, a context member whose
-    // in-WASM permissions are lower than the node-owner's can execute at
-    // the higher privilege level. Tracked as a known limitation.
+    // not need to specify it, and could not be substituted for it: executing as
+    // the caller's key would need that key's private half, which this node does
+    // not hold. Per-member permissions read `env::caller_account()` instead.
     let executor = {
         let members = ctx_client.get_context_members(&request.context_id, Some(true));
         let mut members = pin!(members);
@@ -139,7 +159,16 @@ pub(crate) async fn execute_request(
     };
 
     let outcome = ctx_client
-        .execute(&request.context_id, &executor, request.method, args, None)
+        .execute_with_origin(
+            &request.context_id,
+            &executor,
+            request.method,
+            args,
+            None,
+            caller_account,
+            None,
+            0,
+        )
         .await
         .map_err(ExecutionError::ExecuteError)?;
 

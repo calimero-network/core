@@ -428,13 +428,18 @@ impl Module {
             private_storage,
             node_client,
             None,
+            None,
         )
     }
 
-    /// Run a method, optionally tagged with the source context that dispatched
-    /// it via `xcall`. `xcall_origin` is surfaced to the guest through
-    /// `env::xcall_origin()` so a target can authorize its caller; `None` for
-    /// direct/RPC calls.
+    /// Run a method, optionally tagged with who asked for it and what dispatched
+    /// it. `caller_account` reaches the guest as `env::caller_account()` and
+    /// `xcall_origin` as `env::xcall_origin()`; both are `None` for a run with no
+    /// direct caller and no dispatching context.
+    ///
+    /// `caller_account` is deliberately NOT defaulted to `account` — the guest
+    /// reads that one as `env::account_id()`, and collapsing the two would put an
+    /// app back to being unable to tell who asked from which node ran it.
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub fn run_with_origin<'a>(
         &'a self,
@@ -446,6 +451,7 @@ impl Module {
         storage: &'a mut dyn Storage,
         private_storage: Option<&'a mut dyn Storage>,
         node_client: Option<NodeClient>,
+        caller_account: Option<AccountId>,
         xcall_origin: Option<ContextId>,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
@@ -454,6 +460,7 @@ impl Module {
 
         let mut context = VMContext::new(input.into(), *context_id, *executor, account);
         context.xcall_origin = xcall_origin.map(|origin| *origin);
+        context.caller_account = caller_account.map(|caller| *caller.as_bytes());
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 

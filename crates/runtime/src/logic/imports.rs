@@ -22,6 +22,7 @@ impl VMLogic<'_> {
             // Not offered by `calimero-sys`, so no new app can reach it.
             fn executor_id(register_id: u64);
             fn xcall_origin(register_id: u64) -> u32;
+            fn caller_account(register_id: u64) -> u32;
 
             fn input(register_id: u64);
             fn value_return(value_ptr: u64);
