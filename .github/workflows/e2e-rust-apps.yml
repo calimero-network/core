@@ -813,26 +813,53 @@ jobs:
           #
           # A marker means the two planes disagreed about the SAME question: the
           # node only compares when the applied op's cut reaches everything live
-          # has applied. An op applied out of causal order is reported at debug
-          # ("projection behind live's governance frontier") and is not a
-          # divergence — the two answers describe different histories.
+          # has applied. An op applied out of causal order is not a divergence —
+          # the two answers describe different histories — and reports itself as
+          # `result="skipped_stale_cut"` instead.
+          #
+          # Which is why this step also asserts COVERAGE. "No divergence marker"
+          # and "no comparison happened" are the same silence, so a gate that
+          # only looks for markers can go quiet across every scenario at once and
+          # still report green — it fails OPEN. Each membership op a node folds
+          # logs `unified_projection_compare` with what the comparison did, and a
+          # scenario that refused every comparison it attempted is a scenario
+          # this gate did not actually check.
           #
           # Node logs carry ANSI escapes between a field name and its value, so
           # every grep here strips them first; matching `plane="…"` on the raw
           # line silently finds nothing, which is how "planes seen:" used to
           # print an empty list under a failing gate.
+          strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
+          compares=$(grep -rh "unified_projection_compare" docker-logs/ 2>/dev/null | strip || true)
+          echo "membership comparisons:"
+          if [ -n "${compares}" ]; then
+              echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
+          else
+              echo "  (none — this scenario folded no membership op)"
+          fi
+          concluded=$(echo "${compares}" | grep -cE 'result="(agree|diverged)"' || true)
+          refused=$(echo "${compares}" | grep -cE 'result="skipped_[a-z_]+"' || true)
+
           if grep -rl "unified_projection_divergence" docker-logs/ 2>/dev/null | grep -q .; then
               echo "::error::unified-op projection diverged from the live decision in ${{ matrix.workflow }} — cutover gate not met"
               echo "planes seen:"
               grep -rh "unified_projection_divergence" docker-logs/ \
-                | sed -E 's/\x1b\[[0-9;]*m//g' \
-                | grep -o 'plane="[^"]*"' | sort | uniq -c
+                | strip | grep -o 'plane="[^"]*"' | sort | uniq -c
               echo "sample:"
-              grep -rn "unified_projection_divergence" docker-logs/ \
-                | sed -E 's/\x1b\[[0-9;]*m//g' | head -30
+              grep -rn "unified_projection_divergence" docker-logs/ | strip | head -30
               exit 1
           fi
-          echo "no unified_projection_divergence markers — projection agrees with the live decision"
+
+          # A scenario with no membership ops at all is fine (both counts zero);
+          # what fails is having attempted comparisons and concluded none of
+          # them. `no_live_row` counts as neither — it is the expected model
+          # difference for inherited members, not a refusal.
+          if [ "${refused}" -gt 0 ] && [ "${concluded}" -eq 0 ]; then
+              echo "::error::the projection gate checked NOTHING in ${{ matrix.workflow }} — every membership comparison was refused, so a divergence here could not have been seen"
+              grep -rn "unified_projection_compare" docker-logs/ | strip | head -20
+              exit 1
+          fi
+          echo "no unified_projection_divergence markers across ${concluded} concluded comparison(s) (${refused} refused) — projection agrees with the live decision"
 
       - name: Assert unified op-store completeness (C3 Stage 4, HARD gate)
         if: always()
