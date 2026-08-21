@@ -212,6 +212,7 @@ jobs:
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
+          - 40-peer-prestages-target-blob
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

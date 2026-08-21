@@ -1,0 +1,362 @@
+name: 40 - The peer pre-stages the target blob (v1 → v2, 2-node)
+description: >
+  2-node end-to-end baseline migration. Node 1 (admin) installs
+  migration-suite-v1, creates a namespace + one Open subgroup + one
+  context in the subgroup, invites node 2 via namespace invitation,
+  node 2 materialises subgroup membership via inheritance + joins the
+  context. Node 1 writes v1 state, waits for node 2 to catch up, then
+  runs upgrade_group on the subgroup (per-context, cascade=false)
+  and the node resolves migrate_v1_to_v2 from the target bundle's
+  embedded ABI. Asserts the Migrated event + v2 schema shape
+  on node 1 AND mirrors the post-migration schema_info on node 2 to
+  prove cross-node convergence via context-sync gossip.
+
+  Acts as the regression guard for Root<T> merge semantics: a change
+  there once broke write_migration_state's save_raw call with
+  MergeFailure(NoMergeFunctionRegistered), which this workflow catches
+  at the upgrade_group step.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-baseline
+  base_port: 9220
+  base_rpc_port: 9320
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: app-migration-baseline-1
+    path: dist/com.calimero.migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  # Node 2 installs v1 ITSELF. Every member who downloads an update from the
+  # registry lands here, and it is the state the baseline never reaches: the
+  # peer meets the upgrade already holding the version-stable ApplicationId,
+  # so the new bytecode arrives by pre-stage rather than a first fetch.
+  - name: Install migration-suite-v1 on node 2 as well
+    type: install_application
+    node: app-migration-baseline-2
+    path: dist/com.calimero.migration-suite-1.0.0.mpk
+    dev: true
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace on node 1
+    type: create_namespace
+    node: app-migration-baseline-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create Open subgroup on node 1
+    # Open visibility lets node 2 materialise its inherited membership
+    # via `join_subgroup_inheritance`.
+    type: create_group_in_namespace
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "baseline-migration"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-baseline-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to the namespace, then have it materialise
+  # the inherited Open-subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-baseline-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-baseline-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-baseline-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
+  - name: Set description (v1)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-migration"
+
+  - name: Increment counter (v1)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-baseline-1
+      - app-migration-baseline-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read v1 schema_info on node 1 (sanity)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema before migration
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "set-before-migration", "counter": "1"}})'
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  - name: Install migration-suite-v2-add-field on node 1
+    type: install_application
+    node: app-migration-baseline-1
+    path: dist/com.calimero.migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+
+  - name: Assert both versions share one application id (bundle same-id)
+    # Same-package bundles derive ApplicationId = hash(package, signer),
+    # so the second install MUST dedup onto the first id - the upgrade
+    # below then exercises the same-id (blob-only) propagation path.
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
+  - name: Upgrade with migrate_v1_to_v2
+    type: upgrade_group
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    # The node resolves the migration from the target bundle's embedded
+    # ABI (declared by #[derive(app::Migrate)]). This workflow is the
+    # regression guard for that resolution path.
+
+  # Fixed wait, NOT wait_for_sync: per-context migration apply is
+  # asynchronous and a root_hash-based wait_for_sync polled here exits
+  # vacuously synced because both nodes still hold the identical v1
+  # root at the first poll. The fixed wait covers (a) per-context
+  # migration apply on node 1, (b) context-sync gossip of the new
+  # post-migration state to node 2, (c) docker stdout flush so
+  # assert_log_present can see the "Executing migration" log line.
+  - name: Wait for upgrade + migration to apply + log flush
+    type: wait
+    seconds: 15
+
+  - name: Read the subgroup's upgrade record
+    type: get_group_upgrade_status
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+    outputs:
+      up_status: status
+      up_to_version: toVersion
+
+  - name: Assert the record names the v2 target
+    # Only these two fields carry a value on a per-context upgrade: contexts
+    # swap on demand, so `completedAt` and the counters stay null. Whether the
+    # state actually migrated is the rollup's question, asserted below.
+    type: json_assert
+    statements:
+      - 'equal("{{up_status}}", "completed")'
+      - 'equal("{{up_to_version}}", "2.0.0")'
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v1 state to v2 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-baseline-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  # schema_info cannot prove a migration ran: the version string it returns is a
+  # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
+  # v1 bytes too. The rollup carries each member's ABI STATE version instead.
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
+
+  - name: Read the migration-status rollup on node 1 (admin)
+    type: get_migration_status
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      mig_target: target_version
+      mig_expected: expected_members
+      mig_total: total
+      mig_migrated: migrated
+      mig_failed: failed
+      mig_below_target: reported_below_target
+      mig_missing: reported_missing
+      mig_residue: residue_total
+
+  - name: Assert each member migrated its own state, with no residue left
+    type: json_assert
+    statements:
+      # The inherited Open-subgroup member is pinned into the cohort, so a
+      # cohort of 1 would mean node 2's state was never being waited on.
+      - "equal({{mig_expected}}, 2)"
+      - "equal({{mig_total}}, 2)"
+      - "equal({{mig_migrated}}, 2)"
+      - "equal({{mig_failed}}, 0)"
+      # A u32 ABI state version, not the "2.0.0" bundle semver the schema_info
+      # reads compare against.
+      - "equal({{mig_target}}, 2)"
+      # Recomputed from each member's raw report, not read back from core's own
+      # all_migrated, so a rollup with the wrong comparison still fails here.
+      - "equal({{mig_below_target}}, 0)"
+      - "equal({{mig_missing}}, 0)"
+      - "equal({{mig_residue}}, 0)"
+
+  - name: Assert v2 schema on node 1 (v1 data preserved + notes seeded)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"description": "set-before-migration", "counter": "1"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Assert v2 schema on node 2 (same shape, proves migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"description": "set-before-migration", "counter": "1"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"notes": "added in v2"}})'
+
+  # Phase 6: v2-only setter on node 1 round-trips to node 2.
+  - name: Node 1 calls v2-only setter set_notes
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "written-post-migration"
+
+  - name: Wait for v2 write to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-baseline-1
+      - app-migration-baseline-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads notes via v2 getter
+    type: call
+    node: app-migration-baseline-2
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    outputs:
+      notes_after_node2: result
+
+  - name: Assert v2-only write reached node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{notes_after_node2}}, {"output": "written-post-migration"})'
+
+  # Phase 7: Teardown (node 1 holds admin authority).
+  - name: Delete context
+    type: delete_context
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+
+
+  # Pre-staging is a prefetch: when it fails the lazy path still completes the
+  # migration, so every outcome assertion in this suite stays green while the
+  # peer silently falls back. Only the node log distinguishes the two, which is
+  # why this scenario asserts on it.
+  #
+  # Regression pinned: passing the stream ceiling as `expected_size` made
+  # add_blob assert every transfer was exactly MAX_BLOB_STREAM_SIZE_BYTES,
+  # so any real bundle failed with "fatal: blob size mismatch".
+  - name: Assert the peer pre-staged the target bytecode rather than failing over
+    type: assert_log_absent
+    nodes:
+      - app-migration-baseline-2
+    patterns:
+      - "failed to pre-stage target app blob"
+      - "blob size mismatch"
+
+  - name: Assert the pre-stage actually ran and succeeded on the peer
+    type: assert_log_present
+    nodes:
+      - app-migration-baseline-2
+    patterns:
+      - "pre-staged target app bytecode for pending upgrade"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-baseline-1
+    application_id: "{{app_v1}}"
+
+stop_all_nodes: false
