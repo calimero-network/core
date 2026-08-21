@@ -8,7 +8,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        MIN_MEROBOX="0.6.58"
+        MIN_MEROBOX="0.6.59"
 
         case "$(uname -m)" in
           x86_64) MEROBOX_ARCH="linux-x86-64" ;;
