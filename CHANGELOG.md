@@ -44,6 +44,18 @@
 
 ### Fixed
 
+- **A snapshot whose applied state does not hash to the claimed boundary now
+  fails for retry** instead of being published anyway. The receiver recomputed
+  the root from the state that landed, compared it to the boundary the sender
+  promised, and on a mismatch logged a warning and stored the computed hash —
+  leaving the node advertising a root whose state it does not hold. That claim
+  satisfies every root-hash equality check, including the one that selects a
+  repair protocol, so the only node that knew its state was incomplete had just
+  told the rest there was nothing to repair. Forward-compatibility declines are
+  unaffected: a future-schema or signature-rejected *leaf* does not move this
+  hash, and shows up as the per-page `snapshot page applied with rejections`
+  warning ([#3607])
+
 - **Snapshot sync no longer serves state its announced boundary does not
   describe.** Both boundary checks on the serve path — before page generation
   and the recheck after it — compared `ContextMeta.root_hash`, but a local
@@ -848,3 +860,4 @@ Integrations:
 [#3528]: https://github.com/calimero-network/core/pull/3528
 [#3530]: https://github.com/calimero-network/core/pull/3530
 [#3595]: https://github.com/calimero-network/core/pull/3595
+[#3607]: https://github.com/calimero-network/core/pull/3607
