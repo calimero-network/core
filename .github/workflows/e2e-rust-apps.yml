@@ -813,26 +813,55 @@ jobs:
           #
           # A marker means the two planes disagreed about the SAME question: the
           # node only compares when the applied op's cut reaches everything live
-          # has applied. An op applied out of causal order is reported at debug
-          # ("projection behind live's governance frontier") and is not a
-          # divergence — the two answers describe different histories.
+          # has applied. An op applied out of causal order is not a divergence —
+          # the two answers describe different histories — and reports itself as
+          # `result="skipped_stale_cut"` instead.
+          #
+          # Which is why this step also asserts COVERAGE. "No divergence marker"
+          # and "no comparison happened" are the same silence, so a gate that
+          # only looks for markers can go quiet across every scenario at once and
+          # still report green — it fails OPEN. Each membership op a node folds
+          # logs `unified_projection_compare` with what the comparison did, and a
+          # scenario that refused every comparison it attempted is a scenario
+          # this gate did not actually check.
           #
           # Node logs carry ANSI escapes between a field name and its value, so
           # every grep here strips them first; matching `plane="…"` on the raw
           # line silently finds nothing, which is how "planes seen:" used to
           # print an empty list under a failing gate.
+          strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
+          compares=$(grep -rh "unified_projection_compare" docker-logs/ 2>/dev/null | strip || true)
+          echo "membership comparisons:"
+          if [ -n "${compares}" ]; then
+              echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
+          else
+              echo "  (none — this scenario folded no membership op)"
+          fi
+          concluded=$(echo "${compares}" | grep -cE 'result="(agree|diverged)"' || true)
+          refused=$(echo "${compares}" | grep -cE 'result="skipped_[a-z_]+"' || true)
+
           if grep -rl "unified_projection_divergence" docker-logs/ 2>/dev/null | grep -q .; then
               echo "::error::unified-op projection diverged from the live decision in ${{ matrix.workflow }} — cutover gate not met"
               echo "planes seen:"
               grep -rh "unified_projection_divergence" docker-logs/ \
-                | sed -E 's/\x1b\[[0-9;]*m//g' \
-                | grep -o 'plane="[^"]*"' | sort | uniq -c
+                | strip | grep -o 'plane="[^"]*"' | sort | uniq -c
               echo "sample:"
-              grep -rn "unified_projection_divergence" docker-logs/ \
-                | sed -E 's/\x1b\[[0-9;]*m//g' | head -30
+              grep -rn "unified_projection_divergence" docker-logs/ | strip | head -30
               exit 1
           fi
-          echo "no unified_projection_divergence markers — projection agrees with the live decision"
+
+          # Observe-only per scenario, and deliberately so. A scenario can hold
+          # a single membership op that lands on a node whose ancestry is not yet
+          # decrypted — one refusal, no conclusions — which is thin coverage, not
+          # a broken gate: 9 of 88 scenarios look like that. The systemic failure
+          # this instrument exists to catch is the gate concluding nothing
+          # ANYWHERE, and that is asserted once over the whole suite in
+          # `projection-coverage`, where it cannot be confused with a quiet
+          # scenario.
+          if [ "${refused}" -gt 0 ] && [ "${concluded}" -eq 0 ]; then
+              echo "::notice::every membership comparison in ${{ matrix.workflow }} was refused (${refused}) — thin coverage here; the suite-wide assertion is what gates this"
+          fi
+          echo "no unified_projection_divergence markers across ${concluded} concluded comparison(s) (${refused} refused) — projection agrees with the live decision"
 
       - name: Assert unified op-store completeness (C3 Stage 4, HARD gate)
         if: always()
@@ -982,18 +1011,75 @@ jobs:
           if-no-files-found: ignore
 
   # ── Report phase: notify on PR failure ──
+  projection-coverage:
+    name: Assert the projection gate compared something
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      # The counterpart to the per-scenario divergence gate. That one asserts a
+      # NEGATIVE — no divergence marker — which a suite that compared nothing
+      # satisfies just as well as a suite that compared everything. Asserting the
+      # positive per scenario turns out to be too sharp (a scenario legitimately
+      # holds one undecodable membership op and concludes nothing), so the floor
+      # sits here instead: across every scenario, the gate has to have concluded
+      # at least one comparison, or it was not gating.
+      - name: Download scenario logs
+        id: logs
+        # Tolerated so the assertion below runs and can say precisely WHY there
+        # are no logs; a bare failure here would be indistinguishable from a
+        # suite that legitimately produced none.
+        uses: actions/download-artifact@v8
+        with:
+          pattern: logs-*
+          merge-multiple: true
+          path: all-logs
+        continue-on-error: true
+
+      - name: Assert the suite concluded comparisons
+        run: |
+          # Missing logs is benign in exactly one case: the matrix never ran, so
+          # there was nothing to check and the `test` job already says why. A
+          # download failure, or a matrix that ran and left nothing behind, is
+          # the fail-open case this job exists to prevent — it must not pass as
+          # "nothing to inspect".
+          if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
+              case "${{ needs.test.result }}" in
+                skipped|cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+                  exit 0
+                  ;;
+              esac
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the coverage floor could not be checked"
+              exit 1
+          fi
+          strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
+          compares=$(grep -rh "unified_projection_compare" all-logs/ 2>/dev/null | strip || true)
+          echo "suite-wide membership comparisons:"
+          if [ -n "${compares}" ]; then
+              echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
+          else
+              echo "  (none)"
+          fi
+          concluded=$(echo "${compares}" | grep -cE 'result="(agree|diverged)"' || true)
+          if [ "${concluded}" -eq 0 ]; then
+              echo "::error::the projection gate concluded NO comparison anywhere in the suite — every divergence gate in this run passed without checking anything"
+              exit 1
+          fi
+          echo "the gate concluded ${concluded} comparison(s) across the suite"
+
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam]
+    needs: [test, auth-seam, projection-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
