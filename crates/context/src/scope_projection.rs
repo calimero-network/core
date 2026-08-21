@@ -1986,12 +1986,28 @@ impl ScopeProjections {
             .map_err(|_| UndecidableCause::NamespaceUnresolved)?
             .to_bytes();
         let scope = ScopeId::from(namespace_id);
-        if !self.cut_ancestry_complete(&scope, heads) {
+        // One lookup and one walk answer both questions: is the cited ancestry
+        // whole, and what does folding it yield. Asking `cut_ancestry_complete`
+        // and then `acl_view_at` walked the same ancestry twice and left the fold
+        // with a `None` arm no input could reach — completeness had already
+        // established the log exists, so there was nothing left for the fold to
+        // fail on. Holding the log here keeps that unreachable state out of the
+        // types rather than giving it a metric label it could never populate.
+        //
+        // An absent log goes through `classify_unresolvable_cut`, not a bare
+        // `ScopeUnfed`: that function checks truncation FIRST, so a truncated
+        // scope whose log is already evicted keeps reporting the permanent
+        // `LogTruncated` instead of a cause `is_transient` calls self-healing —
+        // which would park the op retrying forever and leave the one series
+        // worth alerting on silent.
+        let Some(log) = self.logs.get(&scope) else {
+            return Err(self.classify_unresolvable_cut(&scope, heads));
+        };
+        let walked = ScopeState::cut_ancestry(log, heads);
+        if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
-        let view = self
-            .acl_view_at(&scope, heads)
-            .ok_or(UndecidableCause::ViewUnavailable)?;
+        let view = ScopeState::acl_view_from_ancestry(&walked);
         let root_group = ContextGroupId::from(namespace_id);
         let root = MetaRepository::new(store)
             .load(&root_group)
@@ -2531,11 +2547,13 @@ mod tests {
     /// SAME two-op ancestry (`add <- remove`) so only the projection's state
     /// differs between cases.
     ///
-    /// The last case is the load-bearing one: with the log shaped exactly as the
-    /// `AncestryGap` case, marking the scope truncated must change the verdict to
-    /// `LogTruncated`. Truncation is *why* the ancestor is missing, and it is
-    /// permanent, so classifying by log shape first would file a node that has
-    /// stalled forever under a cause that reads as "retrying, give it a moment".
+    /// The two truncation cases are the load-bearing ones. With the log shaped
+    /// exactly as the `AncestryGap` case, marking the scope truncated must change
+    /// the verdict to `LogTruncated`; and the same must hold once the log is
+    /// evicted outright, where the shape alone reads as an unfed scope. Truncation
+    /// is *why* the ancestry is missing, and it is permanent, so classifying by
+    /// log shape first would file a node that has stalled forever under a cause
+    /// that reads as "retrying, give it a moment".
     #[test]
     fn an_unresolvable_cut_is_classified_by_the_reason_it_cannot_resolve() {
         let scope = ScopeId::from([7u8; 32]);
@@ -2607,6 +2625,27 @@ mod tests {
             UndecidableCause::LogTruncated,
             "a truncated log presents as an ancestry gap; reporting it as one \
              would hide a permanent stall inside a transient-looking cause",
+        );
+
+        // Truncation that evicted the scope's log entirely. By shape this is
+        // indistinguishable from the never-fed case above, so log-shape-first
+        // ordering would call it `ScopeUnfed` — transient, self-healing, retry
+        // forever — for a scope whose history is permanently gone. Callers that
+        // short-circuit an absent log to `ScopeUnfed` themselves, instead of
+        // asking this function, reintroduce exactly that bug.
+        let mut truncated_and_evicted = ScopeProjections::new();
+        let _ = truncated_and_evicted.truncated.insert(scope);
+        let cause = truncated_and_evicted.classify_unresolvable_cut(&scope, &cut);
+        assert_eq!(
+            cause,
+            UndecidableCause::LogTruncated,
+            "an evicted log looks unfed; the truncation mark is the only thing \
+             that distinguishes permanent loss from history that never arrived",
+        );
+        assert!(
+            !cause.is_transient(),
+            "the point of the distinction: this cut can never resolve, so the \
+             op must stop being retried as though it could",
         );
 
         // Sanity: a complete ancestry is not classified at all — the walk

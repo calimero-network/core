@@ -349,8 +349,8 @@ impl Metrics {
         //   A sustained rate here is the signal that a namespace's governance
         //   history has outgrown the retained window and that node's governance
         //   DAG has stopped advancing. This is the series to alert on.
-        // - `fold_unavailable` / `namespace_unresolved` / `view_unavailable` —
-        //   a store or mapping fault, not a history gap.
+        // - `fold_unavailable` / `namespace_unresolved` — a store or mapping
+        //   fault, not a history gap.
         //
         // A rate that never decays for a given cause means ops are parked
         // indefinitely, not retrying successfully.
@@ -645,10 +645,6 @@ pub enum UndecidableCause {
     /// The group's namespace could not be resolved (a store or mapping fault).
     /// Not a history gap.
     NamespaceUnresolved,
-    /// The ancestry is complete, but folding it yielded no view. Should not
-    /// happen given a complete ancestry; recorded distinctly so it cannot hide
-    /// inside a history-gap series.
-    ViewUnavailable,
 }
 
 impl UndecidableCause {
@@ -660,7 +656,6 @@ impl UndecidableCause {
             UndecidableCause::LogTruncated => "log_truncated",
             UndecidableCause::FoldUnavailable => "fold_unavailable",
             UndecidableCause::NamespaceUnresolved => "namespace_unresolved",
-            UndecidableCause::ViewUnavailable => "view_unavailable",
         }
     }
 
@@ -757,7 +752,6 @@ mod tests {
             UndecidableCause::LogTruncated,
             UndecidableCause::FoldUnavailable,
             UndecidableCause::NamespaceUnresolved,
-            UndecidableCause::ViewUnavailable,
         ];
 
         let labels: std::collections::HashSet<&str> = all.iter().map(|c| c.as_label()).collect();
