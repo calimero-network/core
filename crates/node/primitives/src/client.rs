@@ -356,6 +356,27 @@ impl NodeClient {
         }
     }
 
+    /// Feed a governance op this node just published into its own namespace
+    /// governance DAG and unified-op projection — the local half of the apply
+    /// feed, which the publisher path otherwise bypasses entirely. See
+    /// [`NodeMessage::ApplyLocalNamespaceOp`].
+    ///
+    /// Best-effort, like the two notifications above: on a full mailbox the op
+    /// still reaches the DAG the old way (a peer echoing it back), so the cost
+    /// of a drop is latency, not lost state.
+    pub fn feed_local_namespace_op(&self, op: SignedNamespaceOp) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ApplyLocalNamespaceOp { op: Box::new(op) })
+        {
+            warn!(
+                ?err,
+                "failed to enqueue ApplyLocalNamespaceOp — the op stays out of the \
+                 local governance DAG until a peer echoes it back"
+            );
+        }
+    }
+
     /// Notify the readiness FSM that we just subscribed to a namespace
     /// topic, so it seeds `subscribed_at` at subscribe time (boot-grace
     /// anchor) instead of at the first applied op. Best-effort, mirroring
