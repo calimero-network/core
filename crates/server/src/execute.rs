@@ -190,3 +190,120 @@ pub(crate) async fn execute_request(
 
     Ok(ExecutionResponse::new(Some(returns)))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::events::NodeEvent;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tokio::sync::broadcast;
+
+    use super::*;
+
+    /// Bind `sign_pk` to a fresh account in `namespace`, the way an applied join
+    /// op does, and return that account.
+    ///
+    /// Mirrors governance-store's own enrolment fixture, which is crate-private
+    /// there. The KEM half is arbitrary because nothing here opens an envelope —
+    /// only the binding lookup matters.
+    fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> AccountId {
+        let key_bytes: [u8; 32] = *(*sign_pk);
+        let root_sk = PrivateKey::from(key_bytes);
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let cert = DeviceCert::sign(
+            &root_sk,
+            genesis.account_id(),
+            DeviceId::from(key_bytes),
+            sign_pk,
+            &KemPublicKey::from([0; 32]),
+            0,
+            0,
+        )
+        .expect("the account root signs its own device cert");
+        let account = cert.account;
+        let bindings = calimero_governance_store::AccountBindingRepository::new(store);
+        let _ = bindings
+            .apply_link(namespace, &genesis, &[], &cert)
+            .expect("store the binding");
+        bindings
+            .record_endorser(namespace, account, &account)
+            .expect("record the endorser");
+        // The membership row the account-keyed arm of `has_member` reads. A join
+        // writes both; the binding alone resolves the key but admits nobody.
+        calimero_governance_store::MembershipRepository::new(store)
+            .add_member(namespace, &account, GroupMemberRole::Member)
+            .expect("add the member row");
+        account
+    }
+
+    /// A `ContextClient` over a fresh in-memory store, plus the store to seed.
+    ///
+    /// The returned `TempDir` backs the blob store and must outlive the client.
+    async fn client() -> (ContextClient, Store, tempfile::TempDir) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _) = broadcast::channel::<NodeEvent>(16);
+        let (node_client, blob_dir) =
+            crate::test_support::test_node_client(&store, LazyRecipient::new(), event_sender).await;
+        let ctx_client = ContextClient::new(store.clone(), node_client, LazyRecipient::new());
+        (ctx_client, store, blob_dir)
+    }
+
+    /// The gate hands back the account it authorized, instead of dropping it.
+    ///
+    /// The regression guard for the defect `caller_account` exists to close: this
+    /// account was resolved to answer "may this caller act?" and then discarded,
+    /// leaving the guest to derive a different one from this node's own device
+    /// row. Carrying it out is what makes `env::caller_account()` answerable.
+    #[tokio::test]
+    async fn the_gate_returns_the_account_it_authorized() {
+        let (ctx_client, store, _blob_dir) = client().await;
+        let namespace = ContextGroupId::from([0xAA; 32]);
+        let context_id = ContextId::from([0x77; 32]);
+        calimero_governance_store::register_context_in_group(&store, &namespace, &context_id)
+            .expect("register context");
+
+        let caller_key = PublicKey::from([0x42; 32]);
+        let caller_account = enrol(&store, &namespace, &caller_key);
+
+        let authorization = caller_authorized_for_context(
+            &ctx_client,
+            &context_id,
+            &CallerIdentity::Key(&caller_key),
+        )
+        .expect("gate must not error");
+
+        assert!(authorization.authorized, "an enrolled member may act");
+        assert_eq!(
+            authorization.account,
+            Some(caller_account),
+            "the gate must surface who it authorized, not drop it"
+        );
+    }
+
+    /// A node owner names no separate account, and must not borrow one.
+    ///
+    /// Every call made today takes this branch, so `None` here is what keeps them
+    /// reading as "no direct caller to attribute" rather than silently presenting
+    /// this node as the requester.
+    #[tokio::test]
+    async fn a_node_owner_authorizes_with_no_account() {
+        let (ctx_client, _store, _blob_dir) = client().await;
+
+        let authorization = caller_authorized_for_context(
+            &ctx_client,
+            &ContextId::from([0x77; 32]),
+            &CallerIdentity::NodeOwner,
+        )
+        .expect("gate must not error");
+
+        assert!(authorization.authorized);
+        assert_eq!(authorization.account, None);
+    }
+}
