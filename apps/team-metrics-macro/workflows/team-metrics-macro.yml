@@ -4,7 +4,6 @@ description: Test team metrics with derive(Mergeable) macro implementation
 force_pull_image: true
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: team-macro-node

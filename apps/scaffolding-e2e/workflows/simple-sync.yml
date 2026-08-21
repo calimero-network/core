@@ -4,7 +4,6 @@ description: Basic set/get sync test without event handlers
 force_pull_image: false
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: e2e-node
