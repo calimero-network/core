@@ -564,7 +564,10 @@ impl ScopeProjections {
     pub fn ops_for_namespace(store: &Store, namespace_id: [u8; 32]) -> Option<Vec<Op>> {
         let scope = ScopeId::from(namespace_id);
         match crate::unified_op_store::load_scope_ops(store, &scope) {
-            Ok(ops) if !ops.is_empty() => Some(ops),
+            Ok(mut ops) if !ops.is_empty() => {
+                Self::reclassify_stored_holes(store, namespace_id, &mut ops);
+                Some(ops)
+            }
             Ok(_) => Self::collect_namespace_ops(store, namespace_id),
             Err(err) => {
                 tracing::warn!(
@@ -573,6 +576,83 @@ impl ScopeProjections {
                     "op-store load failed; falling back to the governance-DAG fold"
                 );
                 Self::collect_namespace_ops(store, namespace_id)
+            }
+        }
+    }
+
+    /// Re-derive the payload of every stored `Noop`, so a row written before
+    /// `Opaque` existed cannot pass as readable.
+    ///
+    /// The op-store persists the FOLDED op, and an older build wrote `Noop` for
+    /// both of the reasons a fold produces nothing — including an encrypted group
+    /// op it could not decrypt. Reading such a row now would say "readable" about
+    /// a hole, which is the one direction that must never happen: a provisional
+    /// fold presented as conclusive turns into a divergence marker for an op
+    /// nobody could see. `repersist_namespace_ops` rewrites rows when a key
+    /// ARRIVES, so it does not cover an op this node will never decrypt.
+    ///
+    /// Only stored `Noop`s are touched, and each is decided the way the walk would
+    /// decide it: consult the signed op, re-attempt the decrypt, and take whatever
+    /// payload that yields — a real one if the key is here now, `Noop` if the op is
+    /// readable and models nothing, `Opaque` if it cannot be read. A row already
+    /// carrying a real payload or an `Opaque` is left alone, so steady state costs
+    /// nothing and the work shrinks as rows are rewritten.
+    fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
+        let stale: Vec<usize> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op.payload, OpPayload::Noop))
+            .map(|(i, _)| i)
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        let op_log = NamespaceOpLogService::new(store, namespace_id.into());
+        for i in stale {
+            let Ok(Some(signed)) = op_log.get_signed_op(ops[i].id()) else {
+                // No signed op behind it: nothing to re-derive from. Left as it
+                // is — a `Noop` that cannot be checked is not evidence of a hole.
+                continue;
+            };
+            let calimero_governance_types::NamespaceOp::Group {
+                group_id,
+                key_id,
+                encrypted,
+                ..
+            } = &signed.op
+            else {
+                // A root op that models nothing is a genuine `Noop`, then and now.
+                continue;
+            };
+            let decrypted = calimero_governance_store::decrypt_group_op(
+                store,
+                namespace_id.into(),
+                *group_id,
+                key_id.as_bytes(),
+                encrypted,
+            )
+            .ok()
+            .flatten();
+            let signer_binding = calimero_governance_store::signer_binding_for(
+                store,
+                &ContextGroupId::from(namespace_id),
+                &signed.signer,
+            );
+            let rebuilt = calimero_governance_store::op_from_namespace_op_with_binding(
+                &signed,
+                decrypted.as_ref(),
+                signer_binding,
+                ops[i].id(),
+                ops[i].hlc,
+                &ops[i].parents,
+            );
+            if rebuilt.payload != ops[i].payload {
+                tracing::debug!(
+                    namespace = ?namespace_id,
+                    op = ?ops[i].id(),
+                    "op-store: re-derived a stored placeholder written before holes were distinguishable"
+                );
+                ops[i] = rebuilt;
             }
         }
     }
