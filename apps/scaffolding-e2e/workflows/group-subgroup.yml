@@ -9,7 +9,6 @@ description: >
     5. Subgroup and root contexts are fully isolated
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

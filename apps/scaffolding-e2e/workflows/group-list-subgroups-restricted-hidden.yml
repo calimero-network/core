@@ -32,7 +32,6 @@ description: >
   tests `subgroup_visible_to_*` in `group_store/tests.rs`.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

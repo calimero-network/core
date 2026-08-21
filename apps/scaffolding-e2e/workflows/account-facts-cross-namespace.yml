@@ -46,7 +46,6 @@ description: >
   it kept writing to my other team's data."
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

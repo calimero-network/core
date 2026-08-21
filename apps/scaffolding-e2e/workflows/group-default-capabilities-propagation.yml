@@ -39,7 +39,6 @@ description: >
        is sufficient regression coverage.)
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

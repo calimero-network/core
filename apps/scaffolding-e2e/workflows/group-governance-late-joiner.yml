@@ -6,7 +6,6 @@ description: >
   proving "applied locally + propagated via sync".
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

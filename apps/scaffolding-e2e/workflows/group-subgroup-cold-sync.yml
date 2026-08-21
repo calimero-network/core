@@ -28,7 +28,6 @@ description: >
   fallback for subgroup-owned contexts, this test will catch it.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

@@ -25,7 +25,6 @@ description: >
   for the partition variant.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

@@ -98,7 +98,6 @@ description: >
   it kept reading our messages."
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

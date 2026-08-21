@@ -10,7 +10,6 @@ description: >
     4. CRDT sync works correctly within each service's context.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

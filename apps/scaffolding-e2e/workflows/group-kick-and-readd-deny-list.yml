@@ -36,7 +36,6 @@ description: >
   symptom of a stale deny-list entry on the receiver side.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

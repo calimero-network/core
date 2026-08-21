@@ -6,7 +6,6 @@ description: >
   governance op; both must converge on the new capability value via sync.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

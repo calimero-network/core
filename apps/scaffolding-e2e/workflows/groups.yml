@@ -4,7 +4,6 @@ description: >
   multi-context groups, and context invitation within groups.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

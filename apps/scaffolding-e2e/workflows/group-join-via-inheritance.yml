@@ -34,7 +34,6 @@ description: >
   workflow exercises the new top-level entry point instead.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
