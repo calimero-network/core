@@ -40,7 +40,7 @@ ed25519 identity keypair, writes `config.toml`, and opens the datastore.
 | `--auth-mode <MODE>`                | `proxy`, `embedded`      | `proxy`            | Authentication mode for server endpoints.                               |
 | `--auth-storage <KIND>`             | `persistent`, `memory`   | `persistent`       | Embedded-auth storage backend (only with `--auth-mode embedded`).       |
 | `--auth-storage-path <PATH>`        | path                     | `auth`             | Embedded-auth storage path (persistent storage only).                   |
-| `--mdns`                            | bool                     | `true`             | Enable mDNS local discovery.                                            |
+| `--mdns`                            | bool                     | `false`            | Enable mDNS local discovery (LAN / offline dev; off by default).         |
 | `--advertise-address`               | bool                     | `false`            | Advertise the node's observed address.                                  |
 | `--external-address <MULTIADDR>`    | multiaddr (repeatable)   | —                  | Static external multiaddrs to advertise. Pair with `--advertise-address` for them to be advertised. |
 | `--rendezvous-registrations-limit <N>` | usize                 | `3`                | Max rendezvous registrations.                                           |

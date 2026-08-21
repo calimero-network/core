@@ -453,7 +453,7 @@ pub struct NetworkConfig {
 }
 
 pub struct DiscoveryConfig {
-    pub mdns: bool,                     // Enable mDNS (default: true)
+    pub mdns: bool,                     // Enable mDNS (init writes false)
     pub advertise_address: bool,        // Advertise public IP
     pub rendezvous: RendezvousConfig,   // Rendezvous settings
     pub relay: RelayConfig,             // Relay settings
