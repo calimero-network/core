@@ -1679,8 +1679,10 @@ impl SyncManager {
                     context_id,
                     chosen_peer,
                     our_identity,
-                    &context.root_hash,
-                    &peer_root_hash,
+                    crate::sync::protocol_selector::RootHashPair {
+                        local: &context.root_hash,
+                        peer: &peer_root_hash,
+                    },
                     session_peer,
                     stream,
                 )

@@ -16,6 +16,23 @@ use calimero_governance_store;
 use calimero_governance_store::MAX_NAMESPACE_DEPTH;
 use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 
+/// The claim a proof asserts, named so its three strings cannot be transposed.
+///
+/// They were three adjacent `&str` parameters. Swapping `audience` and `subject`
+/// compiled, and — unlike a swapped epoch, which changes a signature preimage and
+/// is refused by the first verifier — it is **silent**: the payload is built from
+/// named fields and then signed, so the proof verifies perfectly and simply
+/// asserts the wrong thing. A valid signature over a false statement.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProofClaim<'a> {
+    /// Who the proof is addressed to.
+    pub(crate) audience: &'a str,
+    /// What the proof is about.
+    pub(crate) subject: &'a str,
+    /// Caller-supplied replay guard.
+    pub(crate) nonce: &'a str,
+}
+
 /// Domain-separation tag prepended to the serialized payload before signing.
 /// Verifiers MUST reconstruct the signed bytes as `OWNERSHIP_PROOF_DOMAIN ||
 /// signed_payload_bytes`.
@@ -127,12 +144,15 @@ pub(crate) fn build_ownership_proof(
     node_identity: PublicKey,
     group_id: ContextGroupId,
     context_id: ContextId,
-    audience: &str,
-    subject: &str,
-    nonce: &str,
+    claim: ProofClaim<'_>,
     requested_expires_at_ms: u64,
     now_ms: u64,
 ) -> eyre::Result<OwnershipProofBuildOutput> {
+    let ProofClaim {
+        audience,
+        subject,
+        nonce,
+    } = claim;
     validate_proof_fields(audience, subject, nonce)?;
 
     let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
@@ -235,12 +255,15 @@ pub(crate) fn build_namespace_ownership_proof(
     store: &Store,
     node_identity: PublicKey,
     group_id: ContextGroupId,
-    audience: &str,
-    subject: &str,
-    nonce: &str,
+    claim: ProofClaim<'_>,
     requested_expires_at_ms: u64,
     now_ms: u64,
 ) -> eyre::Result<OwnershipProofBuildOutput> {
+    let ProofClaim {
+        audience,
+        subject,
+        nonce,
+    } = claim;
     validate_proof_fields(audience, subject, nonce)?;
 
     let node_account = crate::member_account::require(store, &group_id, &node_identity)?;
@@ -337,9 +360,11 @@ impl Handler<IssueOwnershipProofRequest> for ContextManager {
                 node_identity,
                 req.group_id,
                 req.context_id,
-                &req.audience,
-                &req.subject,
-                &req.nonce,
+                ProofClaim {
+                    audience: &req.audience,
+                    subject: &req.subject,
+                    nonce: &req.nonce,
+                },
                 req.expires_at_ms,
                 now_ms,
             )?;
@@ -375,9 +400,11 @@ impl Handler<IssueNamespaceOwnershipProofRequest> for ContextManager {
                 &self.datastore,
                 node_identity,
                 req.group_id,
-                &req.audience,
-                &req.subject,
-                &req.nonce,
+                ProofClaim {
+                    audience: &req.audience,
+                    subject: &req.subject,
+                    nonce: &req.nonce,
+                },
                 req.expires_at_ms,
                 now_ms,
             )?;
@@ -404,7 +431,9 @@ mod tests {
     use calimero_store::Store;
     use serde_json::Value;
 
-    use super::{build_namespace_ownership_proof, build_ownership_proof, OWNERSHIP_PROOF_DOMAIN};
+    use super::{
+        build_namespace_ownership_proof, build_ownership_proof, ProofClaim, OWNERSHIP_PROOF_DOMAIN,
+    };
     use calimero_governance_store;
     use calimero_governance_store::{MembershipRepository, NamespaceRepository};
 
@@ -451,9 +480,11 @@ mod tests {
             signing_pub,
             group_id,
             context_id,
-            "mdma.cloud",
-            "subject-xyz",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "mdma.cloud",
+                subject: "subject-xyz",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             requested_expires_at_ms,
             NOW_MS,
         )
@@ -501,9 +532,11 @@ mod tests {
             identity,
             group_id,
             context_id,
-            "aud",
-            "sub",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "aud",
+                subject: "sub",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -535,9 +568,11 @@ mod tests {
             identity,
             group_id,
             context_id,
-            "aud",
-            "sub",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "aud",
+                subject: "sub",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -555,9 +590,11 @@ mod tests {
             signing_pub,
             group_id,
             context_id,
-            "aud",
-            "sub",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "aud",
+                subject: "sub",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS - 1,
             NOW_MS,
         )
@@ -575,9 +612,11 @@ mod tests {
             signing_pub,
             group_id,
             context_id,
-            "aud",
-            "sub",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "aud",
+                subject: "sub",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS,
             NOW_MS,
         )
@@ -621,9 +660,11 @@ mod tests {
             signing_pub,
             root,
             context_id,
-            "mdma.cloud",
-            "subject-xyz",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "mdma.cloud",
+                subject: "subject-xyz",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -654,9 +695,11 @@ mod tests {
             signing_pub,
             group_id,
             foreign_ctx,
-            "aud",
-            "sub",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "aud",
+                subject: "sub",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -703,9 +746,11 @@ mod tests {
             other_identity,
             group_id,
             context_id,
-            "mdma.cloud",
-            "subject-xyz",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "mdma.cloud",
+                subject: "subject-xyz",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -742,9 +787,11 @@ mod tests {
             &store,
             signing_pub,
             group_id,
-            "mdma:enable-ha-namespace",
-            "subject-xyz",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "mdma:enable-ha-namespace",
+                subject: "subject-xyz",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -785,9 +832,11 @@ mod tests {
             &store,
             identity,
             group_id,
-            "mdma:enable-ha-namespace",
-            "sub",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "mdma:enable-ha-namespace",
+                subject: "sub",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -836,9 +885,11 @@ mod tests {
             &store,
             signing_pub,
             child,
-            "mdma:enable-ha-namespace",
-            "subject-xyz",
-            "deadbeefcafebabe1122334455667788",
+            ProofClaim {
+                audience: "mdma:enable-ha-namespace",
+                subject: "subject-xyz",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
@@ -861,9 +912,11 @@ mod tests {
                 signing_pub,
                 group_id,
                 context_id,
-                audience,
-                subject,
-                nonce,
+                ProofClaim {
+                    audience,
+                    subject,
+                    nonce,
+                },
                 NOW_MS + 1_000,
                 NOW_MS,
             )
@@ -920,9 +973,11 @@ mod tests {
             &store,
             identity,
             group_id,
-            "aud",
-            "sub",
-            "short",
+            ProofClaim {
+                audience: "aud",
+                subject: "sub",
+                nonce: "short",
+            },
             NOW_MS + 1_000,
             NOW_MS,
         )
