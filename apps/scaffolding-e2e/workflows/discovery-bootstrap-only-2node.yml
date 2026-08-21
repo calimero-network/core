@@ -1,0 +1,183 @@
+description: >
+  Two nodes find each other with mDNS switched off, using nothing but the
+  bootstrap addresses in their config.
+
+  Why this exists
+  ---------------
+
+  Every other flat-bridge scenario in the suite runs with `mdns: true` and an
+  EMPTY `bootstrap.nodes` — `--e2e-mode` clears the list to isolate the fleet
+  and then forces mDNS on. Those two settings together mean multicast is not a
+  fallback in those scenarios, it is the only discovery mechanism they have.
+  Measured on `mesh-soak-8node` at the time this landed: with mDNS disabled and
+  nothing else changed, the 8-node fleet recorded 0 kad `RoutingUpdated`, 0
+  connections and 0 identify exchanges, and the first namespace join died on
+  `KeyDelivery timed out ... no group key arrived within 5s`. With mDNS on, the
+  same run made 112 mDNS dials and 112 `RoutingUpdated` — one routing entry per
+  multicast-initiated connection.
+
+  The consequence is that a total regression in bootstrap/kad discovery — the
+  only path a real deployment has, since nodes on separate hosts share no
+  multicast domain — keeps every one of those scenarios green. This scenario is
+  the one that goes red instead.
+
+  How it forces the issue
+  -----------------------
+
+  `mdns: false` removes multicast. `restart: true` routes node startup through
+  merobox's `run_multiple_nodes`, the only path that calls
+  `_wire_cluster_bootstrap_peers`, which writes each node's siblings into its
+  `bootstrap.nodes` and restarts the container so merod re-reads it. So the
+  peers begin knowing each other's addresses and nothing else: no shouting, no
+  rendezvous server to ask.
+
+  There are deliberately no log-pattern assertions here. Convergence IS the
+  assertion — with multicast gone, the writes below can only cross if dialing a
+  bootstrap address, identify, and the kad routing table all work. A discovery
+  regression surfaces as a failed join or a failed read, not as a missing grep.
+
+  What it does NOT cover
+  ----------------------
+
+  The wiring hands every node a complete roster of its siblings. A real node is
+  told about one or two bootstrap peers and has to ASK one of them who else
+  exists — that is rendezvous register/discover, and it stays uncovered on a
+  flat bridge because there is no rendezvous server here to ask (merod builds
+  `rendezvous::client::Behaviour` only). The NAT `sync-resilience-*` scenarios
+  are the ones that exercise it, bundled together with relay reservations and
+  hole-punching.
+
+  Requires merobox >= 0.6.57: below it the cluster-connectivity gate that
+  `restart: true` runs into polls `/admin-api/peers` unauthenticated, reads the
+  401 as "0 peers", and fails node management on every embedded-auth fleet
+  before a single step executes.
+name: E2E Discovery - Bootstrap Only, No mDNS (2 nodes)
+
+force_pull_image: false
+near_devnet: false
+
+# Routes startup through the wiring path described above. Without it merobox
+# takes the per-node path, `bootstrap.nodes` stays empty, and with mDNS off the
+# two nodes never meet.
+restart: true
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+  mdns: false
+
+steps:
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Create context on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{ns}}'
+    outputs:
+      ctx: contextId
+
+  # The join is the first thing that needs a peer: group-key delivery has to
+  # reach node-1 over the network. Pre-#3525 with mDNS off this is exactly
+  # where the run died, 5s after the request, with no mesh peer to ask.
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{ns}}'
+    invitation: '{{invitation}}'
+
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+
+  # Writes in both directions: a one-way check passes on a half-open mesh where
+  # only the dialer's side of the gossipsub graph formed.
+  - name: Node-1 writes a key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "from_node_1"
+      value: "dialed_over_bootstrap"
+
+  - name: Node-2 writes a key
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "from_node_2"
+      value: "dialed_over_bootstrap"
+
+  - name: Converge both peers
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads node-1's key
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "from_node_1"
+    outputs:
+      n2_reads_n1: result
+
+  - name: Node-1 reads node-2's key
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "from_node_2"
+    outputs:
+      n1_reads_n2: result
+
+  - name: Assert both directions crossed without multicast
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_reads_n1}}, {"output": "dialed_over_bootstrap"})'
+      - 'json_equal({{n1_reads_n2}}, {"output": "dialed_over_bootstrap"})'

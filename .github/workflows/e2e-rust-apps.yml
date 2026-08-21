@@ -502,6 +502,27 @@ jobs:
           - workflow: mesh-soak-8node
             file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
+          # The only scenarios on a flat bridge that discover peers the way a
+          # real deployment must. Every other entry here runs with `mdns: true`
+          # and an empty `bootstrap.nodes` (`--e2e-mode` clears the list, then
+          # forces mDNS on), so multicast is not their fallback — it is their
+          # only discovery mechanism, and it exists only because one Docker
+          # bridge is one multicast domain. Nodes on separate hosts have no such
+          # path. Measured on `mesh-soak-8node` when these landed: mDNS off and
+          # nothing else changed gave 0 kad `RoutingUpdated`, 0 connections, 0
+          # identify, and a dead first join; mDNS on gave 112 dials and 112
+          # routing updates. So a total regression in bootstrap/kad discovery
+          # keeps ~80 of these entries green, and only these two go red.
+          #
+          # They are cheap (2 and 4 nodes, no soak tail) and they must stay in
+          # the matrix: a skip here reads as "discovery is fine" while removing
+          # the only evidence for it.
+          - workflow: discovery-bootstrap-only-2node
+            file: workflows/discovery-bootstrap-only-2node.yml
+            app: scaffolding-e2e
+          - workflow: discovery-bootstrap-only-4node
+            file: workflows/discovery-bootstrap-only-4node.yml
+            app: scaffolding-e2e
           # #2422 auto-follow regression workflows.
           - workflow: auto-follow-on-context-registered
             file: workflows/auto-follow/auto-follow-on-context-registered.yml

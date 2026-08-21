@@ -1,0 +1,191 @@
+description: >
+  Four nodes discover each other with mDNS switched off, and a write travels
+  between two peers that are both joiners — neither of them the node that
+  created the namespace.
+
+  Why a second, larger case
+  -------------------------
+
+  The 2-node companion
+  (`discovery-bootstrap-only-2node.yml`) proves a bootstrap address can be
+  dialled at all. It cannot distinguish that from a fleet where only the one
+  connection it needs happens to form: with two peers there is exactly one edge,
+  and the writer is always either the namespace creator or its only peer.
+
+  Four nodes make the gossipsub mesh a real graph and put a write on an edge
+  that no invitation flow established: node-3 writes, node-4 reads. Both are
+  joiners, so the payload has to cross a link between two peers that only know
+  of each other through the bootstrap roster and kad — the namespace creator is
+  not on the path. A partially-populated routing table, or a mesh that forms
+  only towards the node everyone was invited by, converges in the 2-node case
+  and fails here.
+
+  Four rather than eight: `mesh-soak-8node` already owns the upper end of the
+  mesh-size range, and it is a soak with a 70s idle tail. This scenario is meant
+  to be cheap enough to run on every PR.
+
+  See the 2-node file for the full background on why mDNS is load-bearing in
+  the flat-bridge suite, how `restart: true` + `mdns: false` forces bootstrap
+  discovery, why there are no log-pattern assertions, and what this shape still
+  does not cover (rendezvous). Same merobox >= 0.6.57 requirement.
+name: E2E Discovery - Bootstrap Only, No mDNS (4 nodes)
+
+force_pull_image: false
+near_devnet: false
+
+restart: true
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+  mdns: false
+
+steps:
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-3
+    type: login
+    node: e2e-node-3
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-4
+    type: login
+    node: e2e-node-4
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Create context on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{ns}}'
+    outputs:
+      ctx: contextId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invite_n2: invitation
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{ns}}'
+    invitation: '{{invite_n2}}'
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invite_n3: invitation
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{ns}}'
+    invitation: '{{invite_n3}}'
+  - name: Node-3 joins context
+    type: join_context
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+
+  - name: Invite node-4 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invite_n4: invitation
+  - name: Node-4 joins namespace
+    type: join_namespace
+    node: e2e-node-4
+    namespace_id: '{{ns}}'
+    invitation: '{{invite_n4}}'
+  - name: Node-4 joins context
+    type: join_context
+    node: e2e-node-4
+    context_id: '{{ctx}}'
+
+  # The point of the scenario: a joiner-to-joiner write. Node-1 created the
+  # namespace and invited everyone, so every peer has a reason to talk to it.
+  # Nothing gave node-3 and node-4 a reason to know each other beyond the
+  # bootstrap roster they started with.
+  - name: Node-3 writes a key
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "from_node_3"
+      value: "joiner_to_joiner"
+
+  - name: Converge all four peers
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+      - e2e-node-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-4 reads node-3's key
+    type: call
+    node: e2e-node-4
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "from_node_3"
+    outputs:
+      n4_reads_n3: result
+
+  - name: Node-2 reads node-3's key
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "from_node_3"
+    outputs:
+      n2_reads_n3: result
+
+  - name: Assert the joiner-to-joiner write reached the other joiners
+    type: json_assert
+    statements:
+      - 'json_equal({{n4_reads_n3}}, {"output": "joiner_to_joiner"})'
+      - 'json_equal({{n2_reads_n3}}, {"output": "joiner_to_joiner"})'
