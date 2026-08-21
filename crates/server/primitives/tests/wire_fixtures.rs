@@ -18,7 +18,8 @@ use serde_json::Value;
 use calimero_server_primitives::admin::{
     AddGroupMembersApiRequest, CreateContextRequest, CreateContextResponseData,
     GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, JoinGroupApiResponse,
-    ReparentGroupApiRequest, ReparentGroupApiResponse, UpgradeGroupApiResponse,
+    JoinNamespaceApiResponse, ReparentGroupApiRequest, ReparentGroupApiResponse,
+    UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -82,11 +83,13 @@ macro_rules! wire_fixtures {
 wire_fixtures! {
     create_context_req: CreateContextRequest => "contexts/create_context.req.json",
     create_context_res: CreateContextResponseData => "contexts/create_context.res.json",
-    // Shared by `POST groups/join` and `POST namespaces/:id/join`, which build the
-    // same DTO. The key and the account are deliberately unequal and rendered in
-    // different alphabets, so a field crossed between the two spaces shows up as a
-    // diff rather than round-tripping cleanly.
+    // The key and the account are deliberately unequal and rendered in different
+    // alphabets, so a field crossed between the two spaces shows up as a diff
+    // rather than round-tripping cleanly.
     join_res: JoinGroupApiResponse => "groups/join.res.json",
+    // Same values as the group join, but the namespace endpoint names the id
+    // `namespaceId`. Pinned separately so the two cannot drift back together.
+    join_namespace_res: JoinNamespaceApiResponse => "namespaces/join.res.json",
     // Both id spaces in one request, so a field that stops accepting either
     // shows up here.
     add_members_req: AddGroupMembersApiRequest => "groups/add_members.req.json",
