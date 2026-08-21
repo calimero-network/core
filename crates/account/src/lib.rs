@@ -94,10 +94,13 @@ pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDe
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
 pub use crate::signed::{AccountProof, RootSigned, Verified};
 
-// The three end-to-end verifiers keep free-function form: each takes an anchor and
-// a BORROWED chain, which is what the apply paths hold, and a method would force
-// them to allocate an `AccountProof` per check just to throw it away. A caller
-// that already has a proof should use `AccountProof::verify` instead.
+// The two end-to-end verifiers keep free-function form: each takes an anchor and a
+// BORROWED chain, which is what the apply paths hold, and a method would force them
+// to allocate an `AccountProof` per check just to throw it away. A caller that
+// already has a proof should use `AccountProof::verify` instead.
+//
+// `verify_root_signed`, the generic they share, is deliberately NOT exported: it has
+// no caller outside this crate, and an unused `pub fn` in a crate that forbids dead
+// code is a claim about an API nobody asked for. Re-export it when something needs it.
 pub use crate::device::verify_device_cert;
 pub use crate::revocation::verify_device_revocation;
-pub use crate::signed::verify_root_signed;

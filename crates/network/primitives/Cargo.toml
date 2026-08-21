@@ -10,7 +10,6 @@ publish = true
 
 [dependencies]
 actix.workspace = true
-async-trait.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 bytes.workspace = true
 either.workspace = true

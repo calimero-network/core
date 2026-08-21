@@ -9,13 +9,11 @@ publish = false
 
 [dependencies]
 base64.workspace = true
-bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 const_format.workspace = true
 dirs.workspace = true
-ed25519-consensus.workspace = true
 eyre.workspace = true
 borsh.workspace = true
 hex.workspace = true
@@ -39,10 +37,8 @@ url = { workspace = true, features = ["serde"] }
 calimero-blobstore.workspace = true
 calimero-config.workspace = true
 calimero-context.workspace = true
-calimero-context-config.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node.workspace = true
-calimero-node-primitives.workspace = true
 calimero-server.workspace = true
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
