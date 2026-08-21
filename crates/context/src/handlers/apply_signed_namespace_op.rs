@@ -99,6 +99,24 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         &delta_parents,
                     );
 
+                    // Live's governance frontier for this namespace, read AFTER
+                    // the apply above advanced it. The shadow compares an at-cut
+                    // projection answer against a live row, and those describe the
+                    // same history only while the cut reaches this frontier — see
+                    // the `at_frontier` gate below. `None` (head unreadable) leaves
+                    // that unestablished, so the compare is skipped rather than run
+                    // on an unknown premise.
+                    let live_frontier = calimero_governance_store::NamespaceDagService::new(
+                        &compare_store,
+                        namespace_id,
+                    )
+                    .read_head_record()
+                    .map(|head| head.parent_hashes)
+                    .map_err(|err| {
+                        tracing::debug!(%err, "unified-op shadow: governance head unreadable; skipping compare");
+                    })
+                    .ok();
+
                     {
                         // The member this op touches (for the per-member
                         // shadow-compare), if it's a membership op.
@@ -115,9 +133,21 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // this op (no TOCTOU window between ingest and read). A
                         // poisoned lock skips feed+compare with a warning rather
                         // than affecting the governance apply path.
-                        let (fed, projected, decoded) = match scope_projections.write() {
+                        let (fed, projected, decoded, at_frontier) = match scope_projections.write() {
                             Ok(mut projections) => {
                                 projections.ingest_op(&shadow_op);
+                                // Does THIS op's cut — the one `role` is resolved
+                                // at, just below — reach everything live has
+                                // applied? Asked after the ingest, so the ordinary
+                                // in-order apply (the op IS live's head) covers the
+                                // frontier and the compare is meaningful.
+                                let at_frontier = live_frontier.as_ref().is_some_and(|heads| {
+                                    projections.cut_covers_frontier(
+                                        &shadow_op.scope,
+                                        &[shadow_op.id()],
+                                        heads,
+                                    )
+                                });
                                 // Resolve at THIS op's own causal cut (its id),
                                 // so a re-add after a remove reflects the
                                 // causally-latest state rather than the non-causal
@@ -141,11 +171,11 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                         &[shadow_op.id()],
                                     )
                                 });
-                                (true, role, decoded)
+                                (true, role, decoded, at_frontier)
                             }
                             Err(err) => {
                                 tracing::warn!(%err, "scope-projections lock poisoned; skipping unified-op shadow feed/compare");
-                                (false, None, false)
+                                (false, None, false, false)
                             }
                         };
 
@@ -171,6 +201,19 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // not a fold-logic divergence. Skipping it keeps the shadow
                         // sharp for real disagreements, which surface only once the
                         // history is fully readable.
+                        //
+                        // And require this op's CUT to cover live's governance
+                        // frontier. The role is resolved at the op's own cut while
+                        // `live` answers about now, so an op applied out of causal
+                        // order — the author's own op returning through the feed
+                        // after it published a newer one, a partition heal replaying
+                        // old history — makes the two answer different questions.
+                        // That is what fired here: the projection said `Member` at
+                        // the cut of an add while live said `Admin`, because the
+                        // promotion that followed the add had already applied. Both
+                        // correct, a divergence for neither. Folding more ops does
+                        // not fix it — the cut is what excludes the promotion — so
+                        // this is a real precondition, not a lag to wait out.
                         if fed && decoded {
                             if let Some((group, member)) = membership {
                                 // Both sides now name the same principal: `member`
@@ -186,15 +229,34 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                 .ok()
                                 .flatten();
                                 if live.is_some() && projected != live {
-                                    tracing::warn!(
-                                        marker = "unified_projection_divergence",
-                                        plane = "membership",
-                                        ?group,
-                                        %member,
-                                        ?projected,
-                                        ?live,
-                                        "unified-op projection disagrees with live membership resolver"
-                                    );
+                                    // Disagreement is only a DIVERGENCE if both
+                                    // planes were answering the same question.
+                                    // Off the frontier they were not, and saying
+                                    // so — rather than dropping the observation —
+                                    // keeps the suppression visible, so a gate
+                                    // that stops firing can be told apart from a
+                                    // gate that has nothing to fire about.
+                                    if at_frontier {
+                                        tracing::warn!(
+                                            marker = "unified_projection_divergence",
+                                            plane = "membership",
+                                            ?group,
+                                            %member,
+                                            ?projected,
+                                            ?live,
+                                            "unified-op projection disagrees with live membership resolver"
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            plane = "membership",
+                                            ?group,
+                                            %member,
+                                            ?projected,
+                                            ?live,
+                                            "projection behind live's governance frontier; \
+                                             at-cut answer is not comparable to the live row"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -212,6 +274,11 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                         // just-ingested op), so it runs OUTSIDE the write lock under
                         // a brief read lock — no store I/O while the apply path's
                         // ingest is blocked.
+                        //
+                        // Same frontier premise as the membership compare above: a
+                        // projection that holds less than live under-authorizes for
+                        // that reason alone, so `Some(false)` would name the lag
+                        // rather than a real disagreement.
                         if fed {
                             if let Some((auth_group, req)) =
                                 apply_auth_requirement(&signed_op, decrypted.as_ref())
@@ -236,13 +303,25 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                                     Err(_) => None,
                                 };
                                 if verdict == Some(false) {
-                                    tracing::warn!(
-                                        marker = "unified_projection_divergence",
-                                        plane = "governance-auth",
-                                        group_id = ?auth_group,
-                                        signer = %signed_op.signer,
-                                        "projection would reject a governance op the live resolver authorized"
-                                    );
+                                    // Same frontier premise, same reporting split
+                                    // as the membership compare above.
+                                    if at_frontier {
+                                        tracing::warn!(
+                                            marker = "unified_projection_divergence",
+                                            plane = "governance-auth",
+                                            group_id = ?auth_group,
+                                            signer = %signed_op.signer,
+                                            "projection would reject a governance op the live resolver authorized"
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            plane = "governance-auth",
+                                            group_id = ?auth_group,
+                                            signer = %signed_op.signer,
+                                            "projection behind live's governance frontier; \
+                                             under-auth at the parent cut is the lag, not a disagreement"
+                                        );
+                                    }
                                 }
                             }
                         }
