@@ -22,7 +22,7 @@ cargo test -p mero-auth
 cargo run -p mero-auth -- --config crates/auth/config/config.toml --bind 0.0.0.0:3001
 ```
 
-Building the binary requires `CALIMERO_AUTH_FRONTEND_PATH` to point at a built auth-frontend static bundle (`src/api/handlers/mod.rs` embeds it via `rust_embed`); `build.rs` fetches the `calimero-network/auth-frontend` release archive into `OUT_DIR` if the env var isn't already set to a local checkout.
+Building the binary requires `CALIMERO_AUTH_FRONTEND_PATH` to point at a built auth-frontend static bundle (`src/api/handlers/mod.rs` embeds it via `rust_embed`); `build.rs` fetches the `calimero-network/auth-frontend` release archive into `OUT_DIR` if the env var isn't already set to a local checkout. The fetched version is **pinned** in `build.rs` (`CALIMERO_AUTH_FRONTEND_VERSION`), so a given core commit always embeds the same frontend — bump that constant to take a new auth-frontend release, or set `CALIMERO_AUTH_FRONTEND_VERSION` (`latest` included) for a one-off build.
 
 ## What it does
 
