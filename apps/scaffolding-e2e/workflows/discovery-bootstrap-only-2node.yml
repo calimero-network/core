@@ -125,6 +125,23 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx}}'
 
+  # Barrier before the writes, not decoration. `join_context` returns as soon as
+  # the join is accepted; node-2's context state materialises a moment later.
+  # Writing immediately raced that and node-2 answered `Uninitialized` ("context
+  # state not initialized, awaiting state sync"), which merobox papered over by
+  # retrying 3s later — so the scenario passed while logging two ERRORs that
+  # have nothing to do with discovery, and would have failed outright had the
+  # retry budget been shorter.
+  - name: Settle the join before either peer writes
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
   # Writes in both directions: a one-way check passes on a half-open mesh where
   # only the dialer's side of the gossipsub graph formed.
   - name: Node-1 writes a key

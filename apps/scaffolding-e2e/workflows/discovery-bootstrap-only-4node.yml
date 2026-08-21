@@ -138,6 +138,24 @@ steps:
     node: e2e-node-4
     context_id: '{{ctx}}'
 
+  # Barrier before the write, not decoration. `join_context` returns when the
+  # join is accepted, while the joiner's context state materialises a moment
+  # later; writing into that gap gets `Uninitialized` ("context state not
+  # initialized, awaiting state sync"), which merobox hides behind a retry. The
+  # 2-node companion hit exactly that and passed anyway, logging two ERRORs
+  # unrelated to discovery.
+  - name: Settle the joins before the write
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+      - e2e-node-4
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
   # The point of the scenario: a joiner-to-joiner write. Node-1 created the
   # namespace and invited everyone, so every peer has a reason to talk to it.
   # Nothing gave node-3 and node-4 a reason to know each other beyond the
