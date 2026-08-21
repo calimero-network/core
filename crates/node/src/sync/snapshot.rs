@@ -27,7 +27,6 @@ use calimero_store::slice::Slice;
 use calimero_store::types::ContextState as ContextStateValue;
 use calimero_store::Store;
 use eyre::Result;
-use hex;
 use tracing::{debug, info, warn};
 
 use super::manager::SyncManager;
@@ -420,45 +419,15 @@ impl SyncManager {
             .request_and_apply_snapshot_pages(context_id, &boundary, force, &mut stream)
             .await?;
 
-        // Verify snapshot integrity by computing the actual root hash from storage (I7).
-        // We always persist the locally-computed hash because it reflects what is
-        // actually persisted; storing the peer's claimed hash would risk a silent
-        // divergence. If the local compute fails we must NOT fall back to the peer's
-        // claimed root — that would persist an unverified, peer-supplied value on a
-        // purely local error. Instead we fail the sync here; the sync-in-progress
-        // marker is left set (we return before clearing it), so crash-recovery
-        // re-syncs and retries rather than accepting an untrusted root.
-        let root_to_store = match self.context_client.compute_root_hash(&context_id) {
-            Ok(computed_root) => {
-                if computed_root != *boundary.boundary_root_hash {
-                    warn!(
-                        %context_id,
-                        computed_root = %hex::encode(computed_root),
-                        claimed_root = %hex::encode(*boundary.boundary_root_hash),
-                        "Snapshot root hash mismatch - using computed hash from storage"
-                    );
-                } else {
-                    info!(
-                        %context_id,
-                        root_hash = %hex::encode(computed_root),
-                        "Snapshot root hash verified successfully"
-                    );
-                }
-                computed_root
-            }
-            Err(e) => {
-                warn!(
-                    %context_id,
-                    error = %e,
-                    claimed_root = %hex::encode(*boundary.boundary_root_hash),
-                    "Could not compute local root hash; refusing to trust peer's claimed \
-                     root, failing sync for retry"
-                );
-                return Err(eyre::eyre!(
-                    "snapshot verify: could not compute local root hash for {context_id}: {e}"
-                ));
-            }
-        };
+        // Verify snapshot integrity against the state that actually landed (I7).
+        // Either arm of a failure returns before the sync-in-progress marker is
+        // cleared, so crash-recovery re-syncs and retries rather than publishing
+        // a root this node cannot back.
+        let root_to_store = *verified_snapshot_root(
+            self.context_client.datastore(),
+            context_id,
+            boundary.boundary_root_hash,
+        )?;
 
         // Publish root_hash + dag_heads in one atomic ContextMeta write. Two
         // separate read-modify-writes (force_root_hash then update_dag_heads)
@@ -1424,6 +1393,63 @@ struct SnapshotBoundary {
     boundary_timestamp: u64,
     boundary_root_hash: Hash,
     dag_heads: Vec<[u8; 32]>,
+}
+
+/// The root hash a completed snapshot may be published under.
+///
+/// `Ok` only when the state that actually landed hashes to the boundary the
+/// sender claimed. Anything else is an error, and the caller must not publish:
+/// the alternative — storing the locally-computed hash and carrying on — leaves
+/// this node advertising a root whose state it does not hold, and that claim
+/// satisfies every root-hash equality check in the system, `protocol_selector`'s
+/// "root hashes match, already in sync" included. So the one node that knows
+/// its state is incomplete is also the only one that could have asked for a
+/// repair, and it has just told everyone else there is nothing to repair.
+///
+/// A mismatch is not a choice between two candidate hashes. It is evidence the
+/// transfer was not a consistent point-in-time capture of the sender's state,
+/// and the same is true of a local compute failure — hence one verdict for
+/// both. Note what a mismatch specifically implies: [`served_state_root`] reads
+/// the context's ROOT `Index` entry, so the entry is either absent (its record
+/// never landed) or from a different point in the sender's history than the
+/// boundary. Individual *leaf* records dropped mid-apply — a future-schema
+/// decline, a signature that failed verification — do not move this hash; they
+/// surface as the per-page `snapshot page applied with rejections` warning, and
+/// a run that logged those alongside a mismatch had both problems.
+///
+/// Failing is safe to repeat. The applied `ContextState` entries persist with
+/// the root still unpublished, which is the state
+/// `calimero_node_primitives::sync::snapshot_safety_decision` classifies as
+/// `RecoverContradiction` — explicitly allowed to re-bootstrap rather than
+/// deadlock on the I5 gate.
+fn verified_snapshot_root(store: &Store, context_id: ContextId, claimed: Hash) -> Result<Hash> {
+    let computed = served_state_root(store, context_id).map_err(|e| {
+        warn!(
+            %context_id,
+            error = %e,
+            claimed_root = %claimed,
+            "Could not compute local root hash; refusing to trust peer's claimed root, \
+             failing sync for retry"
+        );
+        eyre::eyre!("snapshot verify: could not compute local root hash for {context_id}: {e}")
+    })?;
+
+    if computed != claimed {
+        warn!(
+            %context_id,
+            computed_root = %computed,
+            claimed_root = %claimed,
+            "Snapshot root hash mismatch - refusing to publish a root this node cannot \
+             back, failing sync for retry"
+        );
+        eyre::bail!(
+            "snapshot verify: applied state for {context_id} hashes to {computed}, not the \
+             claimed boundary {claimed}"
+        );
+    }
+
+    info!(%context_id, root_hash = %computed, "Snapshot root hash verified successfully");
+    Ok(computed)
 }
 
 /// The hash a snapshot boundary is validated against: the root of the state
@@ -2562,6 +2588,65 @@ mod tests {
     /// back at `ContextMeta.root_hash` fails this test.
     fn boundary_guard_hash(store: &Store, ctx: ContextId) -> Hash {
         served_state_root(store, ctx).unwrap()
+    }
+
+    /// A snapshot whose applied state hashes to the claimed boundary is the
+    /// only case that may be published.
+    #[test]
+    fn verified_snapshot_root_accepts_state_matching_the_claim() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([11u8; 32]);
+        let claimed = Hash::from([0xC1_u8; 32]);
+
+        put_entity(&store, ctx, [1u8; 32], 32);
+        put_root_index(&store, ctx, *claimed);
+
+        assert_eq!(
+            verified_snapshot_root(&store, ctx, claimed).unwrap(),
+            claimed
+        );
+    }
+
+    /// State that hashes to something else must NOT be published, however
+    /// trustworthy the locally-computed hash looks: publishing it advertises a
+    /// root this node cannot back, and that claim silences the repair paths
+    /// that would otherwise correct it.
+    #[test]
+    fn verified_snapshot_root_rejects_state_that_hashes_to_something_else() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([12u8; 32]);
+
+        put_entity(&store, ctx, [1u8; 32], 32);
+        put_root_index(&store, ctx, [0xC2_u8; 32]);
+
+        let err = verified_snapshot_root(&store, ctx, Hash::from([0xC1_u8; 32]))
+            .expect_err("state disagreeing with the claimed boundary must not verify");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("hashes to"),
+            "the error must name both hashes so the mismatch is diagnosable: {msg}"
+        );
+    }
+
+    /// The case that motivated failing instead of accepting: a snapshot whose
+    /// ROOT `Index` record never landed. The context has state but no root to
+    /// hash, so nothing here can be published — and the pre-existing behaviour
+    /// (store the computed hash) would have published a zero root while
+    /// entities sat in the store, which is exactly the `RecoverContradiction`
+    /// shape the I5 gate has to dig back out of.
+    #[test]
+    fn verified_snapshot_root_rejects_a_snapshot_missing_its_root_index() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([13u8; 32]);
+
+        // Leaf entities landed; the ROOT index record did not.
+        put_entity(&store, ctx, [1u8; 32], 32);
+        put_entity(&store, ctx, [2u8; 32], 32);
+
+        assert!(
+            verified_snapshot_root(&store, ctx, Hash::from([0xC1_u8; 32])).is_err(),
+            "a snapshot with no ROOT index has no verified root to publish"
+        );
     }
 
     /// Two snapshots generated under the same boundary hash must carry the
