@@ -1265,6 +1265,17 @@ impl E2eKvStore {
         Ok(AccountId::from(env::account_id()).to_string())
     }
 
+    /// The account that ASKED for this call, hex-encoded, or `None` when nobody
+    /// in particular did.
+    ///
+    /// Exists for the e2e: the distinction from `my_account` is invisible from
+    /// outside the guest, so a scenario needs both to prove the node stopped
+    /// answering "who asked" with its own identity. A direct node-owner call has
+    /// no separate caller, so `None` here is the expected result today.
+    pub fn my_caller(&self) -> app::Result<Option<String>> {
+        Ok(env::caller_account().map(|caller| AccountId::from(caller).to_string()))
+    }
+
     /// Add a writer, by ACCOUNT — the writer set grants people, so one grant
     /// covers every device they hold.
     pub fn shared_add_writer(&mut self, writer: AccountId) -> app::Result<()> {

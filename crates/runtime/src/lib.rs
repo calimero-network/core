@@ -739,6 +739,101 @@ mod wasm_integration_tests {
         );
     }
 
+    /// A real guest importing `caller_account` links, and reads the CALLER.
+    ///
+    /// The host-function unit tests drive `VMLogic` directly, so they cannot see
+    /// the import table. This one instantiates an actual module that declares
+    /// `(import "env" "caller_account" ...)`: if the name or the signature ever
+    /// disagrees with `calimero-sys`, instantiation fails here rather than at a
+    /// deployed app's first call.
+    ///
+    /// The guest traps on any mismatch, so `returns.is_ok()` is the assertion.
+    #[test]
+    fn a_guest_importing_caller_account_links_and_reads_the_caller() {
+        // Distinct from the node's account and device below, so reading the
+        // wrong one traps.
+        const CALLER_BYTE: u8 = 11;
+
+        let wat = format!(
+            r#"
+            (module
+                (import "env" "caller_account" (func $caller_account (param i64) (result i32)))
+                (import "env" "read_register" (func $read_register (param i64 i64) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "probe")
+                    ;; A caller is present, so the host must report 1.
+                    (if (i32.eqz (call $caller_account (i64.const 0)))
+                        (then unreachable))
+                    ;; BufferMut descriptor at 16: dest ptr = 100, len = 32.
+                    (i64.store (i32.const 16) (i64.const 100))
+                    (i64.store (i32.const 24) (i64.const 32))
+                    (if (i32.eqz (call $read_register (i64.const 0) (i64.const 16)))
+                        (then unreachable))
+                    ;; First and last byte, so a short or zeroed register cannot pass.
+                    (if (i32.ne (i32.load8_u (i32.const 100)) (i32.const {CALLER_BYTE}))
+                        (then unreachable))
+                    (if (i32.ne (i32.load8_u (i32.const 131)) (i32.const {CALLER_BYTE}))
+                        (then unreachable))
+                )
+                (func (export "probe_absent")
+                    ;; No caller, so the host must report 0 and write nothing.
+                    (if (call $caller_account (i64.const 0))
+                        (then unreachable))
+                )
+            )
+        "#
+        );
+        let wasm = wat::parse_str(&wat).expect("Failed to parse WAT");
+        let module = Engine::default()
+            .compile(&wasm)
+            .expect("Failed to compile module");
+
+        let node_account = AccountId::from([7; 32]);
+        let caller = AccountId::from([CALLER_BYTE; 32]);
+
+        let mut storage = InMemoryStorage::default();
+        let present = module
+            .run_with_origin(
+                [0; 32].into(),
+                node_account,
+                [5; 32].into(),
+                "probe",
+                &[],
+                &mut storage,
+                None,
+                None,
+                Some(caller),
+                None,
+            )
+            .expect("Failed to run module");
+        assert!(
+            present.returns.is_ok(),
+            "the guest must see the caller, not the node: {:?}",
+            present.returns
+        );
+
+        let mut storage = InMemoryStorage::default();
+        let absent = module
+            .run_with_origin(
+                [0; 32].into(),
+                node_account,
+                [5; 32].into(),
+                "probe_absent",
+                &[],
+                &mut storage,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("Failed to run module");
+        assert!(
+            absent.returns.is_ok(),
+            "with no caller the host must report absence, never the node: {:?}",
+            absent.returns
+        );
+    }
+
     /// Test that a simple WASM module runs successfully (baseline test)
     #[test]
     fn test_wasm_execution_success() {
