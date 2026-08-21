@@ -5,7 +5,6 @@ name: Collaborative Editor Workflow
 force_pull_image: true
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: calimero-node
@@ -32,7 +31,6 @@ steps:
     path: res/collaborative_editor.wasm
     nodes:
       - calimero-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

@@ -81,7 +81,6 @@ description: >
   which is the value writes attribute to.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

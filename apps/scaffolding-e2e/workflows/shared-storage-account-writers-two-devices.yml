@@ -71,7 +71,6 @@ description: >
   and then my second device got permission denied."
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

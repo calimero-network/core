@@ -48,7 +48,6 @@ description: >
   updated_at).
 
 force_pull_image: false
-near_devnet: false
 
 # `nodes.image` below is the workflow's default — used when this YAML
 # is run locally without an explicit override (`merobox bootstrap run

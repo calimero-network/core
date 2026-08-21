@@ -46,7 +46,6 @@ description: >
   it kept writing to my other team's data."
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -139,7 +138,7 @@ steps:
   # Two barriers, because a namespace is a DAG and `wait_for_sync` settles one.
   - name: Settle the join to namespace A
     type: wait_for_sync
-    comment: >-
+    description: >-
       lint-convergence: ok — node-3 is deliberately outside both barriers. It is
       a member of nothing at this point; its only mutation so far is a local
       application install, which no other node reads. Its whole right to act

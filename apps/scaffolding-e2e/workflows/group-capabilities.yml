@@ -10,7 +10,6 @@ description: >
   capability enforcement (server rejecting unauthorized operations).
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

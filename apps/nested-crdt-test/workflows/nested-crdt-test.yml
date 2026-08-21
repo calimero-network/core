@@ -4,7 +4,6 @@ description: Nested CRDT test - verifies Map<String, Counter>, Map<String, LWW>,
 force_pull_image: true
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: nested-node
@@ -25,7 +24,6 @@ steps:
     path: res/nested_crdt_test.wasm
     nodes:
       - nested-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

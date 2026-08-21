@@ -51,7 +51,6 @@ force_pull_image: true
 auth_mode: embedded
 
 nodes:
-  chain_id: calimero-testnet
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: rust-blob-size
@@ -84,7 +83,6 @@ steps:
     path: "res/blobs.wasm"
     nodes:
       - rust-blob-size-2
-    capability: member
     outputs:
       context_id: contextId
 

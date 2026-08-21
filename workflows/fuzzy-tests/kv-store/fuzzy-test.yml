@@ -7,7 +7,6 @@ nuke_on_start: true
 nuke_on_end: false
 
 nodes:
-  chain_id: calimero-testnet
   count: 4
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-kv-node
@@ -31,7 +30,6 @@ steps:
       - fuzzy-kv-node-2
       - fuzzy-kv-node-3
       - fuzzy-kv-node-4
-    capability: member
     outputs:
       kv_context_id: contextId
       node1_key: memberPublicKey
@@ -60,15 +58,14 @@ steps:
   - name: Seed initial data
     type: repeat
     count: 10
-    variable: seed_idx
     steps:
       - type: call
         node: fuzzy-kv-node-1
         context_id: "{{kv_context_id}}"
         method: set
         args:
-          key: "initial_key_{{seed_idx}}"
-          value: "initial_value_{{seed_idx}}"
+          key: "initial_key_{{iteration}}"
+          value: "initial_value_{{iteration}}"
 
   - name: Wait for seed data sync
     type: wait_for_sync

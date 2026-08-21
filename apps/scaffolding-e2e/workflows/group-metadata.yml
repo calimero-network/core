@@ -25,7 +25,6 @@ description: >
   force_pull_image: false — CI builds merod:local locally).
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

@@ -5,7 +5,6 @@ name: Sample Calimero Workflow
 force_pull_image: true
 
 nodes:
-  chain_id: testnet-1
   count: 3
   image: ghcr.io/calimero-network/merod:edge
   prefix: calimero-node

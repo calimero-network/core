@@ -7,7 +7,6 @@ restart: false
 wait_timeout: 120
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: new-calimero-node
@@ -30,7 +29,6 @@ steps:
     path: "./res/kv_store_with_user_and_frozen_storage.wasm"
     nodes:
       - new-calimero-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

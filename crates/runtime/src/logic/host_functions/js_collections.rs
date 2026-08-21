@@ -100,6 +100,200 @@ macro_rules! js_new_with_id_op {
     };
 }
 
+// The plain and authored halves of these five reads are the same code; only the
+// loader differs. Generating both from one body is what stops them drifting apart
+// unnoticed — before this they sat ~1500 lines apart in the same impl.
+//
+// `insert`, `push` and `remove` are deliberately NOT generated. Their halves only
+// look alike: authored `insert` rejects an already-present key where plain upserts
+// and returns the previous value, authored `push` returns the new index through an
+// extra register argument, and authored `remove` is owner-only. Those differences
+// are intentional and covered by tests in `calimero-storage`; folding them in would
+// assert an equivalence the design rejects.
+/// `map_get` for a plain and an authored collection: the same host-function body,
+/// differing only in which loader resolves the instance id.
+macro_rules! js_map_get {
+    ($name:ident, $loader:ident) => {
+        fn $name(
+            &mut self,
+            map_id_ptr: u64,
+            key_ptr: u64,
+            dest_register_id: u64,
+        ) -> VMLogicResult<i32> {
+            let map_id = match self.read_map_id(map_id_ptr)? {
+                Ok(id) => id,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            let key = self.read_buffer(key_ptr)?;
+
+            let map = match $loader(map_id) {
+                Ok(map) => map,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            match map.get(&key) {
+                Ok(Some(value)) => {
+                    self.write_register_bytes(dest_register_id, &value)?;
+                    Ok(1)
+                }
+                Ok(None) => {
+                    self.clear_register(dest_register_id)?;
+                    Ok(0)
+                }
+                Err(err) => self.write_error_message(dest_register_id, err),
+            }
+        }
+    };
+}
+/// `vector_get` for a plain and an authored collection: the same host-function body,
+/// differing only in which loader resolves the instance id.
+macro_rules! js_vector_get {
+    ($name:ident, $loader:ident) => {
+        fn $name(
+            &mut self,
+            vector_id_ptr: u64,
+            index: u64,
+            dest_register_id: u64,
+        ) -> VMLogicResult<i32> {
+            let vector_id = match self.read_map_id(vector_id_ptr)? {
+                Ok(id) => id,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            let idx = match usize::try_from(index) {
+                Ok(value) => value,
+                Err(_) => {
+                    return self.write_error_message(
+                        dest_register_id,
+                        format!("index {index} does not fit into usize"),
+                    )
+                }
+            };
+
+            let vector = match $loader(vector_id) {
+                Ok(vector) => vector,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            match vector.get(idx) {
+                Ok(Some(value)) => {
+                    self.write_register_bytes(dest_register_id, &value)?;
+                    Ok(1)
+                }
+                Ok(None) => {
+                    self.clear_register(dest_register_id)?;
+                    Ok(0)
+                }
+                Err(err) => self.write_error_message(dest_register_id, err),
+            }
+        }
+    };
+}
+/// `map_contains` for a plain and an authored collection: the same host-function body,
+/// differing only in which loader resolves the instance id.
+macro_rules! js_map_contains {
+    ($name:ident, $loader:ident) => {
+        fn $name(&mut self, map_id_ptr: u64, key_ptr: u64) -> VMLogicResult<i32> {
+            let map_id = match self.read_map_id(map_id_ptr)? {
+                Ok(id) => id,
+                Err(message) => return self.write_error_message(0, message),
+            };
+
+            let key = self.read_buffer(key_ptr)?;
+
+            let map = match $loader(map_id) {
+                Ok(map) => map,
+                Err(message) => return self.write_error_message(0, message),
+            };
+
+            match map.contains(&key) {
+                Ok(result) => Ok(i32::from(result)),
+                Err(err) => self.write_error_message(0, err),
+            }
+        }
+    };
+}
+/// `map_iter` for a plain and an authored collection: the same host-function body,
+/// differing only in which loader resolves the instance id.
+macro_rules! js_map_iter {
+    ($name:ident, $loader:ident) => {
+        fn $name(&mut self, map_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+            let map_id = match self.read_map_id(map_id_ptr)? {
+                Ok(id) => id,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            let map = match $loader(map_id) {
+                Ok(map) => map,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            let entries = match map.entries() {
+                Ok(entries) => entries,
+                Err(err) => return self.write_error_message(dest_register_id, err),
+            };
+
+            let count = u32::try_from(entries.len()).map_err(|_| HostError::IntegerOverflow)?;
+
+            let mut total_len: usize = 4;
+            for (key, value) in &entries {
+                let key_len = key.len();
+                let value_len = value.len();
+                u32::try_from(key_len).map_err(|_| HostError::IntegerOverflow)?;
+                u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
+                total_len = total_len
+                    .checked_add(4)
+                    .and_then(|acc| acc.checked_add(key_len))
+                    .and_then(|acc| acc.checked_add(4))
+                    .and_then(|acc| acc.checked_add(value_len))
+                    .ok_or(HostError::IntegerOverflow)?;
+            }
+
+            let mut buffer = Vec::with_capacity(total_len);
+            buffer.extend_from_slice(&count.to_le_bytes());
+            for (key, value) in entries {
+                let key_len = u32::try_from(key.len()).map_err(|_| HostError::IntegerOverflow)?;
+                let value_len =
+                    u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
+                buffer.extend_from_slice(&key_len.to_le_bytes());
+                buffer.extend_from_slice(&key);
+                buffer.extend_from_slice(&value_len.to_le_bytes());
+                buffer.extend_from_slice(&value);
+            }
+
+            self.write_register_bytes(dest_register_id, &buffer)?;
+            Ok(1)
+        }
+    };
+}
+/// `vector_len` for a plain and an authored collection: the same host-function body,
+/// differing only in which loader resolves the instance id.
+macro_rules! js_vector_len {
+    ($name:ident, $loader:ident) => {
+        fn $name(&mut self, vector_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
+            let vector_id = match self.read_map_id(vector_id_ptr)? {
+                Ok(id) => id,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            let vector = match $loader(vector_id) {
+                Ok(vector) => vector,
+                Err(message) => return self.write_error_message(dest_register_id, message),
+            };
+
+            match vector.len() {
+                Ok(len) => {
+                    let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+                    self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
+                    Ok(1)
+                }
+                Err(err) => self.write_error_message(dest_register_id, err),
+            }
+        }
+    };
+}
+
 impl VMHostFunctions<'_> {
     fn make_runtime_env(&mut self) -> VMLogicResult<RuntimeEnv> {
         self.with_logic_mut(|logic| {
@@ -1019,36 +1213,8 @@ impl VMHostFunctions<'_> {
         self.invoke_with_storage_env(|host| host.crdt_delete_collection(id_ptr, register_id))
     }
 
-    fn crdt_map_get(
-        &mut self,
-        map_id_ptr: u64,
-        key_ptr: u64,
-        dest_register_id: u64,
-    ) -> VMLogicResult<i32> {
-        let map_id = match self.read_map_id(map_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let key = self.read_buffer(key_ptr)?;
-
-        let map = match load_js_map_instance(map_id) {
-            Ok(map) => map,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        match map.get(&key) {
-            Ok(Some(value)) => {
-                self.write_register_bytes(dest_register_id, &value)?;
-                Ok(1)
-            }
-            Ok(None) => {
-                self.clear_register(dest_register_id)?;
-                Ok(0)
-            }
-            Err(err) => self.write_error_message(dest_register_id, err),
-        }
-    }
+    js_map_get!(crdt_map_get, load_js_map_instance);
+    js_map_get!(crdt_authored_map_get, load_js_authored_map_instance);
 
     fn crdt_map_insert(
         &mut self,
@@ -1122,92 +1288,14 @@ impl VMHostFunctions<'_> {
         }
     }
 
-    fn crdt_map_contains(&mut self, map_id_ptr: u64, key_ptr: u64) -> VMLogicResult<i32> {
-        let map_id = match self.read_map_id(map_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(0, message),
-        };
+    js_map_contains!(crdt_map_contains, load_js_map_instance);
+    js_map_contains!(crdt_authored_map_contains, load_js_authored_map_instance);
 
-        let key = self.read_buffer(key_ptr)?;
+    js_map_iter!(crdt_map_iter, load_js_map_instance);
+    js_map_iter!(crdt_authored_map_iter, load_js_authored_map_instance);
 
-        let map = match load_js_map_instance(map_id) {
-            Ok(map) => map,
-            Err(message) => return self.write_error_message(0, message),
-        };
-
-        match map.contains(&key) {
-            Ok(result) => Ok(i32::from(result)),
-            Err(err) => self.write_error_message(0, err),
-        }
-    }
-
-    fn crdt_map_iter(&mut self, map_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
-        let map_id = match self.read_map_id(map_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let map = match load_js_map_instance(map_id) {
-            Ok(map) => map,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let entries = match map.entries() {
-            Ok(entries) => entries,
-            Err(err) => return self.write_error_message(dest_register_id, err),
-        };
-
-        let count = u32::try_from(entries.len()).map_err(|_| HostError::IntegerOverflow)?;
-
-        let mut total_len: usize = 4;
-        for (key, value) in &entries {
-            let key_len = key.len();
-            let value_len = value.len();
-            u32::try_from(key_len).map_err(|_| HostError::IntegerOverflow)?;
-            u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
-            total_len = total_len
-                .checked_add(4)
-                .and_then(|acc| acc.checked_add(key_len))
-                .and_then(|acc| acc.checked_add(4))
-                .and_then(|acc| acc.checked_add(value_len))
-                .ok_or(HostError::IntegerOverflow)?;
-        }
-
-        let mut buffer = Vec::with_capacity(total_len);
-        buffer.extend_from_slice(&count.to_le_bytes());
-        for (key, value) in entries {
-            let key_len = u32::try_from(key.len()).map_err(|_| HostError::IntegerOverflow)?;
-            let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
-            buffer.extend_from_slice(&key_len.to_le_bytes());
-            buffer.extend_from_slice(&key);
-            buffer.extend_from_slice(&value_len.to_le_bytes());
-            buffer.extend_from_slice(&value);
-        }
-
-        self.write_register_bytes(dest_register_id, &buffer)?;
-        Ok(1)
-    }
-
-    fn crdt_vector_len(&mut self, vector_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
-        let vector_id = match self.read_map_id(vector_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let vector = match load_js_vector_instance(vector_id) {
-            Ok(vector) => vector,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        match vector.len() {
-            Ok(len) => {
-                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
-                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
-                Ok(1)
-            }
-            Err(err) => self.write_error_message(dest_register_id, err),
-        }
-    }
+    js_vector_len!(crdt_vector_len, load_js_vector_instance);
+    js_vector_len!(crdt_authored_vector_len, load_js_authored_vector_instance);
 
     fn crdt_vector_push(&mut self, vector_id_ptr: u64, value_ptr: u64) -> VMLogicResult<i32> {
         let vector_id = match self.read_map_id(vector_id_ptr)? {
@@ -1231,44 +1319,8 @@ impl VMHostFunctions<'_> {
         }
     }
 
-    fn crdt_vector_get(
-        &mut self,
-        vector_id_ptr: u64,
-        index: u64,
-        dest_register_id: u64,
-    ) -> VMLogicResult<i32> {
-        let vector_id = match self.read_map_id(vector_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let idx = match usize::try_from(index) {
-            Ok(value) => value,
-            Err(_) => {
-                return self.write_error_message(
-                    dest_register_id,
-                    format!("index {index} does not fit into usize"),
-                )
-            }
-        };
-
-        let vector = match load_js_vector_instance(vector_id) {
-            Ok(vector) => vector,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        match vector.get(idx) {
-            Ok(Some(value)) => {
-                self.write_register_bytes(dest_register_id, &value)?;
-                Ok(1)
-            }
-            Ok(None) => {
-                self.clear_register(dest_register_id)?;
-                Ok(0)
-            }
-            Err(err) => self.write_error_message(dest_register_id, err),
-        }
-    }
+    js_vector_get!(crdt_vector_get, load_js_vector_instance);
+    js_vector_get!(crdt_authored_vector_get, load_js_authored_vector_instance);
 
     fn crdt_vector_pop(&mut self, vector_id_ptr: u64, dest_register_id: u64) -> VMLogicResult<i32> {
         let vector_id = match self.read_map_id(vector_id_ptr)? {
@@ -2554,56 +2606,6 @@ impl VMHostFunctions<'_> {
         }
     }
 
-    fn crdt_authored_map_get(
-        &mut self,
-        map_id_ptr: u64,
-        key_ptr: u64,
-        dest_register_id: u64,
-    ) -> VMLogicResult<i32> {
-        let map_id = match self.read_map_id(map_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let key = self.read_buffer(key_ptr)?;
-
-        let map = match load_js_authored_map_instance(map_id) {
-            Ok(map) => map,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        match map.get(&key) {
-            Ok(Some(value)) => {
-                self.write_register_bytes(dest_register_id, &value)?;
-                Ok(1)
-            }
-            Ok(None) => {
-                self.clear_register(dest_register_id)?;
-                Ok(0)
-            }
-            Err(err) => self.write_error_message(dest_register_id, err),
-        }
-    }
-
-    fn crdt_authored_map_contains(&mut self, map_id_ptr: u64, key_ptr: u64) -> VMLogicResult<i32> {
-        let map_id = match self.read_map_id(map_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(0, message),
-        };
-
-        let key = self.read_buffer(key_ptr)?;
-
-        let map = match load_js_authored_map_instance(map_id) {
-            Ok(map) => map,
-            Err(message) => return self.write_error_message(0, message),
-        };
-
-        match map.contains(&key) {
-            Ok(result) => Ok(i32::from(result)),
-            Err(err) => self.write_error_message(0, err),
-        }
-    }
-
     fn crdt_authored_map_owner_of(
         &mut self,
         map_id_ptr: u64,
@@ -2658,57 +2660,6 @@ impl VMHostFunctions<'_> {
             Ok(result) => Ok(i32::from(result)),
             Err(err) => self.write_error_message(0, err),
         }
-    }
-
-    fn crdt_authored_map_iter(
-        &mut self,
-        map_id_ptr: u64,
-        dest_register_id: u64,
-    ) -> VMLogicResult<i32> {
-        let map_id = match self.read_map_id(map_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let map = match load_js_authored_map_instance(map_id) {
-            Ok(map) => map,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let entries = match map.entries() {
-            Ok(entries) => entries,
-            Err(err) => return self.write_error_message(dest_register_id, err),
-        };
-
-        let count = u32::try_from(entries.len()).map_err(|_| HostError::IntegerOverflow)?;
-
-        let mut total_len: usize = 4;
-        for (key, value) in &entries {
-            let key_len = key.len();
-            let value_len = value.len();
-            u32::try_from(key_len).map_err(|_| HostError::IntegerOverflow)?;
-            u32::try_from(value_len).map_err(|_| HostError::IntegerOverflow)?;
-            total_len = total_len
-                .checked_add(4)
-                .and_then(|acc| acc.checked_add(key_len))
-                .and_then(|acc| acc.checked_add(4))
-                .and_then(|acc| acc.checked_add(value_len))
-                .ok_or(HostError::IntegerOverflow)?;
-        }
-
-        let mut buffer = Vec::with_capacity(total_len);
-        buffer.extend_from_slice(&count.to_le_bytes());
-        for (key, value) in entries {
-            let key_len = u32::try_from(key.len()).map_err(|_| HostError::IntegerOverflow)?;
-            let value_len = u32::try_from(value.len()).map_err(|_| HostError::IntegerOverflow)?;
-            buffer.extend_from_slice(&key_len.to_le_bytes());
-            buffer.extend_from_slice(&key);
-            buffer.extend_from_slice(&value_len.to_le_bytes());
-            buffer.extend_from_slice(&value);
-        }
-
-        self.write_register_bytes(dest_register_id, &buffer)?;
-        Ok(1)
     }
 
     fn crdt_authored_map_len(
@@ -2843,45 +2794,6 @@ impl VMHostFunctions<'_> {
         }
     }
 
-    fn crdt_authored_vector_get(
-        &mut self,
-        vector_id_ptr: u64,
-        index: u64,
-        dest_register_id: u64,
-    ) -> VMLogicResult<i32> {
-        let vector_id = match self.read_map_id(vector_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let idx = match usize::try_from(index) {
-            Ok(value) => value,
-            Err(_) => {
-                return self.write_error_message(
-                    dest_register_id,
-                    format!("index {index} does not fit into usize"),
-                )
-            }
-        };
-
-        let vector = match load_js_authored_vector_instance(vector_id) {
-            Ok(vector) => vector,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        match vector.get(idx) {
-            Ok(Some(value)) => {
-                self.write_register_bytes(dest_register_id, &value)?;
-                Ok(1)
-            }
-            Ok(None) => {
-                self.clear_register(dest_register_id)?;
-                Ok(0)
-            }
-            Err(err) => self.write_error_message(dest_register_id, err),
-        }
-    }
-
     fn crdt_authored_vector_owner_of(
         &mut self,
         vector_id_ptr: u64,
@@ -2994,31 +2906,6 @@ impl VMHostFunctions<'_> {
 
         self.write_register_bytes(dest_register_id, &buffer)?;
         Ok(1)
-    }
-
-    fn crdt_authored_vector_len(
-        &mut self,
-        vector_id_ptr: u64,
-        dest_register_id: u64,
-    ) -> VMLogicResult<i32> {
-        let vector_id = match self.read_map_id(vector_id_ptr)? {
-            Ok(id) => id,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        let vector = match load_js_authored_vector_instance(vector_id) {
-            Ok(vector) => vector,
-            Err(message) => return self.write_error_message(dest_register_id, message),
-        };
-
-        match vector.len() {
-            Ok(len) => {
-                let len_u64 = u64::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
-                self.write_register_bytes(dest_register_id, &len_u64.to_le_bytes())?;
-                Ok(1)
-            }
-            Err(err) => self.write_error_message(dest_register_id, err),
-        }
     }
 
     fn crdt_shared_new(

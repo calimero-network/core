@@ -22,16 +22,15 @@ description: >
 
   SCOPE: this covers defect 1 (announce skipped). Defect 2 (every outgoing blob
   request unsigned, so the serving node answers found:false) needs an assertion
-  on the received BYTES, which requires merobox's `download_blob` step —
-  unreleased at time of writing. blob-cross-node-transfer.yml is that test,
-  waiting on a MIN_MEROBOX bump to 0.6.44.
+  on the received BYTES, which requires merobox's `download_blob` step.
+  blob-cross-node-transfer.yml is that test, and it now runs — the step shipped
+  in merobox 0.6.44 and the version CI installs is well past it.
 
 force_pull_image: true
 
 auth_mode: embedded
 
 nodes:
-  chain_id: calimero-testnet
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: rust-blob-announce
@@ -69,7 +68,6 @@ steps:
     path: "res/blobs.wasm"
     nodes:
       - rust-blob-announce-2
-    capability: member
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey

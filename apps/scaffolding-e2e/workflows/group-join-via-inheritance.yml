@@ -34,7 +34,6 @@ description: >
   workflow exercises the new top-level entry point instead.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -105,7 +104,7 @@ steps:
     type: create_group_in_namespace
     node: join-inherit-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: open-subgroup
+    group_name: open-subgroup
     outputs:
       subgroup_id: groupId
 

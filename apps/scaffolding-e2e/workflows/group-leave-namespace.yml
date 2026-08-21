@@ -6,7 +6,6 @@ description: >
   subtree on every peer.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -71,7 +70,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: leave-namespace-subgroup-a
+    group_name: leave-namespace-subgroup-a
     outputs:
       subgroup_a_id: groupId
 
@@ -79,7 +78,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: leave-namespace-subgroup-b
+    group_name: leave-namespace-subgroup-b
     outputs:
       subgroup_b_id: groupId
 

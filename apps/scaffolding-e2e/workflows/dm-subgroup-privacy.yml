@@ -30,7 +30,6 @@ description: >
   and `collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in`.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -153,7 +152,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: private-dm
+    group_name: private-dm
     outputs:
       subgroup_priv: groupId
 
@@ -269,7 +268,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: open-channel
+    group_name: open-channel
     outputs:
       subgroup_open: groupId
 

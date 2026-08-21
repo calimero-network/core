@@ -34,7 +34,6 @@ description: >
   is the proof that the 500 reproduces on pre-fix code.)
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

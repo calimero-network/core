@@ -75,42 +75,20 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: sync-resil-node-1
+  - name: Create the mesh - namespace, context and every joiner
+    type: create_mesh
+    context_node: sync-resil-node-1
     application_id: '{{app_id}}'
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - sync-resil-node-2
     outputs:
       namespace_id: namespaceId
-
-  - name: Create context in namespace on node-1
-    type: create_context
-    node: sync-resil-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{namespace_id}}'
-    outputs:
       ctx_id: contextId
-
-  - name: Create namespace invitation for node-2
-    type: create_namespace_invitation
-    node: sync-resil-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invitation_node2: invitation
 
   - name: Wait for namespace gossip
     type: wait
     seconds: 5
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: sync-resil-node-2
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invitation_node2}}'
-
-  - name: Node-2 joins context via group membership
-    type: join_context
-    node: sync-resil-node-2
-    context_id: '{{ctx_id}}'
 
   # ---------- Baseline: confirm sync works before the fault ----------
 

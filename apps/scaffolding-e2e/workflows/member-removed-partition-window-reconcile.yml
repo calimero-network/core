@@ -51,7 +51,6 @@ description: >
   while partitioned is what makes the divergence deterministic.
 
 force_pull_image: false
-near_devnet: false
 
 nodes:
   count: 3

@@ -36,7 +36,6 @@ description: >
   symptom of a stale deny-list entry on the receiver side.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -142,7 +141,7 @@ steps:
     type: create_group_in_namespace
     node: kick-readd-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: private-channel
+    group_name: private-channel
     outputs:
       subgroup_id: groupId
 

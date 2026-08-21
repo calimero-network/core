@@ -4,7 +4,6 @@ description: Private data storage example using the Rust SDK.
 force_pull_image: true
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: rust-private-data
@@ -25,7 +24,6 @@ steps:
     path: res/private_data.wasm
     nodes:
       - rust-private-data-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

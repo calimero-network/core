@@ -11,7 +11,6 @@ description: >
   branch in `execute/mod.rs` ("group key not yet delivered") and fail.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

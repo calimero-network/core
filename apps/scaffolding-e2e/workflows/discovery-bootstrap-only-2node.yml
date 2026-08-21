@@ -89,41 +89,20 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
+  - name: Create the mesh - namespace, context and every joiner
+    type: create_mesh
+    context_node: e2e-node-1
     application_id: '{{app_id}}'
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - e2e-node-2
     outputs:
       ns: namespaceId
-
-  - name: Create context on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{ns}}'
-    outputs:
       ctx: contextId
 
   # The join is the first thing that needs a peer: group-key delivery has to
   # reach node-1 over the network. Pre-#3525 with mDNS off this is exactly
   # where the run died, 5s after the request, with no mesh peer to ask.
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invitation: invitation
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{ns}}'
-    invitation: '{{invitation}}'
-
-  - name: Node-2 joins context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx}}'
 
   # Barrier before the writes, not decoration. `join_context` returns as soon as
   # the join is accepted; node-2's context state materialises a moment later.

@@ -4,7 +4,6 @@ description: Test KV Store with handlers functionality, including insert, update
 force_pull_image: true
 
 nodes:
-  chain_id: testnet-1
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: kvh-node
@@ -25,7 +24,6 @@ steps:
     path: res/kv_store_with_handlers.wasm
     nodes:
       - kvh-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

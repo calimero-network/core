@@ -12,9 +12,9 @@ description: >
   never even logged "Processing blob request stream" — it bailed at the auth
   gate before looking for a blob it was holding.
 
-  Needs merobox >= 0.6.44 for the `download_blob` step (floor enforced in
-  .github/actions/setup-merobox/action.yml) and a node build carrying #3326,
-  without which the kad preconditions below fail.
+  Needs merobox >= 0.6.44 for the `download_blob` step (the version CI installs
+  is pinned in .github/actions/setup-merobox/action.yml) and a node build
+  carrying #3326, without which the kad preconditions below fail.
 
   Run locally — --e2e-mode is REQUIRED, it clears the public devnet bootstrap
   list `merod init` writes; without it the provider lookup times out on
@@ -34,7 +34,6 @@ force_pull_image: true
 auth_mode: embedded
 
 nodes:
-  chain_id: calimero-testnet
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: rust-blob-xfer
@@ -67,7 +66,6 @@ steps:
     path: "res/blobs.wasm"
     nodes:
       - rust-blob-xfer-2
-    capability: member
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey
