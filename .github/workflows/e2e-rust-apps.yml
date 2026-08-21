@@ -1025,6 +1025,10 @@ jobs:
       # sits here instead: across every scenario, the gate has to have concluded
       # at least one comparison, or it was not gating.
       - name: Download scenario logs
+        id: logs
+        # Tolerated so the assertion below runs and can say precisely WHY there
+        # are no logs; a bare failure here would be indistinguishable from a
+        # suite that legitimately produced none.
         uses: actions/download-artifact@v8
         with:
           pattern: logs-*
@@ -1034,12 +1038,20 @@ jobs:
 
       - name: Assert the suite concluded comparisons
         run: |
-          # No logs at all means the matrix never ran (build failure, cancelled
-          # run). That is the `test` job's business to report, not this one's —
-          # failing here too would only add noise to an already-red run.
+          # Missing logs is benign in exactly one case: the matrix never ran, so
+          # there was nothing to check and the `test` job already says why. A
+          # download failure, or a matrix that ran and left nothing behind, is
+          # the fail-open case this job exists to prevent — it must not pass as
+          # "nothing to inspect".
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
-              echo "::notice::no scenario logs to inspect — the matrix did not run"
-              exit 0
+              case "${{ needs.test.result }}" in
+                skipped|cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+                  exit 0
+                  ;;
+              esac
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the coverage floor could not be checked"
+              exit 1
           fi
           strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
           compares=$(grep -rh "unified_projection_compare" all-logs/ 2>/dev/null | strip || true)
@@ -1058,16 +1070,16 @@ jobs:
 
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam]
+    needs: [test, auth-seam, projection-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ]; then
+            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT

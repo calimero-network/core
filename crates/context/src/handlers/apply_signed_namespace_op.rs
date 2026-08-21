@@ -501,7 +501,13 @@ fn shadow_fold_and_compare(
                 at_frontier,
                 agrees: projected == live,
             });
-            tracing::debug!(
+            // INFO, not debug, and that is load-bearing: the coverage gate reads
+            // these lines, so emitting them at a level a scenario's `log_level`
+            // can filter out would put the gate back to trusting silence — the
+            // exact failure it exists to catch. Two of 86 scenarios already
+            // override the level, and a governance membership op is rare enough
+            // (67 lines across a whole e2e suite) that INFO costs nothing.
+            tracing::info!(
                 marker = "unified_projection_compare",
                 plane = "membership",
                 result,
