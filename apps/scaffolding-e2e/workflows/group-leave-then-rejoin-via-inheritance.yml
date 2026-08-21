@@ -160,7 +160,7 @@ steps:
     type: create_group_in_namespace
     node: leave-rejoin-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: open-channel
+    group_name: open-channel
     outputs:
       subgroup_id: groupId
 

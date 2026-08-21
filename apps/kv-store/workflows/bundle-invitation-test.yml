@@ -47,7 +47,6 @@ steps:
     path: dist/com.calimero.kv-store-0.0.0.mpk
     nodes:
       - calimero-node-2
-    capability: member
     outputs:
       context_id: contextId
       inviter_public_key: memberPublicKey

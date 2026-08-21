@@ -25,7 +25,6 @@ steps:
     path: res/private_data.wasm
     nodes:
       - rust-private-data-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

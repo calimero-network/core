@@ -31,7 +31,6 @@ steps:
       - fuzzy-e2e-node-2
       - fuzzy-e2e-node-3
       - fuzzy-e2e-node-4
-    capability: member
     outputs:
       e2e_context_id: contextId
       node1_key: memberPublicKey
@@ -60,7 +59,6 @@ steps:
   - name: Seed initial KV data
     type: repeat
     count: 10
-    variable: seed_idx
     steps:
       - type: call
         node: fuzzy-e2e-node-1
@@ -68,14 +66,13 @@ steps:
         executor_public_key: "{{node1_key}}"
         method: set
         args:
-          key: "seed_key_{{seed_idx}}"
-          value: "seed_value_{{seed_idx}}"
+          key: "seed_key_{{iteration}}"
+          value: "seed_value_{{iteration}}"
 
   # Pre-populate CRDT counters so increment operations always have existing state
   - name: Seed initial CRDT counters
     type: repeat
     count: 5
-    variable: cnt_idx
     steps:
       - type: call
         node: fuzzy-e2e-node-1
@@ -83,13 +80,12 @@ steps:
         executor_public_key: "{{node1_key}}"
         method: increment_g_counter
         args:
-          key: "perf_counter_{{cnt_idx}}"
+          key: "perf_counter_{{iteration}}"
 
   # Pre-populate Vector so get_metric(0) always has an entry to read
   - name: Seed initial metrics vector
     type: repeat
     count: 3
-    variable: metric_idx
     steps:
       - type: call
         node: fuzzy-e2e-node-1

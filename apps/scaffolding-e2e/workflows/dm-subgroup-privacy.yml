@@ -153,7 +153,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: private-dm
+    group_name: private-dm
     outputs:
       subgroup_priv: groupId
 
@@ -269,7 +269,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: open-channel
+    group_name: open-channel
     outputs:
       subgroup_open: groupId
 

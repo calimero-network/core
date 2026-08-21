@@ -102,7 +102,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: should-not-exist
+    group_name: should-not-exist
     expected_failure: true
 
   # --- node-1 grants node-2 the subgroup-management capabilities ---
@@ -141,7 +141,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: member-channel
+    group_name: member-channel
     outputs:
       subgroup_id: groupId
 
