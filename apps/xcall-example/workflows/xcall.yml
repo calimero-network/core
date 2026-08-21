@@ -346,7 +346,7 @@ steps:
     type: create_group_in_namespace
     node: xcall-authz-1
     namespace_id: "{{ns_n}}"
-    group_alias: subgroup-s
+    group_name: subgroup-s
     outputs:
       sub_s: groupId
 

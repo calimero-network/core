@@ -25,7 +25,6 @@ steps:
     path: res/abi_conformance.wasm
     nodes:
       - abi-conformance-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

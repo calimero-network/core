@@ -69,7 +69,6 @@ steps:
     path: "res/blobs.wasm"
     nodes:
       - rust-blob-announce-2
-    capability: member
     outputs:
       context_id: contextId
       inviter_key: memberPublicKey

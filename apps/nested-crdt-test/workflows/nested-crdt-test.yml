@@ -25,7 +25,6 @@ steps:
     path: res/nested_crdt_test.wasm
     nodes:
       - nested-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

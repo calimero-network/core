@@ -25,7 +25,6 @@ steps:
     path: res/team_metrics_custom.wasm
     nodes:
       - team-custom-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey
