@@ -121,60 +121,21 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
+  - name: Create the mesh - namespace, context and every joiner
+    type: create_mesh
+    context_node: e2e-node-1
     application_id: '{{app_id}}'
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - e2e-node-2
+      - e2e-node-3
     outputs:
       ns: namespaceId
-
-  - name: Create context on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{ns}}'
-    outputs:
       ctx: contextId
-
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_node2: invitation
-
-  - name: Invite node-3 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_node3: invitation
 
   - name: Wait for namespace gossip
     type: wait
     seconds: 5
-
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_node2}}'
-
-  - name: Node-2 joins context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-
-  - name: Node-3 joins namespace
-    type: join_namespace
-    node: e2e-node-3
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_node3}}'
-
-  - name: Node-3 joins context
-    type: join_context
-    node: e2e-node-3
-    context_id: '{{ctx}}'
 
   # Capture each node's ACCOUNT (A/B/C) — what a writer set names.
   #
