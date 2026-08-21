@@ -8,6 +8,13 @@ license.workspace = true
 description.workspace = true
 publish = true
 
+# `wasmer-compiler-cranelift` is the compiler backend wasmer links through a
+# feature, so no `use` of it ever appears in `src` — but removing it fails the
+# build. cargo-machete works from source references, so it cannot see that edge;
+# this is the one entry the CI gate has to be told about rather than a dead dep.
+[package.metadata.cargo-machete]
+ignored = ["wasmer-compiler-cranelift"]
+
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 bytes.workspace = true

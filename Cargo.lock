@@ -752,9 +752,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "hex",
- "sha2",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1256,7 +1253,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "calimero-utils-actix",
- "either",
  "eyre",
  "futures-util",
  "hex",
@@ -1268,7 +1264,6 @@ dependencies = [
  "multiaddr",
  "owo-colors 3.5.0",
  "prometheus-client",
- "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
@@ -2016,7 +2011,6 @@ dependencies = [
  "bs58",
  "calimero-sdk",
  "calimero-storage",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2538,7 +2532,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -5833,7 +5826,6 @@ dependencies = [
  "hex",
  "jaq-interpret",
  "jaq-parse",
- "jaq-syn",
  "once_cell",
  "rocksdb",
  "serde",
@@ -8126,7 +8118,6 @@ dependencies = [
  "bs58",
  "calimero-sdk",
  "calimero-storage",
- "calimero-storage-macros",
  "hex",
  "sha2",
  "thiserror 1.0.69",
@@ -9119,7 +9110,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -9150,8 +9140,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-storage-macros",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -11472,7 +11460,6 @@ version = "0.0.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "thiserror 1.0.69",
 ]
 
 [[package]]

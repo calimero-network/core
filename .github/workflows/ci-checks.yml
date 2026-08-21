@@ -139,6 +139,22 @@ jobs:
           cargo install cargo-deny --version 0.19.9 --locked
           cargo deny check advisories bans licenses sources
 
+      - name: Cargo machete (unused dependencies)
+        if: ${{ !cancelled() }}
+        run: |
+          # Catches dependencies nothing references any more. 35 had accumulated
+          # before this gate existed, three of them listed as "key deps" in their
+          # own crate's AGENTS.md — nobody had a reason to look.
+          #
+          # It works from source references, so a dependency linked only through a
+          # feature reads as unused. There is exactly one of those
+          # (`wasmer-compiler-cranelift` in calimero-runtime); it is declared in
+          # that crate's `[package.metadata.cargo-machete] ignored`, with the
+          # reason beside it. Add to that list only after confirming removal
+          # actually breaks the build — otherwise the entry hides a real dead dep.
+          cargo install cargo-machete --version 0.9.2 --locked
+          cargo machete
+
   cargo-mero-e2e:
     name: cargo-mero e2e
     runs-on: big-machine
