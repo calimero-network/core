@@ -7,7 +7,6 @@ nuke_on_start: true
 nuke_on_end: false
 
 nodes:
-  chain_id: calimero-testnet
   count: 4
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-e2e-node

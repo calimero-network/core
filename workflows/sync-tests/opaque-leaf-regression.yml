@@ -36,12 +36,16 @@ nodes:
   # but specify it here so a local `merobox bootstrap run` works without
   # the override.
   #
-  # NB: no `use_image_entrypoint` / `chain_id` here, on purpose — those
-  # are the *profiling* fuzzy-workflow shape, used with the
+  # NB: no `use_image_entrypoint` here, on purpose — that is the
+  # *profiling* fuzzy-workflow shape, used with the
   # `merod:edge-profiling` image that wraps the binary in `perf record`.
   # For the plain `merod:edge`/`merod:local` images (no profiling
   # wrapper), merobox invokes the merod CLI directly — same shape as
   # every working e2e workflow under `apps/*/workflows/*.yml`.
+  #
+  # This note used to name `chain_id` alongside it. merobox no longer
+  # reads that key anywhere, so its presence or absence decides nothing
+  # and it has been dropped from every scenario.
   image: merod:local
   prefix: sync-regression-node
 
