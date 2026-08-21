@@ -4,14 +4,15 @@ use calimero_server_primitives::admin::{
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
     DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
     GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
-    JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
-    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
-    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    JoinContextApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
+    LeaveContextApiResponse, LeaveGroupApiResponse, LeaveNamespaceApiResponse,
+    ListGroupContextsApiResponse, ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse,
+    ListNamespacesApiResponse, ListSubgroupsApiResponse, NamespaceApiResponse,
+    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
+    RemoveGroupMembersApiResponse, ReparentGroupApiResponse, RevokeDeviceApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SyncGroupApiResponse, UpdateMemberRoleApiResponse,
+    UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -405,6 +406,22 @@ impl Report for JoinGroupApiResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Group ID", &self.data.group_id]);
+        let _ = table.add_row(vec![
+            "Member Identity",
+            &self.data.member_identity.to_string(),
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for JoinNamespaceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Namespace Joined").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.data.namespace_id]);
         let _ = table.add_row(vec![
             "Member Identity",
             &self.data.member_identity.to_string(),
