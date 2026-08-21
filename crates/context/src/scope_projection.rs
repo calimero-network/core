@@ -453,6 +453,37 @@ impl ScopeProjections {
         Some(ScopeState::acl_view_at(log, parents))
     }
 
+    /// The at-cut ACL view, but **only** when the cut's whole causal ancestry is
+    /// folded — `None` for an unfed scope or a truncated one.
+    ///
+    /// Every authoritative reader wants exactly this pair of facts, and used to get
+    /// them as `cut_ancestry_complete(..)` followed by `acl_view_at(..)`: two calls
+    /// that walked the same ancestry twice per read, with nothing making the first
+    /// one mandatory. A caller that skipped it received a view folded over a
+    /// truncated history — plausible, possibly stale, and silent about it. One call
+    /// that cannot return the view without the verdict removes both the second walk
+    /// and the chance to forget.
+    ///
+    /// Deliberately *not* offered beside a laxer default that returns the view
+    /// regardless: an imprecise default with a precise opt-in is how the
+    /// distinction gets lost, since the default is what callers reach for.
+    /// `acl_view_at` remains for the readers that legitimately fold a partial
+    /// ancestry — a cross-scope edge out of the slice — and those are not
+    /// authoritative-grant paths.
+    #[must_use]
+    pub fn acl_view_at_complete_cut(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+    ) -> Option<calimero_authz::AclView> {
+        let log = self.logs.get(scope)?;
+        let walked = ScopeState::cut_ancestry(log, parents);
+        if !walked.is_complete() {
+            return None;
+        }
+        Some(ScopeState::acl_view_from_ancestry(&walked))
+    }
+
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +
     /// governance (membership / admin / policy / subgroups) onto the
     /// **externally-supplied storage Merkle `entities_root`**. `None` when the
@@ -804,10 +835,8 @@ impl ScopeProjections {
         let scope = ScopeId::from(namespace_id);
         // Defer to live on a partial fold (governance-backfill race) rather than
         // returning an under-counted cohort — same guard as the membership gate.
-        if !proj.cut_ancestry_complete(&scope, &heads) {
-            return None;
-        }
-        let view = proj.acl_view_at(&scope, &heads)?;
+        // One walk for both questions — see `acl_view_at_complete_cut`.
+        let view = proj.acl_view_at_complete_cut(&scope, &heads)?;
         let mut out = std::collections::BTreeSet::new();
         for group in groups {
             out.extend(Self::member_accounts_in_view(
@@ -859,10 +888,8 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<std::collections::BTreeSet<AccountId>> {
         let scope = ScopeId::from(namespace_id);
-        if !self.cut_ancestry_complete(&scope, heads) {
-            return None;
-        }
-        let view = self.acl_view_at(&scope, heads)?;
+        // One walk for both questions — see `acl_view_at_complete_cut`.
+        let view = self.acl_view_at_complete_cut(&scope, heads)?;
         Some(Self::member_accounts_in_view(
             &view,
             store,
