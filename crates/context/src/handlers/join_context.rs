@@ -1,8 +1,11 @@
-use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinContextRequest, JoinContextResponse};
+use calimero_context_client::local_governance::KeyEnvelope;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextConfigParams;
 use eyre::bail;
@@ -305,6 +308,88 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // path for them.
                 if was_inherited {
                     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+
+                    // Deterministic key acquisition. This is the ONLY path by
+                    // which an inherited joiner obtains the subgroup key:
+                    // `MemberJoinedOpen` emits no `KeyDelivery` (the only
+                    // emitters are `add_group_members`, `admit_tee_node` and
+                    // `pair_device_complete`), so without this fetch the joiner
+                    // stays keyless indefinitely. `join_subgroup_inheritance`
+                    // already uses this direct-stream fetch (#2357); a context
+                    // join needs the same certainty.
+                    //
+                    // Missing it fails silently and asymmetrically: state
+                    // deltas still decrypt, because their lookup falls back to
+                    // the namespace keyring by `key_id`, but ephemeral presence
+                    // resolves strictly through `load_current_key_record` on
+                    // the context's own group (rotation-as-eviction depends on
+                    // that), so every presence message is dropped with no trace
+                    // at default log level.
+                    //
+                    // Best-effort, like the publish below: the join has already
+                    // happened locally, and the gossip round-trip remains as
+                    // the fallback. Skipped when the key is already local, so
+                    // repeat joins cost nothing.
+                    let key_already_local =
+                        match GroupKeyring::new(&datastore, group_id).load_current_key() {
+                            Ok(k) => k.is_some(),
+                            Err(err) => {
+                                warn!(
+                                    ?err,
+                                    ?group_id,
+                                    "join_context: keyring read failed -- attempting the \
+                                     direct key fetch anyway"
+                                );
+                                false
+                            }
+                        };
+                    if !key_already_local {
+                        let fetched = match node_client
+                            .request_open_subgroup_join(
+                                ns_id.to_bytes(),
+                                group_id.to_bytes(),
+                                joiner_identity,
+                            )
+                            .await
+                        {
+                            Ok(bytes) => borsh::from_slice::<KeyEnvelope>(&bytes)
+                                .map_err(|e| {
+                                    eyre::eyre!("decode KeyEnvelope from peer response: {e}")
+                                })
+                                .and_then(|envelope| {
+                                    GroupKeyring::unwrap_for_recipient(
+                                        &signer_sk,
+                                        &group_id.to_bytes(),
+                                        None,
+                                        &envelope,
+                                    )
+                                })
+                                .and_then(|group_key| {
+                                    crate::group_key_pull::adopt_pulled_group_key(
+                                        &datastore,
+                                        ns_id.to_bytes().into(),
+                                        group_id,
+                                        &group_key,
+                                    )
+                                }),
+                            Err(err) => Err(err),
+                        };
+                        match fetched {
+                            Ok(_key_id) => info!(
+                                ?group_id,
+                                %joiner_identity,
+                                "join_context: fetched the inherited subgroup key directly"
+                            ),
+                            Err(err) => warn!(
+                                ?err,
+                                ?group_id,
+                                %joiner_identity,
+                                "join_context: direct subgroup-key fetch failed -- the joiner \
+                                 has no subgroup key; presence and any subgroup-encrypted op \
+                                 will be dropped until an admin re-adds them"
+                            ),
+                        }
+                    }
                     // NOT `?`. By this point the join has already happened locally —
                     // the identity marker is written, the leave tombstone cleared,
                     // and the context subscribed and synced. Propagating here would
