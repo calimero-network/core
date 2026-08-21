@@ -334,6 +334,68 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         }
     }
 
+    /// Link `child` under `parent` using caller-supplied row access.
+    ///
+    /// The writer-side counterpart to [`children_with`](Self::children_with),
+    /// for callers that reach the store directly rather than through a
+    /// [`StorageAdaptor`] — specifically snapshot sync, which installs entities
+    /// by writing their `Entry` and `Index` rows straight to the store.
+    ///
+    /// It needs to exist because children stopped living inside the parent's
+    /// index row. While they were inline, anything that shipped an index row
+    /// shipped the parent→child links with it, and snapshot sync got them for
+    /// free. Now they are their own keyspace, and a receiver that installs
+    /// entities without also building the trie holds every entity but cannot
+    /// enumerate them and computes a different root — permanently, because
+    /// re-applying byte-identical entities never re-links anything.
+    ///
+    /// Pass the child's SHIPPED `full_hash`: the trie is a pure function of the
+    /// `{(id, full_hash)}` set, so reconstructing it from the sender's values
+    /// reproduces the sender's root exactly, with no re-hashing and no ordering
+    /// requirement between parent and child.
+    pub fn insert_with<R, W>(parent: Id, child: ChildInfo, read: R, mut write: W)
+    where
+        R: Fn(Key) -> Option<Vec<u8>>,
+        W: FnMut(Key, &[u8]),
+    {
+        let id = child.id();
+        let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
+
+        let mut bucket = read(Key::ChildTrie(addr(parent, &path)))
+            .and_then(|bytes| TrieBucket::try_from_slice(&bytes).ok())
+            .unwrap_or_default();
+
+        let delta = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
+            Ok(i) => {
+                bucket.entries[i] = child;
+                0
+            }
+            Err(i) => {
+                bucket.entries.insert(i, child);
+                1
+            }
+        };
+        if let Ok(bytes) = to_vec(&bucket) {
+            write(Key::ChildTrie(addr(parent, &path)), &bytes);
+        }
+
+        // Same spine walk as `insert`, through the caller's rows.
+        let mut below = bucket.hash();
+        for level in (0..DEPTH).rev() {
+            let node_path: Vec<u8> = (0..level).map(|i| nibble(id, i)).collect();
+            let key = Key::ChildTrie(addr(parent, &node_path));
+            let mut node = read(key)
+                .and_then(|bytes| TrieNode::try_from_slice(&bytes).ok())
+                .unwrap_or_default();
+            node.set(nibble(id, level), below);
+            node.count = node.count.saturating_add_signed(delta);
+            if let Ok(bytes) = to_vec(&node) {
+                write(key, &bytes);
+            }
+            below = node.hash();
+        }
+    }
+
     /// Enumerate a parent's children using a caller-supplied reader.
     ///
     /// For callers that reach the store directly rather than through a
