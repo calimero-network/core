@@ -119,6 +119,24 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-scenario-coverage.py
 
+      - name: Duplication ratchet
+        if: ${{ !cancelled() }}
+        run: |
+          # Fails when a crate gains a near-duplicate function it did not have
+          # before. A ratchet, not a threshold: the workspace has ~330 accepted
+          # pairs and demanding zero would be absurd, but a crate growing a NEW
+          # one is how every cleanup gets undone. Two measured cases motivated
+          # it — a third of js_collections.rs was redundant across 26 clone
+          # families, and a fourth copy of the projection ancestry walk landed
+          # within days of a PR unifying the first three.
+          #
+          # The match is syntactic, so it cannot tell a copy from two operations
+          # that merely look alike. A new pair therefore fails with both names
+          # printed rather than being auto-rejected on a score: fold it, or run
+          # `scripts/check-duplication.py --update` and say in the PR why the two
+          # are honest neighbours. Either way somebody looked.
+          python3 scripts/check-duplication.py
+
       - name: Cargo build (merodb gui)
         if: ${{ !cancelled() }}
         run: cargo build -p merodb --features gui

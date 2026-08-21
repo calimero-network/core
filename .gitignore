@@ -37,3 +37,7 @@ tools/cargo-mero/tests/fixtures/*/crates/*/res/
 # Random bytes, 141 MiB at the default tier — regenerated per run, never committed.
 apps/blobs/static/generated/
 
+# Only appears if a script under scripts/ is imported rather than run (a test
+# harness, or a debug session). Running them as `python3 scripts/x.py` creates
+# nothing.
+scripts/__pycache__/
