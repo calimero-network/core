@@ -2,7 +2,7 @@
 //! the add/remove/re-add fold the governance state machine has to agree with.
 
 use calimero_account::{
-    sign_account_endorsement, sign_device_cert, AccountGenesis, AccountId, DeviceId, KemPublicKey,
+    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, KemPublicKey,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -29,7 +29,7 @@ fn a_governance_device_link_reaches_the_projection() {
     let genesis = AccountGenesis::new(root.public_key());
     let account = genesis.account_id();
     let device = DeviceId::mint(account, [5u8; 16]);
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &root,
         account,
         device,
@@ -47,7 +47,7 @@ fn a_governance_device_link_reaches_the_projection() {
             genesis,
             chain: vec![],
             cert,
-            endorsement: sign_account_endorsement(&root, account).expect("sign endorsement"),
+            endorsement: AccountMemberEndorsement::sign(&root, account).expect("sign endorsement"),
         },
     )
     .expect("the account ops must map to a unified payload, not fold to Noop");

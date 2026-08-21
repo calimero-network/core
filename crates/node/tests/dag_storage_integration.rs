@@ -700,20 +700,10 @@ async fn test_concurrent_branches_deterministic_root_hash() {
 
     // Create two concurrent deltas from same parent (root)
     // Delta A has root_hash R1 = [0xAA; 32]
-    let delta_a = create_test_delta(
-        [10; 32],      // id
-        vec![[0; 32]], // parents: root
-        vec![],        // actions
-        [0xAA; 32],    // expected_root_hash
-    );
+    let delta_a = create_test_delta([10; 32], vec![[0; 32]], vec![]);
 
     // Delta B has root_hash R2 = [0xBB; 32]
-    let delta_b = create_test_delta(
-        [20; 32],      // id
-        vec![[0; 32]], // parents: root
-        vec![],        // actions
-        [0xBB; 32],    // expected_root_hash
-    );
+    let delta_b = create_test_delta([20; 32], vec![[0; 32]], vec![]);
 
     // Apply in order A, B
     let _ = dag.add_delta(delta_a.clone(), &applier).await.unwrap();
@@ -750,14 +740,12 @@ fn create_test_delta(
     id: [u8; 32],
     parents: Vec<[u8; 32]>,
     actions: Vec<Action>,
-    expected_root_hash: [u8; 32],
 ) -> CausalDelta<Vec<Action>> {
     CausalDelta {
         id,
         parents,
         payload: actions,
         hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-        expected_root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     }
 }

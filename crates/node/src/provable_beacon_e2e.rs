@@ -362,7 +362,7 @@ fn queued_join_op(
         NamespaceOp::Root(RootOp::MemberJoinedAt {
             // The account the credential beside it certifies — a pair that
             // disagrees is refused before it reaches the beacon proof.
-            member: test_join_account().cert.account,
+            member: test_join_account().statement.account,
             signed_invitation: invitation,
             joined_at: 0,
             account: test_join_account(),
@@ -523,7 +523,7 @@ fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAcc
     let genesis = calimero_account::AccountGenesis::new(root);
     Box::new(
         calimero_context_client::local_governance::JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
+            statement: calimero_account::DeviceCert {
                 account: genesis.account_id(),
                 device: calimero_account::DeviceId::from([0x3E; 32]),
                 sign_pk: calimero_primitives::identity::PublicKey::from([0x7B; 32]),

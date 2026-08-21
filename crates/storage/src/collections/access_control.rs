@@ -483,10 +483,11 @@ mod tests {
     /// Two devices of one account must NOT collapse into one writer for the
     /// purposes of per-writer state.
     ///
-    /// The gate is account-keyed; owner stamps stay device-keyed. If someone
-    /// "simplifies" by moving stamps onto accounts, the gate tests above all keep
-    /// passing and this is the one that fails — two devices would then share a
-    /// counter slot and an HLC seed, and silently lose each other's writes.
+    /// The gate is account-keyed, and so is an owner stamp; the CRDT internals
+    /// underneath (a counter slot, an HLC seed) stay device-keyed. If someone
+    /// "simplifies" by moving those onto accounts too, the gate tests above all
+    /// keep passing and this is the one that fails — two devices would then
+    /// share a slot and silently lose each other's writes.
     #[test]
     #[serial]
     fn the_gate_moves_to_accounts_but_stamps_stay_per_device() {

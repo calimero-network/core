@@ -47,14 +47,7 @@ pub fn signed_op_to_delta(op: &SignedGroupOp) -> Result<CausalDelta<SignedGroupO
     let delta_id = op
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-    Ok(make_delta(
-        op,
-        op.parent_op_hashes.clone(),
-        // C5.S3b removed the op-level state_hash; the DAG delta carries no
-        // meaningful `expected_root_hash` from a governance op.
-        [0u8; 32],
-        delta_id,
-    ))
+    Ok(make_delta(op, op.parent_op_hashes.clone(), delta_id))
 }
 
 // ---------------------------------------------------------------------------
@@ -163,12 +156,7 @@ impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
 // `crate::governance_dag::signed_namespace_op_to_delta`.
 pub use calimero_governance_store::unified_op_decode::signed_namespace_op_to_delta;
 
-fn make_delta<T>(
-    op: &T,
-    parents: Vec<[u8; 32]>,
-    expected_root_hash: [u8; 32],
-    delta_id: [u8; 32],
-) -> CausalDelta<T>
+fn make_delta<T>(op: &T, parents: Vec<[u8; 32]>, delta_id: [u8; 32]) -> CausalDelta<T>
 where
     T: Clone,
 {
@@ -177,6 +165,5 @@ where
         parents,
         op.clone(),
         calimero_storage::logical_clock::HybridTimestamp::default(),
-        expected_root_hash,
     )
 }

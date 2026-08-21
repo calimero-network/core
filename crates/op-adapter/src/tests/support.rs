@@ -2,9 +2,7 @@
 
 use core::num::NonZeroU128;
 
-use calimero_account::{
-    sign_device_cert, AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey,
-};
+use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_governance_types::JoinAccountCredential;
 use calimero_op::Authorship;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -37,7 +35,7 @@ pub(crate) fn hlc(ns: u64) -> HybridTimestamp {
 pub(crate) fn real_join_account_for(sign_pk: PublicKey, seed: u8) -> Box<JoinAccountCredential> {
     let root_sk = PrivateKey::from([seed; 32]);
     let genesis = AccountGenesis::new(root_sk.public_key());
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
         DeviceId::from([0x3E; 32]),
@@ -50,7 +48,7 @@ pub(crate) fn real_join_account_for(sign_pk: PublicKey, seed: u8) -> Box<JoinAcc
     Box::new(JoinAccountCredential {
         genesis,
         chain: vec![],
-        cert,
+        statement: cert,
     })
 }
 
@@ -61,7 +59,7 @@ pub(crate) fn test_join_account_for(sign_pk: PublicKey) -> Box<JoinAccountCreden
     let root = PublicKey::from([0x7A; 32]);
     let genesis = AccountGenesis::new(root);
     Box::new(JoinAccountCredential {
-        cert: DeviceCert {
+        statement: DeviceCert {
             account: genesis.account_id(),
             device: DeviceId::from([0x3E; 32]),
             sign_pk,

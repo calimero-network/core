@@ -93,14 +93,14 @@ fn root_op_encoder_mapping() {
     let joined_open = real_join_account_for(m_key, 0x61);
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoinedOpen {
-            member: joined_open.cert.account,
+            member: joined_open.statement.account,
             group_id: gid.into(),
             account: joined_open.clone(),
         }),
         Some(OpPayload::DeviceLinked {
             genesis: joined_open.genesis,
             chain: joined_open.chain.clone(),
-            cert: joined_open.cert,
+            cert: joined_open.statement,
         })
     );
     // Invitation-based join: group_id + role decoded off the admin-signed
@@ -110,17 +110,17 @@ fn root_op_encoder_mapping() {
     let invited = real_join_account_for(m_key, 0x62);
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoined {
-            member: invited.cert.account,
+            member: invited.statement.account,
             signed_invitation: signed_invitation.clone(),
             account: invited.clone(),
         }),
         Some(OpPayload::MemberJoinedWithDevice {
             group: ContextGroupId::from(gid),
-            member: invited.cert.account,
+            member: invited.statement.account,
             role: GroupMemberRole::Admin,
             genesis: invited.genesis,
             chain: invited.chain.clone(),
-            cert: invited.cert,
+            cert: invited.statement,
         })
     );
     // `MemberJoinedAt` (the timestamped invitation join `join_group` emits)
@@ -128,18 +128,18 @@ fn root_op_encoder_mapping() {
     let invited_at = real_join_account_for(m_key, 0x63);
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoinedAt {
-            member: invited_at.cert.account,
+            member: invited_at.statement.account,
             signed_invitation,
             joined_at: 42,
             account: invited_at.clone(),
         }),
         Some(OpPayload::MemberJoinedWithDevice {
             group: ContextGroupId::from(gid),
-            member: invited_at.cert.account,
+            member: invited_at.statement.account,
             role: GroupMemberRole::Admin,
             genesis: invited_at.genesis,
             chain: invited_at.chain.clone(),
-            cert: invited_at.cert,
+            cert: invited_at.statement,
         })
     );
     let parent = [0x70; 32]; // placeholder parent id
@@ -196,7 +196,7 @@ fn root_op_encoder_mapping() {
 fn namespace_created_folds_the_founders_device_link() {
     let founder_pk = PublicKey::from([0x21u8; 32]);
     let credential = real_join_account_for(founder_pk, 0x21);
-    let founder = credential.cert.account;
+    let founder = credential.statement.account;
 
     assert_eq!(
         payload_from_root_op(&RootOp::NamespaceCreated {
@@ -206,7 +206,7 @@ fn namespace_created_folds_the_founders_device_link() {
         Some(OpPayload::DeviceLinked {
             genesis: credential.genesis,
             chain: credential.chain.clone(),
-            cert: credential.cert,
+            cert: credential.statement,
         }),
         "genesis is the only place the founder's device is bound"
     );
@@ -225,7 +225,7 @@ fn namespace_created_with_a_foreign_credential_folds_no_device() {
         payload_from_root_op(&RootOp::NamespaceCreated {
             // The account the op names is NOT the one the credential
             // certifies, so the pair proves nothing.
-            founder: real_join_account_for(founder_pk, 0x22).cert.account,
+            founder: real_join_account_for(founder_pk, 0x22).statement.account,
             account: stranger,
         }),
         Some(OpPayload::Noop)

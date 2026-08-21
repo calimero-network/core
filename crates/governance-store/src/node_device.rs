@@ -224,7 +224,7 @@ pub struct NodeDevice {
     /// The account this device speaks for.
     pub account: AccountId,
     /// The genesis that addresses [`Self::account`], reconstructed from the
-    /// stored nonce and the account root key that roots it.
+    /// stored account root key alone — the id carries no per-namespace nonce.
     ///
     /// Carried because a device link has to put the genesis on the wire, and
     /// pairing a second device means publishing another link naming this same
@@ -873,7 +873,7 @@ mod tests {
         let alice = AccountGenesis::new(alice_sk.public_key());
         let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
 
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             &alice_sk,
             paired.account,
             paired.device(),
@@ -1263,7 +1263,7 @@ mod tests {
         // anyway, so only a linked one exercises the refusal.
         let discarded = repo.ensure_account_root().expect("generate");
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             discarded.signing_key(),
             mine.account,
             mine.device(),
@@ -1553,7 +1553,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             repo.account_root()
                 .expect("read")
                 .expect("present")
@@ -1599,7 +1599,7 @@ mod tests {
         let alice_sk = PrivateKey::from([1u8; 32]);
         let alice = AccountGenesis::new(alice_sk.public_key());
         let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             &alice_sk,
             paired.account,
             paired.device(),
@@ -1703,7 +1703,7 @@ mod tests {
     fn link(store: &Store, ns: &ContextGroupId, root_sk: &PrivateKey, nonce: [u8; 16]) -> DeviceId {
         let genesis = AccountGenesis::new(root_sk.public_key());
         let device = DeviceId::mint(genesis.account_id(), nonce);
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             root_sk,
             genesis.account_id(),
             device,
@@ -1787,7 +1787,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             repo.account_root()
                 .expect("read")
                 .expect("present")
@@ -1827,7 +1827,7 @@ mod tests {
         let alice_sk = PrivateKey::from([1u8; 32]);
         let alice = AccountGenesis::new(alice_sk.public_key());
         let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             &alice_sk,
             paired.account,
             paired.device(),
@@ -1973,7 +1973,7 @@ mod tests {
         let enrolled = repo.ensure_enrolled(&ns).expect("enroll");
         let namespace_identity = PrivateKey::random(&mut rand::thread_rng());
 
-        let wrong = calimero_account::sign_device_cert(
+        let wrong = calimero_account::DeviceCert::sign(
             &namespace_identity,
             enrolled.account,
             enrolled.device(),
@@ -1989,7 +1989,7 @@ mod tests {
             "a cert signed by the namespace identity must not verify against the account root"
         );
 
-        let right = calimero_account::sign_device_cert(
+        let right = calimero_account::DeviceCert::sign(
             repo.ensure_account_root().expect("root").signing_key(),
             enrolled.account,
             enrolled.device(),

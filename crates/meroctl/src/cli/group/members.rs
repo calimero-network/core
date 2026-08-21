@@ -1,6 +1,6 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::MemberIdentity;
 use calimero_server_primitives::admin::{
     AddGroupMembersApiRequest, GroupMemberApiInput, RemoveGroupMembersApiRequest,
     SetMemberCapabilitiesApiRequest, UpdateMemberRoleApiRequest,
@@ -105,8 +105,11 @@ pub struct AddMembersCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the identity to add")]
-    pub identity: PublicKey,
+    #[clap(
+        name = "IDENTITY",
+        help = "Account (64 hex) or public key (bs58) of the member to add"
+    )]
+    pub identity: MemberIdentity,
 
     #[clap(
         name = "ROLE",
@@ -195,10 +198,10 @@ pub struct SetRoleCommand {
     pub group_id: String,
 
     #[clap(
-        name = "IDENTITY",
-        help = "Public key of the member whose role to update"
+        name = "ACCOUNT",
+        help = "Account of the member whose role to update (64 hex characters)"
     )]
-    pub identity: PublicKey,
+    pub identity: calimero_account::AccountId,
 
     #[clap(name = "ROLE", value_enum, help = "New role to assign")]
     pub role: MemberRoleArg,
@@ -206,7 +209,7 @@ pub struct SetRoleCommand {
 
 impl SetRoleCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let identity_hex = hex::encode(self.identity.digest());
+        let identity_hex = self.identity.to_string();
 
         let request = UpdateMemberRoleApiRequest {
             role: self.role.into(),
@@ -233,8 +236,8 @@ pub struct SetCapabilitiesCommand {
     )]
     pub group_id: String,
 
-    #[clap(name = "IDENTITY", help = "Public key of the member")]
-    pub identity: PublicKey,
+    #[clap(name = "ACCOUNT", help = "Account of the member (64 hex characters)")]
+    pub identity: calimero_account::AccountId,
 
     #[clap(long, help = "Allow member to create contexts in the group")]
     pub can_create_context: bool,
@@ -282,7 +285,7 @@ impl SetCapabilitiesCommand {
             self.can_manage_metadata,
         );
 
-        let identity_hex = hex::encode(self.identity.digest());
+        let identity_hex = self.identity.to_string();
 
         let request = SetMemberCapabilitiesApiRequest { capabilities };
 

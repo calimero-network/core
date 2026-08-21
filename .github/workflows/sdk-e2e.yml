@@ -110,6 +110,16 @@ jobs:
           node-version: "20"
       - run: npm install -g pnpm
 
+      # The SDK half of the wire-fixture canary: only this job has both
+      # checkouts. Node-free, so it runs before merod boots.
+      - name: Wire contract (core fixtures vs SDK types)
+        working-directory: _mero-js
+        env:
+          CALIMERO_CORE_DIR: ${{ github.workspace }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test:contract
+
       - name: Boot merod (embedded auth, single node)
         run: |
           BIN="$PWD/target/debug/merod"

@@ -453,6 +453,37 @@ impl ScopeProjections {
         Some(ScopeState::acl_view_at(log, parents))
     }
 
+    /// The at-cut ACL view, but **only** when the cut's whole causal ancestry is
+    /// folded — `None` for an unfed scope or a truncated one.
+    ///
+    /// Every authoritative reader wants exactly this pair of facts, and used to get
+    /// them as `cut_ancestry_complete(..)` followed by `acl_view_at(..)`: two calls
+    /// that walked the same ancestry twice per read, with nothing making the first
+    /// one mandatory. A caller that skipped it received a view folded over a
+    /// truncated history — plausible, possibly stale, and silent about it. One call
+    /// that cannot return the view without the verdict removes both the second walk
+    /// and the chance to forget.
+    ///
+    /// Deliberately *not* offered beside a laxer default that returns the view
+    /// regardless: an imprecise default with a precise opt-in is how the
+    /// distinction gets lost, since the default is what callers reach for.
+    /// `acl_view_at` remains for the readers that legitimately fold a partial
+    /// ancestry — a cross-scope edge out of the slice — and those are not
+    /// authoritative-grant paths.
+    #[must_use]
+    pub fn acl_view_at_complete_cut(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+    ) -> Option<calimero_authz::AclView> {
+        let log = self.logs.get(scope)?;
+        let walked = ScopeState::cut_ancestry(log, parents);
+        if !walked.is_complete() {
+            return None;
+        }
+        Some(ScopeState::acl_view_from_ancestry(&walked))
+    }
+
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +
     /// governance (membership / admin / policy / subgroups) onto the
     /// **externally-supplied storage Merkle `entities_root`**. `None` when the
@@ -592,6 +623,32 @@ impl ScopeProjections {
         self.logs
             .get(scope)
             .is_some_and(|log| ScopeState::cut_ancestry_decoded(log, parents))
+    }
+
+    /// Does the cut at `parents` cover `frontier` in `scope` — the precondition
+    /// for comparing an at-cut projection answer against a live row?
+    ///
+    /// `frontier` is live's governance head set. When the cut reaches it, both
+    /// planes are describing the same history and a disagreement is a real one.
+    /// When it does not, the op being folded is behind live: an author's own op
+    /// arriving through the apply feed after it has already published a newer
+    /// one, or a partition heal replaying old history. The projection then
+    /// answers about the older cut, live answers about now, and the difference
+    /// is the ordering, not the fold. `false` for an unfed scope, and for a
+    /// frontier the walk cannot reach — including one sitting behind a gap in
+    /// the log, which errs toward suppressing the comparison.
+    ///
+    /// See [`ScopeState::cut_covers`].
+    #[must_use]
+    pub fn cut_covers_frontier(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+        frontier: &[[u8; 32]],
+    ) -> bool {
+        self.logs
+            .get(scope)
+            .is_some_and(|log| ScopeState::cut_covers(log, parents, frontier))
     }
 
     /// Rebuild this namespace's governance scopes from **persisted** source
@@ -778,10 +835,8 @@ impl ScopeProjections {
         let scope = ScopeId::from(namespace_id);
         // Defer to live on a partial fold (governance-backfill race) rather than
         // returning an under-counted cohort — same guard as the membership gate.
-        if !proj.cut_ancestry_complete(&scope, &heads) {
-            return None;
-        }
-        let view = proj.acl_view_at(&scope, &heads)?;
+        // One walk for both questions — see `acl_view_at_complete_cut`.
+        let view = proj.acl_view_at_complete_cut(&scope, &heads)?;
         let mut out = std::collections::BTreeSet::new();
         for group in groups {
             out.extend(Self::member_accounts_in_view(
@@ -833,10 +888,8 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<std::collections::BTreeSet<AccountId>> {
         let scope = ScopeId::from(namespace_id);
-        if !self.cut_ancestry_complete(&scope, heads) {
-            return None;
-        }
-        let view = self.acl_view_at(&scope, heads)?;
+        // One walk for both questions — see `acl_view_at_complete_cut`.
+        let view = self.acl_view_at_complete_cut(&scope, heads)?;
         Some(Self::member_accounts_in_view(
             &view,
             store,
@@ -2139,7 +2192,7 @@ mod tests {
     ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
         let root_sk = calimero_primitives::identity::PrivateKey::random(&mut rand::rngs::OsRng);
         let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
-        let cert = calimero_account::sign_device_cert(
+        let cert = calimero_account::DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
             calimero_account::DeviceId::from([0x3E; 32]),
@@ -2153,7 +2206,7 @@ mod tests {
             calimero_context_client::local_governance::JoinAccountCredential {
                 genesis,
                 chain: vec![],
-                cert,
+                statement: cert,
             },
         )
     }
@@ -2261,7 +2314,7 @@ mod tests {
                     // The account the credential certifies. The decode pairs the
                     // two, and a member naming anything else folds as a Noop —
                     // it cannot tell whose device it is looking at.
-                    member: account.cert.account,
+                    member: account.statement.account,
                     group_id: group.into(),
                     account: account.clone(),
                 },
@@ -2284,7 +2337,7 @@ mod tests {
             OpPayload::DeviceLinked {
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             },
             "open-subgroup inheritance join folds its credential and no membership"
         );
@@ -2316,7 +2369,7 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoined {
-                    member: account.cert.account,
+                    member: account.statement.account,
                     signed_invitation,
                     account: account.clone(),
                 },
@@ -2335,11 +2388,11 @@ mod tests {
             op.payload,
             OpPayload::MemberJoinedWithDevice {
                 group,
-                member: account.cert.account,
+                member: account.statement.account,
                 role: GroupMemberRole::Admin,
                 genesis: account.genesis,
                 chain: account.chain.clone(),
-                cert: account.cert,
+                cert: account.statement,
             }
         );
     }
@@ -2611,6 +2664,66 @@ mod tests {
             LIVE_LOG_LOW_WATER,
             "eviction trims to the low-water mark",
         );
+    }
+
+    /// The gate the shadow compare stands on: an at-cut answer is only
+    /// comparable to a live row while the cut reaches everything live has
+    /// applied. Live's governance head set is what "everything" means, and
+    /// folding more ops is no substitute — a cut that excludes a later op still
+    /// excludes it once that op is in the log.
+    #[test]
+    fn cut_covers_frontier_gates_on_the_cut_not_the_log() {
+        let scope = ScopeId::from([7u8; 32]);
+        let signer = PublicKey::from([2u8; 32]);
+        let build = |ns: u64, parents: Vec<[u8; 32]>| -> Op {
+            Op::new(
+                scope,
+                parents,
+                calimero_op::Authorship::unattributed(signer),
+                hlc(ns),
+                OpPayload::Noop,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+        let add = build(1, vec![]);
+        let promote = build(2, vec![add.id()]);
+
+        // Unfed scope: nothing to walk, so no coverage can be shown.
+        let empty = ScopeProjections::new();
+        assert!(!empty.cut_covers_frontier(&scope, &[add.id()], &[add.id()]));
+
+        let mut proj = ScopeProjections::new();
+        proj.ingest_op(&add);
+        proj.ingest_op(&promote);
+
+        // In-order apply: the op being folded IS live's head, so its cut covers
+        // the frontier and the compare must run.
+        assert!(proj.cut_covers_frontier(&scope, &[promote.id()], &[promote.id()]));
+
+        // The CI failure: the add applies after the promotion it precedes. Both
+        // ops are folded — the log is complete — and the cut still excludes the
+        // promotion live already applied, so the compare must stay quiet. This is
+        // the case a log-completeness check would wave through.
+        assert!(
+            !proj.cut_covers_frontier(&scope, &[add.id()], &[promote.id()]),
+            "a cut that predates live's newest op does not cover it, however much \
+             else has been folded",
+        );
+
+        // A forked live frontier needs every head reached, not either.
+        let sibling = build(3, vec![add.id()]);
+        proj.ingest_op(&sibling);
+        assert!(!proj.cut_covers_frontier(&scope, &[promote.id()], &[promote.id(), sibling.id()]));
+
+        // An empty frontier — a namespace with no governance head yet — is
+        // covered vacuously: there is nothing live holds to be behind on.
+        assert!(proj.cut_covers_frontier(&scope, &[add.id()], &[]));
+
+        // A cut whose ancestry the log cannot walk proves nothing.
+        let orphan = build(4, vec![[0xEE; 32]]);
+        proj.ingest_op(&orphan);
+        assert!(!proj.cut_covers_frontier(&scope, &[orphan.id()], &[promote.id()]));
     }
 
     #[test]

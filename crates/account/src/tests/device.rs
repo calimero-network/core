@@ -6,10 +6,10 @@ use calimero_primitives::identity::DeviceId;
 
 use super::support::{genesis_for, key, sign_cert, sign_handoff};
 use crate::account::AccountGenesis;
-use crate::device::{sign_device_cert, verify_device_cert, KemPublicKey};
+use crate::device::{verify_device_cert, DeviceCert, KemPublicKey};
 use crate::error::AccountError;
-use crate::revocation::{sign_device_revocation, verify_device_revocation};
-use crate::root_key::sign_root_key_handoff;
+use crate::revocation::{verify_device_revocation, DeviceRevocation};
+use crate::root_key::RootKeyHandoff;
 
 // ---- device ids ----
 
@@ -247,7 +247,7 @@ fn a_credential_ignores_a_handoff_beyond_the_epoch_it_needs() {
         "epoch 1 is established by the first handoff alone"
     );
 
-    let revocation = sign_device_revocation(&r1, account, device, 1).expect("sign");
+    let revocation = DeviceRevocation::sign(&r1, account, device, 1).expect("sign");
     assert!(
         verify_device_revocation(account, &g, &chain, &revocation).is_ok(),
         "and the same holds for a revocation proof, which accepts any epoch \
@@ -275,7 +275,7 @@ fn a_minted_cert_verifies() {
     let account = g.account_id();
     let device = DeviceId::mint(account, [3u8; 16]);
 
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &root,
         account,
         device,
@@ -298,9 +298,9 @@ fn a_cert_minted_under_a_rotated_key_verifies_against_the_chain() {
     let (r0, r1, dev) = (key(1), key(2), key(5));
     let g = genesis_for(&r0);
     let account = g.account_id();
-    let chain = [sign_root_key_handoff(&r0, account, 0, &r1.public_key()).expect("sign")];
+    let chain = [RootKeyHandoff::sign(&r0, account, 0, &r1.public_key()).expect("sign")];
 
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &r1,
         account,
         DeviceId::mint(account, [3u8; 16]),
@@ -323,9 +323,9 @@ fn minting_with_the_wrong_key_for_the_claimed_epoch_fails_verification() {
     let (r0, r1, dev) = (key(1), key(2), key(5));
     let g = genesis_for(&r0);
     let account = g.account_id();
-    let chain = [sign_root_key_handoff(&r0, account, 0, &r1.public_key()).expect("sign")];
+    let chain = [RootKeyHandoff::sign(&r0, account, 0, &r1.public_key()).expect("sign")];
 
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &r0, // superseded key...
         account,
         DeviceId::mint(account, [3u8; 16]),
@@ -351,7 +351,7 @@ fn minted_credentials_are_deterministic() {
     let g = genesis_for(&root);
     let account = g.account_id();
     let mint = || {
-        sign_device_cert(
+        DeviceCert::sign(
             &root,
             account,
             DeviceId::mint(account, [3u8; 16]),

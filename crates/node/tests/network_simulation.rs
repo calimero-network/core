@@ -187,7 +187,6 @@ impl MockNetwork {
                                 parents: msg.parent_ids.clone(),
                                 payload: actions,
                                 hlc: calimero_storage::env::hlc_timestamp(),
-                                expected_root_hash: msg.root_hash,
                                 kind: calimero_dag::DeltaKind::Regular,
                             };
 
@@ -373,7 +372,6 @@ async fn test_p2p_delta_request() {
             metadata: Default::default(),
         }],
         hlc: calimero_storage::env::hlc_timestamp(),
-        expected_root_hash: [0xDE; 32],
         kind: calimero_dag::DeltaKind::Regular,
     };
 

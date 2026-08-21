@@ -14,4 +14,5 @@ mod domain;
 mod pairing;
 mod revocation;
 mod root_key;
+mod signed;
 mod wire;

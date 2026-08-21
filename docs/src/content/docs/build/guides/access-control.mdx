@@ -34,7 +34,7 @@ current writer can `rotate_writers` to change the set. This is
 
 ```rust
 use std::collections::BTreeSet;
-use calimero_sdk::{app, PublicKey};
+use calimero_sdk::{app, AccountId};
 use calimero_storage::collections::{LwwRegister, SharedStorage};
 
 #[app::state]
@@ -47,7 +47,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         // seed the writer set with whoever installed the app
-        let initializer: PublicKey = calimero_sdk::env::device_id().into();
+        let initializer: AccountId = calimero_sdk::env::account_id().into();
         let mut writers = BTreeSet::new();
         writers.insert(initializer);
         // second arg `frozen`: once true, the writer set can never rotate
@@ -59,7 +59,7 @@ impl KvStore {
         Ok(())
     }
 
-    pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
+    pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
         self.shared_value.rotate_writers(new_writers.into_iter().collect())?;
         Ok(())
     }
@@ -68,12 +68,12 @@ impl KvStore {
 
 ## UserStorage — per-user slots
 
-Internally a map keyed by `PublicKey`. `insert` always writes the **current
+Internally a map keyed by `AccountId`. `insert` always writes the **current
 executor's** slot, so users can't overwrite each other. Reads can target any
 user. This is `apps/kv-store-with-user-and-frozen-storage`:
 
 ```rust
-use calimero_sdk::{app, PublicKey};
+use calimero_sdk::{app, AccountId};
 use calimero_storage::collections::{LwwRegister, UserStorage};
 
 #[app::state]
@@ -92,8 +92,8 @@ impl KvStore {
         Ok(self.user_items.get()?.map(|v| v.get().clone()))
     }
 
-    // read another user's slot by their public key
-    pub fn get_user_for(&self, user_key: PublicKey) -> app::Result<Option<String>> {
+    // read another user's slot by their account
+    pub fn get_user_for(&self, user_key: AccountId) -> app::Result<Option<String>> {
         Ok(self.user_items.get_for_user(&user_key)?.map(|v| v.get().clone()))
     }
 }
@@ -138,12 +138,12 @@ their own. That is `SharedStorage` for the first field and `AuthoredVector` for
 the second.
 
 `AuthoredVector<T>` is an append-only list that stamps each entry with the
-public key of whoever pushed it. Anyone may `push`, but `update`/`tombstone` on
+account of whoever pushed it. Anyone may `push`, but `update`/`tombstone` on
 an entry are gated to its original author, enforced the same way — locally for a
 fast failure, authoritatively at merge:
 
 ```rust
-use calimero_sdk::{app, PublicKey};
+use calimero_sdk::{app, AccountId};
 use calimero_storage::collections::{AuthoredVector, LwwRegister, SharedStorage};
 
 #[app::state]
@@ -156,7 +156,7 @@ pub struct TeamDoc {
 impl TeamDoc {
     #[app::init]
     pub fn init() -> TeamDoc {
-        let owner: PublicKey = calimero_sdk::env::device_id().into();
+        let owner: AccountId = calimero_sdk::env::account_id().into();
         let mut writers = std::collections::BTreeSet::new();
         writers.insert(owner);
         TeamDoc {
@@ -172,7 +172,7 @@ impl TeamDoc {
     }
 
     // grant edit rights to another teammate (only a current writer can rotate)
-    pub fn add_owner(&mut self, who: Vec<PublicKey>) -> app::Result<()> {
+    pub fn add_owner(&mut self, who: Vec<AccountId>) -> app::Result<()> {
         let mut writers = self.title.writers();
         writers.extend(who);
         self.title.rotate_writers(writers)?;

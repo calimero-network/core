@@ -104,6 +104,22 @@ impl DeltaSyncResponse {
 /// A delta payload for transport.
 ///
 /// Contains the delta data and metadata needed for application.
+///
+/// # UNUSED — not the live delta-sync path
+///
+/// Nothing outside this module constructs or reads this type, nor
+/// [`DeltaSyncRequest`], [`DeltaSyncResponse`], or [`DeltaApplyResult`]; they are
+/// only re-exported from `sync.rs`. The delta paths that actually run are
+/// `BroadcastMessage::StateDelta` (gossip) and `MessagePayload::DeltaResponse`
+/// (DAG-catchup / parent-fetch), and the delta types they carry are
+/// `calimero_storage::delta::CausalDelta` and `calimero_dag::CausalDelta`.
+///
+/// Worth knowing before editing: this type still carries an
+/// `expected_root_hash`, which the LIVE types no longer do (#3557 removed it as
+/// an unverifiable sender assertion). So a change made here to "fix" delta
+/// authentication would land nowhere. Retiring the cluster is tracked
+/// separately; it is left in place here rather than deleted inside a docs
+/// change.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct DeltaPayload {
     /// Unique delta ID (content hash).
@@ -133,14 +149,6 @@ pub struct DeltaPayload {
     /// deltas from a single linear chain. For concurrent/merged deltas, use
     /// the Merkle tree reconciliation protocol instead.
     pub expected_root_hash: [u8; 32],
-}
-
-impl DeltaPayload {
-    /// Check if this delta has no parents (genesis delta).
-    #[must_use]
-    pub fn is_genesis(&self) -> bool {
-        self.parents.is_empty()
-    }
 }
 
 // =============================================================================
@@ -239,30 +247,6 @@ mod tests {
         let decoded: DeltaPayload = borsh::from_slice(&encoded).expect("deserialize");
 
         assert_eq!(payload, decoded);
-        assert!(!decoded.is_genesis());
-    }
-
-    #[test]
-    fn test_delta_payload_genesis() {
-        let genesis = DeltaPayload {
-            id: [1; 32],
-            parents: vec![], // No parents = genesis
-            payload: vec![1, 2, 3],
-            hlc_timestamp: 0,
-            expected_root_hash: [2; 32],
-        };
-
-        assert!(genesis.is_genesis());
-
-        let non_genesis = DeltaPayload {
-            id: [2; 32],
-            parents: vec![[1; 32]], // Has parent
-            payload: vec![4, 5, 6],
-            hlc_timestamp: 1,
-            expected_root_hash: [3; 32],
-        };
-
-        assert!(!non_genesis.is_genesis());
     }
 
     #[test]

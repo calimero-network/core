@@ -47,6 +47,7 @@ mod mergeable;
 mod migrate_derive;
 mod migration;
 mod private;
+mod rekey;
 mod reserved;
 mod sanitizer;
 mod state;

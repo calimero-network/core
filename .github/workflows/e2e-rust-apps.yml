@@ -30,6 +30,8 @@ on:
       - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
       - ".github/workflows/build-merod-image.yml"
+      - ".github/actions/setup-merobox/**"
+      - ".github/actions/build-local-merod/**"
 
   pull_request:
     branches: [master]
@@ -52,6 +54,8 @@ on:
       - "apps/team-metrics-macro/**"
       - ".github/workflows/e2e-rust-apps.yml"
       - ".github/workflows/build-merod-image.yml"
+      - ".github/actions/setup-merobox/**"
+      - ".github/actions/build-local-merod/**"
 
   workflow_dispatch:
 
@@ -498,6 +502,27 @@ jobs:
           - workflow: mesh-soak-8node
             file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
+          # The only scenarios on a flat bridge that discover peers the way a
+          # real deployment must. Every other entry here runs with `mdns: true`
+          # and an empty `bootstrap.nodes` (`--e2e-mode` clears the list, then
+          # forces mDNS on), so multicast is not their fallback — it is their
+          # only discovery mechanism, and it exists only because one Docker
+          # bridge is one multicast domain. Nodes on separate hosts have no such
+          # path. Measured on `mesh-soak-8node` when these landed: mDNS off and
+          # nothing else changed gave 0 kad `RoutingUpdated`, 0 connections, 0
+          # identify, and a dead first join; mDNS on gave 112 dials and 112
+          # routing updates. So a total regression in bootstrap/kad discovery
+          # keeps ~80 of these entries green, and only these two go red.
+          #
+          # They are cheap (2 and 4 nodes, no soak tail) and they must stay in
+          # the matrix: a skip here reads as "discovery is fine" while removing
+          # the only evidence for it.
+          - workflow: discovery-bootstrap-only-2node
+            file: workflows/discovery-bootstrap-only-2node.yml
+            app: scaffolding-e2e
+          - workflow: discovery-bootstrap-only-4node
+            file: workflows/discovery-bootstrap-only-4node.yml
+            app: scaffolding-e2e
           # #2422 auto-follow regression workflows.
           - workflow: auto-follow-on-context-registered
             file: workflows/auto-follow/auto-follow-on-context-registered.yml
@@ -785,12 +810,26 @@ jobs:
           # decision_group_in_view) are printed on the offending lines to pinpoint
           # the failure mode. Runs `always()` so divergence is reported even when
           # the scenario itself failed for another reason.
+          #
+          # A marker means the two planes disagreed about the SAME question: the
+          # node only compares when the applied op's cut reaches everything live
+          # has applied. An op applied out of causal order is reported at debug
+          # ("projection behind live's governance frontier") and is not a
+          # divergence — the two answers describe different histories.
+          #
+          # Node logs carry ANSI escapes between a field name and its value, so
+          # every grep here strips them first; matching `plane="…"` on the raw
+          # line silently finds nothing, which is how "planes seen:" used to
+          # print an empty list under a failing gate.
           if grep -rl "unified_projection_divergence" docker-logs/ 2>/dev/null | grep -q .; then
               echo "::error::unified-op projection diverged from the live decision in ${{ matrix.workflow }} — cutover gate not met"
               echo "planes seen:"
-              grep -rho 'plane="[^"]*"' docker-logs/ | sort | uniq -c
+              grep -rh "unified_projection_divergence" docker-logs/ \
+                | sed -E 's/\x1b\[[0-9;]*m//g' \
+                | grep -o 'plane="[^"]*"' | sort | uniq -c
               echo "sample:"
-              grep -rn "unified_projection_divergence" docker-logs/ | head -30
+              grep -rn "unified_projection_divergence" docker-logs/ \
+                | sed -E 's/\x1b\[[0-9;]*m//g' | head -30
               exit 1
           fi
           echo "no unified_projection_divergence markers — projection agrees with the live decision"
@@ -814,7 +853,11 @@ jobs:
               echo "sample (missing_count per namespace):"
               # Match `missing_count=N` anywhere on an op_store_incomplete line — robust
               # to field ordering. Tolerates the line not carrying the field at all.
-              grep -rho 'op_store_incomplete.*' docker-logs/ | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
+              # ANSI escapes are stripped first: they sit between the field name and
+              # the `=` in node logs, so the raw pattern never matches.
+              grep -rho 'op_store_incomplete.*' docker-logs/ \
+                | sed -E 's/\x1b\[[0-9;]*m//g' \
+                | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
               grep -rn "op_store_incomplete" docker-logs/ | head -10
               exit 1
           elif grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then

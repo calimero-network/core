@@ -52,7 +52,7 @@ pub(super) fn join_account_for(
     device: [u8; 32],
     device_epoch: u32,
 ) -> Box<JoinAccountCredential> {
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         root_sk,
         genesis.account_id(),
         calimero_account::DeviceId::from(device),
@@ -67,7 +67,7 @@ pub(super) fn join_account_for(
     Box::new(JoinAccountCredential {
         genesis,
         chain: vec![],
-        cert,
+        statement: cert,
     })
 }
 
@@ -96,7 +96,7 @@ pub(super) fn real_join_account(sign_pk: &PublicKey) -> Box<JoinAccountCredentia
 
 /// The account [`real_join_account`] certifies for this signing key.
 pub(super) fn account_for(sign_pk: &PublicKey) -> AccountId {
-    real_join_account(sign_pk).cert.account
+    real_join_account(sign_pk).statement.account
 }
 
 pub(super) fn test_store() -> Store {
@@ -203,7 +203,7 @@ pub(super) fn namespace_genesis_for(
 ) {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp};
     let credential = founder_credential(founder_sk);
-    let founder = credential.cert.account;
+    let founder = credential.statement.account;
     (
         NamespaceOp::Root(RootOp::NamespaceCreated {
             founder,
@@ -228,7 +228,7 @@ fn founder_credential(founder_sk: &PrivateKey) -> Box<JoinAccountCredential> {
 
 /// The account [`namespace_genesis_for`] will establish for this founder.
 pub(super) fn founder_account_for(founder_sk: &PrivateKey) -> AccountId {
-    founder_credential(founder_sk).cert.account
+    founder_credential(founder_sk).statement.account
 }
 
 /// A genesis op that DECLARES `founder` while carrying `signer_sk`'s own
@@ -281,14 +281,14 @@ pub(super) fn enrol_member(
     sign_pk: &PublicKey,
 ) -> AccountId {
     let credential = real_join_account(sign_pk);
-    let account = credential.cert.account;
+    let account = credential.statement.account;
     let bindings = crate::AccountBindingRepository::new(store);
     let _ = bindings
         .apply_link(
             namespace,
             &credential.genesis,
             &credential.chain,
-            &credential.cert,
+            &credential.statement,
         )
         .expect("store the binding");
     bindings
@@ -502,7 +502,7 @@ pub(super) fn enrol_local_device(
     let node = crate::NodeDeviceRepository::new(store)
         .ensure_enrolled_into(namespace, genesis)
         .expect("mint this node's device");
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         node.account,
         node.secret.device,
@@ -515,7 +515,7 @@ pub(super) fn enrol_local_device(
     let credential = Box::new(JoinAccountCredential {
         genesis,
         chain: vec![],
-        cert,
+        statement: cert,
     });
     record_credential(store, namespace, &credential);
     (node.account, node.secret.device, credential)
@@ -533,14 +533,18 @@ pub(super) fn record_credential(
 ) {
     let bindings = crate::AccountBindingRepository::new(store);
     bindings
-        .record_endorser(namespace, credential.cert.account, &credential.cert.account)
+        .record_endorser(
+            namespace,
+            credential.statement.account,
+            &credential.statement.account,
+        )
         .expect("endorse");
     let _ = bindings
         .apply_link(
             namespace,
             &credential.genesis,
             &credential.chain,
-            &credential.cert,
+            &credential.statement,
         )
         .expect("record the binding");
 }

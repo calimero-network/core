@@ -52,9 +52,46 @@ pub enum DeltaKind {
     ///
     /// # Properties
     /// - `payload` is empty (no operations)
-    /// - `expected_root_hash` is the snapshot's root hash
+    /// - `root_hash` is the snapshot's root hash, computed LOCALLY by the node
+    ///   that took the snapshot — it is not a peer's assertion
     /// - Treated as "already applied" by the DAG
-    Checkpoint,
+    Checkpoint {
+        /// Root hash of the snapshot this checkpoint marks the boundary of.
+        ///
+        /// This lives inside the variant rather than on every `CausalDelta`
+        /// because a checkpoint is the ONLY delta for which a root hash is
+        /// meaningful. `CausalDelta` used to carry an `expected_root_hash` on
+        /// every delta for this one variant's benefit; a `Regular` delta's copy
+        /// was a sender-supplied hint no receiver could verify (it is not in the
+        /// `compute_id` preimage), so it was removed. Keeping it here makes the
+        /// one real meaning explicit and locally-sourced.
+        root_hash: [u8; 32],
+    },
+    /// Root of the DAG: a delta that legitimately has no parents.
+    ///
+    /// Two conventions for "this is the root" coexist in the codebase (#3126):
+    /// the DAG's own `[0; 32]` sentinel parent, and the unified-op layer's empty
+    /// `parents` list — a genesis op's `parent_op_hashes` is empty, and that
+    /// emptiness is load-bearing elsewhere (it is how
+    /// `NamespaceCreated`'s founder gate recognises a founding op, checked
+    /// before the signer for #596). So the empty list cannot simply be outlawed.
+    ///
+    /// The problem it left behind: `can_apply` could not tell a genuine root from
+    /// a delta whose `parents` were dropped by a bug or stripped on purpose, so
+    /// it accepted both and the latter applied immediately as a disconnected
+    /// head, skipping the missing-parent machinery entirely.
+    ///
+    /// This variant is that missing distinction. It is set by the op -> delta
+    /// adapters, which already read the op to build the delta and therefore
+    /// already know whether it is genesis-eligible; `can_apply` then accepts an
+    /// empty parent list ONLY for this kind. It is deliberately NOT a wire field
+    /// — a receiver derives it locally from the op's own signed content, so it
+    /// cannot be asserted by a peer.
+    ///
+    /// This says only "structurally a root". Whether a root op is ALLOWED to
+    /// establish authority is a separate decision, and stays where it was, in
+    /// the founder gate.
+    Genesis,
 }
 
 impl Default for DeltaKind {
@@ -65,13 +102,17 @@ impl Default for DeltaKind {
 
 /// A causal delta with parent references
 ///
-/// `kind` is a trailing field: it was added after the original wire format, so
-/// both the serde and borsh decoders tolerate its absence and default it to
-/// [`DeltaKind::Regular`]. serde gets this from `#[serde(default)]`; borsh — whose
-/// derive has no trailing-field tolerance — gets it from the hand-written
-/// [`BorshDeserialize`] below (the derive is intentionally omitted). Keep the two
-/// in step: a new trailing field needs the same treatment in both.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, Serialize, Deserialize)]
+/// # No root hash here
+///
+/// This used to carry an `expected_root_hash` on every delta. It was a
+/// sender-asserted value: absent from the `compute_id` preimage, so no receiver
+/// could verify it, and on the DAG-catchup paths a responder could set it
+/// freely. Its only production consumer was a merge-classification heuristic
+/// that is now derived from local state, and the node has always stored the root
+/// hash it COMPUTED itself rather than this one. The single case where a root
+/// hash is genuinely meaningful — a snapshot boundary — now carries it inside
+/// [`DeltaKind::Checkpoint`], where the value is locally sourced.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct CausalDelta<T> {
     /// Unique delta ID (content hash)
     pub id: [u8; 32],
@@ -85,84 +126,9 @@ pub struct CausalDelta<T> {
     /// Hybrid Logical Clock timestamp for fine-grained causal ordering
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
 
-    /// Expected root hash after applying this delta
-    pub expected_root_hash: [u8; 32],
-
-    /// Kind of delta (regular or checkpoint). Trailing field — see the struct
-    /// docs; absent on deltas produced before it existed.
+    /// Kind of delta (regular or checkpoint).
     #[serde(default)]
     pub kind: DeltaKind,
-}
-
-impl<T: BorshDeserialize> BorshDeserialize for CausalDelta<T> {
-    /// # Framing requirement
-    ///
-    /// The trailing-`kind` detection depends on the reader ending exactly at the
-    /// delta's last byte: end-of-input means "no `kind` present" (legacy delta →
-    /// `Regular`). So this impl is only correct when the reader is bounded to
-    /// exactly one delta — i.e. `borsh::from_slice` / `try_from_slice` over one
-    /// delta's bytes, or a length-delimited frame. Do **not** decode a
-    /// `CausalDelta` embedded mid-stream in a larger borsh aggregate (a field of
-    /// another struct, or an element of a `Vec<CausalDelta<_>>` with more
-    /// elements after it): there, the bytes that follow would be misread as the
-    /// `kind` discriminant. Today this holds — production never whole-borsh's a
-    /// `CausalDelta<T>` (the payload is serialized on its own and the other
-    /// fields live in separate store columns); if that changes, length-frame the
-    /// delta or promote `kind` to a non-trailing field.
-    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
-        // Field order must match the derived `BorshSerialize` (declaration
-        // order). `kind` is a backward-compatible trailing field: a pre-`kind`
-        // delta stops cleanly after `expected_root_hash`, so a clean EOF at that
-        // boundary decodes as `DeltaKind::Regular`.
-        let id = <[u8; 32]>::deserialize_reader(reader)?;
-        let parents = Vec::<[u8; 32]>::deserialize_reader(reader)?;
-        let payload = T::deserialize_reader(reader)?;
-        let hlc = calimero_storage::logical_clock::HybridTimestamp::deserialize_reader(reader)?;
-        let expected_root_hash = <[u8; 32]>::deserialize_reader(reader)?;
-
-        // `DeltaKind` is a unit-variant enum, so its borsh encoding is a single
-        // discriminant byte: 0 = Regular, 1 = Checkpoint. A pre-`kind` delta
-        // omits it, so a clean EOF at this boundary must decode as Regular.
-        //
-        // We deliberately read the byte with a raw `read()` loop rather than
-        // `u8::deserialize_reader`: borsh's reader maps an at-EOF read to
-        // `ErrorKind::InvalidData` ("Unexpected length of input"), which is
-        // indistinguishable by kind from a genuine corrupt-data error — so it
-        // can't detect the trailing-field boundary. `read()` distinguishes them
-        // directly: `Ok(0)` is end-of-input (→ Regular), `Ok(1)` is a present
-        // discriminant, and `Interrupted` retries. This mirrors the existing
-        // `read_option_tag` helper used for the same trailing-field pattern in
-        // the sync types.
-        let mut tag = [0u8; 1];
-        let kind = loop {
-            match reader.read(&mut tag) {
-                Ok(0) => break DeltaKind::Regular, // end of input: legacy delta
-                Ok(_) => {
-                    break match tag[0] {
-                        0 => DeltaKind::Regular,
-                        1 => DeltaKind::Checkpoint,
-                        other => {
-                            return Err(borsh::io::Error::new(
-                                borsh::io::ErrorKind::InvalidData,
-                                format!("invalid DeltaKind discriminant {other}"),
-                            ))
-                        }
-                    }
-                }
-                Err(e) if e.kind() == borsh::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        };
-
-        Ok(Self {
-            id,
-            parents,
-            payload,
-            hlc,
-            expected_root_hash,
-            kind,
-        })
-    }
 }
 
 impl<T> CausalDelta<T> {
@@ -171,14 +137,12 @@ impl<T> CausalDelta<T> {
         parents: Vec<[u8; 32]>,
         payload: T,
         hlc: calimero_storage::logical_clock::HybridTimestamp,
-        expected_root_hash: [u8; 32],
     ) -> Self {
         Self {
             id,
             parents,
             payload,
             hlc,
-            expected_root_hash,
             kind: DeltaKind::Regular,
         }
     }
@@ -189,8 +153,8 @@ impl<T> CausalDelta<T> {
     /// - The DAG head IDs from the snapshot as their ID
     /// - Genesis as parent (since we don't know actual history)
     /// - Empty payload (no operations to apply)
-    /// - The snapshot's root hash as expected_root_hash
-    pub fn checkpoint(id: [u8; 32], expected_root_hash: [u8; 32]) -> Self
+    /// - The snapshot's locally-computed root hash, inside the `Checkpoint` kind
+    pub fn checkpoint(id: [u8; 32], root_hash: [u8; 32]) -> Self
     where
         T: Default,
     {
@@ -199,14 +163,35 @@ impl<T> CausalDelta<T> {
             parents: vec![[0; 32]], // Genesis parent
             payload: T::default(),  // Empty payload
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-            expected_root_hash,
-            kind: DeltaKind::Checkpoint,
+            kind: DeltaKind::Checkpoint { root_hash },
         }
     }
 
     /// Returns true if this is a checkpoint (snapshot boundary) delta
     pub fn is_checkpoint(&self) -> bool {
-        self.kind == DeltaKind::Checkpoint
+        matches!(self.kind, DeltaKind::Checkpoint { .. })
+    }
+
+    /// The snapshot root hash, for a checkpoint delta; `None` otherwise.
+    pub fn checkpoint_root_hash(&self) -> Option<[u8; 32]> {
+        match self.kind {
+            DeltaKind::Checkpoint { root_hash } => Some(root_hash),
+            DeltaKind::Regular | DeltaKind::Genesis => None,
+        }
+    }
+
+    /// Mark this delta as the DAG root, so [`DeltaKind::Genesis`] licenses its
+    /// empty parent list. Set by the op -> delta adapters; see the variant docs
+    /// for why a receiver derives this locally rather than trusting the wire.
+    #[must_use]
+    pub fn into_genesis(mut self) -> Self {
+        self.kind = DeltaKind::Genesis;
+        self
+    }
+
+    /// Returns true if this delta declares itself the DAG root.
+    pub fn is_genesis(&self) -> bool {
+        self.kind == DeltaKind::Genesis
     }
 
     /// Convenience constructor for tests that uses a default HLC
@@ -217,7 +202,6 @@ impl<T> CausalDelta<T> {
             parents,
             payload,
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-            expected_root_hash: [0; 32],
             kind: DeltaKind::Regular,
         }
     }
@@ -680,12 +664,32 @@ impl<T: Clone> DagStore<T> {
     /// Returns true if all parent deltas have been applied and exist in the DAG.
     /// This ensures topological ordering and prevents phantom references.
     fn can_apply(&self, delta: &CausalDelta<T>) -> bool {
-        // NOTE: an empty parent list is NOT rejected here. In the unified-op
-        // layer a genesis op legitimately carries `parents: []` (it descends
-        // from the DAG root implicitly), and it must apply immediately as a
-        // root — pending it would strand the whole causal chain built on it.
-        // `all()` over an empty list is vacuously true, which is exactly the
-        // wanted behaviour for that genesis convention.
+        // An empty parent list is only legitimate for a declared root
+        // ([`DeltaKind::Genesis`]) — the unified-op layer's genesis convention.
+        // Anything else with no parents is malformed: `all()` over an empty list
+        // is vacuously true, so before this guard such a delta applied
+        // immediately as a disconnected head, bypassing missing-parent detection
+        // and polluting head computation (#3126).
+        //
+        // Checkpoints are excluded too, on purpose: they are constructed with a
+        // `[0; 32]` parent, so a parentless one is as malformed as a parentless
+        // regular delta.
+        if delta.parents.is_empty() {
+            if delta.kind == DeltaKind::Genesis {
+                return true;
+            }
+            // Loud on purpose. A delta rejected here does not fail, it PENDS —
+            // silently, and forever, since nothing will ever satisfy a parent it
+            // never named. That is indistinguishable from a stalled sync unless
+            // the rejection says so, and it is exactly the shape of failure that
+            // makes a missed genesis path expensive to diagnose.
+            tracing::warn!(
+                delta_id = ?delta.id,
+                "rejecting a parentless delta that does not declare DeltaKind::Genesis"
+            );
+            return false;
+        }
+
         delta.parents.iter().all(|p| {
             // Genesis (zero hash) is always considered applied
             if *p == [0; 32] {

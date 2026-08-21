@@ -1,25 +1,26 @@
-//! Integration test for concurrent branches with deterministic root hash selection
+//! Integration test for concurrent branches in the DAG.
 //!
-//! This test verifies that when multiple DAG heads exist (concurrent branches),
-//! the expected_root_hash field is properly tracked and used.
+//! These tests used to assert that each delta carried an `expected_root_hash`
+//! through to the applier. That field is gone: it was a sender-declared value no
+//! receiver could verify, and every node computes its own root hash on apply. What
+//! remains worth pinning is the DAG topology itself — concurrent branches produce
+//! two heads, a merge over both collapses them to one, and every delta reaches the
+//! applier exactly once.
 
 use calimero_dag::CausalDelta;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::entities::Metadata;
 
-/// Test that concurrent branches maintain expected_root_hash field
+/// Test that concurrent branches leave the DAG with two heads, and that both
+/// deltas are applied.
 ///
 /// Scenario:
-///          → Delta A (id: [0x01...], expected_root_hash: [0xAA...]) ↘
-///   Root                                                               → 2 heads
-///          → Delta B (id: [0x02...], expected_root_hash: [0xBB...]) ↗
-///
-/// This test verifies that expected_root_hash is properly stored and can be
-/// retrieved for each delta. The actual deterministic selection happens in
-/// DeltaStore which requires full node/context setup.
+///          → Delta A (id: [0x01...]) ↘
+///   Root                                → 2 heads
+///          → Delta B (id: [0x02...]) ↗
 #[tokio::test]
-async fn test_concurrent_branches_track_expected_root_hash() {
+async fn test_concurrent_branches_produce_two_heads() {
     use calimero_dag::{ApplyError, DagStore, DeltaApplier};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -27,16 +28,13 @@ async fn test_concurrent_branches_track_expected_root_hash() {
     // Simple test applier that doesn't actually apply to storage
     struct TestApplier {
         #[allow(clippy::type_complexity, reason = "test fixture")]
-        applied: Arc<Mutex<Vec<([u8; 32], [u8; 32])>>>, // (delta_id, expected_root_hash)
+        applied: Arc<Mutex<Vec<[u8; 32]>>>, // applied delta ids, in order
     }
 
     #[async_trait::async_trait]
     impl DeltaApplier<Vec<Action>> for TestApplier {
         async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
-            self.applied
-                .lock()
-                .await
-                .push((delta.id, delta.expected_root_hash));
+            self.applied.lock().await.push(delta.id);
             Ok(())
         }
     }
@@ -48,8 +46,8 @@ async fn test_concurrent_branches_track_expected_root_hash() {
     let mut dag = DagStore::new([0; 32]);
 
     // Create two concurrent deltas with different expected_root_hashes
-    let delta_a = create_delta_with_root([0x01; 32], vec![[0; 32]], [0xAA; 32]);
-    let delta_b = create_delta_with_root([0x02; 32], vec![[0; 32]], [0xBB; 32]);
+    let delta_a = create_delta([0x01; 32], vec![[0; 32]]);
+    let delta_b = create_delta([0x02; 32], vec![[0; 32]]);
 
     // Apply both
     let _ = dag.add_delta(delta_a.clone(), &applier).await.unwrap();
@@ -61,44 +59,28 @@ async fn test_concurrent_branches_track_expected_root_hash() {
     assert_eq!(heads.len(), 2);
     assert_eq!(heads, vec![[0x01; 32], [0x02; 32]]);
 
-    // Verify applier received correct expected_root_hashes
+    // Both branches reached the applier, exactly once each.
     let applied = applier.applied.lock().await;
     assert_eq!(applied.len(), 2);
-
-    // Find the applied delta with id [0x01; 32]
-    let delta_a_applied = applied.iter().find(|(id, _)| *id == [0x01; 32]).unwrap();
-    assert_eq!(
-        delta_a_applied.1, [0xAA; 32],
-        "Delta A should have expected_root_hash [0xAA; 32]"
-    );
-
-    // Find the applied delta with id [0x02; 32]
-    let delta_b_applied = applied.iter().find(|(id, _)| *id == [0x02; 32]).unwrap();
-    assert_eq!(
-        delta_b_applied.1, [0xBB; 32],
-        "Delta B should have expected_root_hash [0xBB; 32]"
-    );
+    assert!(applied.contains(&[0x01; 32]), "Delta A must be applied");
+    assert!(applied.contains(&[0x02; 32]), "Delta B must be applied");
 }
 
-/// Test that merge delta correctly uses its own expected_root_hash
+/// Test that a merge over two concurrent branches collapses them to a single head.
 #[tokio::test]
-async fn test_merge_delta_expected_root_hash() {
+async fn test_merge_delta_collapses_to_single_head() {
     use calimero_dag::{ApplyError, DagStore, DeltaApplier};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
     struct TestApplier {
-        #[allow(clippy::type_complexity, reason = "test fixture")]
-        applied: Arc<Mutex<Vec<([u8; 32], [u8; 32])>>>,
+        applied: Arc<Mutex<Vec<[u8; 32]>>>,
     }
 
     #[async_trait::async_trait]
     impl DeltaApplier<Vec<Action>> for TestApplier {
         async fn apply(&self, delta: &CausalDelta<Vec<Action>>) -> Result<(), ApplyError> {
-            self.applied
-                .lock()
-                .await
-                .push((delta.id, delta.expected_root_hash));
+            self.applied.lock().await.push(delta.id);
             Ok(())
         }
     }
@@ -110,42 +92,29 @@ async fn test_merge_delta_expected_root_hash() {
     let mut dag = DagStore::new([0; 32]);
 
     // Create concurrent branches
-    let delta_a = create_delta_with_root([0x01; 32], vec![[0; 32]], [0xAA; 32]);
-    let delta_b = create_delta_with_root([0x02; 32], vec![[0; 32]], [0xBB; 32]);
+    let delta_a = create_delta([0x01; 32], vec![[0; 32]]);
+    let delta_b = create_delta([0x02; 32], vec![[0; 32]]);
 
     let _ = dag.add_delta(delta_a, &applier).await.unwrap();
     let _ = dag.add_delta(delta_b, &applier).await.unwrap();
 
-    // Create merge delta with its own expected_root_hash
-    let delta_merge = create_delta_with_root(
-        [0x03; 32],
-        vec![[0x01; 32], [0x02; 32]],
-        [0xCC; 32], // Merge produces new root_hash
-    );
+    let delta_merge = create_delta([0x03; 32], vec![[0x01; 32], [0x02; 32]]);
 
     let _ = dag.add_delta(delta_merge, &applier).await.unwrap();
 
     // Should have single head
     assert_eq!(dag.get_heads(), vec![[0x03; 32]]);
 
-    // Verify merge delta had correct expected_root_hash
+    // The merge itself reached the applier.
     let applied = applier.applied.lock().await;
-    let merge_applied = applied.iter().find(|(id, _)| *id == [0x03; 32]).unwrap();
-    assert_eq!(
-        merge_applied.1, [0xCC; 32],
-        "Merge delta should have its own expected_root_hash"
-    );
+    assert!(applied.contains(&[0x03; 32]), "merge delta must be applied");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // Test Helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-fn create_delta_with_root(
-    id: [u8; 32],
-    parents: Vec<[u8; 32]>,
-    expected_root_hash: [u8; 32],
-) -> CausalDelta<Vec<Action>> {
+fn create_delta(id: [u8; 32], parents: Vec<[u8; 32]>) -> CausalDelta<Vec<Action>> {
     // Create a simple action for testing
     let action = Action::Add {
         id: Id::from([id[0]; 32]),
@@ -159,7 +128,6 @@ fn create_delta_with_root(
         parents,
         payload: vec![action],
         hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
-        expected_root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     }
 }

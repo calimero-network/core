@@ -89,6 +89,29 @@ impl KeyFetchRound {
     }
 }
 
+/// The group a join request is actually for.
+///
+/// The stream is keyed by NAMESPACE, but the invitation names the group being
+/// joined, which is a subgroup whenever the invite was issued on one. The two
+/// coincide only for a namespace invitation, so reading the request's id
+/// instead serves the wrong group's key bound to the wrong scope, and the
+/// joiner's unwrap refuses the envelope it is sent.
+///
+/// A signed invitation is authority over the group it names and nothing else,
+/// so that group has to resolve back to the namespace being served.
+fn join_target_group(
+    store: &calimero_store::Store,
+    namespace: calimero_context_config::types::ContextGroupId,
+    invitation: &calimero_context_config::types::SignedGroupOpenInvitation,
+) -> Result<calimero_context_config::types::ContextGroupId, String> {
+    let group_id = invitation.invitation.group_id;
+    match calimero_governance_store::NamespaceRepository::new(store).resolve(&group_id) {
+        Ok(owner) if owner == namespace => Ok(group_id),
+        Ok(_) => Err("invitation names a group outside this namespace".to_owned()),
+        Err(err) => Err(format!("could not resolve the invited group: {err}")),
+    }
+}
+
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
     /// identity we don't yet recognize as a context member.
@@ -509,15 +532,15 @@ impl SyncManager {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
-        if credential.genesis.account_id() != credential.cert.account {
+        if credential.genesis.account_id() != credential.statement.account {
             return Err("genesis does not derive the account the certificate claims".to_owned());
         }
 
         let verified = calimero_account::verify_device_cert(
-            credential.cert.account,
+            credential.statement.account,
             &credential.genesis,
             &credential.chain,
-            &credential.cert,
+            &credential.statement,
         )
         .map_err(|e| format!("{e}"))?;
 
@@ -527,7 +550,7 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok(credential.cert.account)
+        Ok(credential.statement.account)
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -564,8 +587,21 @@ impl SyncManager {
             }
         };
 
-        let group_id = ContextGroupId::from(namespace_id);
+        let namespace = ContextGroupId::from(namespace_id);
         let store = self.context_client.datastore_handle().into_inner();
+
+        let group_id = match join_target_group(&store, namespace, &invitation) {
+            Ok(target) => target,
+            Err(reason) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::NamespaceJoinRejected { reason },
+                    next_nonce: nonce,
+                };
+                crate::sync::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        };
 
         let meta = match MetaRepository::new(&store).load(&group_id)? {
             Some(m) => m,
@@ -687,7 +723,7 @@ impl SyncManager {
         let key_envelope_bytes = match GroupKeyring::new(&store, group_id).load_current_key()? {
             Some((_key_id, group_key)) => {
                 let ns_identity =
-                    NamespaceRepository::new(&store).resolve_identity_record(&group_id)?;
+                    NamespaceRepository::new(&store).resolve_identity_record(&namespace)?;
                 match ns_identity {
                     Some(record) => {
                         let sender_sk =
@@ -761,7 +797,7 @@ impl SyncManager {
         // updated as those ops apply). `unwrap_or(0)` matches the
         // pre-existing semantics for "default key absent."
         let default_capabilities = CapabilitiesRepository::new(&store)
-            .default_capabilities(&group_id)?
+            .default_capabilities(&namespace)?
             .unwrap_or(0);
 
         debug!(
@@ -2456,7 +2492,7 @@ mod open_subgroup_key_tests {
 /// the deny-list gate downstream has an account to read its rows under.
 #[cfg(test)]
 mod joiner_credential_tests {
-    use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use rand::rngs::OsRng;
@@ -2467,7 +2503,7 @@ mod joiner_credential_tests {
     fn credential_for(sign_pk: &PublicKey) -> (JoinAccountCredential, AccountGenesis) {
         let root_sk = PrivateKey::random(&mut OsRng);
         let genesis = AccountGenesis::new(root_sk.public_key());
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
             DeviceId::from([0xD1; 32]),
@@ -2481,7 +2517,7 @@ mod joiner_credential_tests {
             JoinAccountCredential {
                 genesis,
                 chain: vec![],
-                cert,
+                statement: cert,
             },
             genesis,
         )
@@ -2630,5 +2666,88 @@ mod namespace_pull_peer_tests {
             "callers that supply no fallback keep the old behaviour exactly — \
              this must not start guessing at a peer on its own",
         );
+    }
+}
+
+#[cfg(test)]
+mod join_target_tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_governance_store::NamespaceRepository;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use rand::rngs::OsRng;
+    use sha2::{Digest, Sha256};
+
+    use super::join_target_group;
+
+    fn invitation_to(admin_sk: &PrivateKey, group_id: ContextGroupId) -> SignedGroupOpenInvitation {
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+            group_id,
+            expiration_timestamp: 0,
+            invitation_nonce: [0x11; 32],
+            invited_role: 1,
+        };
+        let signature = admin_sk
+            .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
+            .unwrap();
+        SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id: None,
+            app_key: None,
+        }
+    }
+
+    #[test]
+    fn a_subgroup_invitation_resolves_to_the_subgroup() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespace = ContextGroupId::from([0x01; 32]);
+        let subgroup = ContextGroupId::from([0x02; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&namespace, &subgroup)
+            .expect("nest the subgroup");
+        let admin_sk = PrivateKey::random(&mut OsRng);
+
+        // The request names the namespace; only the invitation knows it is for
+        // the subgroup, and serving the namespace instead is the whole bug.
+        assert_eq!(
+            join_target_group(&store, namespace, &invitation_to(&admin_sk, subgroup)).unwrap(),
+            subgroup
+        );
+    }
+
+    #[test]
+    fn a_namespace_invitation_resolves_to_the_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespace = ContextGroupId::from([0x01; 32]);
+        let admin_sk = PrivateKey::random(&mut OsRng);
+
+        assert_eq!(
+            join_target_group(&store, namespace, &invitation_to(&admin_sk, namespace)).unwrap(),
+            namespace
+        );
+    }
+
+    #[test]
+    fn an_invitation_from_another_namespace_is_refused() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespace = ContextGroupId::from([0x01; 32]);
+        let elsewhere = ContextGroupId::from([0x03; 32]);
+        let stranger = ContextGroupId::from([0x04; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&elsewhere, &stranger)
+            .expect("nest the foreign subgroup");
+        let admin_sk = PrivateKey::random(&mut OsRng);
+
+        // Pairing a valid invitation with someone else's namespace must not
+        // release that namespace's key material.
+        assert!(join_target_group(&store, namespace, &invitation_to(&admin_sk, stranger)).is_err());
     }
 }

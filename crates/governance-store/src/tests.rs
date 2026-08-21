@@ -1702,7 +1702,7 @@ fn cross_node_state_hash_is_order_independent() {
     .map(|pk| crate::test_fixtures::real_join_account(pk))
     .collect();
     let [admin0_account, admin1_account, admin2_account, member_x_account, member_y_account, member_z_account] =
-        std::array::from_fn(|i| credentials[i].cert.account);
+        std::array::from_fn(|i| credentials[i].statement.account);
 
     let bootstrap = |store: &Store| {
         let bindings = crate::AccountBindingRepository::new(store);
@@ -1712,11 +1712,15 @@ fn cross_node_state_hash_is_order_independent() {
                     &gid,
                     &credential.genesis,
                     &credential.chain,
-                    &credential.cert,
+                    &credential.statement,
                 )
                 .expect("link");
             bindings
-                .record_endorser(&gid, credential.cert.account, &credential.cert.account)
+                .record_endorser(
+                    &gid,
+                    credential.statement.account,
+                    &credential.statement.account,
+                )
                 .expect("endorse");
         }
         MetaRepository::new(store)
@@ -10168,9 +10172,7 @@ mod parked_op_retries_to_success {
 /// idempotent under replay shows up.
 mod account_plane_apply {
     use super::*;
-    use calimero_account::{
-        sign_device_cert, sign_root_key_handoff, AccountGenesis, DeviceId, KemPublicKey,
-    };
+    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff};
     use calimero_context_client::local_governance::GroupOp;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::Store;
@@ -10215,7 +10217,7 @@ mod account_plane_apply {
         let account_genesis = AccountGenesis::new(key(9).public_key());
         let account = account_genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &key(9),
             account,
             device,
@@ -10235,7 +10237,8 @@ mod account_plane_apply {
                 genesis: account_genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -10263,7 +10266,8 @@ mod account_plane_apply {
                 genesis: account_genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -10295,7 +10299,7 @@ mod account_plane_apply {
 
         for seed in [5u8, 6] {
             let device = DeviceId::mint(account, [seed; 16]);
-            let cert = sign_device_cert(
+            let cert = DeviceCert::sign(
                 &key(9),
                 account,
                 device,
@@ -10313,7 +10317,7 @@ mod account_plane_apply {
                     genesis,
                     chain: vec![],
                     cert,
-                    endorsement: calimero_account::sign_account_endorsement(&key(9), account)
+                    endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
                         .unwrap(),
                 },
             )
@@ -10342,7 +10346,7 @@ mod account_plane_apply {
         let genesis = AccountGenesis::new(key(20).public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [21u8; 16]);
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &key(20),
             account,
             device,
@@ -10361,7 +10365,8 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -10391,7 +10396,7 @@ mod account_plane_apply {
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [78u8; 16]);
         // ...but must sign the certificate with his own key, which is not it.
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &key(78),
             account,
             device,
@@ -10410,7 +10415,8 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -10468,7 +10474,7 @@ mod account_plane_apply {
         let genesis = AccountGenesis::new(offline_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &offline_root,
             account,
             device,
@@ -10491,7 +10497,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&stranger, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&stranger, account)
                     .unwrap(),
             },
         )
@@ -10503,7 +10509,8 @@ mod account_plane_apply {
 
         // A FORGED endorsement from a real member → refused. This is the one that
         // matters: without the signature check, naming any member would be enough.
-        let mut forged = calimero_account::sign_account_endorsement(&admin_sk, account).unwrap();
+        let mut forged =
+            calimero_account::AccountMemberEndorsement::sign(&admin_sk, account).unwrap();
         forged.signature = [0u8; 64];
         sign_apply_local_group_op_borsh(
             &store,
@@ -10534,8 +10541,11 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&admin_sk, other_account)
-                    .unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(
+                    &admin_sk,
+                    other_account,
+                )
+                .unwrap(),
             },
         )
         .unwrap();
@@ -10551,7 +10561,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&admin_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
                     .unwrap(),
             },
         )
@@ -10593,7 +10603,7 @@ mod account_plane_apply {
         let genesis = AccountGenesis::new(owner_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &owner_root,
             account,
             device,
@@ -10611,7 +10621,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&owner_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&owner_sk, account)
                     .unwrap(),
             },
         )
@@ -10624,7 +10634,7 @@ mod account_plane_apply {
         let proof = calimero_account::SignedDeviceRevocation {
             genesis,
             chain: vec![],
-            revocation: calimero_account::sign_device_revocation(&owner_root, account, device, 0)
+            statement: calimero_account::DeviceRevocation::sign(&owner_root, account, device, 0)
                 .unwrap(),
         };
         sign_apply_local_group_op_borsh(
@@ -10689,7 +10699,7 @@ mod account_plane_apply {
         let genesis = AccountGenesis::new(victim_root.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &victim_root,
             account,
             device,
@@ -10707,7 +10717,7 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&victim_sk, account)
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&victim_sk, account)
                     .unwrap(),
             },
         )
@@ -10723,7 +10733,7 @@ mod account_plane_apply {
         let forged = calimero_account::SignedDeviceRevocation {
             genesis: attacker_genesis,
             chain: vec![],
-            revocation: calimero_account::sign_device_revocation(
+            statement: calimero_account::DeviceRevocation::sign(
                 &attacker_root,
                 attacker_account,
                 device,
@@ -10791,7 +10801,7 @@ mod account_plane_apply {
         let genesis = AccountGenesis::new(victim_sk.public_key());
         let account = genesis.account_id();
         let device = DeviceId::mint(account, [5u8; 16]);
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &victim_sk,
             account,
             device,
@@ -10809,7 +10819,8 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                    .unwrap(),
             },
         )
         .unwrap();
@@ -10908,7 +10919,7 @@ mod account_plane_apply {
 
         let genesis = AccountGenesis::new(key(9).public_key());
         let account = genesis.account_id();
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &key(9),
             account,
             DeviceId::mint(account, [5u8; 16]),
@@ -10927,7 +10938,8 @@ mod account_plane_apply {
                 genesis,
                 chain: vec![],
                 cert,
-                endorsement: calimero_account::sign_account_endorsement(&key(9), account).unwrap(),
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&key(9), account)
+                    .unwrap(),
             },
             &crate::test_fixtures::TEST_CUT,
             &crate::test_fixtures::UnresolvableAuthorizer,
@@ -10958,7 +10970,7 @@ mod account_plane_apply {
         let repo = AccountBindingRepository::new(&store);
         repo.absorb_genesis(&gid, &genesis).unwrap();
 
-        let handoff = sign_root_key_handoff(&key(9), account, 0, &key(10).public_key()).unwrap();
+        let handoff = RootKeyHandoff::sign(&key(9), account, 0, &key(10).public_key()).unwrap();
 
         // Applied twice: the second is a no-op because `from_epoch` no longer
         // matches, which is exactly the idempotence replay depends on.

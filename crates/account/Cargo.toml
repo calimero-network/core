@@ -11,12 +11,7 @@ publish = false
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 hex.workspace = true
-serde.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 
 calimero-primitives = { workspace = true, features = ["borsh"] }
 
-# Host-only: ABI extraction runs against a native build, never inside the wasm.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-calimero-wasm-abi.workspace = true

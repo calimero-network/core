@@ -669,7 +669,7 @@ fn test_signed_op() -> SignedNamespaceOp {
             // The member is the account the credential beside it certifies —
             // these are round-trip/shape tests, but a pair that disagrees is a
             // shape production never emits.
-            member: test_join_account().cert.account,
+            member: test_join_account().statement.account,
             signed_invitation: test_invitation(),
             joined_at: 0,
             account: test_join_account(),
@@ -721,7 +721,7 @@ fn admission_proof_is_the_invitation_inside_the_queued_join() {
 fn non_join_op_carries_no_admission_proof() {
     let mut op = test_signed_op();
     op.op = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: test_join_account().cert.account,
+        founder: test_join_account().statement.account,
         account: test_join_account(),
     });
 
@@ -771,7 +771,7 @@ fn test_join_account() -> Box<calimero_context_client::local_governance::JoinAcc
     let genesis = calimero_account::AccountGenesis::new(root);
     Box::new(
         calimero_context_client::local_governance::JoinAccountCredential {
-            cert: calimero_account::DeviceCert {
+            statement: calimero_account::DeviceCert {
                 account: genesis.account_id(),
                 device: calimero_account::DeviceId::from([0x3E; 32]),
                 sign_pk: calimero_primitives::identity::PublicKey::from([0x7B; 32]),

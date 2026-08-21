@@ -446,6 +446,7 @@ let val = entry.or_insert(LwwRegister::new(value))?;
 | `src/lib.rs`               | Public API re-exports        |
 | `macros/src/lib.rs`        | Proc macro definitions       |
 | `macros/src/items.rs`      | `#[app::*]` item expansion   |
+| `macros/src/rekey.rs`      | The per-field re-key cascade, shared by `#[app::state]` and `#[derive(Mergeable)]` so a root struct and a nested one cannot drift |
 | `src/env.rs`               | Environment functions        |
 | `src/event.rs`             | Event emission               |
 | `apps/kv-store/src/lib.rs` | Example app (best reference) |

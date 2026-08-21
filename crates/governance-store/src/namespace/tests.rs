@@ -56,7 +56,7 @@ fn a_genesis_whose_founder_credential_can_never_bind_is_refused() {
         panic!("the fixture builds a NamespaceCreated");
     };
     let mut account = account;
-    account.cert.signature = [0xFFu8; 64];
+    account.statement.signature = [0xFFu8; 64];
     let forged = NamespaceOp::Root(RootOp::NamespaceCreated { founder, account });
 
     let signed = SignedNamespaceOp::sign(&founder_sk, namespace_id.into(), vec![], 0, forged)
@@ -170,6 +170,30 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
     }
 }
 
+/// Captures every `NodeMessage` the publish path enqueues, so a test can assert
+/// on the signals it fires rather than on log output. Forwards on an unbounded
+/// channel: the test then AWAITS the message it expects instead of sleeping for
+/// the actor to run.
+struct CapturingNodeActor {
+    seen: tokio::sync::mpsc::UnboundedSender<calimero_node_primitives::messages::NodeMessage>,
+}
+
+impl actix::Actor for CapturingNodeActor {
+    type Context = actix::Context<Self>;
+}
+
+impl actix::Handler<calimero_node_primitives::messages::NodeMessage> for CapturingNodeActor {
+    type Result = ();
+
+    fn handle(
+        &mut self,
+        msg: calimero_node_primitives::messages::NodeMessage,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let _ = self.seen.send(msg);
+    }
+}
+
 /// Build a real `NodeClient`/`AckRouter` pair for tests that call
 /// `NamespaceGovernance::sign_apply_and_publish[_returning_op]`: a namespace
 /// with a bootstrapped admin (returned as the signing key), and a
@@ -184,6 +208,7 @@ async fn namespace_publish_fixture() -> (
     NamespaceId,
     PrivateKey,
     tempfile::TempDir,
+    tokio::sync::mpsc::UnboundedReceiver<calimero_node_primitives::messages::NodeMessage>,
 ) {
     use actix::Actor;
     use calimero_network_primitives::client::NetworkClient;
@@ -218,11 +243,22 @@ async fn namespace_publish_fixture() -> (
     let (open_subgroup_join_tx, _open_rx) = tokio::sync::mpsc::channel(8);
     let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
 
+    // The node-manager side is wired to a capturing actor rather than left
+    // uninitialized: the publish path now enqueues the local-apply feed there,
+    // and a test that wants to see it needs a live recipient.
+    let (seen_tx, seen_rx) = tokio::sync::mpsc::unbounded_channel();
+    let node_recipient = LazyRecipient::<calimero_node_primitives::messages::NodeMessage>::new();
+    let capture_recipient = node_recipient.clone();
+    let _node_addr = CapturingNodeActor::create(move |ctx| {
+        assert!(capture_recipient.init(ctx), "node recipient init");
+        CapturingNodeActor { seen: seen_tx }
+    });
+
     let node_client = NodeClient::new(
         store.clone(),
         blob_manager,
         network_client,
-        LazyRecipient::new(),
+        node_recipient,
         event_sender,
         sync_client,
         None,
@@ -230,14 +266,23 @@ async fn namespace_publish_fixture() -> (
 
     let ack_router = calimero_context_client::local_governance::AckRouter::default();
 
-    (store, node_client, ack_router, ns_id.into(), sk, tmp)
+    (
+        store,
+        node_client,
+        ack_router,
+        ns_id.into(),
+        sk,
+        tmp,
+        seen_rx,
+    )
 }
 
 #[actix::test]
 async fn sign_apply_and_publish_returns_the_signed_op() {
     use calimero_context_client::local_governance::{hash_scoped_namespace, NamespaceOp, RootOp};
 
-    let (store, node_client, ack_router, ns_id, sk, _tmp) = namespace_publish_fixture().await;
+    let (store, node_client, ack_router, ns_id, sk, _tmp, _node_msgs) =
+        namespace_publish_fixture().await;
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
         // The member and the credential name the same account, which the apply
         // requires: the signer has to hold a credential for the member it names.
@@ -262,6 +307,109 @@ async fn sign_apply_and_publish_returns_the_signed_op() {
         )
         .unwrap(),
         "returned op must be the one the report describes"
+    );
+}
+
+/// The op an author publishes must reach its OWN governance DAG, not just the
+/// live store: the publish path writes the live rows, the persisted head and the
+/// op-log directly, and nothing else feeds the in-memory DAG or the unified-op
+/// projection. Before this signal existed, an author learned its own ops back
+/// only when a peer echoed them — which left every child op a peer sent parked
+/// as `Pending` behind parents this node had authored itself.
+#[actix::test]
+async fn a_published_op_is_fed_to_the_local_apply_path() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_node_primitives::messages::NodeMessage;
+
+    let (store, node_client, ack_router, ns_id, sk, _tmp, mut node_msgs) =
+        namespace_publish_fixture().await;
+    let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
+        member: crate::test_fixtures::account_for(&sk.public_key()),
+        signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
+        joined_at: 0,
+        account: crate::test_fixtures::real_join_account(&sk.public_key()),
+    });
+
+    let (_report, signed) = NamespaceGovernance::new(&store, ns_id)
+        .sign_apply_and_publish_returning_op(&node_client, &ack_router, &sk, op)
+        .await
+        .expect("publish");
+    let published = signed.content_hash().expect("content hash");
+
+    // Awaited, not slept on: the feed is fire-and-forget, so the test drains the
+    // capture channel until the signal shows up (or the timeout fails the test
+    // with the messages it did see).
+    let mut observed = Vec::new();
+    let found = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(msg) = node_msgs.recv().await {
+            match msg {
+                NodeMessage::ApplyLocalNamespaceOp { op } => {
+                    return op.content_hash().expect("content hash") == published;
+                }
+                other => observed.push(other),
+            }
+        }
+        false
+    })
+    .await
+    .expect("the local-apply feed must fire within the timeout");
+
+    assert!(
+        found,
+        "publishing must hand the signed op to the local apply feed; saw {} other \
+         node signal(s) instead",
+        observed.len(),
+    );
+}
+
+/// The publish-only choke point (`publish_post_gate`) feeds the local apply path
+/// too — that is the route every GROUP op takes, and group ops are where the
+/// stale-cut divergence showed up. Same assertion, different path, deliberately
+/// not folded into the test above: one covering the other is exactly how a
+/// second write path goes unfed.
+#[actix::test]
+async fn the_publish_only_path_also_feeds_the_local_apply_path() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_node_primitives::messages::NodeMessage;
+
+    let (store, node_client, ack_router, ns_id, sk, _tmp, mut node_msgs) =
+        namespace_publish_fixture().await;
+    // A `KeyDelivery` stands in for any publish-only op: it carries no local
+    // mutation, so this path signs and publishes without applying first.
+    let op = NamespaceOp::Root(RootOp::KeyDelivery {
+        group_id: ns_id.to_bytes().into(),
+        envelope: calimero_context_client::local_governance::KeyEnvelope {
+            recipient: calimero_governance_types::EnvelopeRecipient::Member {
+                identity: sk.public_key(),
+                ephemeral_pk: sk.public_key(),
+            },
+            sender: sk.public_key(),
+            nonce: [0u8; 12],
+            ciphertext: Vec::new(),
+            signature: [0u8; 64],
+        },
+    });
+
+    // The publish itself gathers no acks against the stub network; irrelevant
+    // here — the feed fires before the publish is awaited, which is the point
+    // (the local DAG must not wait on the network for an op authored here).
+    let _ = NamespaceGovernance::new(&store, ns_id)
+        .sign_and_publish_post_gate(&node_client, &ack_router, &sk, op, 0, 0, true)
+        .await;
+
+    let fed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(msg) = node_msgs.recv().await {
+            if matches!(msg, NodeMessage::ApplyLocalNamespaceOp { .. }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("the local-apply feed must fire within the timeout");
+    assert!(
+        fed,
+        "the publish-only path must feed the local apply path too"
     );
 }
 
@@ -6029,7 +6177,7 @@ fn responder_refuses_delivery_to_non_member() {
 /// rotation had just enforced.
 #[test]
 fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
-    use calimero_account::{sign_device_cert, AccountGenesis, DeviceId, KemPublicKey};
+    use calimero_account::{AccountGenesis, DeviceCert, DeviceId, KemPublicKey};
     use calimero_crypto::X25519SecretKey;
     use calimero_governance_types::{EnvelopeRecipient, KeyEnvelope};
 
@@ -6081,7 +6229,7 @@ fn the_pull_responder_serves_a_live_device_and_refuses_a_revoked_one() {
         "a key bound to no account here speaks for nobody and must be served nothing"
     );
 
-    let cert = sign_device_cert(
+    let cert = DeviceCert::sign(
         &member_sk,
         account,
         device,
@@ -6801,7 +6949,7 @@ fn apply_open_join_with(
     // credential names the member it admits.
     let gov = NamespaceGovernance::new(store, namespace_id.into());
     let head = gov.read_head_record().expect("read head");
-    let joiner_account = account.cert.account;
+    let joiner_account = account.statement.account;
     let join = SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
@@ -6868,7 +7016,7 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     );
 
     let account = crate::test_fixtures::real_join_account(&joiner);
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
         .expect("the join applies");
 
@@ -6920,7 +7068,12 @@ fn a_refused_credential_leaves_the_membership_intact() {
         0,
     );
     let _ = crate::AccountBindingRepository::new(&store)
-        .apply_link(&ns_gid, &squatter.genesis, &squatter.chain, &squatter.cert)
+        .apply_link(
+            &ns_gid,
+            &squatter.genesis,
+            &squatter.chain,
+            &squatter.statement,
+        )
         .expect("seed the conflicting device claim");
 
     apply_open_join_with(
@@ -6969,7 +7122,7 @@ fn a_credential_certified_for_another_key_is_refused() {
     // one costs an attacker nothing.
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
-    let victim_account = stolen.cert.account;
+    let victim_account = stolen.statement.account;
 
     // Refused OUTRIGHT — not "admitted without a binding". A member names an
     // account, so presenting the victim's credential is claiming to be the
@@ -7014,7 +7167,7 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     let (root_sk, genesis) = crate::test_fixtures::test_account_root();
     let device = [0x7C; 32];
     let first = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
-    let account_id = first.cert.account;
+    let account_id = first.statement.account;
     namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &account_id);
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, first)
         .expect("first join applies");
@@ -7072,7 +7225,7 @@ fn a_tee_admission_binds_the_replicas_device() {
     let replica = replica_sk.public_key();
     let replica_account = enrol_member(&store, &ns_gid, &replica);
     let account = crate::test_fixtures::real_join_account(&replica);
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
 
     // Authored by the VERIFIER, not the replica — a replica cannot admit itself.
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
@@ -7175,7 +7328,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
     let replica_account = enrol_member(&store, &ns_gid, &replica);
     let victim = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     let stolen = crate::test_fixtures::real_join_account(&victim);
-    let victim_account = stolen.cert.account;
+    let victim_account = stolen.statement.account;
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
@@ -7301,11 +7454,16 @@ fn a_member_resolves_through_the_namespace_binding_not_the_subgroup() {
     let member_sk = PrivateKey::random(&mut rand::rngs::OsRng);
     let member = member_sk.public_key();
     let account = crate::test_fixtures::real_join_account(&member);
-    let account_id = account.cert.account;
+    let account_id = account.statement.account;
 
     // Bound at the namespace, exactly as a join records it.
     crate::AccountBindingRepository::new(&store)
-        .apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)
+        .apply_link(
+            &ns_gid,
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+        )
         .expect("store")
         .expect("admitted");
 
@@ -7355,7 +7513,12 @@ fn a_revoked_device_resolves_to_nothing() {
 
     let bindings = crate::AccountBindingRepository::new(&store);
     let binding = bindings
-        .apply_link(&ns_gid, &account.genesis, &account.chain, &account.cert)
+        .apply_link(
+            &ns_gid,
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+        )
         .expect("store")
         .expect("admitted");
     assert!(crate::member_account_in_namespace(&store, &ns_gid, &member)

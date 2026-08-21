@@ -79,7 +79,7 @@ impl Account {
     /// Roll the root key, returning the handoff to publish.
     fn rotate_to(&mut self, new_seed: u8) -> RootKeyHandoff {
         let new_root = key(new_seed);
-        let handoff = calimero_account::sign_root_key_handoff(
+        let handoff = calimero_account::RootKeyHandoff::sign(
             &self.root,
             self.id,
             self.epoch,
@@ -110,7 +110,7 @@ impl Account {
         let id = DeviceId::mint(self.id, [device_seed; 16]);
         Device {
             id,
-            cert: calimero_account::sign_device_cert(
+            cert: calimero_account::DeviceCert::sign(
                 signer,
                 self.id,
                 id,
@@ -354,7 +354,7 @@ fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id() {
         let sk = key(device_seed);
         Device {
             id,
-            cert: calimero_account::sign_device_cert(
+            cert: calimero_account::DeviceCert::sign(
                 &alice.root,
                 alice.id,
                 id,
@@ -633,7 +633,7 @@ fn the_adversarial_account_workload_converges() {
         let sk = key(device_seed);
         Device {
             id: DeviceId::from(id),
-            cert: calimero_account::sign_device_cert(
+            cert: calimero_account::DeviceCert::sign(
                 &alice.root,
                 alice.id,
                 DeviceId::from(id),

@@ -21,24 +21,19 @@ use crate::test_support::build_delta_store;
 /// pending (and the applier — i.e. WASM — is never invoked).
 const MISSING_PARENT: [u8; 32] = [0x99; 32];
 
-fn make_delta(
-    id: [u8; 32],
-    parents: Vec<[u8; 32]>,
-    expected_root_hash: [u8; 32],
-) -> CausalDelta<Vec<Action>> {
+fn make_delta(id: [u8; 32], parents: Vec<[u8; 32]>) -> CausalDelta<Vec<Action>> {
     CausalDelta {
         id,
         parents,
         payload: Vec::new(),
         hlc: HybridTimestamp::default(),
-        expected_root_hash,
         kind: DeltaKind::Regular,
     }
 }
 
-fn pending_input(id: [u8; 32], hash: [u8; 32]) -> BatchDeltaInput {
+fn pending_input(id: [u8; 32]) -> BatchDeltaInput {
     BatchDeltaInput {
-        delta: make_delta(id, vec![MISSING_PARENT], hash),
+        delta: make_delta(id, vec![MISSING_PARENT]),
         events: None,
         author_id: Some(PublicKey::from([0xBB; 32])),
         governance_position_blob: None,
@@ -58,10 +53,6 @@ async fn add_deltas_batch_empty_is_noop() {
     assert!(result.applied.is_empty());
     assert!(result.pending.is_empty());
     assert!(result.forwarded_events.is_empty());
-    assert!(
-        delta_store.head_root_hash_ids().await.is_empty(),
-        "empty batch must not touch head-root-hash tracking"
-    );
 }
 
 #[tokio::test]
@@ -69,11 +60,7 @@ async fn add_deltas_batch_classifies_all_pending() {
     let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let ids = [[0x01u8; 32], [0x02u8; 32], [0x03u8; 32]];
-    let inputs: Vec<BatchDeltaInput> = ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| pending_input(*id, [i as u8 + 1; 32]))
-        .collect();
+    let inputs: Vec<BatchDeltaInput> = ids.iter().map(|id| pending_input(*id)).collect();
 
     let result = delta_store
         .add_deltas_batch(inputs)
@@ -92,10 +79,6 @@ async fn add_deltas_batch_classifies_all_pending() {
     }
     let stats = delta_store.pending_stats().await;
     assert_eq!(stats.count, ids.len());
-    assert!(
-        delta_store.head_root_hash_ids().await.is_empty(),
-        "no heads exist until something applies, so head-root-hashes prune to empty"
-    );
 }
 
 /// One `add_deltas_batch` over all-pending inputs must leave the same observable
@@ -103,14 +86,12 @@ async fn add_deltas_batch_classifies_all_pending() {
 #[tokio::test]
 async fn add_deltas_batch_matches_single_path_for_pending() {
     let ids = [[0x0Au8; 32], [0x0Bu8; 32], [0x0Cu8; 32], [0x0Du8; 32]];
-    let hashes = [[0x10u8; 32], [0x20u8; 32], [0x30u8; 32], [0x40u8; 32]];
-
     // Store A: single-delta path, one call per delta.
     let (store_a, _tmp_a, _rx_a) = build_delta_store().await;
-    for (id, hash) in ids.iter().zip(hashes.iter()) {
+    for id in ids.iter() {
         let applied = store_a
             .add_delta(
-                make_delta(*id, vec![MISSING_PARENT], *hash),
+                make_delta(*id, vec![MISSING_PARENT]),
                 Some(PublicKey::from([0xBB; 32])),
                 None,
                 None,
@@ -122,11 +103,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
 
     // Store B: batch path, one call for all deltas.
     let (store_b, _tmp_b, _rx_b) = build_delta_store().await;
-    let inputs: Vec<BatchDeltaInput> = ids
-        .iter()
-        .zip(hashes.iter())
-        .map(|(id, hash)| pending_input(*id, *hash))
-        .collect();
+    let inputs: Vec<BatchDeltaInput> = ids.iter().map(|id| pending_input(*id)).collect();
     let result = store_b
         .add_deltas_batch(inputs)
         .await
@@ -149,14 +126,5 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     assert_eq!(
         stats_a.total_missing_parents, stats_b.total_missing_parents,
         "missing-parent accounting must match"
-    );
-
-    let mut heads_a = store_a.head_root_hash_ids().await;
-    let mut heads_b = store_b.head_root_hash_ids().await;
-    heads_a.sort_unstable();
-    heads_b.sort_unstable();
-    assert_eq!(
-        heads_a, heads_b,
-        "head-root-hash tracking must match between paths"
     );
 }

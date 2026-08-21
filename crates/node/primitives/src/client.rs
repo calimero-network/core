@@ -179,7 +179,6 @@ pub struct LocalAppliedDelta {
     pub delta_id: [u8; 32],
     pub parents: Vec<[u8; 32]>,
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
-    pub expected_root_hash: [u8; 32],
     pub actions: Vec<calimero_storage::action::Action>,
 }
 
@@ -353,6 +352,27 @@ impl NodeClient {
                 namespace_id = %hex::encode(namespace_id),
                 "failed to enqueue NamespaceOpApplied signal — readiness FSM will \
                  lag for this namespace until the next op fires or a peer beacon arrives"
+            );
+        }
+    }
+
+    /// Feed a governance op this node just published into its own namespace
+    /// governance DAG and unified-op projection — the local half of the apply
+    /// feed, which the publisher path otherwise bypasses entirely. See
+    /// [`NodeMessage::ApplyLocalNamespaceOp`].
+    ///
+    /// Best-effort, like the two notifications above: on a full mailbox the op
+    /// still reaches the DAG the old way (a peer echoing it back), so the cost
+    /// of a drop is latency, not lost state.
+    pub fn feed_local_namespace_op(&self, op: SignedNamespaceOp) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ApplyLocalNamespaceOp { op: Box::new(op) })
+        {
+            warn!(
+                ?err,
+                "failed to enqueue ApplyLocalNamespaceOp — the op stays out of the \
+                 local governance DAG until a peer echoes it back"
             );
         }
     }

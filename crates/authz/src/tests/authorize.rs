@@ -14,9 +14,9 @@ use calimero_storage::entities::OpMask;
 use super::support::{
     bind_account, bind_test_devices, hlc0, membership_view, op_with, view_with_writer,
 };
-use crate::authorize::authorize;
+use crate::authorize::{authorize, required_mask_for};
 use crate::error::Rejected;
-use crate::view::AclView;
+use crate::view::{AccountBinding, AclView};
 
 #[test]
 fn put_requires_write_capability() {
@@ -36,6 +36,7 @@ fn put_requires_write_capability() {
     assert_eq!(
         authorize(&op, &bind_account(AclView::default(), author)),
         Err(Rejected::NotPermitted {
+            entity,
             required: OpMask::WRITE
         })
     );
@@ -210,6 +211,7 @@ fn default_write_lets_a_member_write_a_non_restricted_entity() {
             &view
         ),
         Err(Rejected::NotPermitted {
+            entity: x,
             required: OpMask::WRITE
         })
     );
@@ -284,6 +286,7 @@ fn explicit_acl_overrides_default_write_for_restricted_objects() {
             &view
         ),
         Err(Rejected::NotPermitted {
+            entity: secret,
             required: OpMask::WRITE
         })
     );
@@ -311,7 +314,7 @@ fn a_join_replayed_by_another_device_is_refused() {
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let joiner_key = calimero_primitives::identity::PrivateKey::from([0x22u8; 32]).public_key();
     let granted_device = DeviceId::from([0x4D; 32]);
-    let cert = calimero_account::sign_device_cert(
+    let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
         granted_device,
@@ -364,5 +367,137 @@ fn a_join_replayed_by_another_device_is_refused() {
     assert!(
         authorize(&honest, &view).is_ok(),
         "the honest join must still pass, or the check above proves nothing"
+    );
+}
+
+// ---- the mask mapping, and the rotation refusals ----
+
+/// **`required_mask_for` must name the mask `authorize` actually enforces.**
+///
+/// `authorize` deliberately does *not* call this helper — each data arm inlines
+/// its literal mask so there is no `Option` to unwrap and no fallback arm that
+/// could silently deny. The cost of that choice is that the payload→mask mapping
+/// exists twice, and a comment explaining why cannot stop the two drifting. This
+/// is what stops it: the helper's answer is compared against the mask the
+/// decision reports refusing on, which is the mask it truly enforced.
+#[test]
+fn required_mask_for_agrees_with_the_mask_authorize_enforces() {
+    let author = AccountId::from([0x41; 32]);
+    let entity = Id::root();
+    // An author with no ACL entry and no membership holds nothing, so every data
+    // op is refused and the refusal carries the mask that was required.
+    let view = bind_account(AclView::default(), author);
+
+    for payload in [
+        OpPayload::Put {
+            entity,
+            value: vec![1],
+        },
+        OpPayload::Delete { entity },
+    ] {
+        let expected = required_mask_for(&payload)
+            .expect("every data payload maps to a mask, or the helper is lying");
+        assert_eq!(
+            authorize(&op_with(author, payload.clone()), &view),
+            Err(Rejected::NotPermitted {
+                entity,
+                required: expected,
+            }),
+            "authorize enforces a different mask than required_mask_for reports for {payload:?}"
+        );
+    }
+}
+
+/// A non-data payload has no mask, because the empty mask is contained by every
+/// mask — a `NONE` requirement fed to `may` would authorize anyone.
+#[test]
+fn required_mask_for_declines_to_answer_for_non_data_payloads() {
+    for payload in [
+        OpPayload::Noop,
+        OpPayload::SetWriters {
+            object: Id::root(),
+            writers: BTreeMap::new(),
+        },
+    ] {
+        assert_eq!(
+            required_mask_for(&payload),
+            None,
+            "a non-data payload must have no mask: {payload:?}"
+        );
+    }
+}
+
+/// **"This scope has never seen the account" and "the handoff starts at the wrong
+/// epoch" are different refusals.**
+///
+/// They used to share `RotationNotContinuous`, which sent whoever read it to the
+/// wrong question: the first means nothing has linked a device of this account
+/// here, the second means the account is known and only the epoch is off.
+#[test]
+fn the_two_rotation_refusals_are_told_apart() {
+    let owner = AccountId::from([0x51; 32]);
+    let new_key = calimero_primitives::identity::PrivateKey::from([0x52; 32]);
+    let root_sk = calimero_primitives::identity::PrivateKey::from([0x53; 32]);
+
+    let handoff_from_epoch = |from_epoch: u32| RootKeyHandoff {
+        account: owner,
+        from_epoch,
+        new_root_sign_pk: new_key.public_key(),
+        signature: [0u8; 64],
+    };
+
+    // Nothing known about the account at this cut.
+    let unknown = bind_account(bind_test_devices(AclView::default()), owner);
+    assert_eq!(
+        authorize(
+            &op_with(
+                owner,
+                OpPayload::AccountKeysRotated {
+                    handoff: handoff_from_epoch(0)
+                }
+            ),
+            &unknown
+        ),
+        Err(Rejected::RotationAccountUnknown { account: owner }),
+    );
+
+    // Account known at epoch 1; a handoff rolling from epoch 0 is stale.
+    let mut known = unknown;
+    let _ = known.accounts.insert(
+        owner,
+        AccountBinding {
+            epoch: 1,
+            root_pk: root_sk.public_key(),
+        },
+    );
+    assert_eq!(
+        authorize(
+            &op_with(
+                owner,
+                OpPayload::AccountKeysRotated {
+                    handoff: handoff_from_epoch(0)
+                }
+            ),
+            &known
+        ),
+        Err(Rejected::RotationNotContinuous {
+            expected: 1,
+            found: 0
+        }),
+    );
+
+    // At the right epoch the refusal moves on to the signature, which is filler
+    // here — proving the epoch check passed rather than short-circuiting.
+    assert_eq!(
+        authorize(
+            &op_with(
+                owner,
+                OpPayload::AccountKeysRotated {
+                    handoff: handoff_from_epoch(1)
+                }
+            ),
+            &known
+        ),
+        Err(Rejected::RotationSignatureInvalid),
     );
 }

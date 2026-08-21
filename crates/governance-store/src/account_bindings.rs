@@ -66,10 +66,28 @@ pub enum BindingRejected {
         /// Epoch already recorded.
         stored: u32,
     },
-    /// A rotation for an account this group has never seen, or one that does
-    /// not continue the established chain.
-    #[error("key rotation does not continue this account's chain")]
-    RotationNotContinuous,
+    /// A rotation for an account this group has never learned.
+    ///
+    /// Distinct from [`Self::RotationNotContinuous`], which the two used to
+    /// share: they send whoever reads one somewhere different. This means the
+    /// group holds no key chain for the account at all — nothing has linked a
+    /// device of it here — whereas a non-contiguous rotation means the account
+    /// IS known and the handoff merely starts at the wrong epoch. The first is a
+    /// relay of a stranger's rotation and is expected; the second is a stale or
+    /// forked handoff and is worth looking at.
+    #[error("no key chain known for account {account} in this group")]
+    RotationAccountUnknown {
+        /// The account the handoff would roll.
+        account: AccountId,
+    },
+    /// A rotation that does not continue the chain in force for this account.
+    #[error("key rotation starts at epoch {found}, but epoch {expected} is in force")]
+    RotationNotContinuous {
+        /// The epoch currently established for the account.
+        expected: u32,
+        /// The epoch the handoff declares it rolls from.
+        found: u32,
+    },
     /// A rotation not signed by the outgoing root key.
     #[error("key rotation is not signed by the outgoing root key")]
     RotationSignatureInvalid,
@@ -625,11 +643,16 @@ impl<'a> AccountBindingRepository<'a> {
     ) -> EyreResult<Result<(), BindingRejected>> {
         let key = GroupAccountKey::new(group.to_bytes(), *handoff.account.as_bytes());
         let Some(current): Option<GroupAccountKeyValue> = self.store.handle().get(&key)? else {
-            return Ok(Err(BindingRejected::RotationNotContinuous));
+            return Ok(Err(BindingRejected::RotationAccountUnknown {
+                account: handoff.account,
+            }));
         };
         let (epoch, root_pk) = (current.epoch, PublicKey::from(current.root_pk));
         if handoff.from_epoch != epoch {
-            return Ok(Err(BindingRejected::RotationNotContinuous));
+            return Ok(Err(BindingRejected::RotationNotContinuous {
+                expected: epoch,
+                found: handoff.from_epoch,
+            }));
         }
         if root_pk
             .verify_raw_signature(&handoff.payload(), &handoff.signature)
@@ -846,7 +869,7 @@ impl<'a> AccountBindingRepository<'a> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store};
-    use calimero_account::{sign_device_cert, sign_root_key_handoff, KemPublicKey};
+    use calimero_account::{DeviceCert, KemPublicKey, RootKeyHandoff};
     use calimero_primitives::identity::PrivateKey;
 
     fn key(seed: u8) -> PrivateKey {
@@ -865,7 +888,7 @@ mod tests {
         device_epoch: u32,
     ) -> DeviceCert {
         let account = genesis.account_id();
-        sign_device_cert(
+        DeviceCert::sign(
             signer,
             account,
             DeviceId::mint(account, [device_seed; 16]),
@@ -1039,7 +1062,7 @@ mod tests {
         assert!(low < high);
 
         let cert_for_device = |device: DeviceId, seed: u8| {
-            sign_device_cert(
+            DeviceCert::sign(
                 &key(1),
                 account,
                 device,
@@ -1105,7 +1128,7 @@ mod tests {
         let (low, high) = (DeviceId::from(low), DeviceId::from(high));
 
         let cert_at = |device: DeviceId, seed: u8, key_epoch: u32| {
-            sign_device_cert(
+            DeviceCert::sign(
                 &key(if key_epoch == 0 { 1 } else { 2 }),
                 account,
                 device,
@@ -1117,7 +1140,7 @@ mod tests {
             .expect("sign")
         };
         let handoff =
-            sign_root_key_handoff(&key(1), account, 0, &key(2).public_key()).expect("sign");
+            RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
 
         // Certified at epoch 1 so the rotation does not supersede them and mask
         // the collision property.
@@ -1224,7 +1247,7 @@ mod tests {
             .expect("store")
             .expect("admitted");
         let handoff =
-            sign_root_key_handoff(&key(1), account, 0, &key(2).public_key()).expect("sign");
+            RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
         repo.apply_rotation(&gid, &handoff)
             .expect("store")
             .expect("rotated");
@@ -1299,10 +1322,59 @@ mod tests {
         let repo = AccountBindingRepository::new(&store);
         let g = genesis_for(1);
         let handoff =
-            sign_root_key_handoff(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
+            RootKeyHandoff::sign(&key(1), g.account_id(), 0, &key(2).public_key()).expect("sign");
         assert_eq!(
             repo.apply_rotation(&gid, &handoff).expect("store"),
-            Err(BindingRejected::RotationNotContinuous)
+            Err(BindingRejected::RotationAccountUnknown {
+                account: g.account_id()
+            }),
+            "an account this group never learned must not be reported as a \
+             non-contiguous chain — there is no chain to be discontinuous with"
+        );
+    }
+
+    /// The other half of the split: a KNOWN account whose handoff starts at the
+    /// wrong epoch. Previously untested — the branch existed, but nothing pinned
+    /// which epochs it reports, and the fields are the whole point of separating
+    /// it from `RotationAccountUnknown`.
+    #[test]
+    fn a_rotation_from_the_wrong_epoch_names_both_epochs() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let account = g.account_id();
+
+        // Learn the account and roll it to epoch 1.
+        let _ = repo
+            .apply_link(&gid, &g, &[], &cert_for(&g, &key(1), 5, 0, 0))
+            .expect("store")
+            .expect("admitted");
+        let first = RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
+        repo.apply_rotation(&gid, &first)
+            .expect("store")
+            .expect("rotated");
+
+        // Replaying the epoch-0 handoff is stale, not unknown.
+        assert_eq!(
+            repo.apply_rotation(&gid, &first).expect("store"),
+            Err(BindingRejected::RotationNotContinuous {
+                expected: 1,
+                found: 0
+            }),
+            "a replayed handoff must name the epoch in force and the one it \
+             offers, so a stale relay is distinguishable from a forked chain"
+        );
+
+        // ...and so is a handoff that skips ahead.
+        let skipped =
+            RootKeyHandoff::sign(&key(2), account, 3, &key(4).public_key()).expect("sign");
+        assert_eq!(
+            repo.apply_rotation(&gid, &skipped).expect("store"),
+            Err(BindingRejected::RotationNotContinuous {
+                expected: 1,
+                found: 3
+            }),
         );
     }
 
@@ -1331,7 +1403,7 @@ mod tests {
         let _ = repo.apply_link(&gid, &g, &[], &v0).expect("store");
 
         // Same device id, fresh keypair, higher epoch — accepted.
-        let v1 = sign_device_cert(
+        let v1 = DeviceCert::sign(
             &key(1),
             g.account_id(),
             v0.device,
@@ -1368,7 +1440,7 @@ mod tests {
         let _ = repo.apply_link(&gid, &alice, &[], &cert).expect("store");
 
         // Mallory certifies the same device id under his own account.
-        let hijack = sign_device_cert(
+        let hijack = DeviceCert::sign(
             &key(2),
             mallory.account_id(),
             cert.device,
@@ -1405,7 +1477,7 @@ mod tests {
         let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
         let device_sign_pk = key(3).public_key();
-        let cert = sign_device_cert(
+        let cert = DeviceCert::sign(
             &root,
             account,
             DeviceId::mint(account, [0xAB; 16]),
@@ -1480,7 +1552,7 @@ mod tests {
             .apply_link(&gid, &c, &[], &cert_for(&c, &key(3), 8, 0, 0))
             .expect("store")
             .expect("admitted");
-        let handoff = sign_root_key_handoff(&key(3), c.account_id(), 0, &key(4).public_key())
+        let handoff = RootKeyHandoff::sign(&key(3), c.account_id(), 0, &key(4).public_key())
             .expect("sign handoff");
         repo.apply_rotation(&gid, &handoff)
             .expect("store")
@@ -1521,7 +1593,7 @@ mod tests {
         assert!(low < high);
 
         let cert_for_device = |device: DeviceId, seed: u8| {
-            sign_device_cert(
+            DeviceCert::sign(
                 &key(1),
                 account,
                 device,

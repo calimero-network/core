@@ -3,7 +3,7 @@
 //! **Purpose**: Handles incoming events from network layer and processes node-level requests.
 //! **Structure**: Each event type has its own focused file (SRP).
 
-use actix::Handler;
+use actix::{AsyncContext, Handler, WrapFuture};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_utils_actix::adapters::ActorExt;
 use tracing::debug;
@@ -112,6 +112,30 @@ impl Handler<NodeMessage> for NodeManager {
                          dropping (namespace sync remains the fallback)"
                     );
                 }
+            }
+            NodeMessage::ApplyLocalNamespaceOp { op } => {
+                // The publisher path wrote this op to the live store and the
+                // persisted governance log but never to the in-memory DAG or the
+                // unified-op projection; hand it to the same actor entry a peer's
+                // op uses so both origins converge on one apply path. Applying it
+                // again is safe and deliberate: the live apply short-circuits on
+                // finding the op already in the local op-log, so what this call
+                // actually does is insert the DAG node and feed the projection,
+                // while the op is still live's head.
+                let context_client = self.clients.context.clone();
+                let work = async move {
+                    match context_client.apply_signed_namespace_op(*op).await {
+                        Ok(outcome) => {
+                            debug!(?outcome, "fed locally-published governance op to own DAG")
+                        }
+                        // Not fatal: peers still carry the op, and a peer echo
+                        // re-offers it to this same handler later.
+                        Err(err) => {
+                            debug!(%err, "failed to feed locally-published governance op to own DAG")
+                        }
+                    }
+                };
+                let _spawn_handle = ctx.spawn(work.into_actor(self));
             }
             NodeMessage::RefreshMigrationFacts { namespace_id } => {
                 // Edge-trigger a fact recompute + emit-on-change for this

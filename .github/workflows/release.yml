@@ -99,11 +99,30 @@ jobs:
               binary_release=true
               crate_release=true
               docker_release=true
-            elif [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
-              # The release shell exists (created at trigger time by a
-              # previous attempt, or manually after a race) but no binaries
-              # were ever attached — a re-run must still upload them.
+            elif [ "${{ github.run_attempt }}" != "1" ] \
+              && [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
+              # The release shell exists (this run created it on an earlier
+              # attempt, or someone created it by hand after a race) but no
+              # binaries were ever attached, so re-arm the upload.
+              #
+              # Only on a re-run. The shell is created seconds into the
+              # release commit's own run, while the binaries land ~40min
+              # later, so on a first attempt "shell with no assets" is the
+              # normal state of a release that is still building — not a
+              # release that needs rescuing. Re-arming there made every
+              # ordinary commit pushed inside that window believe it owned
+              # the release too, and the second one to reach the upload
+              # died on "an asset called ... already exists".
               binary_release=true
+            elif [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
+              # Same shape, but on a first attempt, so this push is not the
+              # one that owns the release. Either the release is still
+              # building (fine, say nothing useful about it) or its build
+              # failed and nobody noticed. Say so rather than skipping in
+              # silence: the fix is to re-run the release commit's own run,
+              # because the tag points at that commit and the assets have
+              # to be built from it -- not from whatever landed since.
+              echo "::warning::Release $version exists with no assets. If its build failed, re-run that run; this push will not upload binaries."
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             docker_release=true
@@ -193,7 +212,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup rust cache
-        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: release
 
@@ -285,7 +304,17 @@ jobs:
     runs-on: big-machine
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-${{ needs.prepare.outputs.version }}
+      # Keyed on the commit (or the PR), never on the release version. A
+      # version key puts every master push inside one release window into
+      # a single group, and GitHub resolves that contention by cancelling
+      # the older run -- so a commit that built perfectly still shows up
+      # red on master. A per-commit key leaves only the contention dedup
+      # is actually for: a re-run racing the attempt it replaces.
+      #
+      # `github.job` is deliberately absent: it is null everywhere except
+      # inside step execution, so using it here silently collapsed the
+      # binaries and app-bundle jobs into one shared group.
+      group: ${{ github.workflow }}-release-binaries-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
       contents: write
@@ -326,6 +355,63 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
+  # Publishes the kv-store demo app as a signed .mpk release asset, so a
+  # downstream SDK e2e (mero-js, mero-react) can fetch an app bundle from the
+  # SAME tag it fetches `merod` from, instead of committing a binary fixture
+  # that silently rots as the manifest schema moves. It also gives the release
+  # its only end-to-end exercise of `cargo-mero`: the toolchain is shipped as a
+  # binary below, but nothing else in this workflow actually runs `bundle`.
+  #
+  # Signed with the dev key on purpose. The dev seed is well-known and
+  # deterministic, so the bundle's ApplicationId -- hash(package, signer) -- is
+  # stable across every release, which is what makes it usable as a test
+  # fixture. The registry refuses dev-signed bundles, so this artifact
+  # structurally cannot escape into real distribution.
+  release-app-bundle:
+    name: Release App Bundle
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    concurrency:
+      # Per-commit, not per-version: a version key makes two master pushes
+      # in one release window contend, and the older run is cancelled --
+      # red master for a commit that was never broken.
+      group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: release-app-bundle
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build the kv-store bundle
+        run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
+
+      # Gated like `release-binaries`: a PR builds the bundle (so a break in
+      # `cargo mero bundle` fails the PR that caused it) but publishes nothing.
+      - name: Upload the bundle to the release
+        if: needs.prepare.outputs.binary_release == 'true'
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/kv-store-test-fixture.mpk
+          tag: ${{ needs.prepare.outputs.version }}
+          release_name: ${{ needs.prepare.outputs.version }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          target_commit: ${{ needs.prepare.outputs.target_commit }}
+
   release-crates:
     name: Release Crates
     if: needs.prepare.outputs.crate_release == 'true'
@@ -352,7 +438,7 @@ jobs:
         run: rustc --version
 
       - name: Setup rust cache (publish)
-        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: release
 
@@ -394,7 +480,10 @@ jobs:
     name: Release Merod container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-merod-${{ needs.prepare.outputs.version }}
+      # Per-commit, not per-version: a version key makes two master pushes
+      # in one release window contend, and the older run is cancelled --
+      # red master for a commit that was never broken.
+      group: ${{ github.workflow }}-merod-container-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -425,7 +514,10 @@ jobs:
     name: Release Mero Auth container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-mero-auth-${{ needs.prepare.outputs.version }}
+      # Per-commit, not per-version: a version key makes two master pushes
+      # in one release window contend, and the older run is cancelled --
+      # red master for a commit that was never broken.
+      group: ${{ github.workflow }}-mero-auth-container-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -463,7 +555,10 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || needs.prepare.outputs.profiling_paths_changed == 'true' }}
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-merod-profiling-${{ needs.prepare.outputs.version }}
+      # Per-commit, not per-version: a version key makes two master pushes
+      # in one release window contend, and the older run is cancelled --
+      # red master for a commit that was never broken.
+      group: ${{ github.workflow }}-merod-profiling-container-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: true
     permissions:
       contents: read

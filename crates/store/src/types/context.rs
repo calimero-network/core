@@ -193,7 +193,16 @@ pub struct ContextDagDelta {
     pub actions: Vec<u8>, // Serialized actions
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
     pub applied: bool,
-    pub expected_root_hash: [u8; 32],
+    /// Root hash of the snapshot a CHECKPOINT delta marks the boundary of;
+    /// `None` for every regular delta.
+    ///
+    /// This replaced a blanket `expected_root_hash` carried on every row. That
+    /// value was sender-asserted — absent from the `compute_id` preimage, so no
+    /// receiver could verify it, and settable at will by a DAG-catchup responder
+    /// — and the node has always stored the root hash it COMPUTED rather than
+    /// this one. A checkpoint's root hash is different in kind: it is derived
+    /// locally from a snapshot this node took.
+    pub checkpoint_root_hash: Option<[u8; 32]>,
     pub events: Option<Vec<u8>>,
     /// Signing identity of the node that authored this delta. Populated
     /// from the gossip envelope on receive; populated from the local

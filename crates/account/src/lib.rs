@@ -46,13 +46,18 @@
 //!
 //! | Module | What it holds |
 //! | --- | --- |
+//! | `signed` | The shape every root-signed credential shares: [`RootSigned`], [`Verified`], [`AccountProof`] |
 //! | `account` | The account anchor: [`AccountGenesis`] and a member's [`AccountMemberEndorsement`] of it |
 //! | `root_key` | Root-key rotation: [`RootKeyHandoff`] and the chain walk, [`root_key_at_epoch`] |
 //! | `device` | Device credentials: [`KemPublicKey`], [`DeviceCert`], and its verification |
 //! | `revocation` | Withdrawing a device: [`DeviceRevocation`] and its self-contained proof |
-//! | `pairing` | Linking a new device: the pairing statement and the human-compared code |
+//! | `pairing` | Linking a new device: [`PairingOffer`], its statement, and the human-compared code |
 //! | `domain` | Every signing domain in one place, so they stay pairwise distinct |
 //! | `error` | [`AccountError`] — why a credential failed |
+//!
+//! Each module's header carries a `# Why it is shaped this way` section holding
+//! the design arguments for what is in it, so an item's own docs can stay the
+//! contract a caller needs: what it checks, what it returns, and how it fails.
 //!
 //! Every public item is re-exported here, so `calimero_account::DeviceCert`
 //! keeps working regardless of which module it moved to.
@@ -64,6 +69,7 @@ mod error;
 mod pairing;
 mod revocation;
 mod root_key;
+mod signed;
 
 #[cfg(test)]
 mod tests;
@@ -79,20 +85,22 @@ pub use calimero_primitives::identity::{
 };
 
 pub use crate::account::{
-    sign_account_endorsement, verify_account_endorsement, AccountGenesis, AccountMemberEndorsement,
-    ACCOUNT_GENESIS_VERSION,
+    AccountGenesis, AccountMemberEndorsement, VerifiedEndorsement, ACCOUNT_GENESIS_VERSION,
 };
-pub use crate::device::{
-    sign_device_cert, verify_device_cert, DeviceCert, KemPublicKey, VerifiedDeviceCert,
-};
+pub use crate::device::{DeviceCert, KemPublicKey, VerifiedDeviceCert};
 pub use crate::error::AccountError;
-pub use crate::pairing::{
-    pairing_code_matches, pairing_confirmation_code, pairing_statement_payload,
-    sign_pairing_statement, verify_pairing_statement,
-};
-pub use crate::revocation::{
-    sign_device_revocation, verify_device_revocation, DeviceRevocation, SignedDeviceRevocation,
-};
-pub use crate::root_key::{
-    root_key_at_epoch, sign_root_key_handoff, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS,
-};
+pub use crate::pairing::PairingOffer;
+pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
+pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
+pub use crate::signed::{AccountProof, RootSigned, Verified};
+
+// The two end-to-end verifiers keep free-function form: each takes an anchor and a
+// BORROWED chain, which is what the apply paths hold, and a method would force them
+// to allocate an `AccountProof` per check just to throw it away. A caller that
+// already has a proof should use `AccountProof::verify` instead.
+//
+// `verify_root_signed`, the generic they share, is deliberately NOT exported: it has
+// no caller outside this crate, and an unused `pub fn` in a crate that forbids dead
+// code is a claim about an API nobody asked for. Re-export it when something needs it.
+pub use crate::device::verify_device_cert;
+pub use crate::revocation::verify_device_revocation;
