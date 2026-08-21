@@ -709,8 +709,24 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }))
     }
 
+    /// Number of children.
+    ///
+    /// Reads the child trie's maintained count — one row — rather than
+    /// materialising every child id. That distinction is not cosmetic: a
+    /// contract that derives an id from the current length counts on EVERY
+    /// write, so a linear count is a linear write, and the collection walls on
+    /// gas again with the index layer doing nothing wrong. (Measured: the chat
+    /// contract reached 1,187 messages with a linear `len` and stops walling
+    /// entirely without it.)
+    ///
+    /// The cache is preferred when it is already materialised, since then the
+    /// answer costs nothing. `CollectionMut::insert` writes the trie before
+    /// touching the cache, so the two never disagree.
     fn len(&self) -> StoreResult<usize> {
-        Ok(self.children_cache()?.len())
+        if let Some(cached) = self.children_ids.borrow().as_ref() {
+            return Ok(cached.len());
+        }
+        Ok(<crate::child_trie::ChildTrie<S>>::new(self.id()).len() as usize)
     }
 
     fn entries(

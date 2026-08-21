@@ -76,6 +76,14 @@ const DOMAIN_ADDR: &[u8] = b"childtrie:v1:addr";
 pub struct TrieNode {
     /// `(nibble, subtree hash)`, sorted by nibble and at most 16 long.
     pub slots: Vec<(u8, [u8; 32])>,
+    /// Children beneath this node.
+    ///
+    /// Maintained along the spine an insert already walks, so `len()` is a
+    /// single row read instead of a full enumeration. Without it, counting is
+    /// O(n) — and a caller that counts on every write (deriving an id from the
+    /// current length, say) reintroduces exactly the cost this type removes,
+    /// with the trie doing nothing wrong.
+    pub count: u64,
 }
 
 impl TrieNode {
@@ -96,6 +104,9 @@ impl TrieNode {
         }
     }
 
+    /// Deliberately does NOT fold `count`: it is derived from the same slots,
+    /// so hashing it would add nothing while giving a book-keeping slip the
+    /// power to fork the root.
     fn hash(&self) -> [u8; 32] {
         if self.slots.is_empty() {
             return EMPTY;
@@ -181,6 +192,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     fn write_node(&self, path: &[u8], node: &TrieNode) {
         let key = Key::ChildTrie(addr(self.parent, path));
         if node.slots.is_empty() {
+            debug_assert_eq!(node.count, 0, "a slotless node cannot hold children");
             let _ignored = S::storage_remove(key);
         } else if let Ok(bytes) = to_vec(node) {
             let _ignored = S::storage_write(key, &bytes);
@@ -207,12 +219,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Walks from the bucket back to the root, so the cost is `DEPTH` rows
     /// regardless of how many children the parent holds. This is the whole
     /// point of the structure.
-    fn refresh_spine(&self, child: Id, bucket_hash: [u8; 32]) -> [u8; 32] {
+    fn refresh_spine(&self, child: Id, bucket_hash: [u8; 32], delta: i64) -> [u8; 32] {
         let mut below = bucket_hash;
         for level in (0..DEPTH).rev() {
             let path: Vec<u8> = (0..level).map(|i| nibble(child, i)).collect();
             let mut node = self.read_node(&path);
             node.set(nibble(child, level), below);
+            node.count = node.count.saturating_add_signed(delta);
             self.write_node(&path, &node);
             below = node.hash();
         }
@@ -225,12 +238,18 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
         let mut bucket = self.read_bucket(&path);
 
-        match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
-            Ok(i) => bucket.entries[i] = child,
-            Err(i) => bucket.entries.insert(i, child),
-        }
+        let delta = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
+            Ok(i) => {
+                bucket.entries[i] = child;
+                0
+            }
+            Err(i) => {
+                bucket.entries.insert(i, child);
+                1
+            }
+        };
         self.write_bucket(&path, &bucket);
-        self.refresh_spine(id, bucket.hash())
+        self.refresh_spine(id, bucket.hash(), delta)
     }
 
     /// Remove `child_id`. Returns the new root hash.
@@ -243,7 +262,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         {
             let _removed = bucket.entries.remove(i);
             self.write_bucket(&path, &bucket);
-            return self.refresh_spine(child_id, bucket.hash());
+            return self.refresh_spine(child_id, bucket.hash(), -1);
         }
         self.root()
     }
@@ -258,6 +277,21 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             .binary_search_by_key(&child_id, ChildInfo::id)
             .ok()
             .map(|i| bucket.entries[i].clone())
+    }
+
+    /// Number of children, without enumerating them.
+    ///
+    /// One row read. The linear alternative — walking every bucket — is what a
+    /// caller that counts on each write would pay per write.
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        self.read_node(&[]).count
+    }
+
+    /// Whether the parent has no children.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// The trie's root hash — a function of the child set, not of insert order.
@@ -576,5 +610,64 @@ mod cost {
             at_50k < 4_000,
             "a link must stay in the low kilobytes, got {at_50k}"
         );
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+    use crate::entities::Metadata;
+    use crate::store::MainStorage;
+
+    fn child(seed: u16) -> ChildInfo {
+        let id = Id::new(Sha256::digest(seed.to_be_bytes()).into());
+        ChildInfo::new(id, [1; 32], Metadata::default())
+    }
+
+    #[test]
+    fn the_count_tracks_inserts_and_removals() {
+        let trie = ChildTrie::<MainStorage>::new(Id::new(Sha256::digest(b"count").into()));
+        assert_eq!(trie.len(), 0);
+        assert!(trie.is_empty());
+
+        for i in 0..300_u16 {
+            let _root = trie.insert(child(i));
+        }
+        assert_eq!(trie.len(), 300);
+        assert_eq!(
+            trie.len() as usize,
+            trie.children().len(),
+            "count must match enumeration"
+        );
+
+        // Re-inserting the same child is an update, not a new child.
+        let _root = trie.insert(child(7));
+        assert_eq!(trie.len(), 300);
+
+        for i in 0..50_u16 {
+            let _root = trie.remove(child(i).id());
+        }
+        assert_eq!(trie.len(), 250);
+        assert_eq!(trie.len() as usize, trie.children().len());
+
+        // Removing something absent must not drift the count.
+        let _root = trie.remove(child(9_999).id());
+        assert_eq!(trie.len(), 250);
+    }
+
+    #[test]
+    fn the_count_does_not_change_the_root() {
+        // `count` is derived book-keeping. Folding it into the hash would let a
+        // counting slip fork the root, so the two must be independent.
+        let a = ChildTrie::<MainStorage>::new(Id::new(Sha256::digest(b"root-a").into()));
+        let b = ChildTrie::<MainStorage>::new(Id::new(Sha256::digest(b"root-b").into()));
+        for i in 0..20_u16 {
+            let _root = a.insert(child(i));
+        }
+        for i in (0..20_u16).rev() {
+            let _root = b.insert(child(i));
+        }
+        assert_eq!(a.root(), b.root());
+        assert_eq!(a.len(), b.len());
     }
 }
