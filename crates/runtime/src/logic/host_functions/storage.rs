@@ -48,7 +48,10 @@ impl VMHostFunctions<'_> {
 
         if let Some(value) = logic.storage.get(&key) {
             let value_len = value.len();
+            let read_bytes = (key.len() + value_len) as u64;
             self.with_logic_mut(|logic| {
+                logic.storage_reads = logic.storage_reads.saturating_add(1);
+                logic.storage_read_bytes = logic.storage_read_bytes.saturating_add(read_bytes);
                 logic.registers.set(logic.limits, dest_register_id, value)
             })?;
 
