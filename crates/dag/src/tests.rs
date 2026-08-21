@@ -154,8 +154,8 @@ async fn test_dag_add_delta_with_outcome_tri_state() {
         dag.add_delta_with_outcome(delta1.clone(), &applier)
             .await
             .unwrap(),
-        AddDeltaOutcome::Applied,
-        "fresh delta with present parent applies immediately",
+        AddDeltaOutcome::Applied { cascaded: vec![] },
+        "fresh delta with present parent applies immediately, unblocking nothing",
     );
 
     assert_eq!(
@@ -166,7 +166,7 @@ async fn test_dag_add_delta_with_outcome_tri_state() {
 
     assert_eq!(
         dag.add_delta_with_outcome(delta2, &applier).await.unwrap(),
-        AddDeltaOutcome::Applied,
+        AddDeltaOutcome::Applied { cascaded: vec![] },
         "chained delta with applied parent also applies immediately",
     );
 
@@ -253,6 +253,54 @@ async fn test_dag_multiple_pending_sequential() {
     assert_eq!(applied, vec![[1; 32], [2; 32], [3; 32]]);
     assert_eq!(dag.pending_stats().count, 0);
     assert_eq!(dag.get_heads(), vec![[3; 32]]);
+}
+
+/// The outcome must name the deltas the apply DRAINED, not just report that
+/// something applied. A caller keeping a view alongside the applier folds the
+/// delta it passed in; without this list the drained children are invisible to
+/// it, so its view lags the applier's by however much was buffered — which is
+/// how the unified-op projection ended up answering at-cut reads from a log
+/// missing ops the live store held.
+#[tokio::test]
+async fn test_dag_outcome_reports_the_drained_cascade() {
+    use crate::AddDeltaOutcome;
+
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // root -> d1 -> d2 -> d3, delivered so that d2 and d3 wait on d1.
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    let delta3 = CausalDelta::new_test([3; 32], vec![[2; 32]], TestPayload { value: 3 });
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta3, &applier).await.unwrap(),
+        AddDeltaOutcome::Pending,
+    );
+    assert_eq!(
+        dag.add_delta_with_outcome(delta2, &applier).await.unwrap(),
+        AddDeltaOutcome::Pending,
+    );
+
+    // d1 arrives and takes the whole chain with it. The cascade is reported in
+    // apply order, and excludes d1 itself — the caller already has that one.
+    assert_eq!(
+        dag.add_delta_with_outcome(delta1, &applier).await.unwrap(),
+        AddDeltaOutcome::Applied {
+            cascaded: vec![[2; 32], [3; 32]]
+        },
+        "the outcome must name what the apply drained, in the order it applied",
+    );
+
+    // The applier saw exactly the ids the outcome accounts for: d1 (passed in)
+    // followed by the reported cascade. Asserting against the applier is the
+    // point — it is the view the caller has to stay level with.
+    assert_eq!(
+        applier.get_applied().await,
+        vec![[1; 32], [2; 32], [3; 32]],
+        "cascade + the delta itself must be exactly what the applier applied",
+    );
+    assert_eq!(dag.pending_stats().count, 0);
 }
 
 #[tokio::test]
