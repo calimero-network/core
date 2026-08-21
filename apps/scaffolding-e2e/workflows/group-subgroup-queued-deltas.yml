@@ -42,7 +42,6 @@ description: >
   can accumulate first.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -122,7 +121,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: queued-deltas-subgroup
+    group_name: queued-deltas-subgroup
     outputs:
       subgroup_id: groupId
 

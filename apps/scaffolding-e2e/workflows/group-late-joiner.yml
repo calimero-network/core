@@ -6,7 +6,6 @@ description: >
   well as new writes after joining.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

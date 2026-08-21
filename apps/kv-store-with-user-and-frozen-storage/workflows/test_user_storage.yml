@@ -30,7 +30,6 @@ steps:
     path: "./res/kv_store_with_user_and_frozen_storage.wasm"
     nodes:
       - new-calimero-node-2
-    capability: member
     outputs:
       context_id: contextId
       member_public_key: memberPublicKey

@@ -77,7 +77,6 @@ steps:
     path: res/scaffolding_e2e.wasm
     nodes:
       - sortedset-node-2
-    capability: member
     outputs:
       context_id: contextId
       node1_key: memberPublicKey

@@ -49,7 +49,6 @@ description: >
   someone from a public channel and they just walked straight back in."
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -155,7 +154,7 @@ steps:
     type: create_group_in_namespace
     node: kick-rejoin-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: open-channel
+    group_name: open-channel
     outputs:
       subgroup_id: groupId
 

@@ -11,7 +11,6 @@ description: >
   Spec: docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -52,7 +51,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{ns_id}}'
-    group_alias: cascade-a
+    group_name: cascade-a
     outputs:
       group_a: groupId
 
@@ -60,7 +59,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{ns_id}}'
-    group_alias: cascade-b
+    group_name: cascade-b
     outputs:
       group_b: groupId
 
@@ -68,7 +67,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{ns_id}}'
-    group_alias: cascade-c-initial
+    group_name: cascade-c-initial
     outputs:
       group_c: groupId
 

@@ -87,7 +87,6 @@ description: >
   recovery phrase, and there is no way to stop that machine from writing."
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

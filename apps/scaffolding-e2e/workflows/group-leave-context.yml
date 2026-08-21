@@ -5,7 +5,6 @@ description: >
   leaver can rejoin via `join_context` and resume syncing.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -63,7 +62,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: leave-context-subgroup
+    group_name: leave-context-subgroup
     outputs:
       subgroup_id: groupId
 

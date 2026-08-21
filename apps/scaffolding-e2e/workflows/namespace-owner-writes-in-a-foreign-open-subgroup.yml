@@ -143,7 +143,7 @@ steps:
     type: create_group_in_namespace
     node: owner-foreign-sub-node-2
     namespace_id: '{{namespace_id}}'
-    group_alias: foreign-open-subgroup
+    group_name: foreign-open-subgroup
     outputs:
       subgroup_id: groupId
 

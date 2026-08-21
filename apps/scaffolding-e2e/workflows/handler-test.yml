@@ -8,7 +8,6 @@ description: >
     3. get_handler_execution_count reflects handler invocations.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

@@ -9,7 +9,6 @@ description: >
   logs so the steady-state mesh size is captured in the artifact.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

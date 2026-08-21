@@ -38,7 +38,6 @@ description: >
   chain on the admin-add path.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

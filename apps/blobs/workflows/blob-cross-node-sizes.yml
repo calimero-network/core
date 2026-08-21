@@ -84,7 +84,6 @@ steps:
     path: "res/blobs.wasm"
     nodes:
       - rust-blob-size-2
-    capability: member
     outputs:
       context_id: contextId
 

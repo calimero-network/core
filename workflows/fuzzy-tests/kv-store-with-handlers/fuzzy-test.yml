@@ -31,7 +31,6 @@ steps:
       - fuzzy-handlers-node-2
       - fuzzy-handlers-node-3
       - fuzzy-handlers-node-4
-    capability: member
     outputs:
       handlers_context_id: contextId
       handlers_node1_key: memberPublicKey

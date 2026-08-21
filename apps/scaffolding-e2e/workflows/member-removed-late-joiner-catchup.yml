@@ -27,7 +27,6 @@ description: >
       hasn't materialized
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

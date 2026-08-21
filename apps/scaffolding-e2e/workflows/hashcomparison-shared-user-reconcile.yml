@@ -70,7 +70,6 @@ description: >
   and the assertions only depend on final convergence.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 

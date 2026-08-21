@@ -5,7 +5,6 @@ description: >
   apply-side checks: direct-row required, last-admin protection.
 
 force_pull_image: false
-near_devnet: false
 
 auth_mode: embedded
 
@@ -92,7 +91,7 @@ steps:
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
-    group_alias: leave-group-subgroup
+    group_name: leave-group-subgroup
     outputs:
       subgroup_id: groupId
 
