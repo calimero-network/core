@@ -321,12 +321,16 @@ pub struct ScopeProjections {
     /// Op ids already retained per scope — gives `ingest_op` O(1) dedup of a
     /// replayed delta instead of an O(n) scan of the log.
     seen: HashMap<ScopeId, HashSet<[u8; 32]>>,
-    /// Index in `logs` of each op id currently folded as `Noop`, per scope. The
-    /// late-decrypt upgrade (a non-`Noop` payload re-ingested for a `Noop`-folded id)
-    /// uses it to replace the entry in O(1) instead of scanning the whole log, and the
-    /// common no-upgrade re-ingest skips the scan entirely (id not present here).
-    /// Entries are removed once upgraded, so it only ever holds still-undecrypted ops.
-    noop_log_pos: HashMap<ScopeId, HashMap<[u8; 32], usize>>,
+    /// Index in `logs` of each op id currently folded as `Opaque`, per scope — an
+    /// op this node could not decrypt. The late-decrypt upgrade (a readable payload
+    /// re-ingested for an id folded as a hole) uses it to replace the entry in O(1)
+    /// instead of scanning the whole log, and the common no-upgrade re-ingest skips
+    /// the scan entirely (id not present here). Entries are removed once upgraded, so
+    /// it only ever holds ops still waiting for a key.
+    ///
+    /// `Noop` is deliberately NOT tracked: an op the projection models nothing about
+    /// was read correctly and has nothing to upgrade to.
+    opaque_log_pos: HashMap<ScopeId, HashMap<[u8; 32], usize>>,
     /// Namespaces already replayed from persisted state, so `backfill_namespace`
     /// walks each governance DAG at most once (the live feed maintains it after).
     backfilled: HashSet<[u8; 32]>,
@@ -361,17 +365,17 @@ impl ScopeProjections {
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id()) {
             let log = self.logs.entry(op.scope).or_default();
-            if matches!(op.payload, OpPayload::Noop) {
+            if matches!(op.payload, OpPayload::Opaque { .. }) {
                 // Remember where this still-undecrypted op sits so a later decrypted
                 // re-ingest can upgrade it in O(1) (see below).
                 let _ = self
-                    .noop_log_pos
+                    .opaque_log_pos
                     .entry(op.scope)
                     .or_default()
                     .insert(op.id(), log.len());
             }
             log.push(op.clone());
-        } else if !matches!(op.payload, OpPayload::Noop) {
+        } else if !matches!(op.payload, OpPayload::Opaque { .. }) {
             // Already seen, but `op.id()` is the SIGNED op's content hash, not the decoded
             // payload's — so an encrypted op first folded as `Noop` (applied before its
             // group key arrived) shares an id with its later, decrypted form. The op-log
@@ -383,7 +387,7 @@ impl ScopeProjections {
             // common re-ingest (already a real payload) is an O(1) miss, and an actual
             // upgrade is an O(1) indexed replace — no log scan either way.
             if let Some(idx) = self
-                .noop_log_pos
+                .opaque_log_pos
                 .get_mut(&op.scope)
                 .and_then(|m| m.remove(&op.id()))
             {
@@ -398,7 +402,7 @@ impl ScopeProjections {
     /// Cap the retained op-log for `scope` so the live feed can't grow memory
     /// without bound. When the log crosses [`MAX_LIVE_LOG_OPS`] it is trimmed to
     /// [`LIVE_LOG_LOW_WATER`] (batched, so eviction is amortized), dropping the
-    /// oldest ops. `seen` and `noop_log_pos` are kept consistent with the
+    /// oldest ops. `seen` and `opaque_log_pos` are kept consistent with the
     /// trimmed log. The retained window matches the backfill walk's cap, so
     /// `acl_view_at` for a cut older than the window degrades exactly as it
     /// already does for a context whose history exceeded the backfill cap.
@@ -421,13 +425,13 @@ impl ScopeProjections {
                 let _ = seen.remove(id);
             }
         }
-        // `noop_log_pos` values are indices into `log`, which just shifted by
+        // `opaque_log_pos` values are indices into `log`, which just shifted by
         // `drain`; rebuild from the retained log (only runs on eviction).
-        if let Some(noop) = self.noop_log_pos.get_mut(&scope) {
-            noop.clear();
+        if let Some(opaque) = self.opaque_log_pos.get_mut(&scope) {
+            opaque.clear();
             for (idx, op) in log.iter().enumerate() {
-                if matches!(op.payload, OpPayload::Noop) {
-                    let _ = noop.insert(op.id(), idx);
+                if matches!(op.payload, OpPayload::Opaque { .. }) {
+                    let _ = opaque.insert(op.id(), idx);
                 }
             }
         }
@@ -2468,12 +2472,92 @@ mod tests {
         );
     }
 
+    /// The regression this variant exists for, on the production path: a
+    /// `KeyDelivery` is a root op the projection models nothing about, so it folds
+    /// `Noop` — and a cut behind it must still be READABLE. It is not an op anyone
+    /// failed to decrypt; it simply says nothing about membership.
+    ///
+    /// While both cases shared `Noop`, this made a cut provisional on every node,
+    /// including the admin that minted the key, and every scenario publishes one
+    /// of these on its first add. A measured 68% of the divergence gate's
+    /// comparisons abstained on the strength of it.
     #[test]
-    fn undecryptable_group_op_folds_as_a_noop_graph_node() {
+    fn a_readable_op_the_projection_models_nothing_about_leaves_the_cut_readable() {
+        let ns = [0x21; 32];
+        let signer = PublicKey::from([2u8; 32]);
+        let scope = ScopeId::from(ns);
+        let group = ContextGroupId::from([0x22; 32]);
+
+        // Key transport: readable by construction — nothing about it is encrypted
+        // to a group — and modelled by nothing.
+        let key_delivery = SignedNamespaceOp {
+            version: 1,
+            namespace_id: ns.into(),
+            parent_op_hashes: Vec::new(),
+            signer,
+            nonce: 0,
+            op: NamespaceOp::Root(calimero_governance_types::RootOp::KeyDelivery {
+                group_id: group.to_bytes().into(),
+                envelope: calimero_governance_types::KeyEnvelope {
+                    recipient: calimero_governance_types::EnvelopeRecipient::Member {
+                        identity: signer,
+                        ephemeral_pk: signer,
+                    },
+                    sender: signer,
+                    nonce: [0u8; 12],
+                    ciphertext: Vec::new(),
+                    signature: [0u8; 64],
+                },
+            }),
+            signature: [0u8; 64],
+        };
+        let delivery_op = op_from_namespace_op(&key_delivery, None, [0xA1; 32], hlc(1), &[]);
+        assert_eq!(
+            delivery_op.payload,
+            OpPayload::Noop,
+            "key transport folds to Noop — read fine, models nothing"
+        );
+
+        let mut proj = ScopeProjections::new();
+        proj.ingest_op(&delivery_op);
+
+        let (complete, decoded) = proj.cut_ancestry_state(&scope, &[delivery_op.id()]);
+        assert!(complete, "the op is right there in the log");
+        assert!(
+            decoded,
+            "a cut through an op this node READ must not be provisional"
+        );
+
+        // Contrast: the same cut behind an op that truly could not be decrypted.
+        let opaque_op = op_from_namespace_op(
+            &signed_group(ns, signer, group),
+            None,
+            [0xA2; 32],
+            hlc(2),
+            &[delivery_op.id()],
+        );
+        proj.ingest_op(&opaque_op);
+        let (complete, decoded) = proj.cut_ancestry_state(&scope, &[opaque_op.id()]);
+        assert!(complete, "still no gaps");
+        assert!(
+            !decoded,
+            "a cut through an op this node could not read IS provisional"
+        );
+    }
+
+    #[test]
+    fn undecryptable_group_op_folds_as_an_opaque_graph_node() {
         // A group op we can't decrypt (no `decrypted` supplied) carries no
         // membership change we can read, but it MUST still become a node so an
         // ancestry walk can pass through it to the ops behind it (dropping it
         // would orphan them — the bug this guards against).
+        //
+        // It folds `Opaque`, NOT `Noop`, and the distinction is the point: `Noop`
+        // is what a readable op the projection models nothing about folds to, and
+        // sharing one variant made every cut behind such an op — a `KeyDelivery`,
+        // a metadata set — look unreadable to a node holding every key. `Opaque`
+        // also carries the group whose key is missing, which the envelope states
+        // in cleartext even when the body cannot be read.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let group = ContextGroupId::from([0x33; 32]);
@@ -2486,8 +2570,8 @@ mod tests {
         );
         assert_eq!(
             op.payload,
-            OpPayload::Noop,
-            "undecryptable group op is a Noop node"
+            OpPayload::Opaque { group },
+            "an undecryptable group op is a hole that names its group, not a Noop"
         );
         assert_eq!(op.id(), [0x99; 32], "but it still occupies its DAG node");
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");

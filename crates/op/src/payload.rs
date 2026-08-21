@@ -202,4 +202,31 @@ pub enum OpPayload {
         /// The root-signed grant binding the joining device.
         cert: DeviceCert,
     },
+
+    // ---- unreadable ----
+    /// An encrypted group op this node holds no key for: a hole in the fold, at
+    /// its right place in the causal graph.
+    ///
+    /// Distinct from [`Self::Noop`], which is the OTHER reason a fold produces
+    /// nothing — the op was read perfectly well and the projection models nothing
+    /// about it (key transport, metadata, a context registration). Those two
+    /// answers used to share `Noop`, and every reader that asked "is this cut's
+    /// ancestry readable" therefore said no whenever a namespace contained a
+    /// `KeyDelivery`, which is every namespace: an at-cut answer was treated as
+    /// provisional on nodes holding every key, and a measured 68% of the
+    /// divergence gate's comparisons abstained for want of nothing at all.
+    ///
+    /// Folding it changes no state — the state it would have written is
+    /// unknowable here, and that is the point. What it records is that something
+    /// WAS dropped, so a reader can abstain deliberately instead of answering from
+    /// a fold with an invisible hole in it.
+    ///
+    /// `group` is the envelope's cleartext group id, which survives the failed
+    /// decrypt. It is what lets a reader ask the narrower question — an
+    /// unreadable op in a sibling subgroup cannot change who is a member of
+    /// THIS one — rather than treating every hole as fatal to every question.
+    Opaque {
+        /// The group whose key would decrypt this op.
+        group: ContextGroupId,
+    },
 }

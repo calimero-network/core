@@ -204,6 +204,13 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
         }
         // A graph-only node mutates nothing, so there is nothing to authorize.
         OpPayload::Noop => Ok(()),
+        // Neither does a hole. An op this node could not decrypt writes no state
+        // here, so there is no rule to apply — and inventing a refusal would be
+        // wrong in the other direction: the op may well be authorized, this node
+        // simply cannot see what it says. Authorization of its real payload
+        // happens on the nodes that can read it, and on this one once a key
+        // arrives and the op re-folds.
+        OpPayload::Opaque { .. } => Ok(()),
 
         // ---- account plane ----
         OpPayload::DeviceLinked {

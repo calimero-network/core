@@ -442,6 +442,10 @@ impl ScopeState {
             // A graph-only node: present in the log so an ancestry walk can
             // traverse through it, but it folds to nothing.
             OpPayload::Noop => {}
+            // A hole folds to nothing, exactly like `Noop` — the difference is
+            // not what it does to the state, it is what it tells a reader about
+            // the state's completeness. `cut_ancestry` is where that lands.
+            OpPayload::Opaque { .. } => {}
 
             // ---- account plane (monotone; no LWW stamp) ----
             OpPayload::DeviceLinked {
@@ -819,7 +823,12 @@ impl ScopeState {
             }
             match by_id.get(&id) {
                 Some(op) => {
-                    if opaque.is_none() && matches!(op.payload, OpPayload::Noop) {
+                    // `Opaque` only. A `Noop` is an op this node READ and the
+                    // projection models nothing about — key transport, metadata, a
+                    // context registration — and counting it as unreadable made
+                    // every cut behind the first `KeyDelivery` in a namespace
+                    // provisional, on every node, however many keys it held.
+                    if opaque.is_none() && matches!(op.payload, OpPayload::Opaque { .. }) {
                         opaque = Some(id);
                     }
                     ops.push(op);
@@ -1219,7 +1228,10 @@ mod ancestry_oracle {
                 continue;
             }
             match by_id.get(&id) {
-                Some(op) if matches!(op.payload, OpPayload::Noop) => return false,
+                // `Opaque`, not `Noop`: the oracle tracks the corrected meaning of
+                // "readable" — an op this node could not DECRYPT, rather than any
+                // op the projection happens to model nothing about.
+                Some(op) if matches!(op.payload, OpPayload::Opaque { .. }) => return false,
                 Some(op) => queue.extend(op.parents.iter().copied()),
                 None => return false,
             }
@@ -1251,17 +1263,23 @@ mod ancestry_oracle {
     /// A chain `op[0] -> op[1] -> ... -> op[n-1]`, where bit `i` of `noop_mask`
     /// makes `op[i]` an undecrypted placeholder and bit `i` of `drop_mask` removes
     /// it from the log entirely.
-    fn chain(len: usize, noop_mask: u32, drop_mask: u32) -> (Vec<Op>, [u8; 32]) {
+    /// `kinds` is base-3, one digit per position: 0 = a modelled op, 1 = `Noop`
+    /// (read fine, models nothing), 2 = `Opaque` (unreadable here). Three kinds
+    /// rather than two because the two ways a fold produces nothing are exactly
+    /// what the walk has to tell apart.
+    fn chain(len: usize, kinds: u32, drop_mask: u32) -> (Vec<Op>, [u8; 32]) {
         let mut built: Vec<Op> = Vec::new();
         let mut prev: Vec<[u8; 32]> = Vec::new();
         for i in 0..len {
-            let payload = if noop_mask & (1 << i) != 0 {
-                OpPayload::Noop
-            } else {
-                OpPayload::Put {
+            let payload = match (kinds / 3u32.pow(u32::try_from(i).expect("small"))) % 3 {
+                1 => OpPayload::Noop,
+                2 => OpPayload::Opaque {
+                    group: calimero_context_config::types::ContextGroupId::from([0xC0; 32]),
+                },
+                _ => OpPayload::Put {
                     entity: calimero_storage::address::Id::root(),
                     value: vec![u8::try_from(i).expect("small")],
-                }
+                },
             };
             let op = op_with_parents(u64::try_from(i).expect("small") + 1, payload, prev.clone());
             prev = vec![op.id()];
@@ -1279,9 +1297,9 @@ mod ancestry_oracle {
 
     fn for_every_small_chain(mut check: impl FnMut(&[Op], &[[u8; 32]])) {
         for len in 1usize..=4 {
-            for noop_mask in 0u32..(1 << len) {
+            for kinds in 0u32..3u32.pow(u32::try_from(len).expect("small")) {
                 for drop_mask in 0u32..(1 << len) {
-                    let (log, head) = chain(len, noop_mask, drop_mask);
+                    let (log, head) = chain(len, kinds, drop_mask);
                     check(&log, &[head]);
                 }
             }
@@ -1336,8 +1354,10 @@ mod ancestry_oracle {
     /// the missing ancestor behind the placeholder.
     #[test]
     fn an_opaque_op_in_front_of_a_gap_is_both_undecoded_and_incomplete() {
-        // op0 <- op1(noop) <- op2, with op0 dropped from the log.
-        let (log, head) = chain(3, 0b010, 0b001);
+        // op0 <- op1(opaque) <- op2, with op0 dropped from the log. `kinds` is
+        // base-3 least-significant-digit-first, so 6 = (0, 2, 0): an `Opaque` in
+        // the middle position and modelled ops either side.
+        let (log, head) = chain(3, 6, 0b001);
         let walked = ScopeState::cut_ancestry(&log, &[head]);
 
         assert!(!walked.is_decoded(), "the placeholder must be reported");
@@ -1774,11 +1794,19 @@ mod tests {
     }
 
     #[test]
-    fn cut_ancestry_decoded_rejects_a_noop_in_the_ancestry() {
-        // add → re-add chain where the re-add is still an undecrypted `Noop`
-        // (its group key hasn't arrived). The ancestry is structurally COMPLETE —
-        // every id is present — but not fully DECODED, so a membership answer
-        // read over it is provisional and must not be flagged as a divergence.
+    fn cut_ancestry_decoded_rejects_an_unreadable_op_but_not_an_unmodelled_one() {
+        // add → re-add chain where the re-add is still undecrypted (its group key
+        // hasn't arrived), folded as `Opaque`. The ancestry is structurally
+        // COMPLETE — every id is present — but not fully DECODED, so a membership
+        // answer read over it is provisional and must not be flagged as a
+        // divergence.
+        //
+        // The second half is the distinction this used to miss: a `Noop` in the
+        // same position does NOT make the cut undecoded. `Noop` is what a
+        // perfectly readable op folds to when the projection models nothing about
+        // it — key transport, metadata, a context registration — and treating that
+        // as unreadable made every cut behind the first such op provisional, on
+        // every node, however many keys it held.
         let group = ContextGroupId::from([3u8; 32]);
         let member = AccountId::from([0x55; 32]);
         let scope = ScopeId::from([0u8; 32]);
@@ -1803,17 +1831,31 @@ mod tests {
                 role: GroupMemberRole::Member,
             },
         );
-        // The re-add op, still encrypted → retained as a `Noop` placeholder. Its
-        // content-id is stable across decrypt, so we model that by giving the
-        // Noop the same parents a decrypted re-add would carry.
-        let readd_noop = mk(vec![add.id()], OpPayload::Noop);
+        // The re-add op, still encrypted → retained as an `Opaque` placeholder.
+        // Its content-id is stable across decrypt, so we model that by giving the
+        // placeholder the same parents a decrypted re-add would carry.
+        let readd_noop = mk(vec![add.id()], OpPayload::Opaque { group });
 
         let log = vec![add.clone(), readd_noop.clone()];
 
         // Structurally complete — both ids reachable.
         assert!(ScopeState::cut_ancestry_complete(&log, &[readd_noop.id()]));
-        // But NOT fully decoded — the re-add is a Noop.
+        // But NOT fully decoded — the re-add is unreadable here.
         assert!(!ScopeState::cut_ancestry_decoded(&log, &[readd_noop.id()]));
+
+        // A readable op that models nothing, in the same position, leaves the cut
+        // DECODED. This is the case that used to abstain for nothing.
+        let unmodelled = mk(vec![add.id()], OpPayload::Noop);
+        let readable_log = vec![add.clone(), unmodelled.clone()];
+        assert!(ScopeState::cut_ancestry_complete(
+            &readable_log,
+            &[unmodelled.id()]
+        ));
+        assert!(
+            ScopeState::cut_ancestry_decoded(&readable_log, &[unmodelled.id()]),
+            "an op the projection models nothing about was still READ; a cut \
+             through it is not provisional",
+        );
 
         // Once the re-add decrypts (same id, real payload), it is decoded.
         let readd = mk(
