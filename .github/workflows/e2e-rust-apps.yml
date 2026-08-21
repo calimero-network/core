@@ -523,6 +523,17 @@ jobs:
           - workflow: discovery-bootstrap-only-4node
             file: workflows/discovery-bootstrap-only-4node.yml
             app: scaffolding-e2e
+          # The only scenario on any topology that exercises rendezvous
+          # register/discover WITHOUT also testing relay reservations and
+          # hole-punching. The two entries above are handed a full roster of
+          # sibling addresses, so they never ask anyone for one; the eight NAT
+          # `sync-resilience-*` scenarios do ask, but behind a gateway, which is
+          # why a discovery regression there reads as a NAT flake. A
+          # cookie-poisoning bug in exactly this path once shipped with CI green
+          # (see crates/network/src/manager_discovery_tests.rs).
+          - workflow: discovery-rendezvous-3node
+            file: workflows/discovery-rendezvous-3node.yml
+            app: scaffolding-e2e
           # #2422 auto-follow regression workflows.
           - workflow: auto-follow-on-context-registered
             file: workflows/auto-follow/auto-follow-on-context-registered.yml

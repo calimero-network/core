@@ -16,7 +16,12 @@ runs:
         # red at once and none of them had touched a scenario. Bumping is now a
         # deliberate edit here, and the PR that makes it runs the full e2e suite
         # against the new version before it becomes everyone's problem.
-        MEROBOX_VERSION="0.6.59"
+        # 0.6.60 adds `topology: { type: bootstrap }`, which
+        # workflows/discovery-rendezvous-3node.yml needs — on 0.6.59 that key
+        # fails schema validation ("only 'nat' is implemented") before any node
+        # starts. This is the deliberate bump the note above describes, and the
+        # PR carrying it runs the full suite against the new version.
+        MEROBOX_VERSION="0.6.60"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in
