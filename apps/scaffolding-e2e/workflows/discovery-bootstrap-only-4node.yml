@@ -75,68 +75,18 @@ steps:
     outputs:
       app_id: applicationId
 
-  - name: Create namespace on node-1
-    type: create_namespace
-    node: e2e-node-1
+  - name: Create the mesh - namespace, context and every joiner
+    type: create_mesh
+    context_node: e2e-node-1
     application_id: '{{app_id}}'
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - e2e-node-2
+      - e2e-node-3
+      - e2e-node-4
     outputs:
       ns: namespaceId
-
-  - name: Create context on node-1
-    type: create_context
-    node: e2e-node-1
-    application_id: '{{app_id}}'
-    group_id: '{{ns}}'
-    outputs:
       ctx: contextId
-
-  - name: Invite node-2 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_n2: invitation
-  - name: Node-2 joins namespace
-    type: join_namespace
-    node: e2e-node-2
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_n2}}'
-  - name: Node-2 joins context
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx}}'
-
-  - name: Invite node-3 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_n3: invitation
-  - name: Node-3 joins namespace
-    type: join_namespace
-    node: e2e-node-3
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_n3}}'
-  - name: Node-3 joins context
-    type: join_context
-    node: e2e-node-3
-    context_id: '{{ctx}}'
-
-  - name: Invite node-4 to namespace
-    type: create_namespace_invitation
-    node: e2e-node-1
-    namespace_id: '{{ns}}'
-    outputs:
-      invite_n4: invitation
-  - name: Node-4 joins namespace
-    type: join_namespace
-    node: e2e-node-4
-    namespace_id: '{{ns}}'
-    invitation: '{{invite_n4}}'
-  - name: Node-4 joins context
-    type: join_context
-    node: e2e-node-4
-    context_id: '{{ctx}}'
 
   # Barrier before the write, not decoration. `join_context` returns when the
   # join is accepted, while the joiner's context state materialises a moment
