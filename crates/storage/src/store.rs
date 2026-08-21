@@ -21,6 +21,12 @@ pub enum Key {
 
     /// Sync state key for tracking last sync time with a remote node.
     SyncState(Id),
+
+    /// A node in a parent's child trie. Its own keyspace so the tombstone GC,
+    /// which tells an index row from opaque entity data by re-serialising and
+    /// requiring byte-identical output, never sees a trie node where it expects
+    /// an `EntityIndex`.
+    ChildTrie(Id),
 }
 
 impl Key {
@@ -39,6 +45,10 @@ impl Key {
             }
             Self::SyncState(id) => {
                 bytes[0] = 2;
+                bytes[1..33].copy_from_slice(id.as_bytes());
+            }
+            Self::ChildTrie(id) => {
+                bytes[0] = 3;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }

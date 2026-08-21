@@ -11,6 +11,7 @@
 
 pub mod action;
 pub mod address;
+pub mod child_trie;
 pub mod collections;
 pub mod constants;
 pub mod delta;
