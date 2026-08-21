@@ -72,3 +72,27 @@ fn root_fans_out_flat_when_records_carry_nested_collections() {
         "expected ~150 nested collections to land directly on ROOT, saw +{added}"
     );
 }
+
+/// How big is the blob that gets rewritten on every single link?
+#[test]
+fn measure_the_children_blob() {
+    use calimero_storage::store::{Key, MainStorage, StorageAdaptor};
+
+    let mut keep: Vec<UnorderedSet<[u8; 8]>> = Vec::new();
+    for i in 0_u64..200 {
+        let mut set = UnorderedSet::<[u8; 8]>::new();
+        let _ = set.insert(i.to_be_bytes());
+        keep.push(set);
+    }
+
+    let raw = MainStorage::storage_read(Key::Index(Id::root())).expect("root index row");
+    let children = <Index<MainStorage>>::get_children_of(Id::root()).expect("children");
+    let n = children.len();
+    println!("ROOT children: {n}");
+    println!("ROOT index row: {} bytes", raw.len());
+    println!("per child: ~{} bytes", raw.len() / n.max(1));
+    println!(
+        "one link at this size rewrites {} bytes and folds {n} SHA-256 inputs",
+        raw.len()
+    );
+}
