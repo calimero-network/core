@@ -909,7 +909,10 @@ impl<S: StorageAdaptor> Index<S> {
 
             // Log when root hash changes
             if parent_id.is_root() && old_full_hash != parent_index.full_hash {
-                let children_count = <ChildTrie<S>>::new(parent_id).children().len();
+                // `len()`, not `children().len()`: this runs on the ancestor
+                // recompute of every write, and enumerating the trie here made
+                // each write read every child of the parent.
+                let children_count = <ChildTrie<S>>::new(parent_id).len();
                 info!(
                     target: "storage::merkle",
                     parent_id = %parent_id,
@@ -1197,12 +1200,25 @@ impl<S: StorageAdaptor> Index<S> {
 
         // Log detailed info for root entity hash updates
         if id.is_root() {
-            let root_children = <ChildTrie<S>>::new(id).children();
-            let children_count = root_children.len();
-            let children_hashes: Vec<String> = root_children
-                .iter()
-                .map(|child| format!("{}:{}", child.id(), hex::encode(child.merkle_hash())))
-                .collect();
+            // O(1): the trie maintains the count. Enumerating every child here
+            // put a LINEAR READ on every root hash update — that is, on every
+            // write — and hex-formatted each one into a String on the way.
+            // Measured at 599 records: 7,697 reads and 640 KB read for a single
+            // insert, versus 76 writes. It was also built eagerly, so the cost
+            // was paid even when the log level discarded the result.
+            let children_count = <ChildTrie<S>>::new(id).len();
+            // The per-child dump is a genuine diagnostic, so keep it — but only
+            // materialise it when something is actually listening at TRACE.
+            let children_hashes: Vec<String> = if tracing::enabled!(target: "storage::merkle", tracing::Level::TRACE)
+            {
+                <ChildTrie<S>>::new(id)
+                    .children()
+                    .iter()
+                    .map(|child| format!("{}:{}", child.id(), hex::encode(child.merkle_hash())))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             info!(
                 target: "storage::merkle",
                 %id,
