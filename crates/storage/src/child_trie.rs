@@ -266,7 +266,16 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         self.read_node(&[]).hash()
     }
 
-    /// Every child, ascending by id.
+    /// Every child, in [`ChildInfo`]'s own order — `(created_at, id)`.
+    ///
+    /// That order is load-bearing, NOT cosmetic: `Vector::get(idx)` walks a
+    /// collection's children in it, so a child's position is its insertion
+    /// position. Enumerating by id instead would silently reorder every
+    /// `Vector` in the system while every hash still matched.
+    ///
+    /// The trie's internal layout is keyed by id, and its hash folds buckets in
+    /// id order — that is what makes the root canonical. Enumeration order is a
+    /// separate concern, applied here on the way out.
     ///
     /// Linear in the number of children by nature; the structure exists to make
     /// *writes* independent of size, not to make a full enumeration cheaper.
@@ -274,7 +283,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     pub fn children(&self) -> Vec<ChildInfo> {
         let mut out = Vec::new();
         self.collect(&mut Vec::new(), &mut out);
-        out.sort_by_key(ChildInfo::id);
+        out.sort();
         out
     }
 
@@ -289,6 +298,51 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             self.collect(path, out);
             let _popped = path.pop();
         }
+    }
+
+    /// Enumerate a parent's children using a caller-supplied reader.
+    ///
+    /// For callers that reach the store directly rather than through a
+    /// [`StorageAdaptor`] — raw-DB diagnostic and projection paths that
+    /// previously decoded the child list straight out of the parent's index row.
+    /// Children moved into this keyspace, so those callers need a way to walk it
+    /// without duplicating the addressing, which is what this provides.
+    ///
+    /// `read` is given the trie row's [`Key`] and returns its bytes, if present.
+    pub fn children_with<F>(parent: Id, read: F) -> Vec<ChildInfo>
+    where
+        F: Fn(Key) -> Option<Vec<u8>>,
+    {
+        fn walk<F: Fn(Key) -> Option<Vec<u8>>>(
+            parent: Id,
+            path: &mut Vec<u8>,
+            read: &F,
+            out: &mut Vec<ChildInfo>,
+        ) {
+            let key = Key::ChildTrie(addr(parent, path));
+            let Some(bytes) = read(key) else {
+                return;
+            };
+            if path.len() == DEPTH {
+                if let Ok(bucket) = TrieBucket::try_from_slice(&bytes) {
+                    out.extend(bucket.entries);
+                }
+                return;
+            }
+            let Ok(node) = TrieNode::try_from_slice(&bytes) else {
+                return;
+            };
+            for (nib, _) in node.slots {
+                path.push(nib);
+                walk(parent, path, read, out);
+                let _popped = path.pop();
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(parent, &mut Vec::new(), &read, &mut out);
+        out.sort();
+        out
     }
 
     /// Drop the whole trie.
@@ -402,9 +456,13 @@ mod tests {
         let all = trie.children();
         assert_eq!(all.len(), 200);
 
-        // Ascending by id, and no duplicates.
+        // Enumeration follows ChildInfo's own (created_at, id) order, which
+        // Vector::get(idx) depends on — see `children`.
         for pair in all.windows(2) {
-            assert!(pair[0].id() < pair[1].id(), "children must be sorted by id");
+            assert!(
+                pair[0] < pair[1],
+                "children must come back in ChildInfo order"
+            );
         }
     }
 

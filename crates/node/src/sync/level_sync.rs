@@ -984,8 +984,9 @@ fn get_local_hashes_at_level(
     match parent_ids {
         None => {
             // Level 0: get direct children of root
-            if let Some(children) = root_index.children() {
-                for child in children {
+            {
+                let _ = &root_index;
+                for child in Index::<MainStorage>::get_children_of(Id::root()).unwrap_or_default() {
                     let child_id = *child.id().as_bytes();
                     if let Some(child_hash) = Index::<MainStorage>::get_hashes_for(child.id())
                         .ok()
@@ -1001,8 +1002,11 @@ fn get_local_hashes_at_level(
             for parent_id in parents {
                 let parent_storage_id = Id::new(*parent_id);
                 if let Ok(Some(parent_index)) = Index::<MainStorage>::get_index(parent_storage_id) {
-                    if let Some(children) = parent_index.children() {
-                        for child in children {
+                    {
+                        let _ = &parent_index;
+                        for child in Index::<MainStorage>::get_children_of(parent_storage_id)
+                            .unwrap_or_default()
+                        {
                             let child_id = *child.id().as_bytes();
                             if let Some(child_hash) =
                                 Index::<MainStorage>::get_hashes_for(child.id())
@@ -1074,9 +1078,10 @@ fn get_nodes_at_level(
             crate::sync::hash_comparison_protocol::collect_deleted_children_wire(&parent_index),
         );
 
-        let Some(children) = parent_index.children() else {
+        let children = Index::<MainStorage>::get_children_of(parent_id).unwrap_or_default();
+        if children.is_empty() {
             continue;
-        };
+        }
 
         for child in children {
             let child_storage_id = child.id();
@@ -1090,8 +1095,9 @@ fn get_nodes_at_level(
             };
 
             let child_hash = child_index.full_hash();
-            let is_leaf = child_index.children().is_none()
-                || child_index.children().map(|c| c.is_empty()).unwrap_or(true);
+            let is_leaf = Index::<MainStorage>::get_children_of(child.id())
+                .unwrap_or_default()
+                .is_empty();
 
             // Determine parent_id for this node (None for level 0)
             let parent_id_bytes = if level == 0 {

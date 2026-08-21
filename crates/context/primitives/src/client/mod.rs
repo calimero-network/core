@@ -125,14 +125,17 @@ mod borsh_layout {
     use calimero_primitives::crdt::CrdtType;
 
     /// Captures every field [`super::ContextRegistry::dump_root`] needs in
-    /// a single pass: children (with metadata), full_hash, own_hash.
+    /// a single pass: full_hash and own_hash.
     /// `compute_root_hash_via_borsh` reads only `full_hash`.
+    ///
+    /// Children are no longer inline: they live in the parent's `ChildTrie`,
+    /// which is its own keyspace. A diagnostic that wants the child list has to
+    /// read the trie rather than decode it out of this row.
     #[derive(BorshDeserialize)]
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct EntityIndex {
         pub(super) id: [u8; 32],
         pub(super) parent_id: Option<[u8; 32]>,
-        pub(super) children: Option<Vec<ChildInfo>>,
         pub(super) full_hash: [u8; 32],
         pub(super) own_hash: [u8; 32],
     }
@@ -769,11 +772,14 @@ impl ContextRegistry {
     ) -> eyre::Result<[u8; 32]> {
         // Deserialize EntityIndex and extract full_hash
         // EntityIndex is borsh-serialized with full_hash at a known offset
-        // Structure: id(32) + parent_id(Option<32>) + children(Option<Vec>) + full_hash(32) + ...
+        // Structure: id(32) + parent_id(Option<32>) + full_hash(32) + ...
+        // Children are no longer inline — they live in the parent's ChildTrie,
+        // its own keyspace — so there is no variable-length field before
+        // full_hash and this parse is now always exact.
 
         if bytes.len() < 68 {
-            // Minimum size: id(32) + parent_id_tag(1) + children_tag(1) + full_hash(32) + own_hash(32) = 98
-            // But we check for 68 to be safe (id + tags + full_hash)
+            // Minimum size: id(32) + parent_id_tag(1) + full_hash(32) + own_hash(32) = 97
+            // But we check for 68 to be safe (id + tag + full_hash)
             eyre::bail!(
                 "EntityIndex too small: {} bytes, expected at least 68",
                 bytes.len()
@@ -783,7 +789,6 @@ impl ContextRegistry {
         // Parse the EntityIndex structure manually for efficiency
         // id: [u8; 32]
         // parent_id: Option<Id> - 1 byte tag + optional 32 bytes
-        // children: Option<Vec<ChildInfo>> - 1 byte tag + optional length + data
         // full_hash: [u8; 32]
 
         let mut offset = 32; // Skip id
@@ -793,14 +798,6 @@ impl ContextRegistry {
         offset += 1;
         if parent_tag == 1 {
             offset += 32; // Skip the Id bytes
-        }
-
-        // Skip children (Option<Vec<ChildInfo>>)
-        let children_tag = bytes[offset];
-        offset += 1;
-        if children_tag == 1 {
-            // Children present - use full borsh deserialization for correctness
-            return self.compute_root_hash_via_borsh(context_id, bytes);
         }
 
         // Now at full_hash position
@@ -989,19 +986,23 @@ impl ContextRegistry {
         let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader)
             .map_err(|e| eyre::eyre!("dump_root: EntityIndex deserialize failed: {e}"))?;
 
-        let children: Vec<RootChildDump> = index
-            .children
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| RootChildDump {
-                id: c.id,
-                merkle_hash: c.merkle_hash,
-                created_at: c.metadata.created_at,
-                updated_at: c.metadata.updated_at,
-                crdt_type: c.metadata.crdt_type,
-                field_name: c.metadata.field_name,
-            })
-            .collect();
+        // KNOWN GAP (child-trie migration): children are no longer inline in
+        // the EntityIndex row — they live in the parent's ChildTrie, a separate
+        // keyspace this raw-DB path does not yet walk.
+        //
+        // Returning an empty list here is NOT "the root has no children", and
+        // this diagnostic exists precisely to tell "matching children +
+        // mismatched own_hash" from "mismatched children → subtree divergence".
+        // Reading it as the former would misdiagnose. Warn so nobody triages off
+        // a silently empty list, and re-implement against the trie keyspace
+        // before relying on this path again.
+        tracing::warn!(
+            target: "calimero_context::dump_root",
+            %context_id,
+            "dump_root: child enumeration not yet implemented against ChildTrie — \
+             the empty child list below means UNKNOWN, not none"
+        );
+        let children: Vec<RootChildDump> = Vec::new();
 
         let entry_state_key = Self::entry_state_key(context_id);
         let entry_db_key = key::ContextState::new(*context_id, entry_state_key);

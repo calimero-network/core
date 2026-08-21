@@ -1306,10 +1306,11 @@ fn collect_leaves_recursive(
         }
     };
 
-    let children_ids: Vec<[u8; 32]> = index
-        .children()
-        .map(|children| children.iter().map(|c| *c.id().as_bytes()).collect())
-        .unwrap_or_default();
+    let children_ids: Vec<[u8; 32]> = Index::<MainStorage>::get_children_of(entity_id)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| *c.id().as_bytes())
+        .collect();
 
     if children_ids.is_empty() {
         // Leaf node — collect its data. Internal nodes (children non-empty)
@@ -1562,10 +1563,11 @@ pub(crate) fn get_local_tree_node(
     };
 
     let full_hash = index.full_hash();
-    let children_ids: Vec<[u8; 32]> = index
-        .children()
-        .map(|children| children.iter().map(|c| *c.id().as_bytes()).collect())
-        .unwrap_or_default();
+    let children_ids: Vec<[u8; 32]> = Index::<MainStorage>::get_children_of(entity_id)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| *c.id().as_bytes())
+        .collect();
 
     // Tombstones for children this node removed, resolved to signed
     // `EntityDeletion`s from each child's own tombstone index. Carried on the

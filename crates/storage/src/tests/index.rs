@@ -67,7 +67,12 @@ mod index__public_methods {
 
         assert_eq!(e1.id, root_id);
         assert_eq!(e1.parent_id, None);
-        assert_eq!(e1.children.as_ref().map(|v| v.len()).unwrap_or(0), 0);
+        assert_eq!(
+            <Index<MockedStorage<0>>>::get_children_of(e1.id)
+                .unwrap()
+                .len(),
+            0
+        );
         assert_ne!(e1.own_hash, [37; 32]);
         assert_eq!(e1.metadata.created_at, 1);
         assert_eq!(e1.metadata.updated_at, 1.into());
@@ -87,14 +92,24 @@ mod index__public_methods {
 
         assert_eq!(e1.id, root_id);
         assert_eq!(e1.parent_id, None);
-        assert_eq!(e1.children.as_ref().map(|v| v.len()).unwrap_or(0), 1);
+        assert_eq!(
+            <Index<MockedStorage<1>>>::get_children_of(e1.id)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(e1.own_hash, [37; 32]);
         assert_eq!(e1.metadata.created_at, 43);
         assert_eq!(e1.metadata.updated_at, 22.into());
 
         assert_eq!(e2.id, p1_id);
         assert_eq!(e2.parent_id, Some(Id::root()));
-        assert_eq!(e2.children.as_ref().map(|v| v.len()).unwrap_or(0), 0);
+        assert_eq!(
+            <Index<MockedStorage<1>>>::get_children_of(e2.id)
+                .unwrap()
+                .len(),
+            0
+        );
         assert_ne!(e2.own_hash, [37; 32]);
         assert_eq!(e2.metadata.created_at, 1);
         assert_eq!(e2.metadata.updated_at, 1.into());
@@ -150,14 +165,24 @@ mod index__public_methods {
 
         assert_eq!(e1.id, root_id);
         assert_eq!(e1.parent_id, None);
-        assert_eq!(e1.children.as_ref().map(|v| v.len()).unwrap_or(0), 1);
+        assert_eq!(
+            <Index<MockedStorage<2>>>::get_children_of(e1.id)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_ne!(e1.own_hash, [37; 32]);
         assert_eq!(e1.metadata.created_at, 1);
         assert_eq!(e1.metadata.updated_at, 1.into());
 
         assert_eq!(e2.id, p1_id);
         assert_eq!(e2.parent_id, Some(Id::root()));
-        assert_eq!(e2.children.as_ref().map(|v| v.len()).unwrap_or(0), 0);
+        assert_eq!(
+            <Index<MockedStorage<2>>>::get_children_of(e2.id)
+                .unwrap()
+                .len(),
+            0
+        );
         assert_ne!(e2.own_hash, [37; 32]);
         assert_eq!(e2.metadata.created_at, 1);
         assert_eq!(e2.metadata.updated_at, 1.into());
@@ -180,14 +205,24 @@ mod index__public_methods {
 
         assert_eq!(e1.id, root_id);
         assert_eq!(e1.parent_id, None);
-        assert_eq!(e1.children.as_ref().map(|v| v.len()).unwrap_or(0), 1);
+        assert_eq!(
+            <Index<MockedStorage<3>>>::get_children_of(e1.id)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(e1.own_hash, [37; 32]);
         assert_eq!(e1.metadata.created_at, 43);
         assert_eq!(e1.metadata.updated_at, 22.into());
 
         assert_eq!(e2.id, p1_id);
         assert_eq!(e2.parent_id, Some(Id::root()));
-        assert_eq!(e2.children.as_ref().map(|v| v.len()).unwrap_or(0), 0);
+        assert_eq!(
+            <Index<MockedStorage<3>>>::get_children_of(e2.id)
+                .unwrap()
+                .len(),
+            0
+        );
         assert_ne!(e2.own_hash, [37; 32]);
         assert_eq!(e2.metadata.created_at, 1);
         assert_eq!(e2.metadata.updated_at, 1.into());
@@ -209,7 +244,9 @@ mod index__public_methods {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.own_hash, root_hash);
         assert!(root_index.parent_id.is_none());
-        assert!(root_index.children.is_none());
+        assert!(<Index<MainStorage>>::get_children_of(root_index.id)
+            .unwrap()
+            .is_empty());
 
         let _collection_name = "Books";
         let child_id = Id::random();
@@ -230,15 +267,8 @@ mod index__public_methods {
         assert_eq!(updated_root_index.id, root_id);
         assert_eq!(updated_root_index.own_hash, root_hash);
         assert!(updated_root_index.parent_id.is_none());
-        assert_eq!(
-            updated_root_index
-                .children
-                .as_ref()
-                .map(|v| v.len())
-                .unwrap_or(0),
-            1
-        );
-        let children_vec = updated_root_index.children.as_ref().unwrap();
+        let children_vec = <Index<MainStorage>>::get_children_of(root_id).unwrap();
+        assert_eq!(children_vec.len(), 1);
         assert_eq!(
             children_vec[0],
             ChildInfo::new(child_id, child_full_hash, Metadata::default())
@@ -248,7 +278,9 @@ mod index__public_methods {
         assert_eq!(child_index.id, child_id);
         assert_eq!(child_index.own_hash, child_own_hash);
         assert_eq!(child_index.parent_id, Some(root_id));
-        assert!(child_index.children.is_none());
+        assert!(<Index<MainStorage>>::get_children_of(child_index.id)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -297,10 +329,10 @@ mod index__public_methods {
             "re-add left the child in the parent's deleted-children advert"
         );
         assert!(
-            parent
-                .children()
-                .map(|c| c.iter().any(|ci| ci.id() == child_id))
-                .unwrap_or(false),
+            <Index<S>>::get_children_of(parent.id)
+                .unwrap()
+                .iter()
+                .any(|ci| ci.id() == child_id),
             "re-add did not relink the child as a live child"
         );
         // The resurrected child is re-folded into the parent hash — the other
@@ -328,7 +360,9 @@ mod index__public_methods {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.own_hash, root_hash);
         assert!(root_index.parent_id.is_none());
-        assert!(root_index.children.is_none());
+        assert!(<Index<MainStorage>>::get_children_of(root_index.id)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -346,6 +380,9 @@ mod index__public_methods {
         ),)
         .is_ok());
 
+        // Random, for isolation: the native test store is a thread-local that
+        // cargo reuses across tests, so a fixed id collides with whatever else
+        // ran on this thread.
         let child_id = Id::random();
         let child_hash = [2_u8; 32];
         let child_info = ChildInfo::new(child_id, child_hash, Metadata::default());
@@ -553,7 +590,9 @@ mod index__public_methods {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.own_hash, root_hash);
         assert!(root_index.parent_id.is_none());
-        assert!(root_index.children.is_none());
+        assert!(<Index<MainStorage>>::get_children_of(root_index.id)
+            .unwrap()
+            .is_empty());
 
         let _collection_name = "Books";
         let child_id = Id::random();
@@ -613,7 +652,9 @@ mod index__public_methods {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.own_hash, root_hash);
         assert!(root_index.parent_id.is_none());
-        assert!(root_index.children.is_none());
+        assert!(<Index<MainStorage>>::get_children_of(root_index.id)
+            .unwrap()
+            .is_empty());
 
         let _collection_name = "Books";
         let child_id = Id::random();
@@ -628,7 +669,9 @@ mod index__public_methods {
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         // After removal, children should be None
-        assert!(root_index.children.is_none());
+        assert!(<Index<MainStorage>>::get_children_of(root_index.id)
+            .unwrap()
+            .is_empty());
 
         // With tombstones, index still exists but is marked as deleted
         assert!(<Index<MainStorage>>::is_deleted(child_id).unwrap());
@@ -648,7 +691,6 @@ mod index__private_methods {
         let index = EntityIndex {
             id,
             parent_id: None,
-            children: None,
             full_hash: hash1,
             own_hash: hash2,
             metadata: Metadata::default(),
@@ -670,7 +712,6 @@ mod index__private_methods {
         let index = EntityIndex {
             id,
             parent_id: None,
-            children: None,
             full_hash: hash1,
             own_hash: hash2,
             metadata: Metadata::default(),
@@ -1000,9 +1041,12 @@ mod hashing {
             hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child3_id).unwrap()),
             "648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b",
         );
+        // Folds the child-trie root rather than the sorted sibling list. The
+        // three child hashes asserted above are unchanged, which is the check
+        // that leaf hashing did not move — only the parent construction did.
         assert_eq!(
             hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(root_id).unwrap()),
-            "866edea6f7ce51612ad0ea3bcde93b2494d77e8c466bc2a69817a6443f2a57f0",
+            "dfd7c32f3f436c0a69a7abd5fd4070c47050e50b0b87b2f8cede4dee43c173cf",
         );
     }
 
@@ -1039,13 +1083,25 @@ mod hashing {
 
         let root_index_with_child = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         let child_index = <Index<MainStorage>>::get_index(child_id).unwrap().unwrap();
+        // A parent now commits to its children's IDS as well as their hashes
+        // (a child's id is its position in the trie), which is strictly
+        // stronger than the old fold over `merkle_hash` alone — but it means a
+        // parent hash is no longer a constant when child ids are random. Assert
+        // the invariant that matters: the stored hash equals an independent
+        // recompute, and it moved off the childless value.
         assert_eq!(
-            hex::encode(root_index_with_child.full_hash),
-            "3f18867aec61c1c3cd3ca1b8a0ff42612a8dd0ad83f3e59055e3b9ba737e31d9"
+            root_index_with_child.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(root_id, root_hash),
+            "root full_hash must match an independent recompute"
+        );
+        assert_ne!(
+            root_index_with_child.full_hash, expected_empty_full_hash,
+            "adding a child must move the parent hash"
         );
         assert_eq!(
-            hex::encode(child_index.full_hash),
-            "75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a"
+            child_index.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(child_id, child_index.own_hash),
+            "full_hash must equal an independent recompute",
         );
 
         let grandchild_id = Id::random();
@@ -1059,17 +1115,25 @@ mod hashing {
         let grandchild_index = <Index<MainStorage>>::get_index(grandchild_id)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            hex::encode(root_index_with_grandchild.full_hash),
-            "2504baa308dcb51f7046815258e36cd4a83d34c6b1d5f1cc1b8ffa321e40f0c6"
+        // The point of this test: a change two levels down reaches the root.
+        assert_ne!(
+            root_index_with_grandchild.full_hash, root_index_with_child.full_hash,
+            "a grandchild must propagate into the root hash"
         );
         assert_eq!(
-            hex::encode(child_index_with_grandchild.full_hash),
-            "80c2b6364721221e7f87028c0482e1e16f49a29889e357c8acab8cb26d4d99da"
+            root_index_with_grandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(root_id, root_hash),
+            "root full_hash must match an independent recompute"
         );
         assert_eq!(
-            hex::encode(grandchild_index.full_hash),
-            "648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b"
+            child_index_with_grandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(child_id, child_hash),
+            "child full_hash must match an independent recompute"
+        );
+        assert_eq!(
+            grandchild_index.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(grandchild_id, grandchild_index.own_hash),
+            "full_hash must equal an independent recompute",
         );
 
         let greatgrandchild_id = Id::random();
@@ -1091,21 +1155,31 @@ mod hashing {
         let greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            hex::encode(root_index_with_greatgrandchild.full_hash),
-            "6bdcb2f1a98eba952d3b2cf43c8bb36eb6a50b853d5b49dea089775e17d67b27"
+        // Four levels deep now: the change must still reach the root, and every
+        // level must agree with an independent recompute.
+        assert_ne!(
+            root_index_with_greatgrandchild.full_hash, root_index_with_grandchild.full_hash,
+            "a great-grandchild must propagate all the way into the root hash"
         );
         assert_eq!(
-            hex::encode(child_index_with_greatgrandchild.full_hash),
-            "8aca1399f292c2ed8dfaba100a7885c7ac108b7b6b32f10d4a3e9c05fd7c38c0"
+            root_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(root_id, root_hash),
         );
         assert_eq!(
-            hex::encode(grandchild_index_with_greatgrandchild.full_hash),
-            "135605b30fda6d313c472745c4445edb4e8c619cdcc24caa2352c12aacd18a76"
+            child_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(child_id, child_hash),
         );
         assert_eq!(
-            hex::encode(greatgrandchild_index.full_hash),
-            "9f4fb68f3e1dac82202f9aa581ce0bbf1f765df0e9ac3c8c57e20f685abab8ed"
+            grandchild_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(grandchild_id, grandchild_hash),
+        );
+        assert_eq!(
+            greatgrandchild_index.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                greatgrandchild_id,
+                greatgrandchild_index.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
 
         // Change greatgrandchild's own_hash. `update_hash_for` rewrites
@@ -1125,20 +1199,36 @@ mod hashing {
             .unwrap()
             .unwrap();
         assert_eq!(
-            hex::encode(updated_root_index_with_greatgrandchild.full_hash),
-            "f61c8077c7875e38a3cbdce3b3d4ce40a5a18add8ce386803760484772bcb85b"
+            updated_root_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                root_id,
+                updated_root_index_with_greatgrandchild.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
         assert_eq!(
-            hex::encode(updated_child_index_with_greatgrandchild.full_hash),
-            "abef09c52909317783e0c582553a8fb19124249d93f8878cf131b8dd28fbb4bf"
+            updated_child_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                child_id,
+                updated_child_index_with_greatgrandchild.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
         assert_eq!(
-            hex::encode(updated_grandchild_index_with_greatgrandchild.full_hash),
-            "97b2d3a1682881ec11e747f3dd4c242a33f8cff6c6d6224e1dd23278eef35554"
+            updated_grandchild_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                grandchild_id,
+                updated_grandchild_index_with_greatgrandchild.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
         assert_eq!(
-            hex::encode(updated_greatgrandchild_index.full_hash),
-            "8c0cc17a04942cc4f8e0fe0b302606d3108860c126428ba2ceeb5f9ed41c2b05"
+            updated_greatgrandchild_index.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                greatgrandchild_id,
+                updated_greatgrandchild_index.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
 
         // Same pattern — update_hash_for handles the ancestor walk itself.
@@ -1156,20 +1246,36 @@ mod hashing {
             .unwrap()
             .unwrap();
         assert_eq!(
-            hex::encode(updated_root_index_with_greatgrandchild.full_hash),
-            "0483e0a8a3c3002a94c3ce2e1f7fcadae4b2dc29e2dee9752b9caa683dfe39fc"
+            updated_root_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                root_id,
+                updated_root_index_with_greatgrandchild.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
         assert_eq!(
-            hex::encode(updated_child_index_with_greatgrandchild.full_hash),
-            "a7bad731e6767c36725a7c592174fdfe799c6bc32e92cc0f455e6ec5f6e5d42b"
+            updated_child_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                child_id,
+                updated_child_index_with_greatgrandchild.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
         assert_eq!(
-            hex::encode(updated_grandchild_index_with_greatgrandchild.full_hash),
-            "67eb9aff17a7db347e4c56264042dcfb1f4e465f70abb56a2108571316435ea5"
+            updated_grandchild_index_with_greatgrandchild.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                grandchild_id,
+                updated_grandchild_index_with_greatgrandchild.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
         assert_eq!(
-            hex::encode(updated_greatgrandchild_index.full_hash),
-            "cd93782b7fb95559de14f738b65988af85d41dc1565f7c7d1ed2d035665b519c"
+            updated_greatgrandchild_index.full_hash,
+            <Index<MainStorage>>::full_hash_from_trie(
+                greatgrandchild_id,
+                updated_greatgrandchild_index.own_hash
+            ),
+            "full_hash must equal an independent recompute",
         );
     }
 
@@ -1254,7 +1360,7 @@ mod minimal_struct_layout_compat {
     use calimero_primitives::crdt::CrdtType;
 
     use crate::address::Id;
-    use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+    use crate::entities::{Metadata, SignatureData, StorageType};
     use crate::index::EntityIndex;
 
     // ---- Mirror structs (must match borsh_layout in client/mod.rs) ----
@@ -1263,7 +1369,6 @@ mod minimal_struct_layout_compat {
     struct EntityIndexMinimal {
         _id: [u8; 32],
         _parent_id: Option<[u8; 32]>,
-        children: Option<Vec<ChildInfoMinimal>>,
         full_hash: [u8; 32],
         own_hash: [u8; 32],
     }
@@ -1308,7 +1413,6 @@ mod minimal_struct_layout_compat {
     }
 
     fn make_index(
-        children: Option<Vec<ChildInfo>>,
         storage_type: StorageType,
         crdt_type: Option<CrdtType>,
         field_name: Option<String>,
@@ -1316,7 +1420,6 @@ mod minimal_struct_layout_compat {
         EntityIndex {
             id: Id::new([0xAA; 32]),
             parent_id: Some(Id::new([0xBB; 32])),
-            children,
             full_hash: [0x11; 32],
             own_hash: [0x22; 32],
             metadata: Metadata {
@@ -1352,65 +1455,23 @@ mod minimal_struct_layout_compat {
         // the metadata sub-fields the mirror in `borsh_layout` actually
         // reads (created_at, updated_at, crdt_type, field_name,
         // schema_version).
-        match (&minimal.children, &index.children) {
-            (Some(decoded), Some(real)) => {
-                assert_eq!(
-                    decoded.len(),
-                    real.len(),
-                    "children count mismatch after round-trip"
-                );
-                for (d, r) in decoded.iter().zip(real.iter()) {
-                    assert_eq!(&d.id, r.id().as_bytes(), "child id mismatch");
-                    assert_eq!(d.merkle_hash, r.merkle_hash(), "child merkle_hash mismatch");
-                    assert_eq!(
-                        d.metadata.created_at, r.metadata.created_at,
-                        "child metadata.created_at mismatch"
-                    );
-                    assert_eq!(
-                        d.metadata.updated_at, *r.metadata.updated_at,
-                        "child metadata.updated_at mismatch"
-                    );
-                    assert_eq!(
-                        d.metadata.crdt_type, r.metadata.crdt_type,
-                        "child metadata.crdt_type mismatch"
-                    );
-                    assert_eq!(
-                        d.metadata.field_name, r.metadata.field_name,
-                        "child metadata.field_name mismatch"
-                    );
-                    assert_eq!(
-                        d.metadata.schema_version, r.metadata.schema_version,
-                        "child metadata.schema_version mismatch"
-                    );
-                }
-            }
-            (None, None) => {}
-            _ => panic!("children Option discriminant mismatch after round-trip"),
-        }
+        // Children are no longer part of this row — they live in the parent's
+        // ChildTrie, its own keyspace with its own encoding. The mirror in
+        // `borsh_layout` drops the field to match, so there is nothing to
+        // round-trip here; the trie's encoding is covered by its own tests.
     }
 
     #[test]
     fn round_trip_no_children_public() {
-        let index = make_index(None, StorageType::Public, None, None);
+        let index = make_index(StorageType::Public, None, None);
         assert_round_trip(&index);
     }
 
     #[test]
     fn round_trip_with_children_and_crdt_type() {
-        let child = ChildInfo::new(
-            Id::new([0xCC; 32]),
-            [0x33; 32],
-            Metadata {
-                created_at: 500,
-                updated_at: 600.into(),
-                storage_type: StorageType::Public,
-                crdt_type: Some(CrdtType::GCounter),
-                field_name: Some("scores".to_owned()),
-                schema_version: None,
-            },
-        );
+        // The child list is no longer part of this row (it lives in the
+        // ChildTrie), so this case now only exercises the row's own layout.
         let index = make_index(
-            Some(vec![child]),
             StorageType::Public,
             Some(CrdtType::UnorderedMap {
                 key_type: "String".to_owned(),
@@ -1430,7 +1491,6 @@ mod minimal_struct_layout_compat {
             signer: None,
         };
         let index = make_index(
-            None,
             StorageType::User {
                 owner,
                 signature_data: Some(sig_data),
@@ -1443,7 +1503,7 @@ mod minimal_struct_layout_compat {
 
     #[test]
     fn round_trip_frozen_storage() {
-        let index = make_index(None, StorageType::Frozen, None, None);
+        let index = make_index(StorageType::Frozen, None, None);
         assert_round_trip(&index);
     }
 }

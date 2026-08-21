@@ -22,13 +22,15 @@ type TestInterface = Interface<TestStorage>;
 /// `get_hashes_for` would be tautological. This helper gives a real
 /// independent signal: if any write site forgot to refresh
 /// `full_hash`, the stored value and this recompute diverge.
+///
+/// Children now live in the parent's [`ChildTrie`], so the recompute folds the
+/// stored trie root rather than a sibling list. That still answers the question
+/// this helper exists for — did a write site leave `full_hash` stale relative to
+/// the children — while the trie's own tests cover whether the root itself is
+/// maintained correctly.
 fn recompute_full_hash<S: StorageAdaptor>(id: Id) -> [u8; 32] {
     let index = Index::<S>::get_index(id).unwrap().unwrap();
-    Index::<S>::calculate_full_hash_for_children(
-        index.own_hash(),
-        &index.children().map(<[_]>::to_vec),
-    )
-    .unwrap()
+    Index::<S>::full_hash_from_trie(id, index.own_hash())
 }
 
 // ============================================================

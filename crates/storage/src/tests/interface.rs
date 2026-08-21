@@ -23,11 +23,7 @@ fn recompute_full_hash(id: crate::address::Id) -> [u8; 32] {
     use crate::index::Index;
     use crate::store::MainStorage;
     let index = Index::<MainStorage>::get_index(id).unwrap().unwrap();
-    Index::<MainStorage>::calculate_full_hash_for_children(
-        index.own_hash(),
-        &index.children().map(<[_]>::to_vec),
-    )
-    .unwrap()
+    Index::<MainStorage>::full_hash_from_trie(id, index.own_hash())
 }
 
 #[cfg(test)]

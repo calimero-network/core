@@ -1167,8 +1167,13 @@ pub(crate) fn load_rotation_log_direct(
     >::rotation_log_child_id(entity_id);
     if let Some(index) = read_entity_index_direct(context_client, context_id, map_id)? {
         let mut entries = Vec::new();
-        if let Some(children) = index.children() {
-            for child in children {
+        {
+            let _ = &index;
+            for child in calimero_storage::index::Index::<
+                calimero_storage::store::MainStorage,
+            >::get_children_of(map_id)
+            .unwrap_or_default()
+            {
                 // P3: each child is an `UnorderedMap` entry, so its stored value
                 // is `borsh(Entry<([u8;32], RotationLogEntry)>)` — decode the
                 // single entry it holds (NOT a bare `RotationLog` blob).

@@ -73,26 +73,36 @@ fn root_fans_out_flat_when_records_carry_nested_collections() {
     );
 }
 
-/// How big is the blob that gets rewritten on every single link?
+/// The parent's index row must not grow with its child count.
+///
+/// It used to hold the whole child list inline: 16,927 bytes at 200 children,
+/// ~84 bytes per child, rewritten and re-hashed on every link. Children now live
+/// in the parent's `ChildTrie`, so this row is a fixed handful of fields and a
+/// link touches a bounded number of trie rows instead (see
+/// `child_trie::cost`).
 #[test]
-fn measure_the_children_blob() {
+fn the_parent_index_row_stays_small_however_many_children() {
     use calimero_storage::store::{Key, MainStorage, StorageAdaptor};
 
     let mut keep: Vec<UnorderedSet<[u8; 8]>> = Vec::new();
+    let mut sizes = Vec::new();
     for i in 0_u64..200 {
         let mut set = UnorderedSet::<[u8; 8]>::new();
         let _ = set.insert(i.to_be_bytes());
         keep.push(set);
+        if i == 9 || i == 49 || i == 199 {
+            let raw = MainStorage::storage_read(Key::Index(Id::root())).expect("root index row");
+            let n = <Index<MainStorage>>::get_children_of(Id::root())
+                .expect("children")
+                .len();
+            println!("children={n:>4}  parent index row={} bytes", raw.len());
+            sizes.push(raw.len());
+        }
     }
 
-    let raw = MainStorage::storage_read(Key::Index(Id::root())).expect("root index row");
-    let children = <Index<MainStorage>>::get_children_of(Id::root()).expect("children");
-    let n = children.len();
-    println!("ROOT children: {n}");
-    println!("ROOT index row: {} bytes", raw.len());
-    println!("per child: ~{} bytes", raw.len() / n.max(1));
-    println!(
-        "one link at this size rewrites {} bytes and folds {n} SHA-256 inputs",
-        raw.len()
+    assert_eq!(
+        sizes.first(),
+        sizes.last(),
+        "the parent's index row must not grow with its child count: {sizes:?}"
     );
 }

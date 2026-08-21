@@ -72,7 +72,11 @@ impl SyncManager {
 
             // Count children (leaf entities) under root.
             // Minimum 1 when root exists (consistent with fallback estimation).
-            let children = root_index.children().unwrap_or_default();
+            let _ = &root_index;
+            let children = calimero_storage::index::Index::<
+                calimero_storage::store::MainStorage,
+            >::get_children_of(calimero_storage::address::Id::root())
+            .unwrap_or_default();
             let entity_count = (children.len() as u64).max(1);
 
             // Depth: 1 when root has data (consistent with fallback).
