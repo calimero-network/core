@@ -228,9 +228,15 @@ fn membership_touched(
 struct ComparePremise {
     /// The op reached the projection (the lock was not poisoned).
     fed: bool,
-    /// Every op in the cut's ancestry is decrypted, so the folded membership is
-    /// final rather than provisional.
-    decoded: bool,
+    /// Every op in the cut's ancestry is PRESENT in the log. A gap means this
+    /// node has not folded some ancestor yet — sync is behind — and the fold is
+    /// over a truncated history.
+    ancestry_complete: bool,
+    /// Every op in the cut's ancestry is also readable — none is an opaque
+    /// placeholder for a group op this node holds no key for. Implies
+    /// `ancestry_complete`; kept separate because the remedies differ (a fetch
+    /// versus a key).
+    ancestry_decoded: bool,
     /// The live plane holds a DIRECT row for this member. Inherited and
     /// open-join members have none, and the projection modelling them as direct
     /// is an expected difference between the planes, not a disagreement.
@@ -256,18 +262,26 @@ struct ComparePremise {
 fn compare_result(premise: ComparePremise) -> &'static str {
     let ComparePremise {
         fed,
-        decoded,
+        ancestry_complete,
+        ancestry_decoded,
         has_live_row,
         at_frontier,
         agrees,
     } = premise;
-    match (fed, decoded, has_live_row, at_frontier) {
+    match (
+        fed,
+        ancestry_complete,
+        ancestry_decoded,
+        has_live_row,
+        at_frontier,
+    ) {
         (false, ..) => "skipped_unfed",
-        (true, false, ..) => "skipped_undecoded",
-        (true, true, false, _) => "no_live_row",
-        (true, true, true, false) => "skipped_stale_cut",
-        (true, true, true, true) if agrees => "agree",
-        (true, true, true, true) => "diverged",
+        (true, false, ..) => "skipped_incomplete",
+        (true, true, false, ..) => "skipped_undecoded",
+        (true, true, true, false, _) => "no_live_row",
+        (true, true, true, true, false) => "skipped_stale_cut",
+        (true, true, true, true, true) if agrees => "agree",
+        (true, true, true, true, true) => "diverged",
     }
 }
 
@@ -429,7 +443,7 @@ fn shadow_fold_and_compare(
         // this op (no TOCTOU window between ingest and read). A
         // poisoned lock skips feed+compare with a warning rather
         // than affecting the governance apply path.
-        let (fed, projected, decoded, at_frontier) = match scope_projections.write() {
+        let (fed, projected, complete, decoded, at_frontier) = match scope_projections.write() {
             Ok(mut projections) => {
                 projections.ingest_op(&shadow_op);
                 // Does THIS op's cut — the one `role` is resolved
@@ -452,14 +466,18 @@ fn shadow_fold_and_compare(
                 // the folded membership is provisional and a
                 // mismatch against live is a decrypt-feed lag, not
                 // a fold-logic bug — same causal cut as `role`.
-                let decoded = membership.is_some_and(|_| {
-                    projections.cut_ancestry_decoded(&shadow_op.scope, &[shadow_op.id()])
+                // Both ancestry questions from one walk. They are different
+                // conditions with different remedies — a gap needs a fetch, an
+                // opaque op needs a key — and reporting them as one refusal is
+                // what made 52 abstentions in a suite unattributable.
+                let (complete, decoded) = membership.map_or((false, false), |_| {
+                    projections.cut_ancestry_state(&shadow_op.scope, &[shadow_op.id()])
                 });
-                (true, role, decoded, at_frontier)
+                (true, role, complete, decoded, at_frontier)
             }
             Err(err) => {
                 tracing::warn!(%err, "scope-projections lock poisoned; skipping unified-op shadow feed/compare");
-                (false, None, false, false)
+                (false, None, false, false, false)
             }
         };
 
@@ -505,7 +523,7 @@ fn shadow_fold_and_compare(
             // invert the account back into a member key by
             // scanning the live rows, because the two planes
             // disagreed about what a member IS.
-            let live = (fed && decoded)
+            let live = (fed && complete && decoded)
                 .then(|| {
                     calimero_governance_store::MembershipRepository::new(store)
                         .role_of(&group, &member)
@@ -527,7 +545,8 @@ fn shadow_fold_and_compare(
             // the live plane stores no direct row for), not a refusal.
             let result = compare_result(ComparePremise {
                 fed,
-                decoded,
+                ancestry_complete: complete,
+                ancestry_decoded: decoded,
                 has_live_row: live.is_some(),
                 at_frontier,
                 agrees: projected == live,
@@ -742,26 +761,29 @@ mod tests {
     /// exists to break — and it would do so while every scenario stayed green.
     #[test]
     fn only_a_complete_premise_yields_a_conclusive_comparison() {
-        const KNOWN: [&str; 6] = [
+        const KNOWN: [&str; 7] = [
             "agree",
             "diverged",
             "skipped_unfed",
+            "skipped_incomplete",
             "skipped_undecoded",
             "skipped_stale_cut",
             "no_live_row",
         ];
 
-        for bits in 0..32u8 {
-            let (fed, decoded, has_live_row, at_frontier, agrees) = (
+        for bits in 0..64u8 {
+            let (fed, ancestry_complete, ancestry_decoded, has_live_row, at_frontier, agrees) = (
                 bits & 1 != 0,
                 bits & 2 != 0,
                 bits & 4 != 0,
                 bits & 8 != 0,
                 bits & 16 != 0,
+                bits & 32 != 0,
             );
             let result = compare_result(ComparePremise {
                 fed,
-                decoded,
+                ancestry_complete,
+                ancestry_decoded,
                 has_live_row,
                 at_frontier,
                 agrees,
@@ -774,10 +796,20 @@ mod tests {
             );
             assert_eq!(
                 matches!(result, "agree" | "diverged"),
-                fed && decoded && has_live_row && at_frontier,
+                fed && ancestry_complete && ancestry_decoded && has_live_row && at_frontier,
                 "conclusive only with the whole premise: {result} for fed={fed} \
-                 decoded={decoded} live_row={has_live_row} at_frontier={at_frontier}",
+                 complete={ancestry_complete} decoded={ancestry_decoded} \
+                 live_row={has_live_row} at_frontier={at_frontier}",
             );
+            // A gap and an opaque op are different refusals, and the gap is
+            // reported first: an ancestor this node has never folded says nothing
+            // about whether it could have read it.
+            if fed && !ancestry_complete {
+                assert_eq!(
+                    result, "skipped_incomplete",
+                    "a missing ancestor is a gap, not an unreadable op",
+                );
+            }
             if matches!(result, "agree" | "diverged") {
                 assert_eq!(result == "agree", agrees, "verdict must follow the planes");
             }
