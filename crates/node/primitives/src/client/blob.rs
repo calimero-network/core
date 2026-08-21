@@ -37,21 +37,30 @@ impl BlobManager {
         Self { blobstore }
     }
 
+    /// `expected_size` is a length the caller was told and is asserted exactly.
+    /// `max_size` only bounds the stream, for a caller that must cap an
+    /// untrusted sender without knowing how many bytes to expect - passing a
+    /// ceiling as `expected_size` would demand the transfer be exactly that big.
     pub async fn add_blob<S: AsyncRead>(
         &self,
         stream: S,
         expected_size: Option<u64>,
+        max_size: Option<u64>,
         expected_hash: Option<&Hash>,
     ) -> eyre::Result<(BlobId, u64)> {
         debug!(
             expected_size,
+            max_size,
             has_expected_hash = expected_hash.is_some(),
             "add_blob invoked"
         );
 
+        // Either bound caps the write; only `expected_size` is asserted below.
+        let bound = expected_size.or(max_size);
+
         let (blob_id, hash, size) = match self
             .blobstore
-            .put_sized(expected_size.map(Size::Exact), stream)
+            .put_sized(bound.map(Size::Exact), stream)
             .await
         {
             Ok(result) => {
@@ -113,10 +122,11 @@ impl NodeClient {
         &self,
         stream: S,
         expected_size: Option<u64>,
+        max_size: Option<u64>,
         expected_hash: Option<&Hash>,
     ) -> eyre::Result<(BlobId, u64)> {
         self.blob_manager
-            .add_blob(stream, expected_size, expected_hash)
+            .add_blob(stream, expected_size, max_size, expected_hash)
             .await
     }
 
@@ -244,7 +254,7 @@ impl NodeClient {
 
                             // Store the blob locally for future use
                             let (blob_id_stored, _size) = self
-                                .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                                .add_blob(data.as_slice(), Some(data.len() as u64), None, None)
                                 .await?;
 
                             // Verify we stored the correct blob

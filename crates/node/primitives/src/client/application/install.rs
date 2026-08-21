@@ -246,6 +246,7 @@ impl NodeClient {
                     Cursor::new(&artifact.bytes[..]),
                     Some(artifact.bytes.len() as u64),
                     None,
+                    None,
                 )
                 .await?;
             services.push(types::ServiceMeta {
@@ -320,7 +321,7 @@ impl NodeClient {
         );
 
         let (blob_id, size) = self
-            .add_blob(file.compat(), Some(expected_size), None)
+            .add_blob(file.compat(), Some(expected_size), None, None)
             .await?;
         debug!(
             %blob_id,
@@ -403,7 +404,7 @@ impl NodeClient {
 
             let cursor = Cursor::new(&bundle_data[..]);
             let (bundle_blob_id, stored_size) = self
-                .add_blob(cursor, Some(bundle_data.len() as u64), expected_hash)
+                .add_blob(cursor, Some(bundle_data.len() as u64), None, expected_hash)
                 .await?;
 
             debug!(
@@ -430,6 +431,7 @@ impl NodeClient {
                     .map_err(io::Error::other)
                     .into_async_read(),
                 expected_size,
+                None,
                 expected_hash,
             )
             .await?;
@@ -450,7 +452,7 @@ impl NodeClient {
 
         let cursor = Cursor::new(&bundle_data[..]);
         let (bundle_blob_id, stored_size) = self
-            .add_blob(cursor, Some(bundle_data.len() as u64), None)
+            .add_blob(cursor, Some(bundle_data.len() as u64), None, None)
             .await?;
 
         debug!(

@@ -97,13 +97,13 @@ impl SyncManager {
         } else {
             MAX_BLOB_STREAM_SIZE_BYTES
         };
-        // The cap is a ceiling, not a length: `add_blob` compares `expected_size`
-        // for EQUALITY, so handing it the ceiling asserts every transfer is
-        // exactly MAX_BLOB_STREAM_SIZE_BYTES. Only assert a size we were told.
-        let expected_size = (size > 0).then_some(size_limit);
+        // Assert only a size the peer advertised; the ceiling still bounds the
+        // stream. Passing the ceiling as the expected size demanded every
+        // transfer be exactly MAX_BLOB_STREAM_SIZE_BYTES.
         let add_task = self.node_client.add_blob(
             poll_fn(|cx| rx.poll_recv(cx)).into_async_read(),
-            expected_size,
+            (size > 0).then_some(size),
+            Some(size_limit),
             None,
         );
 

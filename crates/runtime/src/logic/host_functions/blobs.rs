@@ -130,7 +130,7 @@ impl VMHostFunctions<'_> {
                     stream.map(|data: Vec<u8>| Ok::<bytes::Bytes, Error>(data.into()));
                 let reader = byte_stream.into_async_read();
 
-                node_client.add_blob(reader, None, None).await
+                node_client.add_blob(reader, None, None, None).await
             });
 
             //TODO: add assert that no bytes were written during the creation of an empty blob.

@@ -79,7 +79,7 @@ pub(crate) async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     async fn add(node: &TestNode, bytes: Vec<u8>) -> [u8; 32] {
         let (blob_id, _) = node
             .node_client
-            .add_blob(&bytes[..], None, None)
+            .add_blob(&bytes[..], None, None, None)
             .await
             .expect("seed blob");
         *blob_id.as_ref()
@@ -1059,7 +1059,7 @@ async fn seed_ladder_bundles(node: &TestNode) -> LadderBlobs {
     async fn add(node: &TestNode, bytes: Vec<u8>) -> [u8; 32] {
         let (blob_id, _) = node
             .node_client
-            .add_blob(&bytes[..], None, None)
+            .add_blob(&bytes[..], None, None, None)
             .await
             .expect("seed bundle blob");
         *blob_id.as_ref()

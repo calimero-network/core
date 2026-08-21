@@ -131,7 +131,7 @@ pub async fn upload_handler(
 
     match state
         .node_client
-        .add_blob(reader, None, expected_hash.as_ref())
+        .add_blob(reader, None, None, expected_hash.as_ref())
         .await
     {
         Ok((blob_id, size)) => {
