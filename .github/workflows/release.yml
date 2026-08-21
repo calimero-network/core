@@ -212,7 +212,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup rust cache
-        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: release
 
@@ -438,7 +438,7 @@ jobs:
         run: rustc --version
 
       - name: Setup rust cache (publish)
-        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: release
 
