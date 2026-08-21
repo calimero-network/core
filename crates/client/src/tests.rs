@@ -550,7 +550,7 @@ async fn join_namespace() {
         .and(path(format!("/admin-api/namespaces/{GID}/join")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
-                "groupId": GID,
+                "namespaceId": GID,
                 "memberIdentity": ZERO_BS58,
                 // The account the joiner joined as, beside the key it signs
                 // with. Both, because a caller needs the account to address the
@@ -576,7 +576,7 @@ async fn join_namespace() {
         .await
         .unwrap();
 
-    assert_eq!(resp.data.group_id, GID);
+    assert_eq!(resp.data.namespace_id, GID);
 }
 
 #[tokio::test]

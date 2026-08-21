@@ -275,15 +275,7 @@ pub struct SetCapabilitiesCommand {
 
 impl SetCapabilitiesCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let capabilities = encode_capabilities(
-            self.can_create_context,
-            self.can_invite_members,
-            self.can_join_open_subgroups,
-            self.can_create_subgroup,
-            self.can_delete_subgroup,
-            self.can_manage_visibility,
-            self.can_manage_metadata,
-        );
+        let capabilities = encode_capabilities(&self);
 
         let identity_hex = self.identity.to_string();
 
@@ -396,37 +388,36 @@ impl CheckAccessCommand {
     }
 }
 
-/// Encode the seven member-capability flags into the `MemberCapabilities`
-/// bitmask sent to the node.
-fn encode_capabilities(
-    can_create_context: bool,
-    can_invite_members: bool,
-    can_join_open_subgroups: bool,
-    can_create_subgroup: bool,
-    can_delete_subgroup: bool,
-    can_manage_visibility: bool,
-    can_manage_metadata: bool,
-) -> u32 {
+/// Encode the member-capability flags into the `MemberCapabilities` bitmask sent
+/// to the node.
+///
+/// Takes the command rather than seven `bool`s. Positionally, every one of those
+/// arguments had the same type and the call site passed them in declaration
+/// order — so transposing any two compiled, passed every test, and granted the
+/// wrong capability. Nothing in a bitmask of `u32` reveals afterwards which flag
+/// was meant. Reading each field by name at the point of use makes the mistake
+/// unrepresentable rather than merely unlikely.
+fn encode_capabilities(cmd: &SetCapabilitiesCommand) -> u32 {
     let mut capabilities: u32 = 0;
-    if can_create_context {
+    if cmd.can_create_context {
         capabilities |= MemberCapabilities::CAN_CREATE_CONTEXT.bits();
     }
-    if can_invite_members {
+    if cmd.can_invite_members {
         capabilities |= MemberCapabilities::CAN_INVITE_MEMBERS.bits();
     }
-    if can_join_open_subgroups {
+    if cmd.can_join_open_subgroups {
         capabilities |= MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
     }
-    if can_create_subgroup {
+    if cmd.can_create_subgroup {
         capabilities |= MemberCapabilities::CAN_CREATE_SUBGROUP.bits();
     }
-    if can_delete_subgroup {
+    if cmd.can_delete_subgroup {
         capabilities |= MemberCapabilities::CAN_DELETE_SUBGROUP.bits();
     }
-    if can_manage_visibility {
+    if cmd.can_manage_visibility {
         capabilities |= MemberCapabilities::CAN_MANAGE_VISIBILITY.bits();
     }
-    if can_manage_metadata {
+    if cmd.can_manage_metadata {
         capabilities |= MemberCapabilities::CAN_MANAGE_METADATA.bits();
     }
     capabilities
@@ -434,36 +425,112 @@ fn encode_capabilities(
 
 #[cfg(test)]
 mod tests {
-    use super::encode_capabilities;
+    use super::{encode_capabilities, SetCapabilitiesCommand};
     use calimero_context_config::MemberCapabilities;
 
-    #[test]
-    fn no_flags_encodes_to_zero() {
-        assert_eq!(
-            encode_capabilities(false, false, false, false, false, false, false),
-            0
-        );
+    /// A command with every flag off, to be turned on by name.
+    ///
+    /// Built field-by-field on purpose. The previous tests called
+    /// `encode_capabilities(false, true, false, …)` positionally, which is the
+    /// same hazard the signature had — a test written that way cannot catch a
+    /// transposition, because it makes the identical mistake.
+    fn cmd() -> SetCapabilitiesCommand {
+        SetCapabilitiesCommand {
+            group_id: String::new(),
+            identity: calimero_account::AccountId::from([0u8; 32]),
+            can_create_context: false,
+            can_invite_members: false,
+            can_join_open_subgroups: false,
+            can_create_subgroup: false,
+            can_delete_subgroup: false,
+            can_manage_visibility: false,
+            can_manage_metadata: false,
+        }
     }
 
     #[test]
-    fn each_flag_maps_to_its_bit() {
-        assert_eq!(
-            encode_capabilities(true, false, false, false, false, false, false),
-            MemberCapabilities::CAN_CREATE_CONTEXT.bits()
-        );
-        assert_eq!(
-            encode_capabilities(false, true, false, false, false, false, false),
-            MemberCapabilities::CAN_INVITE_MEMBERS.bits()
-        );
-        assert_eq!(
-            encode_capabilities(false, false, false, false, false, false, true),
-            MemberCapabilities::CAN_MANAGE_METADATA.bits()
-        );
+    fn no_flags_encodes_to_zero() {
+        assert_eq!(encode_capabilities(&cmd()), 0);
+    }
+
+    /// **Every** flag, not a sample of three.
+    ///
+    /// The old test covered `can_create_context`, `can_invite_members` and
+    /// `can_manage_metadata`, so swapping the four untested flags with each other
+    /// passed. Each entry here sets exactly one field by name and asserts exactly
+    /// one bit, which is what makes a mis-wiring visible.
+    /// One row of [`each_flag_maps_to_its_own_bit`]: the field to switch on, the
+    /// single bit that must result, and the name to report.
+    struct FlagCase {
+        set: fn(&mut SetCapabilitiesCommand),
+        expected: MemberCapabilities,
+        name: &'static str,
+    }
+
+    #[test]
+    fn each_flag_maps_to_its_own_bit() {
+        let cases = [
+            FlagCase {
+                set: |c| c.can_create_context = true,
+                expected: MemberCapabilities::CAN_CREATE_CONTEXT,
+                name: "can_create_context",
+            },
+            FlagCase {
+                set: |c| c.can_invite_members = true,
+                expected: MemberCapabilities::CAN_INVITE_MEMBERS,
+                name: "can_invite_members",
+            },
+            FlagCase {
+                set: |c| c.can_join_open_subgroups = true,
+                expected: MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                name: "can_join_open_subgroups",
+            },
+            FlagCase {
+                set: |c| c.can_create_subgroup = true,
+                expected: MemberCapabilities::CAN_CREATE_SUBGROUP,
+                name: "can_create_subgroup",
+            },
+            FlagCase {
+                set: |c| c.can_delete_subgroup = true,
+                expected: MemberCapabilities::CAN_DELETE_SUBGROUP,
+                name: "can_delete_subgroup",
+            },
+            FlagCase {
+                set: |c| c.can_manage_visibility = true,
+                expected: MemberCapabilities::CAN_MANAGE_VISIBILITY,
+                name: "can_manage_visibility",
+            },
+            FlagCase {
+                set: |c| c.can_manage_metadata = true,
+                expected: MemberCapabilities::CAN_MANAGE_METADATA,
+                name: "can_manage_metadata",
+            },
+        ];
+
+        for case in cases {
+            let mut c = cmd();
+            (case.set)(&mut c);
+            assert_eq!(
+                encode_capabilities(&c),
+                case.expected.bits(),
+                "{} must set exactly its own bit and no other",
+                case.name
+            );
+        }
     }
 
     #[test]
     fn all_flags_or_together() {
-        let all = encode_capabilities(true, true, true, true, true, true, true);
+        let mut c = cmd();
+        c.can_create_context = true;
+        c.can_invite_members = true;
+        c.can_join_open_subgroups = true;
+        c.can_create_subgroup = true;
+        c.can_delete_subgroup = true;
+        c.can_manage_visibility = true;
+        c.can_manage_metadata = true;
+
+        let all = encode_capabilities(&c);
         let expected = (MemberCapabilities::CAN_CREATE_CONTEXT
             | MemberCapabilities::CAN_INVITE_MEMBERS
             | MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS

@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::JoinGroupRequest;
 use calimero_server_primitives::admin::{
-    JoinGroupApiRequest, JoinGroupApiResponse, JoinGroupApiResponseData,
+    JoinGroupApiRequest, JoinNamespaceApiResponse, JoinNamespaceApiResponseData,
 };
 use reqwest::StatusCode;
 use tracing::{error, info};
@@ -67,12 +67,12 @@ pub async fn handler(
 
     match result {
         Ok(resp) => {
-            let group_id_hex = hex::encode(resp.group_id.to_bytes());
-            info!(group_id=%group_id_hex, member=%resp.member_identity, "Joined namespace successfully");
+            let namespace_id_hex = hex::encode(resp.group_id.to_bytes());
+            info!(namespace_id=%namespace_id_hex, member=%resp.member_identity, "Joined namespace successfully");
             ApiResponse {
-                payload: JoinGroupApiResponse {
-                    data: JoinGroupApiResponseData {
-                        group_id: group_id_hex,
+                payload: JoinNamespaceApiResponse {
+                    data: JoinNamespaceApiResponseData {
+                        namespace_id: namespace_id_hex,
                         member_identity: resp.member_identity,
                         member_account: resp.member_account.to_string(),
                     },

@@ -74,7 +74,6 @@ impl Handler<CreateContextRequest> for ContextManager {
             external_config,
             application,
             context,
-            context_secret,
             identity,
             identity_secret,
             group_id,
@@ -130,12 +129,10 @@ impl Handler<CreateContextRequest> for ContextManager {
                     create_context(
                         act.datastore.clone(),
                         act.node_client.clone(),
-                        act.context_client.clone(),
                         Arc::clone(&act.ack_router),
                         module,
                         external_config,
                         context_meta,
-                        context_secret,
                         application,
                         identity,
                         identity_secret,
@@ -181,7 +178,6 @@ struct Prepared<'a> {
     external_config: ContextConfigParams,
     application: Application,
     context: &'a ContextMeta,
-    context_secret: PrivateKey,
     identity: PublicKey,
     identity_secret: PrivateKey,
     group_id: ContextGroupId,
@@ -306,8 +302,14 @@ impl Prepared<'_> {
                 break;
             }
         }
-        let (entry, context_id, context_secret) = context
+        // `context_secret` is dropped with the loop: its only role is deriving
+        // `context_id` from its public key, and the seeded path is what makes that
+        // derivation reproducible. Nothing after this point needs the key — it used
+        // to be carried through `Prepared` to a `create_context` parameter that
+        // ignored it.
+        let (entry, context_id) = context
             .flatten()
+            .map(|(entry, id, _secret)| (entry, id))
             .ok_or_eyre("failed to derive a context id after 5 tries")?;
 
         let identity = identity_secret.public_key();
@@ -323,7 +325,6 @@ impl Prepared<'_> {
             external_config,
             application,
             context,
-            context_secret,
             identity,
             identity_secret,
             group_id,
@@ -339,12 +340,10 @@ impl Prepared<'_> {
 async fn create_context(
     datastore: Store,
     node_client: NodeClient,
-    _context_client: ContextClient,
     ack_router: Arc<calimero_context_client::local_governance::AckRouter>,
     module: calimero_runtime::Module,
     external_config: ContextConfigParams,
     mut context: Context,
-    _context_secret: PrivateKey,
     application: Application,
     identity: PublicKey,
     identity_secret: PrivateKey,

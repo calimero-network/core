@@ -42,7 +42,36 @@
   which a join against a node without the field still decodes ([#3485],
   [#3528])
 
+### Fixed
+
+- **Snapshot sync no longer serves state its announced boundary does not
+  describe.** Both boundary checks on the serve path — before page generation
+  and the recheck after it — compared `ContextMeta.root_hash`, but a local
+  execution commits context state well before it persists the new root hash
+  into `ContextMeta`. For that window the metadata still reported the pre-write
+  hash while every entity the snapshot reads had already moved, so both checks
+  passed and the receiver was handed post-boundary state under a pre-boundary
+  hash. It then adopted the mismatching hash and advertised a root whose state
+  it did not hold, which satisfies every root-hash equality check — including
+  the one that selects a repair protocol — so nothing ever corrected it. Both
+  checks now read the root through the context's ROOT `Index` entry, which is
+  written in the same batch as the entities it covers ([#3595])
+
 ### Changed
+
+- **`POST admin-api/namespaces/:namespace_id/join`** names the id it returns
+  `namespaceId`, not `groupId`. The endpoint shared its response DTO with
+  `POST admin-api/groups/join`, so it leaked the internal noun - a namespace is
+  a root group underneath, and `POST admin-api/namespaces` was the only
+  namespace endpoint that translated that on the way out. A client reading the
+  namespace endpoints could not use one spelling across them; merobox's
+  `join_namespace` step has declared a `namespaceId` export all along, which
+  silently captured nothing. `groups/join` is unchanged and still returns
+  `groupId`. **Breaking**: a client deserializes into the DTO rather than
+  reading the JSON loosely, so one built before this rejects the response until
+  it is rebuilt - `calimero-client-py` tracks core's master and needs no source
+  change, only a release, and `calimero-client`'s `join_namespace` now returns
+  `JoinNamespaceApiResponse`
 
 - **`governanceOp` on both join responses is now optional on deserialization.**
   The node still sends it (always `""`), so nothing changes on the wire; the
@@ -818,3 +847,4 @@ Integrations:
 [#3485]: https://github.com/calimero-network/core/issues/3485
 [#3528]: https://github.com/calimero-network/core/pull/3528
 [#3530]: https://github.com/calimero-network/core/pull/3530
+[#3595]: https://github.com/calimero-network/core/pull/3595

@@ -381,6 +381,20 @@ impl EntityIndex {
         }
     }
 
+    /// Like [`Self::minimal_for_test`] but with a chosen `full_hash`.
+    ///
+    /// A context's ROOT index carries the hash that
+    /// `ContextRegistry::compute_root_hash` reads, so a test that needs the
+    /// state-derived root to *move* has to be able to set it. Kept childless so
+    /// the reader stays on its offset fast path.
+    #[must_use]
+    pub fn minimal_for_test_with_full_hash(id: Id, full_hash: [u8; 32]) -> Self {
+        Self {
+            full_hash,
+            ..Self::minimal_for_test(id)
+        }
+    }
+
     /// Returns the entity ID.
     #[must_use]
     pub fn id(&self) -> Id {

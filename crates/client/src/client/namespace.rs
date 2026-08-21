@@ -1,7 +1,7 @@
 use calimero_server_primitives::admin::{
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
     DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinGroupApiResponse, ListNamespaceGroupsApiResponse,
+    JoinGroupApiRequest, JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse,
     ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
     PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceInitApiRequest,
     PairDeviceInitApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
@@ -170,7 +170,7 @@ where
         &self,
         namespace_id: &str,
         request: JoinGroupApiRequest,
-    ) -> Result<JoinGroupApiResponse> {
+    ) -> Result<JoinNamespaceApiResponse> {
         let response = self
             .connection
             .post(
