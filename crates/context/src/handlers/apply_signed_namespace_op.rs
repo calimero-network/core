@@ -188,6 +188,54 @@ fn apply_auth_requirement(
     }
 }
 
+/// Everything a membership comparison needed to be conclusive, as the fold found
+/// it.
+struct ComparePremise {
+    /// The op reached the projection (the lock was not poisoned).
+    fed: bool,
+    /// Every op in the cut's ancestry is decrypted, so the folded membership is
+    /// final rather than provisional.
+    decoded: bool,
+    /// The live plane holds a DIRECT row for this member. Inherited and
+    /// open-join members have none, and the projection modelling them as direct
+    /// is an expected difference between the planes, not a disagreement.
+    has_live_row: bool,
+    /// The op's cut reaches everything live has applied, so both planes are
+    /// describing the same history.
+    at_frontier: bool,
+    /// What the two planes said, valid only if the premise above holds.
+    agrees: bool,
+}
+
+/// What a membership comparison DID, in one word, for the coverage gate.
+///
+/// The gate reads these to tell "the planes agreed" from "no comparison was
+/// possible" — a distinction the absence of a divergence marker cannot make, and
+/// without which the gate can go quiet while still reporting green.
+///
+/// `agree` and `diverged` are the only CONCLUSIVE answers, and they are reachable
+/// only with the whole premise satisfied. Everything else names the reason the
+/// comparison could not be made: `skipped_*` for a refusal, `no_live_row` for the
+/// expected model difference (which is not a refusal — there was nothing to
+/// compare against).
+fn compare_result(premise: ComparePremise) -> &'static str {
+    let ComparePremise {
+        fed,
+        decoded,
+        has_live_row,
+        at_frontier,
+        agrees,
+    } = premise;
+    match (fed, decoded, has_live_row, at_frontier) {
+        (false, ..) => "skipped_unfed",
+        (true, false, ..) => "skipped_undecoded",
+        (true, true, false, _) => "no_live_row",
+        (true, true, true, false) => "skipped_stale_cut",
+        (true, true, true, true) if agrees => "agree",
+        (true, true, true, true) => "diverged",
+    }
+}
+
 /// One delta the DAG just applied, as the shadow fold needs to see it: the
 /// signed op plus the delta coordinates the fold keys and orders it by.
 ///
@@ -419,48 +467,64 @@ fn shadow_fold_and_compare(
         // correct, a divergence for neither. Folding more ops does
         // not fix it — the cut is what excludes the promotion — so
         // this is a real precondition, not a lag to wait out.
-        if fed && decoded {
-            if let Some((group, member)) = membership {
-                // Both sides now name the same principal: `member`
-                // comes off the op payload as an account, and the
-                // live rows are keyed by account. This used to
-                // invert the account back into a member key by
-                // scanning the live rows, because the two planes
-                // disagreed about what a member IS.
-                let live = calimero_governance_store::MembershipRepository::new(store)
-                    .role_of(&group, &member)
-                    .ok()
-                    .flatten();
-                if live.is_some() && projected != live {
-                    // Disagreement is only a DIVERGENCE if both
-                    // planes were answering the same question.
-                    // Off the frontier they were not, and saying
-                    // so — rather than dropping the observation —
-                    // keeps the suppression visible, so a gate
-                    // that stops firing can be told apart from a
-                    // gate that has nothing to fire about.
-                    if at_frontier {
-                        tracing::warn!(
-                            marker = "unified_projection_divergence",
-                            plane = "membership",
-                            ?group,
-                            %member,
-                            ?projected,
-                            ?live,
-                            "unified-op projection disagrees with live membership resolver"
-                        );
-                    } else {
-                        tracing::debug!(
-                            plane = "membership",
-                            ?group,
-                            %member,
-                            ?projected,
-                            ?live,
-                            "projection behind live's governance frontier; \
-                             at-cut answer is not comparable to the live row"
-                        );
-                    }
-                }
+        if let Some((group, member)) = membership {
+            // Both sides now name the same principal: `member`
+            // comes off the op payload as an account, and the
+            // live rows are keyed by account. This used to
+            // invert the account back into a member key by
+            // scanning the live rows, because the two planes
+            // disagreed about what a member IS.
+            let live = (fed && decoded)
+                .then(|| {
+                    calimero_governance_store::MembershipRepository::new(store)
+                        .role_of(&group, &member)
+                        .ok()
+                        .flatten()
+                })
+                .flatten();
+
+            // Every membership op this node folds reports what the comparison
+            // DID, not only when it failed. Without that a gate reading these
+            // logs cannot tell "the planes agreed" from "no comparison was
+            // possible": both look like the absence of a divergence marker, so
+            // the gate can go quiet — across every scenario at once — while
+            // still reporting green. The counts are the coverage.
+            //
+            // `skipped_*` results are the honest refusals: a comparison whose
+            // premise does not hold says so rather than guessing. `no_live_row`
+            // is the expected model difference (inherited and open-join members
+            // the live plane stores no direct row for), not a refusal.
+            let result = compare_result(ComparePremise {
+                fed,
+                decoded,
+                has_live_row: live.is_some(),
+                at_frontier,
+                agrees: projected == live,
+            });
+            tracing::debug!(
+                marker = "unified_projection_compare",
+                plane = "membership",
+                result,
+                ?group,
+                %member,
+                ?projected,
+                ?live,
+                "unified-op membership comparison"
+            );
+
+            // Disagreement is only a DIVERGENCE if both planes were answering
+            // the same question. Off the frontier they were not, which the
+            // `skipped_stale_cut` result above records without failing a gate.
+            if result == "diverged" {
+                tracing::warn!(
+                    marker = "unified_projection_divergence",
+                    plane = "membership",
+                    ?group,
+                    %member,
+                    ?projected,
+                    ?live,
+                    "unified-op projection disagrees with live membership resolver"
+                );
             }
         }
 
@@ -542,7 +606,7 @@ mod tests {
     use calimero_store::Store;
     use core::num::NonZeroU128;
 
-    use super::{shadow_fold_applied, AppliedOp};
+    use super::{compare_result, shadow_fold_applied, AppliedOp, ComparePremise};
     use crate::scope_projection::ScopeProjections;
 
     /// Drives the DAG's ordering machinery without a governance apply: this test
@@ -577,6 +641,55 @@ mod tests {
                 policy_bytes: Vec::new(),
             }),
             signature: [0u8; 64],
+        }
+    }
+
+    /// Exhaustive over the premise, because the property that matters is a
+    /// negative one: a comparison may report itself CONCLUDED only when every
+    /// part of its premise held. An edit that let a stale-cut or undecoded
+    /// comparison count as `agree` would restore the silence the coverage gate
+    /// exists to break — and it would do so while every scenario stayed green.
+    #[test]
+    fn only_a_complete_premise_yields_a_conclusive_comparison() {
+        const KNOWN: [&str; 6] = [
+            "agree",
+            "diverged",
+            "skipped_unfed",
+            "skipped_undecoded",
+            "skipped_stale_cut",
+            "no_live_row",
+        ];
+
+        for bits in 0..32u8 {
+            let (fed, decoded, has_live_row, at_frontier, agrees) = (
+                bits & 1 != 0,
+                bits & 2 != 0,
+                bits & 4 != 0,
+                bits & 8 != 0,
+                bits & 16 != 0,
+            );
+            let result = compare_result(ComparePremise {
+                fed,
+                decoded,
+                has_live_row,
+                at_frontier,
+                agrees,
+            });
+
+            assert!(
+                KNOWN.contains(&result),
+                "{result} is not a result the coverage gate knows how to count; a \
+                 new label has to be taught to the gate, not just returned here",
+            );
+            assert_eq!(
+                matches!(result, "agree" | "diverged"),
+                fed && decoded && has_live_row && at_frontier,
+                "conclusive only with the whole premise: {result} for fed={fed} \
+                 decoded={decoded} live_row={has_live_row} at_frontier={at_frontier}",
+            );
+            if matches!(result, "agree" | "diverged") {
+                assert_eq!(result == "agree", agrees, "verdict must follow the planes");
+            }
         }
     }
 
