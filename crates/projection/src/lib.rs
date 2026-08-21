@@ -141,6 +141,102 @@ pub struct ScopeState {
     revoked_devices: BTreeSet<DeviceId>,
 }
 
+/// The result of walking a cut's causal ancestry: the ops reached, and what
+/// stopped the walk from being a complete, readable history.
+///
+/// `missing` and `opaque` are recorded **independently and without
+/// short-circuiting**, which is the whole reason this is a struct rather than an
+/// enum. The two questions previously asked by two separate walks differ in what
+/// they tolerate: presence-only tolerates an undecoded ancestor and traverses
+/// *through* it looking for a genuine gap, while presence-and-readable does not. A
+/// verdict that stopped at whichever problem the queue happened to reach first
+/// would answer the presence question wrongly whenever an undecoded op sat in
+/// front of a missing one.
+///
+/// `ops` is populated regardless. A truncated ancestry is still the right thing to
+/// fold for a legitimately out-of-slice cross-scope edge — the caller decides
+/// whether the verdict makes its answer provisional, which is exactly what it could
+/// not do when the walk returned a bare `bool`.
+#[derive(Debug)]
+pub struct CutAncestry<'a> {
+    ops: Vec<&'a Op>,
+    /// Every id the walk reached, **including ones absent from the log**. An id
+    /// cited as a parent is an ancestor whether or not its own record is present,
+    /// which is what makes this the right set to answer coverage against. It is
+    /// the walk's own dedup set, kept rather than dropped, so carrying it is free.
+    reached: HashSet<[u8; 32]>,
+    missing: Option<[u8; 32]>,
+    opaque: Option<[u8; 32]>,
+}
+
+impl<'a> CutAncestry<'a> {
+    /// The ops reachable from the cut, in breadth order.
+    #[must_use]
+    pub fn ops(&self) -> &[&'a Op] {
+        &self.ops
+    }
+
+    /// Is every referenced ancestor present in the log?
+    ///
+    /// `false` names a genuine gap: sync has to fetch the op before any answer
+    /// folded over this cut can be trusted. An undecoded ancestor does **not** make
+    /// this false — it is present, just unreadable.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.missing.is_none()
+    }
+
+    /// Is the ancestry both present **and** fully readable — no `Noop` placeholder
+    /// standing in for an op this node cannot yet decrypt?
+    #[must_use]
+    pub fn is_decoded(&self) -> bool {
+        self.missing.is_none() && self.opaque.is_none()
+    }
+
+    /// The first ancestor found absent from the log, if any.
+    ///
+    /// Distinct from [`Self::first_opaque`] because the two call for different
+    /// responses: a gap needs a fetch, an opaque op needs a key and resolves itself
+    /// once one arrives. Collapsing both into one `false` is what left a caller
+    /// unable to tell "sync is behind" from "this node cannot read that op yet".
+    #[must_use]
+    pub fn first_missing(&self) -> Option<[u8; 32]> {
+        self.missing
+    }
+
+    /// The first ancestor found present but still an undecrypted `Noop`.
+    #[must_use]
+    pub fn first_opaque(&self) -> Option<[u8; 32]> {
+        self.opaque
+    }
+
+    /// Does this cut **cover** `frontier` — is every id in it the cut itself or
+    /// one of its ancestors, as far as the log can show?
+    ///
+    /// The question a shadow comparison has to ask before trusting an at-cut
+    /// answer against a materialized one. An at-cut read answers about the history
+    /// behind that cut; a live row answers about everything applied so far. They
+    /// are the same question only while the cut reaches every op live has, which is
+    /// what `frontier` (live's governance head set) names.
+    ///
+    /// A cut that does NOT cover the frontier is not stale bookkeeping to be
+    /// repaired: no amount of extra folding changes what the cut excludes. An op
+    /// applied out of causal order — an author's own op returning after it
+    /// published a newer one, a partition heal replaying old history — is
+    /// permanently behind live, and comparing the two compares different
+    /// questions.
+    ///
+    /// Decided on the CITATION graph, not on what the log holds: a cited id counts
+    /// as reached whether or not its record is present. What a gap does cost is
+    /// reach BEYOND it, since the walk cannot follow an absent op's parents — which
+    /// errs toward `false`, and a comparison suppressed for a gap is the safe
+    /// direction. An empty `frontier` is covered vacuously.
+    #[must_use]
+    pub fn covers(&self, frontier: &[[u8; 32]]) -> bool {
+        frontier.iter().all(|id| self.reached.contains(id))
+    }
+}
+
 impl ScopeState {
     /// Fold a set of ops into a fresh state. Order-independent (per-slot LWW),
     /// so this is the projection regardless of the order ops arrived.
@@ -698,6 +794,56 @@ impl ScopeState {
         }
     }
 
+    /// Walk the causal ancestry of `parents` within `log`, once.
+    ///
+    /// This is the only ancestry walk in the crate. There were three — one
+    /// collecting ops for the fold, two answering a `bool` about the same
+    /// traversal — and the relationship between them was load-bearing but
+    /// unenforced: [`Self::acl_view_at`] silently folds a truncated ancestry, so a
+    /// caller had to remember a *second* call to learn whether the view it just
+    /// built could be trusted. Nothing made that second call mandatory, and the two
+    /// gating call sites in `calimero-context` walked the same ancestry twice per
+    /// at-cut read to get both answers.
+    #[must_use]
+    pub fn cut_ancestry<'a>(log: &'a [Op], parents: &[[u8; 32]]) -> CutAncestry<'a> {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        let mut ops: Vec<&Op> = Vec::new();
+        let mut missing = None;
+        let mut opaque = None;
+
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match by_id.get(&id) {
+                Some(op) => {
+                    if opaque.is_none() && matches!(op.payload, OpPayload::Noop) {
+                        opaque = Some(id);
+                    }
+                    ops.push(op);
+                    queue.extend(op.parents.iter().copied());
+                }
+                // Recorded, not returned: the walk continues so a gap sitting
+                // behind an absent op is still discovered, and so `ops` stays the
+                // same set the fold has always been handed.
+                None => {
+                    if missing.is_none() {
+                        missing = Some(id);
+                    }
+                }
+            }
+        }
+
+        CutAncestry {
+            ops,
+            reached: visited,
+            missing,
+            opaque,
+        }
+    }
+
     /// Resolve the [`AclView`] at the causal cut named by `parents` over
     /// `log` — the **causal-honor** view: fold the ops named by `parents` and
     /// their transitive ancestors (the cut is inclusive of `parents`, since an
@@ -716,21 +862,18 @@ impl ScopeState {
     /// fully-materialized ancestry.
     #[must_use]
     pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
-        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
-        let mut visited: HashSet<[u8; 32]> = HashSet::new();
-        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
-        let mut ancestry: Vec<&Op> = Vec::new();
-        while let Some(id) = queue.pop_front() {
-            if !visited.insert(id) {
-                continue;
-            }
-            if let Some(op) = by_id.get(&id) {
-                ancestry.push(op);
-                for parent in &op.parents {
-                    queue.push_back(*parent);
-                }
-            }
-        }
+        Self::acl_view_from_ancestry(&Self::cut_ancestry(log, parents))
+    }
+
+    /// Fold an already-walked ancestry into an [`AclView`].
+    ///
+    /// Split from [`Self::acl_view_at`] so a caller that has already walked — to
+    /// learn whether the cut is complete — folds the ops it got rather than walking
+    /// them again. That double walk was the cost of answering the two questions
+    /// separately.
+    #[must_use]
+    pub fn acl_view_from_ancestry(walked: &CutAncestry<'_>) -> AclView {
+        let ancestry: &[&Op] = walked.ops();
 
         // Causal generation per ancestry op = longest path from a root
         // (`1 + max(parent generation)`, `0` when no parent is in the ancestry).
@@ -739,7 +882,7 @@ impl ScopeState {
         // cycles), so deep chains can't blow the stack.
         let anc_by_id: HashMap<[u8; 32], &Op> = ancestry.iter().map(|op| (op.id(), *op)).collect();
         let mut generation: HashMap<[u8; 32], u32> = HashMap::new();
-        for &start in &ancestry {
+        for &start in ancestry {
             if generation.contains_key(&start.id()) {
                 continue;
             }
@@ -776,114 +919,56 @@ impl ScopeState {
         }
 
         let mut state = Self::default();
-        for &op in &ancestry {
+        for &op in ancestry {
             state.apply_with_generation(op, generation.get(&op.id()).copied().unwrap_or(0));
         }
         state.acl_view()
     }
 
-    /// Is the **complete** causal ancestry of `parents` present in `log` — i.e.
-    /// does the walk reach every referenced op without truncating at a missing
-    /// one? `acl_view_at` silently skips a missing ancestor (correct for a
-    /// legitimately out-of-slice cross-scope edge, but a *same-scope* gap yields
-    /// a truncated, possibly-stale view). The **authoritative grant** path must
-    /// not override live's reject on a truncated view: a missing mid-ancestry
-    /// removal would leave a since-removed member still folded as present. This
-    /// returns `false` the moment any referenced id is absent from `log`, so the
-    /// grant can abstain (defer to live) unless it has the whole history.
+    /// Is the **complete** causal ancestry of `parents` present in `log`?
+    ///
+    /// `acl_view_at` silently skips a missing ancestor — correct for a legitimately
+    /// out-of-slice cross-scope edge, but a *same-scope* gap yields a truncated,
+    /// possibly-stale view. The authoritative-grant path must not override live's
+    /// reject on one: a missing mid-ancestry removal would leave a since-removed
+    /// member still folded as present. So the grant abstains unless it has the whole
+    /// history.
+    ///
+    /// An undecoded ancestor does not make this `false` — see
+    /// [`Self::cut_ancestry_decoded`].
     #[must_use]
     pub fn cut_ancestry_complete(log: &[Op], parents: &[[u8; 32]]) -> bool {
-        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
-        let mut visited: HashSet<[u8; 32]> = HashSet::new();
-        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
-        while let Some(id) = queue.pop_front() {
-            if !visited.insert(id) {
-                continue;
-            }
-            match by_id.get(&id) {
-                Some(op) => queue.extend(op.parents.iter().copied()),
-                None => return false,
-            }
-        }
-        true
+        Self::cut_ancestry(log, parents).is_complete()
     }
 
-    /// Does the cut at `parents` **cover** `frontier` — is every id in
-    /// `frontier` the cut itself or one of its ancestors, as far as `log` can
-    /// show?
+    /// Does the cut at `parents` **cover** `frontier`? See
+    /// [`CutAncestry::covers`], which carries the reasoning.
     ///
-    /// The question a shadow comparison has to ask before trusting an at-cut
-    /// answer against a materialized one. An at-cut read answers about the
-    /// history behind that cut; a live row answers about everything applied so
-    /// far. They are the same question only while the cut reaches every op live
-    /// has, which is what `frontier` (live's governance head set) names.
-    ///
-    /// A cut that does NOT cover the frontier is not stale bookkeeping to be
-    /// repaired: no amount of extra folding changes what the cut excludes. An op
-    /// applied out of causal order — an author's own op returning after it
-    /// published a newer one, a partition heal replaying old history — is
-    /// permanently behind live, and comparing the two is comparing different
-    /// questions.
-    ///
-    /// The walk decides coverage on the CITATION graph, not on what the log
-    /// holds: an id cited as a parent is an ancestor whether or not its own
-    /// record is present, so it counts as reached. What a gap does cost is
-    /// reach BEYOND it — the walk cannot follow an absent op's parents — which
-    /// errs toward `false`, and a comparison suppressed for a gap is the safe
-    /// direction. An empty `frontier` (nothing applied) is covered vacuously.
+    /// The empty-`frontier` early return is an optimisation, not a special case:
+    /// `covers` is vacuously true for it, but returning here skips the walk.
     #[must_use]
     pub fn cut_covers(log: &[Op], parents: &[[u8; 32]], frontier: &[[u8; 32]]) -> bool {
         if frontier.is_empty() {
             return true;
         }
-        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
-        let mut visited: HashSet<[u8; 32]> = HashSet::new();
-        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
-        while let Some(id) = queue.pop_front() {
-            if !visited.insert(id) {
-                continue;
-            }
-            if let Some(op) = by_id.get(&id) {
-                queue.extend(op.parents.iter().copied());
-            }
-        }
-        frontier.iter().all(|id| visited.contains(id))
+        Self::cut_ancestry(log, parents).covers(frontier)
     }
 
-    /// Like [`Self::cut_ancestry_complete`], but ALSO requires every op in the
-    /// cut's ancestry to be **decoded** — i.e. carry a real payload, not
-    /// `OpPayload::Noop`.
+    /// Like [`Self::cut_ancestry_complete`], but ALSO requires every ancestor to be
+    /// **decoded** — carrying a real payload rather than `OpPayload::Noop`.
     ///
-    /// An encrypted op the node can't yet decrypt is retained as a `Noop`
-    /// placeholder (it shares the signed op's content-id, so a later decrypted
-    /// re-ingest upgrades it in place). `cut_ancestry_complete` counts that
-    /// placeholder as "present" — correct for structural completeness, wrong for
-    /// deciding whether the folded membership can be trusted. A `Noop` in the
-    /// ancestry means the fold is missing whatever that op did (an add, a remove,
-    /// a role change), so a membership answer read over it is provisional, not
-    /// authoritative.
+    /// An encrypted op this node cannot yet decrypt is retained as a `Noop`
+    /// placeholder (it shares the signed op's content id, so a later decrypted
+    /// re-ingest upgrades it in place). That placeholder is structurally present but
+    /// its effect — an add, a remove, a role change — is missing from the fold, so a
+    /// membership answer read over it is provisional rather than authoritative.
     ///
-    /// Returns `false` if any ancestor is absent OR still a `Noop`; `true` only
-    /// when the whole history behind the cut is present and readable. Used by the
-    /// projection/live shadow-compare to avoid crying divergence during the
-    /// key-delivery window after a member re-join, where live has the
+    /// Used by the projection/live shadow-compare to avoid crying divergence during
+    /// the key-delivery window after a member re-join, where live has the
     /// materialized row but the projection is still holding the re-add encrypted.
     #[must_use]
     pub fn cut_ancestry_decoded(log: &[Op], parents: &[[u8; 32]]) -> bool {
-        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
-        let mut visited: HashSet<[u8; 32]> = HashSet::new();
-        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
-        while let Some(id) = queue.pop_front() {
-            if !visited.insert(id) {
-                continue;
-            }
-            match by_id.get(&id) {
-                Some(op) if matches!(op.payload, OpPayload::Noop) => return false,
-                Some(op) => queue.extend(op.parents.iter().copied()),
-                None => return false,
-            }
-        }
-        true
+        Self::cut_ancestry(log, parents).is_decoded()
     }
 
     /// The single convergence root over the whole projection (values + ACL +
@@ -1037,6 +1122,237 @@ fn role_byte(role: &GroupMemberRole) -> u8 {
         GroupMemberRole::Member => 1,
         GroupMemberRole::ReadOnly => 2,
         GroupMemberRole::ReadOnlyTee => 3,
+    }
+}
+
+/// The four ancestry walks that [`ScopeState::cut_ancestry`] replaced, kept
+/// verbatim as oracles, and swept against it over every small DAG.
+///
+/// Deliberately duplicated: an oracle that shares code with the thing it checks
+/// checks nothing. Do not refactor these to call the crate — if you are changing
+/// them, you are changing the reference the refactor is measured against.
+///
+/// The subtlety they exist to pin: the old presence-only walk traversed *through*
+/// an undecoded (`Noop`) ancestor looking for a genuine gap, while the
+/// presence-and-readable walk stopped at the first one. A unified walk that
+/// short-circuited on whichever problem the queue reached first would answer the
+/// presence question wrongly whenever an undecoded op sat in front of a missing
+/// one — which is exactly the case `an_opaque_op_in_front_of_a_gap` builds.
+#[cfg(test)]
+mod ancestry_oracle {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    use calimero_op::{Authorship, Op, OpPayload, ScopeId};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+
+    use super::ScopeState;
+    use calimero_account::{AccountId, DeviceId};
+
+    /// One op at `hlc_ns` with the given parents. Built here rather than borrowed
+    /// from the sibling test module, so the oracle depends on nothing the refactor
+    /// touched.
+    fn op_with_parents(hlc_ns: u64, payload: OpPayload, parents: Vec<[u8; 32]>) -> Op {
+        let account = AccountId::from([1u8; 32]);
+        Op::new(
+            ScopeId::from([0u8; 32]),
+            parents,
+            Authorship {
+                account,
+                device: DeviceId::from(*account.as_bytes()),
+                device_key: PublicKey::from(*account.as_bytes()),
+            },
+            HybridTimestamp::new(Timestamp::new(
+                NTP64(hlc_ns),
+                ID::from(core::num::NonZeroU128::new(1).expect("nonzero")),
+            )),
+            payload,
+            [0u8; 32],
+            [0u8; 64],
+        )
+    }
+
+    /// Pre-refactor `acl_view_at`'s collecting walk, transcribed.
+    fn reference_collect<'a>(log: &'a [Op], parents: &[[u8; 32]]) -> Vec<&'a Op> {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        let mut ancestry: Vec<&Op> = Vec::new();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(op) = by_id.get(&id) {
+                ancestry.push(op);
+                for parent in &op.parents {
+                    queue.push_back(*parent);
+                }
+            }
+        }
+        ancestry
+    }
+
+    /// Pre-refactor `cut_ancestry_complete`, transcribed.
+    fn reference_complete(log: &[Op], parents: &[[u8; 32]]) -> bool {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match by_id.get(&id) {
+                Some(op) => queue.extend(op.parents.iter().copied()),
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// Pre-refactor `cut_ancestry_decoded`, transcribed.
+    fn reference_decoded(log: &[Op], parents: &[[u8; 32]]) -> bool {
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            match by_id.get(&id) {
+                Some(op) if matches!(op.payload, OpPayload::Noop) => return false,
+                Some(op) => queue.extend(op.parents.iter().copied()),
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// Pre-refactor `cut_covers`, transcribed. Added when master's #3587 landed a
+    /// fourth copy of the walk while this refactor was in review — folding it in
+    /// was the point of the change, so it gets an oracle like the other three.
+    fn reference_covers(log: &[Op], parents: &[[u8; 32]], frontier: &[[u8; 32]]) -> bool {
+        if frontier.is_empty() {
+            return true;
+        }
+        let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
+        let mut visited: HashSet<[u8; 32]> = HashSet::new();
+        let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(op) = by_id.get(&id) {
+                queue.extend(op.parents.iter().copied());
+            }
+        }
+        frontier.iter().all(|id| visited.contains(id))
+    }
+
+    /// A chain `op[0] -> op[1] -> ... -> op[n-1]`, where bit `i` of `noop_mask`
+    /// makes `op[i]` an undecrypted placeholder and bit `i` of `drop_mask` removes
+    /// it from the log entirely.
+    fn chain(len: usize, noop_mask: u32, drop_mask: u32) -> (Vec<Op>, [u8; 32]) {
+        let mut built: Vec<Op> = Vec::new();
+        let mut prev: Vec<[u8; 32]> = Vec::new();
+        for i in 0..len {
+            let payload = if noop_mask & (1 << i) != 0 {
+                OpPayload::Noop
+            } else {
+                OpPayload::Put {
+                    entity: calimero_storage::address::Id::root(),
+                    value: vec![u8::try_from(i).expect("small")],
+                }
+            };
+            let op = op_with_parents(u64::try_from(i).expect("small") + 1, payload, prev.clone());
+            prev = vec![op.id()];
+            built.push(op);
+        }
+        let head = built.last().expect("non-empty").id();
+        let log = built
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| drop_mask & (1 << i) == 0)
+            .map(|(_, op)| op)
+            .collect();
+        (log, head)
+    }
+
+    fn for_every_small_chain(mut check: impl FnMut(&[Op], &[[u8; 32]])) {
+        for len in 1usize..=4 {
+            for noop_mask in 0u32..(1 << len) {
+                for drop_mask in 0u32..(1 << len) {
+                    let (log, head) = chain(len, noop_mask, drop_mask);
+                    check(&log, &[head]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_one_walk_matches_all_four_it_replaced() {
+        let mut checked = 0usize;
+        for_every_small_chain(|log, parents| {
+            let walked = ScopeState::cut_ancestry(log, parents);
+            assert_eq!(
+                walked.ops().iter().map(|op| op.id()).collect::<Vec<_>>(),
+                reference_collect(log, parents)
+                    .iter()
+                    .map(|op| op.id())
+                    .collect::<Vec<_>>(),
+                "the folded ancestry must be the same ops, in the same order"
+            );
+            assert_eq!(
+                walked.is_complete(),
+                reference_complete(log, parents),
+                "presence verdict diverged from the walk it replaced"
+            );
+            assert_eq!(
+                walked.is_decoded(),
+                reference_decoded(log, parents),
+                "readable verdict diverged from the walk it replaced"
+            );
+            // Coverage, over every frontier the chain can pose: each op's own id,
+            // an id that is nowhere in it, and the empty frontier.
+            let mut frontiers: Vec<Vec<[u8; 32]>> = vec![Vec::new(), vec![[0xEE; 32]]];
+            frontiers.extend(log.iter().map(|op| vec![op.id()]));
+            if log.len() >= 2 {
+                frontiers.push(log.iter().map(|op| op.id()).collect());
+            }
+            for frontier in &frontiers {
+                assert_eq!(
+                    walked.covers(frontier),
+                    reference_covers(log, parents, frontier),
+                    "coverage verdict diverged for frontier {frontier:?}"
+                );
+            }
+            checked += 1;
+        });
+        assert!(checked >= 300, "the sweep must be wide: {checked}");
+    }
+
+    /// The case that makes the two verdicts independent rather than one enum: an
+    /// undecoded op sits nearer the cut than a genuine gap. A walk that stopped at
+    /// the first problem would report "present" here, because it would never reach
+    /// the missing ancestor behind the placeholder.
+    #[test]
+    fn an_opaque_op_in_front_of_a_gap_is_both_undecoded_and_incomplete() {
+        // op0 <- op1(noop) <- op2, with op0 dropped from the log.
+        let (log, head) = chain(3, 0b010, 0b001);
+        let walked = ScopeState::cut_ancestry(&log, &[head]);
+
+        assert!(!walked.is_decoded(), "the placeholder must be reported");
+        assert!(
+            !walked.is_complete(),
+            "the gap BEHIND the placeholder must still be found — this is what a \
+             short-circuiting verdict would miss"
+        );
+        assert!(walked.first_opaque().is_some());
+        assert!(walked.first_missing().is_some());
+        assert_ne!(
+            walked.first_opaque(),
+            walked.first_missing(),
+            "the two causes are different ops and must be reported separately"
+        );
     }
 }
 
