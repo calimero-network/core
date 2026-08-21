@@ -54,7 +54,6 @@ description: >
 name: E2E Discovery - Bootstrap Only, No mDNS (2 nodes)
 
 force_pull_image: false
-near_devnet: false
 
 # Routes startup through the wiring path described above. Without it merobox
 # takes the per-node path, `bootstrap.nodes` stays empty, and with mDNS off the

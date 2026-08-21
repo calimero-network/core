@@ -31,7 +31,6 @@ description: >
 name: E2E Discovery - Bootstrap Only, No mDNS (4 nodes)
 
 force_pull_image: false
-near_devnet: false
 
 restart: true
 
