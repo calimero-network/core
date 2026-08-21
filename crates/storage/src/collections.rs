@@ -934,7 +934,18 @@ where
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
         let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
 
-        let _ignored = self.collection.children_cache()?.insert(item.id());
+        // Only touch the cache if it is ALREADY materialised. Calling
+        // `children_cache()` here would populate it — reading every existing
+        // child just to record one new id — which is an O(n) cost on every
+        // insert and defeats the bounded link the trie provides. A fresh
+        // contract call starts with an empty cache, so this fired on
+        // essentially every write.
+        //
+        // Leaving it unpopulated is safe: the trie is authoritative, so a
+        // later read materialises the cache from it with this child included.
+        if let Some(cache) = self.collection.children_ids.borrow_mut().as_mut() {
+            let _ignored = cache.insert(item.id());
+        }
 
         Ok(())
     }
