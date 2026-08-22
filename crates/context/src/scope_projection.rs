@@ -591,17 +591,25 @@ impl ScopeProjections {
     /// nobody could see. `repersist_namespace_ops` rewrites rows when a key
     /// ARRIVES, so it does not cover an op this node will never decrypt.
     ///
-    /// Only stored `Noop`s are touched, and each is decided the way the walk would
-    /// decide it: consult the signed op, re-attempt the decrypt, and take whatever
-    /// payload that yields — a real one if the key is here now, `Noop` if the op is
-    /// readable and models nothing, `Opaque` if it cannot be read. A row already
-    /// carrying a real payload or an `Opaque` is left alone, so steady state costs
-    /// nothing and the work shrinks as rows are rewritten.
+    /// Both kinds of placeholder are re-attempted — a stored `Noop` AND a stored
+    /// `Opaque` — and each is decided the way the walk would decide it: consult the
+    /// signed op, re-attempt the decrypt, and take whatever payload that yields.
+    ///
+    /// Re-attempting `Opaque` is the point, not an extra. That row means "I could
+    /// not read this WHEN I FOLDED IT", which is a cache of a past failure, and the
+    /// whole design has the key arriving later: a member pulls the epoch by
+    /// `key_id` and the op becomes readable. Treating the row as settled left the
+    /// apply gates authorizing against a hole that no longer existed — the retry
+    /// that ran the moment the key landed asked this fold, was told "unreadable",
+    /// and abstained, so the op that the key was pulled FOR could never apply.
+    ///
+    /// Rows already carrying a real payload are untouched, so steady state costs
+    /// nothing and the work shrinks as holes are filled.
     fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
         let stale: Vec<usize> = ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| matches!(op.payload, OpPayload::Noop))
+            .filter(|(_, op)| matches!(op.payload, OpPayload::Noop | OpPayload::Opaque { .. }))
             .map(|(i, _)| i)
             .collect();
         if stale.is_empty() {
