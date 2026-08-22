@@ -61,6 +61,26 @@ pub enum ContextError {
     /// A legitimate client-side precondition (the node hasn't joined the
     /// group, or isn't in it), not a server fault — callers map this to a
     /// `403`, never a generic `500`.
+    /// The node cannot yet decide whether the op's signer was authorized,
+    /// because the causal cut it must judge against cites history this node has
+    /// not folded — a missing ancestor, or one encrypted under a key it does not
+    /// hold yet.
+    ///
+    /// **Not a refusal, and the distinction is the whole point.** The apply path
+    /// burns nothing on this outcome — the DAG head does not advance and the
+    /// nonce is not consumed — so the identical call succeeds once sync or a key
+    /// pull delivers what is missing. Typed for the same reason as
+    /// [`Self::NotAGroupMember`], but mapping to a RETRYABLE status: a caller that
+    /// sees a generic `500` cannot tell "wait, and this will work" from "no, and
+    /// it never will", and those want opposite client behaviour.
+    #[error(
+        "authority for '{group_id}' cannot be resolved at this op's causal cut yet          — this node is missing history or a key it is entitled to; retry once it          has synced"
+    )]
+    AuthorityNotYetResolvable {
+        /// The group whose authority could not be resolved.
+        group_id: String,
+    },
+
     #[error("node is not a member of group '{group_id}'")]
     NotAGroupMember {
         /// Debug rendering of the target group id (for the message only).

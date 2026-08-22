@@ -70,6 +70,10 @@ pub fn signed_op_to_delta(op: &SignedGroupOp) -> Result<CausalDelta<SignedGroupO
 pub struct NamespaceGovernanceApplier {
     store: Store,
     divergence_outbox: Arc<Mutex<Option<DivergenceReport>>>,
+    /// Set when the apply failed because authority was UNDECIDABLE at the cut,
+    /// rather than refused. Same single-slot, read-once shape as
+    /// `divergence_outbox`, and single-flight for the same reason.
+    undecidable_outbox: Arc<Mutex<Option<String>>>,
 }
 
 impl NamespaceGovernanceApplier {
@@ -77,6 +81,7 @@ impl NamespaceGovernanceApplier {
         Self {
             store,
             divergence_outbox: Arc::new(Mutex::new(None)),
+            undecidable_outbox: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -92,6 +97,25 @@ impl NamespaceGovernanceApplier {
     /// path never fires on the report a poison-inducing panic was
     /// concurrent with — exactly the operator-investigation signal
     /// we need to preserve.
+    /// The group whose authority the last apply could not resolve, if that is why
+    /// it failed — read once, like [`Self::take_divergence`].
+    ///
+    /// `ApplyError::Application` carries only a string, so the typed
+    /// `AuthorityUndecidable` the gate raised is gone by the time the DAG returns
+    /// it. It matters at the API edge, where "not yet" and "refused" want opposite
+    /// client behaviour, so it is carried out of band from the one place that
+    /// still has the type rather than recovered by matching on prose.
+    pub fn take_undecidable(&self) -> Option<String> {
+        let mut slot = self.undecidable_outbox.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!(
+                "undecidable_outbox mutex was poisoned by a prior panic; recovering the \
+                 inner value so the retryable outcome still reaches the caller"
+            );
+            poisoned.into_inner()
+        });
+        slot.take()
+    }
+
     pub fn take_divergence(&self) -> Option<DivergenceReport> {
         let mut slot = self.divergence_outbox.lock().unwrap_or_else(|poisoned| {
             tracing::warn!(
@@ -119,7 +143,27 @@ impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
             &delta.parents,
             &authorizer,
         )
-        .map_err(|e| ApplyError::Application(e.to_string()))?;
+        .map_err(|e| {
+            // The one place the typed gate error still exists. Downcast before the
+            // string conversion swallows it; a `None` here is any other apply
+            // failure and stays exactly as it was.
+            if let Some(calimero_governance_store::ApplyError::AuthorityUndecidable {
+                group_id,
+                ..
+            }) = e.downcast_ref::<calimero_governance_store::ApplyError>()
+            {
+                let mut slot = self.undecidable_outbox.lock().unwrap_or_else(|poisoned| {
+                    tracing::warn!(
+                        "undecidable_outbox mutex was poisoned by a prior panic; \
+                         recovering the inner slot so this retryable outcome still \
+                         reaches the caller"
+                    );
+                    poisoned.into_inner()
+                });
+                *slot = Some(group_id.clone());
+            }
+            ApplyError::Application(e.to_string())
+        })?;
         if let Some(report) = outcome.divergence {
             // Last-writer-wins on the outbox. The applier instance
             // is single-flight per actor message turn, so multiple
