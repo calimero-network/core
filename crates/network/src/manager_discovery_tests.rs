@@ -470,3 +470,139 @@ async fn rejected_cookie_self_heals_through_the_real_handler() {
 
     assert!(saw_invalid_cookie);
 }
+
+// ---------------------------------------------------------------------------
+// Peer-cache startup dial: the persisted half
+// ---------------------------------------------------------------------------
+//
+// `PeerAddrCache` has good unit cover for the pure parts — selection order,
+// the startup cap, TTL, prune/LRU, string round-trip. What had none is the
+// wiring in between: reading the blob back out of the node's datastore on
+// startup, which is the step that decides whether a restarted node
+// reconnects from cache or has to rediscover from scratch.
+//
+// It is worth pinning because the behaviour is invisible when it works and
+// misleading when it does not. A merobox experiment that disabled mDNS
+// "passed" purely because this path re-dialled peers persisted by the
+// previous run (`merobox nuke` leaves data dirs whose prefix it does not
+// recognise), which read as "mDNS is redundant" — a wrong conclusion drawn
+// from a cache doing its job. See calimero-network/core#3525.
+//
+// Only the load half is exercised here. `persist_peer_cache` filters to
+// `current_overlay_subscribers()` and returns early when that is empty, so
+// driving it needs gossipsub peers subscribed to real topics — a heavier
+// fixture than the seam justifies. Writing the blob directly under the
+// production key covers the deserialise-and-restore path a restart takes.
+
+use calimero_store::db::InMemoryDB;
+use calimero_store::key::Generic as GenericKey;
+use calimero_store::slice::Slice;
+use calimero_store::types::GenericData;
+use calimero_store::Store;
+
+use crate::discovery::peer_cache::PersistedPeer;
+use crate::discovery::peer_cache_store_key;
+
+/// A manager whose peer cache is backed by a real (in-memory) datastore.
+async fn build_manager_with_store(store: Store) -> NetworkManager {
+    let listen: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", free_port().await)
+        .parse()
+        .unwrap();
+    let mut registry = Registry::default();
+    NetworkManager::new(
+        &client_config(listen),
+        Arc::new(NoopDispatcher),
+        &mut registry,
+        BTreeSet::new(),
+        Some(store),
+    )
+    .await
+    .expect("manager builds with a store")
+}
+
+fn write_peer_cache(store: &Store, records: &[PersistedPeer]) {
+    let bytes = serde_json::to_vec(records).expect("records serialize");
+    let key: GenericKey = peer_cache_store_key();
+    let data = GenericData::from(Slice::from(bytes));
+    store.handle().put(&key, &data).expect("blob persists");
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs()
+}
+
+#[tokio::test]
+async fn startup_restores_fresh_cached_peers_and_drops_expired_ones() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let fresh = PeerId::random();
+    let stale = PeerId::random();
+    let now = now_secs();
+
+    write_peer_cache(
+        &store,
+        &[
+            PersistedPeer {
+                peer_id: fresh.to_string(),
+                addrs: vec!["/ip4/10.0.0.7/tcp/2428".to_owned()],
+                last_seen_secs: now - 60,
+            },
+            PersistedPeer {
+                // Older than the 24h TTL: a restart must not resurrect an
+                // address that stopped being true a week ago, or every
+                // startup pays for dials that cannot connect.
+                peer_id: stale.to_string(),
+                addrs: vec!["/ip4/10.0.0.8/tcp/2428".to_owned()],
+                last_seen_secs: now - (30 * 24 * 60 * 60),
+            },
+        ],
+    );
+
+    let mut manager = build_manager_with_store(store).await;
+    manager.load_peer_cache_and_dial();
+
+    assert_eq!(
+        manager.peer_cache_addrs_for(&fresh).len(),
+        1,
+        "a fresh cached peer must survive the restart, or a restarted node \
+         rediscovers from scratch instead of reconnecting"
+    );
+    assert!(
+        manager.peer_cache_addrs_for(&stale).is_empty(),
+        "an entry past the TTL must not come back"
+    );
+}
+
+#[tokio::test]
+async fn startup_with_a_corrupt_cache_blob_leaves_the_node_running() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let key: GenericKey = peer_cache_store_key();
+    let data = GenericData::from(Slice::from(b"{not json".to_vec()));
+    store.handle().put(&key, &data).expect("blob persists");
+
+    let mut manager = build_manager_with_store(store).await;
+
+    // Best-effort by design: a cache is an optimisation, so an unreadable
+    // one costs a slower reconnect and nothing else. If this ever panics or
+    // propagates, a single corrupt blob takes the node down at boot — and
+    // the node cannot clear it without starting.
+    manager.load_peer_cache_and_dial();
+
+    assert!(
+        manager.peer_cache_addrs_for(&PeerId::random()).is_empty(),
+        "a corrupt blob must leave the cache empty rather than half-loaded"
+    );
+}
+
+#[tokio::test]
+async fn startup_without_a_store_is_a_no_op() {
+    // Binary-mode and test call sites construct the manager with no
+    // datastore at all; the load path must treat that as "nothing cached"
+    // rather than assuming persistence exists.
+    let mut manager = build_manager().await;
+    manager.load_peer_cache_and_dial();
+
+    assert!(manager.peer_cache_addrs_for(&PeerId::random()).is_empty());
+}
