@@ -639,6 +639,18 @@ pub enum UndecidableCause {
     /// reach the cut and never will again. **Permanent.** The op parks forever
     /// and that namespace's governance DAG stops advancing on this node.
     LogTruncated,
+    /// Every ancestor is present, but at least one is an encrypted op this node
+    /// holds no key for, so the fold is missing whatever that op did.
+    ///
+    /// Distinct from [`Self::AncestryGap`] because the remedy differs — a gap
+    /// needs history, this needs a key — and because this one is the reason a
+    /// gate must ABSTAIN rather than answer: an at-cut verdict folded over a hole
+    /// is a verdict about a history the node cannot see, and two nodes with
+    /// different key epochs would reach different ones on the same op.
+    ///
+    /// Transient in the ordinary case (the key is delivered and the op re-folds),
+    /// permanent for a node outside the group whose op it is.
+    AncestryUnreadable,
     /// The ephemeral fold could not be built at all (governance head unreadable
     /// — a store fault). Not a history gap.
     FoldUnavailable,
@@ -654,6 +666,7 @@ impl UndecidableCause {
             UndecidableCause::HeadsMissing => "heads_missing",
             UndecidableCause::AncestryGap => "ancestry_gap",
             UndecidableCause::LogTruncated => "log_truncated",
+            UndecidableCause::AncestryUnreadable => "ancestry_unreadable",
             UndecidableCause::FoldUnavailable => "fold_unavailable",
             UndecidableCause::NamespaceUnresolved => "namespace_unresolved",
         }
@@ -750,6 +763,7 @@ mod tests {
             UndecidableCause::HeadsMissing,
             UndecidableCause::AncestryGap,
             UndecidableCause::LogTruncated,
+            UndecidableCause::AncestryUnreadable,
             UndecidableCause::FoldUnavailable,
             UndecidableCause::NamespaceUnresolved,
         ];
@@ -770,7 +784,9 @@ mod tests {
             permanent,
             vec!["log_truncated"],
             "only a truncated log is unrecoverable; the rest clear once sync \
-             delivers the missing history",
+             delivers the missing history — `ancestry_unreadable` included, since \
+             a key delivery re-folds the op and it is a node outside the group, \
+             not the history, that keeps it standing",
         );
 
         let mut registry = Registry::default();

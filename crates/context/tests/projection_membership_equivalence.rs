@@ -1515,3 +1515,105 @@ fn a_late_applied_add_after_a_promotion_is_not_a_divergence() {
         "and then they agree: Admin at the promotion's cut, Admin in the live row",
     );
 }
+
+/// The authoritative grant path must abstain when an ancestor is UNREADABLE, not
+/// only when one is missing.
+///
+/// A gap and a hole cost the same over-grant by different routes. With a gap, the
+/// removal op is absent and the walk still sees the member; with a hole, the
+/// removal op is present but encrypted under a key this node does not hold, folds
+/// to nothing, and the walk still sees the member. The view is equally stale, and
+/// this path GRANTS on what it returns — so it defers to live in both cases.
+///
+/// Same reasoning covers the apply gates through `auth_cut_context`, where the
+/// verdict is worse than stale: `PermissionChecker` returns a `Some(false)`
+/// straight through as a refusal, so two nodes with different key epochs would
+/// decide one op differently and that namespace's governance DAG would stop
+/// converging on the one that refused.
+#[test]
+fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
+    let store = store();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut OsRng);
+    let joiner = joiner_sk.public_key();
+
+    let ns = ContextGroupId::from([0x61; 32]);
+    let subgroup = ContextGroupId::from([0x62; 32]);
+
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    for g in [&ns, &subgroup] {
+        MetaRepository::new(&store)
+            .save(g, &meta(admin_account))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(g, &admin_account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns, &subgroup)
+        .unwrap();
+
+    let mut proj = ScopeProjections::new();
+    let s2 = fold_subgroup_structure(
+        &mut proj,
+        ns.to_bytes(),
+        admin,
+        subgroup,
+        [0xD0; 32],
+        [0xDF; 32],
+    );
+
+    // The joiner is a member at this cut, by an op the projection HAS folded.
+    let join_ns = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: calimero_context::test_support::account_for(&joiner),
+            signed_invitation: sign_invitation(&admin_sk, subgroup, 1, [0x42; 32]),
+            account: test_join_account_for(&joiner),
+        }),
+    )
+    .expect("sign join");
+    calimero_governance_store::apply_signed_namespace_op(&store, &join_ns).unwrap();
+    let joined = [0xD1; 32];
+    proj.ingest_op(&op_from_namespace_op(&join_ns, None, joined, hlc(1), &[s2]));
+
+    // Complete and readable: the grant path answers.
+    assert_eq!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[joined]),
+        Some(true),
+        "precondition: a whole, readable ancestry is answerable",
+    );
+
+    // Now a descendant op this node cannot decrypt — a group op with no key here.
+    // Its payload folds to nothing, so the view is unchanged and the member still
+    // looks present; what it could have said (a removal, a role change) is exactly
+    // what this node cannot know.
+    let hole = op_from_namespace_op(
+        &ns_group_envelope(ns.to_bytes(), admin, subgroup),
+        None,
+        [0xD2; 32],
+        hlc(2),
+        &[joined],
+    );
+    proj.ingest_op(&hole);
+
+    assert_eq!(
+        proj.member_at_cut_authoritative(&store, subgroup, &joiner, &[hole.id()]),
+        None,
+        "an unreadable ancestor must make the grant path DEFER to live, not grant \
+         from a fold that is missing whatever that op did",
+    );
+    // The narrower shadow question still answers — it is asked about direct rows
+    // only, where a sibling group's hole cannot matter. The two coexisting is the
+    // point: strict where a verdict is authoritative, narrow where it is a
+    // comparison.
+    assert_eq!(
+        proj.cut_ancestry_state(&ScopeId::from(ns.to_bytes()), &[hole.id()]),
+        (true, false),
+        "complete but unreadable, which is the state under test",
+    );
+}

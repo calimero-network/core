@@ -1873,7 +1873,15 @@ impl ScopeProjections {
         // op was absent from the log, so the inherited walk still saw the member
         // in the root). If the ancestry isn't whole, abstain (`None`) and defer to
         // live's reject rather than grant on a truncated, possibly-stale view.
-        if !self.cut_ancestry_complete(&scope, heads) {
+        //
+        // An UNREADABLE ancestor costs exactly the same over-grant by a different
+        // route: an op this node holds no key for folds to nothing, so a removal it
+        // cannot decrypt leaves the member folded as present — the same stale view,
+        // reached without any op going missing. This is a grant path, so it abstains
+        // for the same reason it abstains on a gap. The walk is shared, so both
+        // answers come from one pass.
+        let walked = ScopeState::cut_ancestry(self.logs.get(&scope)?, heads);
+        if !walked.is_complete() || walked.first_opaque().is_some() {
             return None;
         }
 
@@ -2140,6 +2148,28 @@ impl ScopeProjections {
         let walked = ScopeState::cut_ancestry(log, heads);
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
+        }
+        // Complete is not enough to ANSWER with. Every gate reached through this
+        // context folds the whole namespace ancestry and walks inheritance —
+        // admin through an anchor, a capability bit, a visibility wall — so an op
+        // it could not decrypt may be exactly the one that granted or revoked the
+        // authority being asked about. An `Opaque` folds to nothing, so the view
+        // would be missing that effect and the verdict would describe a history
+        // this node cannot see.
+        //
+        // And the verdict is AUTHORITATIVE here: `PermissionChecker` returns a
+        // `Some(false)` straight to the caller as a refusal, with no live
+        // fallback. Two nodes with different key epochs would then decide the same
+        // op differently — one applies it, one refuses — which is a governance DAG
+        // that stops converging. Abstaining defers to live, which is the answer
+        // every node still agrees on.
+        //
+        // Deliberately the namespace-wide question and not the per-group one: the
+        // inheritance walk genuinely depends on other groups' ops. The narrow
+        // question is sound only for a direct-row read (see
+        // `cut_ancestry_state_for_group`).
+        if walked.first_opaque().is_some() {
+            return Err(UndecidableCause::AncestryUnreadable);
         }
         let view = ScopeState::acl_view_from_ancestry(&walked);
         let root_group = ContextGroupId::from(namespace_id);
