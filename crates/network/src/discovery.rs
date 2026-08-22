@@ -38,7 +38,7 @@ const MAX_STARTUP_CACHE_DIALS: usize = 32;
 /// Fixed node-local datastore key for the single peer-cache blob. The
 /// whole relevant-peer set is stored as one value under this key in the
 /// `Generic` column (raw-bytes codec).
-fn peer_cache_store_key() -> GenericKey {
+pub(crate) fn peer_cache_store_key() -> GenericKey {
     GenericKey::new(*b"calimero-peercch", [0u8; 32])
 }
 
