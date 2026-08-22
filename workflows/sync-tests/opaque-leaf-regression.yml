@@ -28,6 +28,15 @@ nuke_on_end: false
 
 nodes:
   count: 2
+  # Explicit, because `merod init` now leaves mDNS off and this is the one
+  # scenario in the repo that needs it: `sync-regression.yml` runs merobox
+  # WITHOUT `--e2e-mode`, so nothing clears `bootstrap.nodes` and nothing
+  # forces multicast on, and with `restart` unset merobox takes the per-node
+  # startup path that skips sibling bootstrap wiring. That leaves these two
+  # nodes with only the public devnet boot-node to find each other through —
+  # an internet round-trip this test has no reason to depend on. Multicast on
+  # the shared docker bridge is the cheap local answer, so ask for it.
+  mdns: true
   # The GHA wrapper (`sync-regression.yml`) builds `merod:local` from the
   # PR HEAD and loads it into docker before invoking merobox — that's the
   # image tag this workflow expects. We need to test against the PR's

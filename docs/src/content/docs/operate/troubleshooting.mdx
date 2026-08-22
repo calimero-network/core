@@ -46,8 +46,10 @@ Checklist:
    `[discovery] external_address` rather than relying on AutoNAT discovery.
 3. **Bootstrap / discovery present.** A fresh node with empty `[bootstrap]
    nodes` and no mDNS peers on the LAN has nobody to dial. Seed bootstrap nodes
-   (`merod init --boot-network calimero-dev` or `--boot-nodes <addr>`), or rely
-   on `[discovery] mdns = true` on a shared LAN.
+   (`merod init --boot-network calimero-dev` or `--boot-nodes <addr>`), or on a
+   shared LAN turn on multicast with `merod init --mdns` — it is off by default,
+   so a node initialised without it and with an empty bootstrap list has no way
+   to find anyone.
 4. **Relay / hole-punching.** Symmetric NAT may need a relay reservation and
    DCUtR hole-punching; `network status` shows whether reservations and
    upgrades succeeded.

@@ -109,7 +109,7 @@ Peer discovery and NAT-traversal behavior.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `mdns` | bool | `true` | Enables local-network mDNS peer discovery. |
+| `mdns` | bool | `false` | Enables local-network mDNS peer discovery. `merod init` writes `false`: a node that announces itself and dials whoever answers is a local-development convenience, and on a shared network it is a tenancy question. Turn it on for LAN or offline development with `merod init --mdns`. (A config file that omits the key keeps `true`, so upgrading an existing node changes nothing.) |
 | `advertise_address` | bool | `false` | Whether to advertise external addresses to peers. Gates `external_address`. |
 | `external_address` | array of multiaddr | `[]` | Operator-supplied external addresses, seeded into the swarm's confirmed external-address set (used for static-IP / hosted deployments instead of AutoNAT discovery). |
 

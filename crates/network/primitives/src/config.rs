@@ -159,9 +159,25 @@ impl BootstrapNodes {
     }
 }
 
+/// Discovery mechanisms available to a node.
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct DiscoveryConfig {
+    /// Multicast (mDNS) peer discovery.
+    ///
+    /// One rule decides the defaults here: **a config that does not mention
+    /// mDNS keeps it on.** So this `serde` default is `true`, and so is
+    /// [`DiscoveryConfig::default`] — the latter matters because
+    /// `calimero_config::NetworkConfig` marks its `discovery` field
+    /// `#[serde(default)]`, so a file omitting the whole `[discovery]` table
+    /// goes through `Default` and never reaches this attribute. Both paths have
+    /// to agree or an existing node loses multicast to a version bump, with no
+    /// config change and nothing in the release notes it reads.
+    ///
+    /// A NEW node gets the safe default instead, because `merod init` writes
+    /// `mdns = false` explicitly — announcing yourself on the local network and
+    /// dialling whoever answers is a local-development convenience and a
+    /// tenancy question anywhere else. `merod init --mdns` opts in.
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
 
@@ -207,6 +223,10 @@ impl DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
+            // `true`, matching the serde default on the field rather than
+            // `merod init`. This is the value a config file omitting the whole
+            // `[discovery]` table resolves to, so it decides what an EXISTING
+            // node does after an upgrade — not what a new one is given.
             mdns: true,
             advertise_address: false,
             external_address: Vec::new(),
@@ -369,4 +389,76 @@ where
     }
 
     deserializer.deserialize_seq(BootstrapVisitor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiscoveryConfig;
+
+    /// The smallest `[discovery]` table that parses, minus the `mdns` line the
+    /// caller supplies. Every sub-table has required fields, so a fixture that
+    /// omits them fails on those instead of exercising the mdns default.
+    fn discovery_toml(mdns_line: &str) -> String {
+        format!(
+            r#"
+            {mdns_line}
+            advertise_address = false
+
+            [rendezvous]
+            namespace = "calimero/test"
+            discovery_rpm = 0.5
+            discovery_interval = {{ secs = 90, nanos = 0 }}
+            registrations_limit = 3
+
+            [relay]
+            registrations_limit = 3
+
+            [autonat]
+            max_candidates = 5
+            probe_interval = {{ secs = 90, nanos = 0 }}
+            "#
+        )
+    }
+
+    #[test]
+    fn discovery_default_matches_the_serde_default() {
+        // Both must say "on", because `calimero_config::NetworkConfig` marks
+        // its `discovery` field `#[serde(default)]`: a config omitting the whole
+        // `[discovery]` table resolves through `Default`, bypassing the
+        // field-level attribute. If these two disagree, an existing node with no
+        // `[discovery]` section loses multicast on upgrade. What gives a NEW
+        // node the safe default is `merod init`, which writes the key.
+        assert!(
+            DiscoveryConfig::default().mdns,
+            "Default must agree with the serde default, or an omitted \
+             [discovery] table silently changes an existing node's behaviour"
+        );
+    }
+
+    #[test]
+    fn a_config_omitting_mdns_still_deserialises_to_on() {
+        // Deliberately NOT the same as the default above. This is the upgrade
+        // path for a node whose config predates the field: it keeps the
+        // behaviour it has been running with rather than losing multicast to a
+        // version bump. Changing this to `false` is a behaviour change to
+        // existing deployments, not a default change — if that is ever wanted
+        // it needs its own release note, and this test should fail loudly first.
+        let cfg: DiscoveryConfig =
+            toml::from_str(&discovery_toml("")).expect("a config omitting mdns must still parse");
+
+        assert!(
+            cfg.mdns,
+            "an existing config without the key must keep multicast on"
+        );
+    }
+
+    #[test]
+    fn an_explicit_mdns_value_wins_over_both_defaults() {
+        for (toml_value, expected) in [("true", true), ("false", false)] {
+            let cfg: DiscoveryConfig =
+                toml::from_str(&discovery_toml(&format!("mdns = {toml_value}")))
+                    .expect("explicit mdns must parse");
+            assert_eq!(cfg.mdns, expected, "mdns = {toml_value} must be honoured");
+        }
+    }
 }

@@ -77,14 +77,20 @@ nodes = [
 ### mDNS (LAN)
 
 Local-network discovery via multicast DNS — nodes on the **same LAN** find each
-other automatically with no bootstrap list. Enabled by default
-(`[discovery] mdns = true`); does nothing across routed networks or the public
-internet, so leave it on for local clusters and ignore it for hosted ones.
+other with no bootstrap list. **Off by default**: it does nothing across routed
+networks or the public internet, and on a shared one — a VPC, a k8s namespace —
+it means dialling any peer that happens to be announcing itself. Turn it on for
+local clusters and offline development, where it is the only way to find a peer
+without a reachable bootstrap node; leave it off for hosted ones.
 
 ```toml
 [discovery]
-mdns = true
+mdns = true   # merod init writes false; opt in with `merod init --mdns`
 ```
+
+An existing config that omits the key keeps multicast on, so upgrading a node
+does not change its behaviour — only newly initialised nodes get the off
+default.
 
 ### Rendezvous
 
