@@ -16,12 +16,27 @@ runs:
         # red at once and none of them had touched a scenario. Bumping is now a
         # deliberate edit here, and the PR that makes it runs the full e2e suite
         # against the new version before it becomes everyone's problem.
-        # 0.6.60 adds `topology: { type: bootstrap }`, which
+        # 0.6.60 added `topology: { type: bootstrap }`, which
         # workflows/discovery-rendezvous-3node.yml needs — on 0.6.59 that key
         # fails schema validation ("only 'nat' is implemented") before any node
-        # starts. This is the deliberate bump the note above describes, and the
-        # PR carrying it runs the full suite against the new version.
-        MEROBOX_VERSION="0.6.60"
+        # starts.
+        #
+        # 0.6.62 is the first release with a working `wait_for_sync` `expect:`
+        # block, which the three convergence barriers in
+        # apps/scaffolding-e2e/workflows/group-subgroup.yml use. It took three
+        # merobox changes: #358 added it, #359 registered the key in the step
+        # schema (without which the block fails validation as unknown), and #361
+        # fixed it comparing the JSON-RPC envelope instead of the inner `result`
+        # — which no `equals` can match, so the gate timed out at 60s reporting
+        # a value as absent while every node had returned it. 0.6.61 carries the
+        # first two only, so `expect` is unusable there.
+        #
+        # Unknown scenario keys are fatal as of 0.6.59, so on anything older that
+        # scenario does not merely lose its barrier — it fails to validate.
+        #
+        # Both are the deliberate bump the note above describes, and the PR
+        # carrying it runs the full suite against the new version.
+        MEROBOX_VERSION="0.6.62"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in

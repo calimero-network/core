@@ -317,3 +317,110 @@ fn locally_authored_op_lands_in_the_op_store_atomically() {
         "the persisted op must decode to the real MemberAdded — the op-store fold sees the member"
     );
 }
+
+/// A row written before holes were distinguishable must not pass as readable.
+///
+/// The op-store persists the FOLDED op, and an older build wrote `Noop` for an
+/// encrypted group op it could not decrypt. Once `cut_ancestry` marks only
+/// `Opaque` as unreadable, such a row would say "fully readable" about a fold
+/// that is missing whatever the op did — a provisional answer presented as
+/// conclusive, which is how a divergence marker gets raised for an op nobody
+/// could see. `repersist_namespace_ops` rewrites rows when a key ARRIVES and so
+/// cannot cover an op this node will never decrypt.
+#[test]
+fn a_legacy_noop_row_for_an_unreadable_op_is_re_derived_as_a_hole() {
+    let store = store();
+    let admin = PrivateKey::random(&mut OsRng).public_key();
+    let member = PrivateKey::random(&mut OsRng).public_key();
+
+    let ns = ContextGroupId::from([0x71; 32]);
+    let ns_bytes = ns.to_bytes();
+    let admin_account = calimero_context::test_support::enrol(&store, &ns, &admin);
+    MetaRepository::new(&store)
+        .save(&ns, &meta(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    // Encrypted under a key this node does NOT hold: the keyring never learns
+    // `group_key`, so no re-decrypt can ever recover this op here. That is the
+    // case `repersist` cannot fix and the load path therefore must.
+    let group_key = [0x6B; 32];
+    let inner = GroupOp::MemberAdded {
+        member: calimero_context::test_support::enrol(&store, &ns, &member),
+        role: GroupMemberRole::Member,
+    };
+    let encrypted = GroupKeyring::encrypt_op(&group_key, &inner).unwrap();
+    let signed = SignedNamespaceOp {
+        version: 1,
+        namespace_id: ns_bytes.into(),
+        parent_op_hashes: Vec::new(),
+        signer: admin,
+        nonce: 1,
+        op: NamespaceOp::Group {
+            group_id: ns_bytes.into(),
+            key_id: [0x9E; 32].into(),
+            encrypted,
+            key_rotation: None,
+        },
+        signature: [0u8; 64],
+    };
+    let delta_id = signed.content_hash().unwrap();
+
+    NamespaceOpLogService::new(&store, ns_bytes.into())
+        .store_signed_operation(&signed)
+        .unwrap();
+    NamespaceDagService::new(&store, ns_bytes.into())
+        .advance_dag_head(delta_id, &[], 0)
+        .unwrap();
+
+    // The legacy row: `Noop`, as an older build persisted it. Written directly
+    // rather than through the current fold, which is the whole point — today's
+    // fold would write `Opaque`.
+    // `from_parts`, not `new`: a bridge op keeps the governance delta's own id
+    // instead of recomputing one from the payload, which is exactly what lets the
+    // decrypted form later replace the placeholder under the same id.
+    let legacy = calimero_op::Op::from_parts(
+        delta_id,
+        ScopeId::from(ns_bytes),
+        Vec::new(),
+        calimero_op::Authorship::unattributed(admin),
+        hlc(1),
+        calimero_op::OpPayload::Noop,
+        [0u8; 32],
+        [0u8; 64],
+    );
+    persist_op(&store, &legacy).unwrap();
+    assert_eq!(
+        load_scope_ops(&store, &ScopeId::from(ns_bytes))
+            .unwrap()
+            .iter()
+            .find(|op| op.id() == delta_id)
+            .expect("the legacy row is there")
+            .payload,
+        calimero_op::OpPayload::Noop,
+        "precondition: the stored row really is a bare Noop",
+    );
+
+    // The projection feed re-derives it, and finds a hole that names its group.
+    let ops = ScopeProjections::ops_for_namespace(&store, ns_bytes).expect("ops");
+    let rebuilt = ops
+        .iter()
+        .find(|op| op.id() == delta_id)
+        .expect("the op is in the feed");
+    assert_eq!(
+        rebuilt.payload,
+        calimero_op::OpPayload::Opaque { group: ns },
+        "a stored Noop for an op this node cannot decrypt must come back a hole",
+    );
+
+    // And the fold over the feed knows the cut is provisional, which is the
+    // property the re-derivation exists to preserve.
+    let mut proj = ScopeProjections::new();
+    proj.apply_backfill(ns_bytes, ops);
+    assert!(
+        !proj.cut_ancestry_decoded(&ScopeId::from(ns_bytes), &[delta_id]),
+        "a cut through the re-derived hole must not read as decoded",
+    );
+}

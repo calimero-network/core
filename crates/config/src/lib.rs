@@ -681,6 +681,31 @@ pub mod serde_identity {
 mod tests {
     use super::{normalize_attestation_measurement, write_atomic, KmsAttestationConfig};
 
+    /// An existing node whose `config.toml` has no `[discovery]` section must
+    /// keep multicast after an upgrade. `discovery` is `#[serde(default)]`, so
+    /// that file resolves through `DiscoveryConfig::default()` and never reaches
+    /// the field-level serde default — the two have to agree, and this is the
+    /// only place that failure would show up. `merod init` is what gives a NEW
+    /// node `mdns = false`; it writes the key explicitly.
+    #[test]
+    fn a_config_without_a_discovery_section_keeps_mdns_on() {
+        let network: super::NetworkConfig = toml::from_str(
+            r#"
+            [swarm]
+            listen = ["/ip4/0.0.0.0/tcp/2428"]
+
+            [server]
+            listen = ["/ip4/127.0.0.1/tcp/2528"]
+            "#,
+        )
+        .expect("a config with no [discovery] section must still parse");
+
+        assert!(
+            network.discovery.mdns,
+            "omitting [discovery] must not turn multicast off on an existing node"
+        );
+    }
+
     fn make_strict_production_config() -> KmsAttestationConfig {
         KmsAttestationConfig {
             enabled: true,

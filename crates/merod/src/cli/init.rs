@@ -177,8 +177,14 @@ pub struct InitCommand {
     #[clap(long)]
     pub no_admin: bool,
 
-    /// Enable mDNS discovery
-    #[clap(long, default_value_t = true)]
+    /// Enable mDNS discovery. Off by default: a node that announces itself on
+    /// the local network and dials whoever answers is a convenience for two
+    /// terminals on one laptop and a tenancy question anywhere else — on a
+    /// shared VPC or in a k8s namespace it means auto-dialling any peer that
+    /// happens to be announcing. Pass `--mdns` for LAN or offline development,
+    /// where it is the only way to find a peer without a reachable bootstrap
+    /// node.
+    #[clap(long, default_value_t = false)]
     #[clap(overrides_with("no_mdns"))]
     pub mdns: bool,
 
@@ -549,6 +555,22 @@ mod tests {
     use clap::Parser;
 
     use super::InitCommand;
+
+    // mDNS is opt-in: a fresh `merod init` must not write a config that
+    // announces the node on the local network. `--mdns` is the way in, and the
+    // hidden `--no-mdns` stays accepted so existing scripts keep parsing.
+    #[test]
+    fn mdns_is_off_unless_asked_for() {
+        let default = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert!(!default.mdns, "a bare init must leave mDNS off");
+        assert!(!default.no_mdns);
+
+        let opted_in = InitCommand::try_parse_from(["merod", "--mdns"]).unwrap();
+        assert!(opted_in.mdns, "--mdns must turn it on");
+
+        let opted_out = InitCommand::try_parse_from(["merod", "--no-mdns"]).unwrap();
+        assert!(!opted_out.mdns, "--no-mdns must still resolve to off");
+    }
 
     // `--no-mdns` and `--advertise-address` are independent flags: setting one
     // must not silently reset the other, in either order. A stray

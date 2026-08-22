@@ -118,6 +118,23 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    # `expect` is what makes this a barrier. Converging on a state hash only
+    # proves the nodes agree on a claim about state: a hash can be published
+    # ahead of the state behind it (calimero-network/core#3595, #3596), and
+    # even truthful hashes can agree a few milliseconds before a pending delta
+    # finishes applying — which is how this scenario failed, reading null 4ms
+    # before the apply committed while the wait had already reported
+    # convergence in 0.00s. Waiting on the read itself cannot pass early.
+    #
+    # The read + json_assert below are kept deliberately: they remain the
+    # scenario's statement of intent, and they now assert something that has
+    # already been observed rather than racing it.
+    expect:
+      method: get
+      args:
+        key: "ns_root_key"
+      equals:
+        output: "from_node1"
 
   - name: Node-2 reads root context value
     type: call
@@ -206,6 +223,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "sub_key"
+      equals:
+        output: "from_subgroup"
 
   - name: Node-2 reads subgroup context value
     type: call
@@ -273,6 +296,12 @@ steps:
       - e2e-node-2
     timeout: 60
     trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "post_subgroup_key"
+      equals:
+        output: "still_works"
 
   - name: Node-1 reads post-subgroup key
     type: call

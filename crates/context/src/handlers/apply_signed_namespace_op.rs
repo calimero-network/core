@@ -209,17 +209,61 @@ fn membership_touched(
 ) -> Option<(
     calimero_context_config::types::ContextGroupId,
     calimero_account::AccountId,
-    &'static str,
+    MembershipOpKind,
 )> {
     match payload {
-        calimero_op::OpPayload::MemberAdded { group, member, .. } => Some((*group, *member, "add")),
+        calimero_op::OpPayload::MemberAdded { group, member, .. } => {
+            Some((*group, *member, MembershipOpKind::Add))
+        }
         calimero_op::OpPayload::MemberJoinedWithDevice { group, member, .. } => {
-            Some((*group, *member, "join"))
+            Some((*group, *member, MembershipOpKind::Join))
         }
         calimero_op::OpPayload::MemberRemoved { group, member } => {
-            Some((*group, *member, "remove"))
+            Some((*group, *member, MembershipOpKind::Remove))
         }
         _ => None,
+    }
+}
+
+/// Which way a folded op moved membership. An enum rather than a label because
+/// the answer decides how the comparison reads an ABSENT live row — see
+/// [`MembershipOpKind::removes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MembershipOpKind {
+    /// An admin-push add.
+    Add,
+    /// An invitation join.
+    Join,
+    /// A removal or a self-leave.
+    Remove,
+}
+
+impl MembershipOpKind {
+    /// The word the coverage histogram groups by.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Join => "join",
+            Self::Remove => "remove",
+        }
+    }
+
+    /// Does this op's whole purpose make an absent live row the EXPECTED answer?
+    ///
+    /// For a removal, yes — and that turns the absence into the comparison rather
+    /// than the end of it. Live deletes the row, the projection drops the member,
+    /// and both planes saying "not a member" is an agreement written as blank
+    /// space. The compare used to require a live row before it would conclude, so
+    /// it walked away from every removal it was handed: 25 attempts and 0
+    /// conclusions in a full e2e suite, on the operation that carries the most
+    /// security weight of the three.
+    ///
+    /// For an add or a join, no. There an absent live row is the expected model
+    /// difference — an inherited or open-join member the live plane stores no
+    /// direct row for while the projection models one — and reading agreement
+    /// into it would compare nothing against nothing.
+    const fn removes(self) -> bool {
+        matches!(self, Self::Remove)
     }
 }
 
@@ -241,6 +285,10 @@ struct ComparePremise {
     /// open-join members have none, and the projection modelling them as direct
     /// is an expected difference between the planes, not a disagreement.
     has_live_row: bool,
+    /// This op removes membership, so an absent live row is what it was supposed
+    /// to produce — see [`MembershipOpKind::removes`]. With it set, absence is
+    /// comparable; without it, absence is the model difference described above.
+    absence_is_the_answer: bool,
     /// The op's cut reaches everything live has applied, so both planes are
     /// describing the same history.
     at_frontier: bool,
@@ -265,14 +313,21 @@ fn compare_result(premise: ComparePremise) -> &'static str {
         ancestry_complete,
         ancestry_decoded,
         has_live_row,
+        absence_is_the_answer,
         at_frontier,
         agrees,
     } = premise;
+    // The one substantive change to the taxonomy: what makes a comparison
+    // POSSIBLE is a live row to compare against, OR an op for which the absence
+    // of one is itself the expected result. `agrees` already carries the verdict
+    // either way — for a removal it is `projected == None`, which is exactly the
+    // agreement that used to be discarded as "nothing to compare".
+    let comparable = has_live_row || absence_is_the_answer;
     match (
         fed,
         ancestry_complete,
         ancestry_decoded,
-        has_live_row,
+        comparable,
         at_frontier,
     ) {
         (false, ..) => "skipped_unfed",
@@ -470,8 +525,20 @@ fn shadow_fold_and_compare(
                 // conditions with different remedies — a gap needs a fetch, an
                 // opaque op needs a key — and reporting them as one refusal is
                 // what made 52 abstentions in a suite unattributable.
-                let (complete, decoded) = membership.map_or((false, false), |_| {
-                    projections.cut_ancestry_state(&shadow_op.scope, &[shadow_op.id()])
+                // Asked about THIS group, not the whole namespace. The compared
+                // value is a direct member row, which only this group's own ops
+                // write — so an unreadable op belonging to a sibling subgroup
+                // cannot have changed it, and treating it as fatal is what left a
+                // node blind to one subgroup unable to conclude anything about any
+                // group in the namespace. The apply-auth compare below keeps the
+                // namespace-wide question, because it walks the inheritance chain
+                // and so genuinely depends on other groups' ops.
+                let (complete, decoded) = membership.map_or((false, false), |(group, _, _)| {
+                    projections.cut_ancestry_state_for_group(
+                        &shadow_op.scope,
+                        &[shadow_op.id()],
+                        group,
+                    )
                 });
                 (true, role, complete, decoded, at_frontier)
             }
@@ -548,6 +615,7 @@ fn shadow_fold_and_compare(
                 ancestry_complete: complete,
                 ancestry_decoded: decoded,
                 has_live_row: live.is_some(),
+                absence_is_the_answer: op_kind.removes(),
                 at_frontier,
                 agrees: projected == live,
             });
@@ -561,7 +629,7 @@ fn shadow_fold_and_compare(
                 marker = "unified_projection_compare",
                 plane = "membership",
                 result,
-                op_kind,
+                op_kind = op_kind.label(),
                 ?group,
                 %member,
                 ?projected,
@@ -576,7 +644,7 @@ fn shadow_fold_and_compare(
                 tracing::warn!(
                     marker = "unified_projection_divergence",
                     plane = "membership",
-                    op_kind,
+                    op_kind = op_kind.label(),
                     ?group,
                     %member,
                     ?projected,
@@ -666,6 +734,7 @@ mod tests {
 
     use super::{
         compare_result, membership_touched, shadow_fold_applied, AppliedOp, ComparePremise,
+        MembershipOpKind,
     };
     use crate::scope_projection::ScopeProjections;
 
@@ -725,10 +794,21 @@ mod tests {
             member,
             role: GroupMemberRole::Member,
         };
-        assert_eq!(membership_touched(&add), Some((group, member, "add")));
+        assert_eq!(
+            membership_touched(&add),
+            Some((group, member, MembershipOpKind::Add))
+        );
 
         let remove = OpPayload::MemberRemoved { group, member };
-        assert_eq!(membership_touched(&remove), Some((group, member, "remove")));
+        assert_eq!(
+            membership_touched(&remove),
+            Some((group, member, MembershipOpKind::Remove))
+        );
+        assert!(
+            MembershipOpKind::Remove.removes(),
+            "a removal is the kind for which absence is the answer"
+        );
+        assert!(!MembershipOpKind::Add.removes() && !MembershipOpKind::Join.removes());
 
         // The arm that was missing. Built through the same helper the fold uses,
         // so a change to the payload's shape shows up here rather than silently
@@ -744,7 +824,7 @@ mod tests {
         };
         assert_eq!(
             membership_touched(&join),
-            Some((group, member, "join")),
+            Some((group, member, MembershipOpKind::Join)),
             "an invitation join moves a direct membership row and must be compared",
         );
 
@@ -771,20 +851,30 @@ mod tests {
             "no_live_row",
         ];
 
-        for bits in 0..64u8 {
-            let (fed, ancestry_complete, ancestry_decoded, has_live_row, at_frontier, agrees) = (
+        for bits in 0..128u8 {
+            let (
+                fed,
+                ancestry_complete,
+                ancestry_decoded,
+                has_live_row,
+                at_frontier,
+                agrees,
+                absence_is_the_answer,
+            ) = (
                 bits & 1 != 0,
                 bits & 2 != 0,
                 bits & 4 != 0,
                 bits & 8 != 0,
                 bits & 16 != 0,
                 bits & 32 != 0,
+                bits & 64 != 0,
             );
             let result = compare_result(ComparePremise {
                 fed,
                 ancestry_complete,
                 ancestry_decoded,
                 has_live_row,
+                absence_is_the_answer,
                 at_frontier,
                 agrees,
             });
@@ -794,13 +884,36 @@ mod tests {
                 "{result} is not a result the coverage gate knows how to count; a \
                  new label has to be taught to the gate, not just returned here",
             );
+            // A live row OR an op for which absence is the expected result. That
+            // disjunction is the new rule: a removal concludes on absence, which
+            // is what it was supposed to produce, while an add or a join does not
+            // — there an absent row is the inherited-member model difference.
             assert_eq!(
                 matches!(result, "agree" | "diverged"),
-                fed && ancestry_complete && ancestry_decoded && has_live_row && at_frontier,
+                fed && ancestry_complete
+                    && ancestry_decoded
+                    && (has_live_row || absence_is_the_answer)
+                    && at_frontier,
                 "conclusive only with the whole premise: {result} for fed={fed} \
                  complete={ancestry_complete} decoded={ancestry_decoded} \
-                 live_row={has_live_row} at_frontier={at_frontier}",
+                 live_row={has_live_row} absence_answers={absence_is_the_answer} \
+                 at_frontier={at_frontier}",
             );
+            // And the case that used to be dropped: no live row, but the op is a
+            // removal, so the planes ARE comparable.
+            if fed
+                && ancestry_complete
+                && ancestry_decoded
+                && at_frontier
+                && !has_live_row
+                && absence_is_the_answer
+            {
+                assert_eq!(
+                    result,
+                    if agrees { "agree" } else { "diverged" },
+                    "a removal must conclude from absence, not report no_live_row",
+                );
+            }
             // A gap and an opaque op are different refusals, and the gap is
             // reported first: an ancestor this node has never folded says nothing
             // about whether it could have read it.

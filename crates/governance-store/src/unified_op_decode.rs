@@ -209,9 +209,18 @@ pub fn op_from_namespace_op_with_binding(
         // let the apply path write a binding the projection never saw, which
         // re-keys the joiner's writer principal on one plane only.
         NamespaceOp::Root(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
-        NamespaceOp::Group { group_id, .. } => decrypted_group_op
-            .and_then(|g| payload_from_group_op(*group_id, g))
-            .unwrap_or(OpPayload::Noop),
+        // Two different nothings. A group op this node COULD read but the
+        // projection models nothing about (app config, metadata) folds to `Noop`;
+        // one it could not decrypt folds to `Opaque`, which records that
+        // something was dropped here so a reader can abstain deliberately rather
+        // than answer from a fold with an invisible hole. Collapsing both into
+        // `Noop` made every cut behind any unmodelled op look unreadable.
+        NamespaceOp::Group { group_id, .. } => match decrypted_group_op {
+            Some(group_op) => payload_from_group_op(*group_id, group_op).unwrap_or(OpPayload::Noop),
+            None => OpPayload::Opaque {
+                group: calimero_context_config::types::ContextGroupId::from(group_id.to_bytes()),
+            },
+        },
         // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a
         // `Noop` graph node (same as an undecryptable/unfoldable op above),
         // preserving causal structure without inventing a payload.
