@@ -640,6 +640,20 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // The node cannot decide this op's authority YET — it is missing history or a
+    // key it is entitled to, and the apply burned nothing, so the identical call
+    // succeeds once it has caught up. `503` rather than the generic `500` because
+    // the two ask opposite things of a client: retry me, versus stop. `Retry-After`
+    // is deliberately omitted — how long depends on sync, which this layer cannot
+    // estimate, and a wrong number is worse than none.
+    if let Some(calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }) =
+        err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: StatusCode::SERVICE_UNAVAILABLE,
+            message: err.to_string(),
+        };
+    }
     // The application's own `init` refused the call — nearly always because the
     // `initializationParams` do not match its signature. That is the caller's
     // input, not a server fault, and the guest's message is the only thing that
@@ -869,6 +883,52 @@ mod parse_api_error_tests {
             "the guest's own diagnosis is the only useful part; got: {}",
             api.message
         );
+    }
+
+    /// "Wait" and "no" must not answer the same. A node that has not yet folded
+    /// the history (or received a key it is entitled to) cannot decide the op's
+    /// authority, and the apply burns nothing — so the identical call succeeds
+    /// after it catches up. A caller told `500` cannot tell that from the
+    /// permanent refusal next to it, and the two want opposite behaviour: retry
+    /// versus stop.
+    #[test]
+    fn authority_not_yet_resolvable_maps_to_503_not_500() {
+        let err = calimero_context::error::ContextError::AuthorityNotYetResolvable {
+            group_id: "test-group".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            api.message.contains("retry"),
+            "the client is being asked to come back, and the message should say so; \
+             got: {}",
+            api.message
+        );
+    }
+
+    /// The pair that must stay apart: same shape of failure to a caller, opposite
+    /// meanings. If these ever collapse to one status, retry logic built on the
+    /// first will spin forever on the second.
+    #[test]
+    fn a_retryable_wait_and_a_permanent_refusal_get_different_statuses() {
+        let waiting = parse_api_error(
+            calimero_context::error::ContextError::AuthorityNotYetResolvable {
+                group_id: "g".to_owned(),
+            }
+            .into(),
+        );
+        let refused = parse_api_error(
+            calimero_context::error::ContextError::NotAGroupMember {
+                group_id: "g".to_owned(),
+            }
+            .into(),
+        );
+        assert_ne!(
+            waiting.status_code, refused.status_code,
+            "'not yet' and 'never' must not be the same answer",
+        );
+        assert!(waiting.status_code.is_server_error());
+        assert!(refused.status_code.is_client_error());
     }
 
     #[test]

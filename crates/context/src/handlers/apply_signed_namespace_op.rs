@@ -112,7 +112,18 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
                     }
                     Ok(AddDeltaOutcome::Pending) => Ok(NamespaceApplyOutcome::Pending),
                     Ok(AddDeltaOutcome::Duplicate) => Ok(NamespaceApplyOutcome::Duplicate),
-                    Err(e) => Err(eyre::eyre!("namespace DAG apply error: {e}")),
+                    Err(e) => Err(match applier.take_undecidable() {
+                        // Not a refusal: the gate could not judge this cut yet, the
+                        // head did not advance and the nonce was not burned, so the
+                        // identical call works once sync or a key pull delivers what
+                        // is missing. Typed so the API edge can say "retry" instead
+                        // of a `500` that reads the same as a permanent no.
+                        Some(group_id) => {
+                            crate::error::ContextError::AuthorityNotYetResolvable { group_id }
+                                .into()
+                        }
+                        None => eyre::eyre!("namespace DAG apply error: {e}"),
+                    }),
                 }
             }
             .into_actor(self),
