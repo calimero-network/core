@@ -193,6 +193,29 @@ impl<'a> CutAncestry<'a> {
         self.missing.is_none() && self.opaque.is_none()
     }
 
+    /// Is any ancestor unreadable AND capable of writing `group`'s direct member
+    /// rows — i.e. is it an unreadable op belonging to `group` itself?
+    ///
+    /// The narrower question behind [`Self::first_opaque`], and the one a
+    /// direct-row read should ask. An `Opaque` op is always an encrypted op of
+    /// ONE group (its envelope names that group in cleartext), and the only
+    /// payloads that write `groups[g][member]` name `g`. So an unreadable op
+    /// belonging to a sibling subgroup cannot have changed who is a direct
+    /// member of this one, and refusing to answer about `group` on its account
+    /// discards a conclusion this node can soundly reach.
+    ///
+    /// **Sound for the direct-row question only.** An answer that walks the
+    /// inheritance chain — membership via an anchor, a capability bit, a
+    /// visibility wall — depends on other groups' ops, so it must keep asking
+    /// [`Self::first_opaque`] about the whole ancestry.
+    #[must_use]
+    pub fn first_opaque_in(&self, group: ContextGroupId) -> Option<[u8; 32]> {
+        self.ops
+            .iter()
+            .find(|op| matches!(&op.payload, OpPayload::Opaque { group: g } if *g == group))
+            .map(|op| op.id())
+    }
+
     /// The first ancestor found absent from the log, if any.
     ///
     /// Distinct from [`Self::first_opaque`] because the two call for different
@@ -204,7 +227,8 @@ impl<'a> CutAncestry<'a> {
         self.missing
     }
 
-    /// The first ancestor found present but still an undecrypted `Noop`.
+    /// The first ancestor found present but unreadable — an `Opaque` placeholder
+    /// for a group op whose key this node does not hold.
     #[must_use]
     pub fn first_opaque(&self) -> Option<[u8; 32]> {
         self.opaque
@@ -1791,6 +1815,73 @@ mod tests {
 
         // A cited head absent from the log → also incomplete.
         assert!(!ScopeState::cut_ancestry_complete(&[], &[remove.id()]));
+    }
+
+    /// An unreadable op belonging to a SIBLING group must not block a direct-row
+    /// answer about this one, and an unreadable op of this group must.
+    ///
+    /// This is what the namespace-wide question was costing: a node outside one
+    /// subgroup cannot read that subgroup's ops, so it could never conclude
+    /// anything about ANY group in the namespace — including groups whose every
+    /// op it reads. An `Opaque` op is an encrypted op of one group, and only ops
+    /// naming `g` write `groups[g][member]`, so the narrower question is sound.
+    #[test]
+    fn an_unreadable_sibling_group_does_not_block_this_group() {
+        let scope = ScopeId::from([0u8; 32]);
+        let mine = ContextGroupId::from([0xA1; 32]);
+        let sibling = ContextGroupId::from([0xB2; 32]);
+        let member = AccountId::from([0x55; 32]);
+        let author = AccountId::from([1u8; 32]);
+        let mk = |parents: Vec<[u8; 32]>, payload: OpPayload| -> Op {
+            Op::new(
+                scope,
+                parents,
+                authorship(author),
+                hlc(0),
+                payload,
+                [0u8; 32],
+                [0u8; 64],
+            )
+        };
+
+        let add = mk(
+            vec![],
+            OpPayload::MemberAdded {
+                group: mine,
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        // A hole in the sibling subgroup, sitting in this cut's ancestry.
+        let sibling_hole = mk(vec![add.id()], OpPayload::Opaque { group: sibling });
+        let later = mk(
+            vec![sibling_hole.id()],
+            OpPayload::MemberAdded {
+                group: mine,
+                member,
+                role: GroupMemberRole::Admin,
+            },
+        );
+        let log = vec![add.clone(), sibling_hole.clone(), later.clone()];
+        let walked = ScopeState::cut_ancestry(&log, &[later.id()]);
+
+        assert!(walked.is_complete(), "no gaps either way");
+        assert!(
+            !walked.is_decoded(),
+            "the namespace-wide question still reports the hole — the inheritance \
+             walk depends on other groups' ops and must keep asking it",
+        );
+        assert_eq!(
+            walked.first_opaque_in(mine),
+            None,
+            "no unreadable op of THIS group, so its direct rows are fully known",
+        );
+        assert_eq!(
+            walked.first_opaque_in(sibling),
+            Some(sibling_hole.id()),
+            "and the sibling's own direct rows are not — asked about it, the same \
+             walk says so",
+        );
     }
 
     #[test]
