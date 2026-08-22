@@ -717,6 +717,38 @@ impl ScopeProjections {
         })
     }
 
+    /// [`cut_ancestry_state`](Self::cut_ancestry_state), asked about ONE group's
+    /// direct member rows rather than the whole namespace.
+    ///
+    /// An unreadable ancestor only blocks if it belongs to `group`. Everything
+    /// else about the cut is judged identically — a gap is still a gap, since a
+    /// missing ancestor could be anything at all, including an op of this group.
+    ///
+    /// This is the narrowing the namespace-wide question was costing us: a node
+    /// outside one subgroup cannot read that subgroup's ops and so could never
+    /// conclude anything about ANY group in the namespace, including groups it
+    /// reads perfectly. Sound because an `Opaque` op is an encrypted op of one
+    /// group, and only ops naming `g` write `groups[g][member]` — see
+    /// [`ScopeState::first_opaque_in`], which also spells out why an
+    /// inheritance-walking answer must NOT use this.
+    #[must_use]
+    pub fn cut_ancestry_state_for_group(
+        &self,
+        scope: &ScopeId,
+        parents: &[[u8; 32]],
+        group: ContextGroupId,
+    ) -> (bool, bool) {
+        let Some(log) = self.logs.get(scope) else {
+            return (false, false);
+        };
+        let ancestry = ScopeState::cut_ancestry(log, parents);
+        let complete = ancestry.is_complete();
+        (
+            complete,
+            complete && ancestry.first_opaque_in(group).is_none(),
+        )
+    }
+
     /// Whether the cut's ancestry is both present AND fully decoded (no `Noop`
     /// placeholders for ops this node can't yet decrypt). See
     /// [`ScopeState::cut_ancestry_decoded`]. `false` for an unknown scope.
@@ -2549,6 +2581,64 @@ mod tests {
             OpPayload::AdminChanged {
                 new_admin: test_account(&signer),
             }
+        );
+    }
+
+    /// The group-scoped question through the projection: a node blind to one
+    /// subgroup can still answer about another. Same log, two groups, two
+    /// different verdicts — which is the whole point, since the namespace-wide
+    /// question gave one verdict for both and it was the pessimistic one.
+    #[test]
+    fn a_hole_in_one_subgroup_does_not_blind_the_projection_to_another() {
+        let ns = [0x31; 32];
+        let scope = ScopeId::from(ns);
+        let signer = PublicKey::from([3u8; 32]);
+        let mine = ContextGroupId::from([0x41; 32]);
+        let sibling = ContextGroupId::from([0x42; 32]);
+
+        let mut proj = ScopeProjections::new();
+        // A readable op of `mine`, then a hole belonging to `sibling`.
+        let readable = op_from_namespace_op(
+            &signed_group(ns, signer, mine),
+            Some(
+                &calimero_context_client::local_governance::GroupOp::MemberAdded {
+                    member: calimero_account::AccountId::from([0x77; 32]),
+                    role: calimero_primitives::context::GroupMemberRole::Member,
+                },
+            ),
+            [0xE1; 32],
+            hlc(1),
+            &[],
+        );
+        let hole = op_from_namespace_op(
+            &signed_group(ns, signer, sibling),
+            None,
+            [0xE2; 32],
+            hlc(2),
+            &[[0xE1; 32]],
+        );
+        assert_eq!(
+            hole.payload,
+            OpPayload::Opaque { group: sibling },
+            "precondition: the hole names the sibling",
+        );
+        proj.ingest_op(&readable);
+        proj.ingest_op(&hole);
+
+        let cut = [hole.id()];
+        // Namespace-wide: blocked, as it must stay for inheritance-walking reads.
+        assert_eq!(proj.cut_ancestry_state(&scope, &cut), (true, false));
+        // Asked about `mine`: nothing unreadable belongs to it, so answerable.
+        assert_eq!(
+            proj.cut_ancestry_state_for_group(&scope, &cut, mine),
+            (true, true),
+            "a hole in a sibling subgroup cannot have moved this group's rows",
+        );
+        // Asked about `sibling`: still blocked, and rightly.
+        assert_eq!(
+            proj.cut_ancestry_state_for_group(&scope, &cut, sibling),
+            (true, false),
+            "the group whose op is unreadable stays unanswerable",
         );
     }
 

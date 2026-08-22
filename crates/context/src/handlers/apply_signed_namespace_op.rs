@@ -525,8 +525,20 @@ fn shadow_fold_and_compare(
                 // conditions with different remedies — a gap needs a fetch, an
                 // opaque op needs a key — and reporting them as one refusal is
                 // what made 52 abstentions in a suite unattributable.
-                let (complete, decoded) = membership.map_or((false, false), |_| {
-                    projections.cut_ancestry_state(&shadow_op.scope, &[shadow_op.id()])
+                // Asked about THIS group, not the whole namespace. The compared
+                // value is a direct member row, which only this group's own ops
+                // write — so an unreadable op belonging to a sibling subgroup
+                // cannot have changed it, and treating it as fatal is what left a
+                // node blind to one subgroup unable to conclude anything about any
+                // group in the namespace. The apply-auth compare below keeps the
+                // namespace-wide question, because it walks the inheritance chain
+                // and so genuinely depends on other groups' ops.
+                let (complete, decoded) = membership.map_or((false, false), |(group, _, _)| {
+                    projections.cut_ancestry_state_for_group(
+                        &shadow_op.scope,
+                        &[shadow_op.id()],
+                        group,
+                    )
                 });
                 (true, role, complete, decoded, at_frontier)
             }
