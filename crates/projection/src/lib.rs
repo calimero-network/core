@@ -208,6 +208,27 @@ impl<'a> CutAncestry<'a> {
     /// inheritance chain — membership via an anchor, a capability bit, a
     /// visibility wall — depends on other groups' ops, so it must keep asking
     /// [`Self::first_opaque`] about the whole ancestry.
+    /// [`first_opaque_in`](Self::first_opaque_in) over a SET of groups — the ops
+    /// that can move an authority question, i.e. the target group and its
+    /// ancestors.
+    ///
+    /// A hole outside that set is not an abstention: a sibling subgroup's
+    /// encrypted op cannot change who is an admin of this one, and treating it as
+    /// fatal makes a node that is legitimately not a member of that sibling
+    /// unable to answer about its OWN group — permanently, since it can never be
+    /// given that key. That is not a conservative refusal, it is a node parked
+    /// forever.
+    #[must_use]
+    pub fn first_opaque_in_any(
+        &self,
+        groups: &std::collections::BTreeSet<ContextGroupId>,
+    ) -> Option<[u8; 32]> {
+        self.ops
+            .iter()
+            .find(|op| matches!(&op.payload, OpPayload::Opaque { group } if groups.contains(group)))
+            .map(|op| op.id())
+    }
+
     #[must_use]
     pub fn first_opaque_in(&self, group: ContextGroupId) -> Option<[u8; 32]> {
         self.ops

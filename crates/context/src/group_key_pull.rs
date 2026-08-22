@@ -246,10 +246,19 @@ mod tests {
             )
         };
 
+        // The wedge is an ABSTENTION, not a rejection, and the difference matters.
+        // The flip sits in this cut unreadable, so the node does not know whether
+        // the subgroup is Open; a node holding the key does and would accept this
+        // join. Answering "no membership path" from a fold that is missing the
+        // flip is a verdict about a history this node cannot see, and it is the
+        // verdict the other node contradicts. Parking until the key arrives is
+        // what converges — and the rest of this test is precisely that arrival.
         let wedged = apply(&store).expect_err("the subgroup still reads Restricted");
+        let wedged = format!("{wedged:#}");
         assert!(
-            format!("{wedged:#}").contains("no membership path"),
-            "the wedge must be the membership-path rejection, got: {wedged:#}"
+            wedged.contains("has not folded the ancestry"),
+            "the wedge must be an abstention that retries, not a decision taken \
+             over an unreadable ancestor, got: {wedged}"
         );
 
         // `load_scope_ops` returns the rows in any order, so compare as sets.
