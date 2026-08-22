@@ -591,17 +591,25 @@ impl ScopeProjections {
     /// nobody could see. `repersist_namespace_ops` rewrites rows when a key
     /// ARRIVES, so it does not cover an op this node will never decrypt.
     ///
-    /// Only stored `Noop`s are touched, and each is decided the way the walk would
-    /// decide it: consult the signed op, re-attempt the decrypt, and take whatever
-    /// payload that yields — a real one if the key is here now, `Noop` if the op is
-    /// readable and models nothing, `Opaque` if it cannot be read. A row already
-    /// carrying a real payload or an `Opaque` is left alone, so steady state costs
-    /// nothing and the work shrinks as rows are rewritten.
+    /// Both kinds of placeholder are re-attempted — a stored `Noop` AND a stored
+    /// `Opaque` — and each is decided the way the walk would decide it: consult the
+    /// signed op, re-attempt the decrypt, and take whatever payload that yields.
+    ///
+    /// Re-attempting `Opaque` is the point, not an extra. That row means "I could
+    /// not read this WHEN I FOLDED IT", which is a cache of a past failure, and the
+    /// whole design has the key arriving later: a member pulls the epoch by
+    /// `key_id` and the op becomes readable. Treating the row as settled left the
+    /// apply gates authorizing against a hole that no longer existed — the retry
+    /// that ran the moment the key landed asked this fold, was told "unreadable",
+    /// and abstained, so the op that the key was pulled FOR could never apply.
+    ///
+    /// Rows already carrying a real payload are untouched, so steady state costs
+    /// nothing and the work shrinks as holes are filled.
     fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
         let stale: Vec<usize> = ops
             .iter()
             .enumerate()
-            .filter(|(_, op)| matches!(op.payload, OpPayload::Noop))
+            .filter(|(_, op)| matches!(op.payload, OpPayload::Noop | OpPayload::Opaque { .. }))
             .map(|(i, _)| i)
             .collect();
         if stale.is_empty() {
@@ -1873,7 +1881,27 @@ impl ScopeProjections {
         // op was absent from the log, so the inherited walk still saw the member
         // in the root). If the ancestry isn't whole, abstain (`None`) and defer to
         // live's reject rather than grant on a truncated, possibly-stale view.
-        if !self.cut_ancestry_complete(&scope, heads) {
+        //
+        // An UNREADABLE ancestor costs exactly the same over-grant by a different
+        // route: an op this node holds no key for folds to nothing, so a removal it
+        // cannot decrypt leaves the member folded as present — the same stale view,
+        // reached without any op going missing. This is a grant path, so it abstains
+        // for the same reason it abstains on a gap. The walk is shared, so both
+        // answers come from one pass.
+        //
+        // Scoped to the groups that can move THIS membership — the target and its
+        // ancestors, since inheritance climbs — and not to the namespace. A hole in
+        // a sibling subgroup is one this node may never be able to fill, so
+        // abstaining on it would park the question permanently rather than
+        // conservatively.
+        let walked = ScopeState::cut_ancestry(self.logs.get(&scope)?, heads);
+        if !walked.is_complete() {
+            return None;
+        }
+        let view = ScopeState::acl_view_from_ancestry(&walked);
+        let relevant: std::collections::BTreeSet<ContextGroupId> =
+            view.group_and_ancestors(group).collect();
+        if walked.first_opaque_in_any(&relevant).is_some() {
             return None;
         }
 
@@ -2142,6 +2170,33 @@ impl ScopeProjections {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
         let view = ScopeState::acl_view_from_ancestry(&walked);
+
+        // Complete is not enough to ANSWER with. An `Opaque` op folds to nothing,
+        // so a verdict taken over one describes a history this node cannot see —
+        // and the verdict here is AUTHORITATIVE: `PermissionChecker` hands a
+        // `Some(false)` straight back as a refusal. Two nodes with different keys
+        // would decide the same op differently.
+        //
+        // Scoped to the groups whose ops can MOVE this question — the target and
+        // its ancestors — not to the namespace. Every input to an
+        // admin-or-capability answer at `group` is an op naming `group` or an
+        // ancestor of it: roles and caps name their group, a visibility wall names
+        // its subgroup, and the root admin arrives on readable root ops. A sibling
+        // subgroup's hole cannot change any of them.
+        //
+        // The namespace-wide version of this check is what an earlier attempt
+        // shipped, and e2e refused it within the hour: a node legitimately not a
+        // member of one subgroup can never obtain that key, so it parked EVERY
+        // authority question in that namespace forever — including questions about
+        // its own group, whose every op it reads. `dm-subgroup-privacy` is that
+        // exact shape and its legitimate join failed. A refusal that cannot clear
+        // is not the conservative choice.
+        let relevant: std::collections::BTreeSet<ContextGroupId> =
+            view.group_and_ancestors(group).collect();
+        if walked.first_opaque_in_any(&relevant).is_some() {
+            return Err(UndecidableCause::AncestryUnreadable);
+        }
+
         let root_group = ContextGroupId::from(namespace_id);
         let root = MetaRepository::new(store)
             .load(&root_group)

@@ -98,6 +98,35 @@ impl AclView {
         .take(MAX_NAMESPACE_DEPTH + 1)
     }
 
+    /// `group` and every ancestor above it, nearest first — the set of groups
+    /// whose ops can move an authority question asked about `group`.
+    ///
+    /// Deliberately climbs THROUGH a `restricted` edge, unlike
+    /// [`Self::open_ancestors`]. That walk stops there because inheritance stops
+    /// there; this one cannot, because whether an edge is restricted is itself
+    /// decided by a `SubgroupVisibilitySet` op of that subgroup — which may be
+    /// exactly the op a reader cannot decrypt. Stopping at an edge whose state is
+    /// unknown would silently shorten the set and let an unreadable ancestor pass
+    /// as irrelevant.
+    ///
+    /// Same `MAX_NAMESPACE_DEPTH` bound as the inheritance climb, so a cyclic or
+    /// adversarial tree cannot spin.
+    pub fn group_and_ancestors(
+        &self,
+        group: ContextGroupId,
+    ) -> impl Iterator<Item = ContextGroupId> + '_ {
+        let mut current = Some(group);
+        core::iter::once(group).chain(
+            core::iter::from_fn(move || {
+                let edge = self.subgroups.get(&ScopeId::from(current?.to_bytes()))?;
+                let parent = ContextGroupId::from(*edge.parent.as_bytes());
+                current = Some(parent);
+                Some(parent)
+            })
+            .take(MAX_NAMESPACE_DEPTH + 1),
+        )
+    }
+
     /// Does `author` hold a direct membership row in `group`?
     fn has_direct_row(&self, group: ContextGroupId, author: &AccountId) -> bool {
         self.groups
