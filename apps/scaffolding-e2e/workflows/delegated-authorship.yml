@@ -103,13 +103,18 @@ steps:
     node: delegated-node-2
     context_id: '{{context_id}}'
 
-  - name: Both nodes converge before anything is delegated
+  # No `expect` here, and that is not an omission: nothing has been written yet,
+  # so there is no materialized value to wait on. This only has to establish that
+  # node-2 is in the context before the delegated write happens.
+  - name: Both nodes are in the context before anything is delegated
     type: wait_for_sync
+    context_id: '{{context_id}}'
     nodes:
       - delegated-node-1
       - delegated-node-2
-    context_id: '{{context_id}}'
-    expect: converged
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
 
   # --- The delegated write ---
   #
@@ -132,13 +137,27 @@ steps:
   # Everything above happened on the relay. This is what proves the network took
   # it: node-2 verified an envelope whose author is not its signer, authorized it
   # at the cut, spent the nonce, and applied it.
+  # `expect` is what makes this a barrier rather than a hope. Converging on a
+  # state hash only proves the nodes agree on a claim ABOUT state — a hash can be
+  # published ahead of the state behind it, and even truthful hashes agree
+  # milliseconds before a pending delta finishes applying. Waiting on the read
+  # itself cannot pass early, which matters more here than anywhere: a delegated
+  # delta is the one thing a peer might verify, authorize, and then still refuse.
   - name: The delegated write reaches the other node
     type: wait_for_sync
+    context_id: '{{context_id}}'
     nodes:
       - delegated-node-1
       - delegated-node-2
-    context_id: '{{context_id}}'
-    expect: converged
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "delegated"
+      equals:
+        output: "from-a-member-with-no-node"
 
   - name: Node-2 reads back what the member wrote
     type: call
@@ -168,11 +187,19 @@ steps:
 
   - name: Converge after the self-authored write
     type: wait_for_sync
+    context_id: '{{context_id}}'
     nodes:
       - delegated-node-1
       - delegated-node-2
-    context_id: '{{context_id}}'
-    expect: converged
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "self-authored"
+      equals:
+        output: "still-works"
 
   - name: Node-1 reads the self-authored write
     type: call
