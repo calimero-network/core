@@ -123,7 +123,7 @@ pub(super) fn dummy_member_removed_op(member: AccountId) -> GroupOp {
 
 pub(super) fn test_meta() -> GroupMetaValue {
     GroupMetaValue {
-        app_key: [0xBB; 32],
+        bytecode_id: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
         admin_identity: AccountId::from([0x01; 32]),
@@ -137,7 +137,7 @@ pub(super) fn test_meta() -> GroupMetaValue {
 /// supplied account. Used by tests that want a specific admin.
 pub(super) fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        app_key: [0xBB; 32],
+        bytecode_id: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
         admin_identity: admin,

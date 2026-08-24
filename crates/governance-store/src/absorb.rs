@@ -1,7 +1,7 @@
 //! Typed Repository over the [`Column::AbsorbBuffer`] CF.
 //!
 //! Persists [`AbsorbRecord`]s — the durable mirror of a stale-schema straggler
-//! delta — keyed by `prefix ‖ context_id ‖ producing_app_key ‖ delta_id`. The
+//! delta — keyed by `prefix ‖ context_id ‖ producing_bytecode_id ‖ delta_id`. The
 //! `delta_id` in the key makes [`save`](AbsorbRepository::save) idempotent: a
 //! re-delivered straggler overwrites rather than duplicating. Mirrors
 //! [`UpgradesRepository`](crate::UpgradesRepository) in shape: save/load/delete
@@ -22,7 +22,7 @@ type AbsorbEntries = Vec<(([u8; 32], [u8; 32]), AbsorbRecord)>;
 
 /// Typed Repository for the per-context absorb buffer.
 ///
-/// Holds one [`AbsorbRecord`] per `(context, producing_app_key, delta_id)`
+/// Holds one [`AbsorbRecord`] per `(context, producing_bytecode_id, delta_id)`
 /// (save/load/delete) plus a per-context contiguous scan for the drain and
 /// crash-recovery paths. See [`UpgradesRepository`](crate::UpgradesRepository)
 /// for the Repository pattern's rationale — same shape.
@@ -41,11 +41,11 @@ impl<'a> AbsorbRepository<'a> {
     pub fn save(
         &self,
         context_id: &ContextId,
-        producing_app_key: [u8; 32],
+        producing_bytecode_id: [u8; 32],
         record: &AbsorbRecord,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
-        let key = AbsorbBufferKey::new(*context_id.as_ref(), producing_app_key, record.id);
+        let key = AbsorbBufferKey::new(*context_id.as_ref(), producing_bytecode_id, record.id);
         // `AbsorbRecord` lives in this crate; the store CF stores it as an
         // opaque borsh byte blob (see the `PredefinedEntry` impl), so encode
         // here.
@@ -57,11 +57,11 @@ impl<'a> AbsorbRepository<'a> {
     pub fn load(
         &self,
         context_id: &ContextId,
-        producing_app_key: [u8; 32],
+        producing_bytecode_id: [u8; 32],
         delta_id: [u8; 32],
     ) -> EyreResult<Option<AbsorbRecord>> {
         let handle = self.store.handle();
-        let key = AbsorbBufferKey::new(*context_id.as_ref(), producing_app_key, delta_id);
+        let key = AbsorbBufferKey::new(*context_id.as_ref(), producing_bytecode_id, delta_id);
         match handle.get(&key)? {
             Some(bytes) => Ok(Some(AbsorbRecord::try_from_slice(&bytes)?)),
             None => Ok(None),
@@ -71,17 +71,17 @@ impl<'a> AbsorbRepository<'a> {
     pub fn delete(
         &self,
         context_id: &ContextId,
-        producing_app_key: [u8; 32],
+        producing_bytecode_id: [u8; 32],
         delta_id: [u8; 32],
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
-        let key = AbsorbBufferKey::new(*context_id.as_ref(), producing_app_key, delta_id);
+        let key = AbsorbBufferKey::new(*context_id.as_ref(), producing_bytecode_id, delta_id);
         handle.delete(&key)?;
         Ok(())
     }
 
     /// Scan the absorb buffer for every pending record belonging to
-    /// `context_id`, returning `((producing_app_key, delta_id), record)`
+    /// `context_id`, returning `((producing_bytecode_id, delta_id), record)`
     /// pairs. Used by the drain-on-advance and crash-recovery paths.
     ///
     /// `collect_keys_with_prefix` seeks directly to the target context's block
@@ -104,7 +104,7 @@ impl<'a> AbsorbRepository<'a> {
         for key in keys {
             if let Some(bytes) = handle.get(&key)? {
                 let record = AbsorbRecord::try_from_slice(&bytes)?;
-                results.push(((key.producing_app_key(), key.delta_id()), record));
+                results.push(((key.producing_bytecode_id(), key.delta_id()), record));
             }
         }
         Ok(results)
@@ -151,7 +151,7 @@ mod tests {
             governance_position: None,
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,
-            producing_app_key: Some([2; 32]),
+            producing_bytecode_id: Some([2; 32]),
             leaf: None,
             entity: None,
             pending_application: None,
@@ -239,7 +239,7 @@ mod tests {
         let store = test_store();
         let repo = AbsorbRepository::new(&store);
         let ctx = ContextId::from([0xAA; 32]);
-        let v2_app_key = [0x22; 32];
+        let v2_bytecode_id = [0x22; 32];
         let entity_id = [0xE5; 32];
         // Bytes a v1 reader's `EntityIndex`/entry decoder could never parse —
         // they only make sense to the v2 binary's schema.
@@ -250,9 +250,9 @@ mod tests {
             entity_id,
             future_entry.clone(),
             future_index.clone(),
-            v2_app_key,
+            v2_bytecode_id,
         );
-        repo.save(&ctx, v2_app_key, &record).unwrap();
+        repo.save(&ctx, v2_bytecode_id, &record).unwrap();
 
         // It lands in the AbsorbBuffer keyed under the SENDER's (v2) schema,
         // not under the loaded (v1) reader — the drain re-applies it only once
@@ -263,9 +263,9 @@ mod tests {
             1,
             "a future-schema entity must be buffered, not dropped or stored"
         );
-        let ((producing_app_key, delta_id), loaded) = &pending[0];
+        let ((producing_bytecode_id, delta_id), loaded) = &pending[0];
         assert_eq!(
-            *producing_app_key, v2_app_key,
+            *producing_bytecode_id, v2_bytecode_id,
             "buffered under the sender's v2 schema so the drain gates on the reader advancing"
         );
         assert_eq!(*delta_id, entity_id);
@@ -288,7 +288,7 @@ mod tests {
             entity.index, future_index,
             "index blob must round-trip the absorb buffer byte-for-byte (never deserialized)"
         );
-        assert_eq!(entity.schema_app_key, v2_app_key);
+        assert_eq!(entity.schema_bytecode_id, v2_bytecode_id);
 
         // And it is NOT convertible to a replayable delta — it must drain via
         // the entity path, not the verbatim-delta replay.

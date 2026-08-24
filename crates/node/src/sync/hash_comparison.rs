@@ -116,8 +116,8 @@ impl SyncManager {
         // PR-6b Task 6b.7: the responder's loaded-reader schema, stamped onto
         // every leaf it emits so a peer on an older reader can decline+buffer a
         // future-schema leaf. `None` when unresolvable (no group / missing meta).
-        let schema_app_key =
-            calimero_context::hlc_fence::loaded_reader_app_key(&datastore, &context_id)
+        let schema_bytecode_id =
+            calimero_context::hlc_fence::loaded_reader_bytecode_id(&datastore, &context_id)
                 .ok()
                 .flatten();
 
@@ -130,7 +130,7 @@ impl SyncManager {
                     &first_node_id,
                     clamped_depth,
                     &runtime_env,
-                    schema_app_key,
+                    schema_bytecode_id,
                 )
                 .await?;
 
@@ -186,7 +186,7 @@ impl SyncManager {
                             &node_id,
                             clamped_depth,
                             &runtime_env,
-                            schema_app_key,
+                            schema_bytecode_id,
                         )
                         .await?;
 
@@ -350,7 +350,7 @@ impl SyncManager {
         node_id: &[u8; 32],
         max_depth: Option<u8>,
         runtime_env: &RuntimeEnv,
-        schema_app_key: Option<[u8; 32]>,
+        schema_bytecode_id: Option<[u8; 32]>,
     ) -> Result<TreeNodeResponse> {
         // Get context to check if this is a root request
         let context = self.context_client.get_context(&context_id)?;
@@ -374,7 +374,7 @@ impl SyncManager {
                 context_id,
                 node_id,
                 is_root_request,
-                schema_app_key,
+                schema_bytecode_id,
             )
         })?;
 
@@ -399,7 +399,7 @@ impl SyncManager {
                         context_id,
                         child_id,
                         false,
-                        schema_app_key,
+                        schema_bytecode_id,
                     )
                 })?;
 

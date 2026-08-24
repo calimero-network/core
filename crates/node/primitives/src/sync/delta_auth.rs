@@ -77,7 +77,7 @@ pub struct DeltaSignaturePayload<'a> {
     pub hlc: HybridTimestamp,
 }
 
-// NOT in this payload, deliberately: `producing_app_key`.
+// NOT in this payload, deliberately: `producing_bytecode_id`.
 //
 // Forging it is a censorship primitive rather than a forgery one — it drives the
 // HLC fence, so a rewritten value gets an otherwise valid delta buffered or

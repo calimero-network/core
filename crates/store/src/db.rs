@@ -75,7 +75,7 @@ pub enum Column {
     /// the locally-loaded binary cannot yet read, so it is replayed verbatim
     /// once the binary advances rather than silently dropped. NOT synchronized
     /// across nodes. Auto-created from `Column::iter()` at `open_cf` (no DB
-    /// migration). Keys are `prefix(1) ‖ context(32) ‖ producing_app_key(32) ‖
+    /// migration). Keys are `prefix(1) ‖ context(32) ‖ producing_bytecode_id(32) ‖
     /// delta_id(32)`; values are borsh'd `AbsorbRecord`s.
     AbsorbBuffer,
     /// Node-local per-context marker that the last migration attempt did not

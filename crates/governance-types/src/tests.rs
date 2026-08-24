@@ -81,11 +81,11 @@ const GOLDEN_GROUP_OP_DEFAULT_CAPABILITIES_SET: &[u8] = &[
     0, 0, 0, 0, // capabilities u32 = 0
 ];
 
-/// GroupOp ordinal 7 - TargetApplicationSet { app_key: [0;32].into(), target: [0;32] }
+/// GroupOp ordinal 7 - TargetApplicationSet { bytecode_id: [0;32].into(), target: [0;32] }
 const GOLDEN_GROUP_OP_TARGET_APPLICATION_SET: &[u8] = &[
     7, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // app_key [0u8;32]
+    0, // bytecode_id [0u8;32]
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target_application_id [0u8;32]
 ];
@@ -310,9 +310,9 @@ const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
 const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     22, // discriminant
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // from_app_key
+    0, // from_bytecode_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // app_key
+    0, // bytecode_id
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, // target_application_id
     0, 0, 0, 0, // to_state_version u32 = 0
@@ -553,7 +553,7 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 /// Encoding: member (32 bytes) + SignedGroupOpenInvitation with a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
 /// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8))
-/// + inviter_signature "" + application_id None + app_key None.
+/// + inviter_signature "" + application_id None + bytecode_id None.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1176,8 +1176,8 @@ fn cascade_upgrade_sign_verify() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: [9u8; 32].into(),
-            app_key: [10u8; 32].into(),
+            from_bytecode_id: [9u8; 32].into(),
+            bytecode_id: [10u8; 32].into(),
             target_application_id: sample_application_id(0x42),
             to_state_version: 3,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
@@ -1196,12 +1196,12 @@ fn cascade_upgrade_sign_verify() {
 
 #[test]
 fn cascade_upgrade_distinct_from_single_group_target() {
-    // A cascade op and a non-cascade op with the same new app_key/target
+    // A cascade op and a non-cascade op with the same new bytecode_id/target
     // must produce DIFFERENT content hashes -- otherwise replay/dedup
     // would conflate the two distinct governance intents.
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
-    let new_app_key = [11u8; 32];
+    let new_bytecode_id = [11u8; 32];
     let target = sample_application_id(0x77);
 
     let single = SignedGroupOp::sign(
@@ -1210,7 +1210,7 @@ fn cascade_upgrade_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::TargetApplicationSet {
-            app_key: new_app_key.into(),
+            bytecode_id: new_bytecode_id.into(),
             target_application_id: target,
         },
     )
@@ -1222,8 +1222,8 @@ fn cascade_upgrade_distinct_from_single_group_target() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: [9u8; 32].into(),
-            app_key: new_app_key.into(),
+            from_bytecode_id: [9u8; 32].into(),
+            bytecode_id: new_bytecode_id.into(),
             target_application_id: target,
             to_state_version: 0,
             migration: None,
@@ -1240,19 +1240,19 @@ fn cascade_upgrade_distinct_from_single_group_target() {
 }
 
 #[test]
-fn cascade_upgrade_from_app_key_changes_hash() {
+fn cascade_upgrade_from_bytecode_id_changes_hash() {
     // The Borsh-discriminant guarantees distinctness from the
     // single-group variant (covered by
     // `cascade_upgrade_distinct_from_single_group_target`). This test
-    // covers the stronger invariant: `from_app_key` is itself part of
+    // covers the stronger invariant: `from_bytecode_id` is itself part of
     // the signed bytes, so two cascade ops that agree on every field
-    // EXCEPT `from_app_key` must still hash differently. Otherwise a
-    // refactor that accidentally collapses `from_app_key` (e.g. by
+    // EXCEPT `from_bytecode_id` must still hash differently. Otherwise a
+    // refactor that accidentally collapses `from_bytecode_id` (e.g. by
     // defaulting it or excluding it from signable bytes) would silently
     // break dedup of intent-different cascades.
     let mut rng = OsRng;
     let sk = PrivateKey::random(&mut rng);
-    let new_app_key = [11u8; 32];
+    let new_bytecode_id = [11u8; 32];
     let target = sample_application_id(0x77);
 
     let a = SignedGroupOp::sign(
@@ -1261,8 +1261,8 @@ fn cascade_upgrade_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: [9u8; 32].into(),
-            app_key: new_app_key.into(),
+            from_bytecode_id: [9u8; 32].into(),
+            bytecode_id: new_bytecode_id.into(),
             target_application_id: target,
             to_state_version: 0,
             migration: None,
@@ -1277,8 +1277,8 @@ fn cascade_upgrade_from_app_key_changes_hash() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: [8u8; 32].into(), // only this differs
-            app_key: new_app_key.into(),
+            from_bytecode_id: [8u8; 32].into(), // only this differs
+            bytecode_id: new_bytecode_id.into(),
             target_application_id: target,
             to_state_version: 0,
             migration: None,
@@ -1290,7 +1290,7 @@ fn cascade_upgrade_from_app_key_changes_hash() {
     assert_ne!(
         a.content_hash().expect("hash a"),
         b.content_hash().expect("hash b"),
-        "from_app_key must be covered by the signed content hash"
+        "from_bytecode_id must be covered by the signed content hash"
     );
 }
 
@@ -1308,8 +1308,8 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     //
     // Golden encoding of:
     //   GroupOp::CascadeUpgrade {
-    //       from_app_key: [3u8; 32].into(),
-    //       app_key: [4u8; 32].into(),
+    //       from_bytecode_id: [3u8; 32].into(),
+    //       bytecode_id: [4u8; 32].into(),
     //       target_application_id: sample_application_id(5),
     //       to_state_version: 2,
     //       migration: Some(b"migrate".to_vec()),
@@ -1318,9 +1318,9 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
     const GOLDEN_CASCADE_UPGRADE: &[u8] = &[
         22, // <- CascadeUpgrade's fixed Borsh discriminant (ordinal 22 at v10)
         3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-        3, 3, // from_app_key
+        3, 3, // from_bytecode_id
         4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-        4, 4, // app_key
+        4, 4, // bytecode_id
         5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 250, // target_application_id = sample_application_id(5)
         2, 0, 0, 0, // to_state_version = 2
@@ -1341,15 +1341,15 @@ fn cascade_upgrade_back_compat_discriminant_fixed() {
         borsh::from_slice(GOLDEN_CASCADE_UPGRADE).expect("decode frozen CascadeUpgrade bytes");
     match decoded {
         GroupOp::CascadeUpgrade {
-            from_app_key,
-            app_key,
+            from_bytecode_id,
+            bytecode_id,
             target_application_id,
             to_state_version,
             migration,
             cascade_hlc,
         } => {
-            assert_eq!(from_app_key.to_bytes(), [3u8; 32]);
-            assert_eq!(app_key.to_bytes(), [4u8; 32]);
+            assert_eq!(from_bytecode_id.to_bytes(), [3u8; 32]);
+            assert_eq!(bytecode_id.to_bytes(), [4u8; 32]);
             assert_eq!(target_application_id, sample_application_id(5));
             assert_eq!(to_state_version, 2);
             assert_eq!(migration, Some(b"migrate".to_vec()));
@@ -1540,7 +1540,7 @@ mod governance_op_storage_roundtrip {
             },
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
-            app_key: Some([0x55; 32]),
+            bytecode_id: Some([0x55; 32]),
         }
     }
 

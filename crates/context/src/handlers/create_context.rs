@@ -91,7 +91,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         context_meta.service_name = service_name;
 
         // Per-context binding from birth: a group pinned to a version (its
-        // app_key differs from the row blob) must run `init` with THAT
+        // bytecode_id differs from the row blob) must run `init` with THAT
         // bytecode, or the new context's state would start on a schema its
         // group never targeted. Zero/legacy keys and absent blobs fall back
         // to the application row.
@@ -99,7 +99,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             .load(&group_id)
             .ok()
             .flatten()
-            .map(|m| m.app_key)
+            .map(|m| m.bytecode_id)
             .filter(|k| *k != [0u8; 32])
             .map(calimero_primitives::blobs::BlobId::from)
             .filter(|b| self.node_client.has_blob(b).unwrap_or(false));

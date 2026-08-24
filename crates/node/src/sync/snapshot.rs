@@ -50,7 +50,7 @@ pub const MAX_PAGE_LIMIT: u16 = 1024;
 /// Leading byte of a **v2** (PR-6b / #2539) snapshot page: records are
 /// length-framed (`u32 LE len ‖ record_bytes`) so the receiver bounds each
 /// record's decode to its own sub-slice. This makes the backward-compatible
-/// trailing `SnapshotRecord::Entity.schema_app_key` (decoded EOF-tolerantly)
+/// trailing `SnapshotRecord::Entity.schema_bytecode_id` (decoded EOF-tolerantly)
 /// sound for NON-terminal records too — a clean EOF is observed at the
 /// sub-slice boundary instead of bleeding into the next record's bytes.
 ///
@@ -66,8 +66,8 @@ const SNAPSHOT_PAGE_FORMAT_V2: u8 = 0xFF;
 /// Exactly 16 bytes to match SCOPE_SIZE.
 const SYNC_IN_PROGRESS_SCOPE: [u8; SCOPE_SIZE] = *b"sync-in-progres\0";
 
-/// Whether a snapshot `Entity` whose sender stamped `schema_app_key` is readable
-/// by a receiver whose loaded reader is `loaded_app_key` (PR-6b Task 6b.7).
+/// Whether a snapshot `Entity` whose sender stamped `schema_bytecode_id` is readable
+/// by a receiver whose loaded reader is `loaded_bytecode_id` (PR-6b Task 6b.7).
 ///
 /// The snapshot apply path writes each verified entity via a raw `handle.put` —
 /// it deliberately does NOT route through `apply_leaf_with_crdt_merge_gated`, so
@@ -82,10 +82,10 @@ const SYNC_IN_PROGRESS_SCOPE: [u8; SCOPE_SIZE] = *b"sync-in-progres\0";
 /// when the stamped schema matches the loaded reader; `false` (decline+buffer)
 /// only when both are known and differ.
 fn snapshot_entity_is_readable(
-    schema_app_key: Option<[u8; 32]>,
-    loaded_app_key: Option<[u8; 32]>,
+    schema_bytecode_id: Option<[u8; 32]>,
+    loaded_bytecode_id: Option<[u8; 32]>,
 ) -> bool {
-    match (schema_app_key, loaded_app_key) {
+    match (schema_bytecode_id, loaded_bytecode_id) {
         (Some(schema), Some(loaded)) => schema == loaded,
         // Legacy sender (no marker) or unresolvable loaded reader ⇒ no gate.
         _ => true,
@@ -235,7 +235,7 @@ impl SyncManager {
         // future-schema entity instead of persisting unreadable bytes. `None`
         // (non-group context / unresolvable meta) leaves the marker absent —
         // legacy semantics; the receiver then applies as today.
-        let schema_app_key = calimero_context::hlc_fence::loaded_reader_app_key(
+        let schema_bytecode_id = calimero_context::hlc_fence::loaded_reader_bytecode_id(
             self.context_client.datastore(),
             &context_id,
         )
@@ -247,7 +247,7 @@ impl SyncManager {
             start_cursor.as_ref(),
             page_limit,
             byte_limit,
-            schema_app_key,
+            schema_bytecode_id,
         )?;
 
         // Post-iteration recheck: verify the state hasn't moved during page
@@ -532,7 +532,7 @@ impl SyncManager {
     /// If concurrent writes were to occur, keys written during sync would not be
     /// cleaned up and could cause state divergence.
     /// Returns `(records_applied, observed_schema)`, where `observed_schema` is
-    /// the `schema_app_key` the applied entities carried (the source peer's real
+    /// the `schema_bytecode_id` the applied entities carried (the source peer's real
     /// schema) — `None` if no entity carried a stamp. The resync settle binds
     /// the activation marker to it so a snapshot from a behind peer is not
     /// mislabeled as the group target.
@@ -597,16 +597,16 @@ impl SyncManager {
 
         // PR-6b Task 6b.7: the schema this node can read *right now* (its loaded
         // reader). A snapshot `Entity` whose sender stamped a newer
-        // `schema_app_key` is declined+buffered rather than `handle.put`-stored.
+        // `schema_bytecode_id` is declined+buffered rather than `handle.put`-stored.
         // `None` (non-group context / unresolvable meta) ⇒ no gate — apply as
         // today (parity with the leaf path's `handle_entity_push`). A forced
         // resync also disables the gate (None): it is an authorized full-state
         // replacement to the peer's current schema, and the stale local marker
         // would otherwise decline every current-schema entity.
-        let loaded_app_key = if force {
+        let loaded_bytecode_id = if force {
             None
         } else {
-            calimero_context::hlc_fence::loaded_reader_app_key(
+            calimero_context::hlc_fence::loaded_reader_bytecode_id(
                 self.context_client.datastore(),
                 &context_id,
             )
@@ -629,7 +629,7 @@ impl SyncManager {
             Id,
             BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
         > = HashMap::new();
-        // (id, entry blob, index blob, sender's stamped schema_app_key) — the
+        // (id, entry blob, index blob, sender's stamped schema_bytecode_id) — the
         // schema is carried so a context whose entities are ALL SharedMember
         // still reports an `observed_schema` (pass 1 only sets it from regular
         // Entity records, so without this the settle would bind to the group
@@ -716,7 +716,7 @@ impl SyncManager {
                                     id,
                                     entry,
                                     index,
-                                    schema_app_key,
+                                    schema_bytecode_id,
                                 } => {
                                     // PR-6b Task 6b.7: the snapshot apply path
                                     // writes verified entities via a raw
@@ -724,21 +724,24 @@ impl SyncManager {
                                     // state-delta fence AND
                                     // `apply_leaf_with_crdt_merge_gated`. So the
                                     // readability check has to live here: if the
-                                    // sender stamped a `schema_app_key` newer
+                                    // sender stamped a `schema_bytecode_id` newer
                                     // than this node's loaded reader, DECLINE +
                                     // BUFFER the raw entity into the absorb
                                     // buffer instead of persisting unreadable
                                     // bytes. The buffered entity is re-applied
                                     // (re-verified + `handle.put`) once the
                                     // loaded reader advances to that schema.
-                                    if !snapshot_entity_is_readable(*schema_app_key, loaded_app_key)
-                                    {
+                                    if !snapshot_entity_is_readable(
+                                        *schema_bytecode_id,
+                                        loaded_bytecode_id,
+                                    ) {
                                         if let Err(e) = self.buffer_future_schema_snapshot_entity(
                                             context_id,
                                             *id,
                                             entry,
                                             index,
-                                            schema_app_key.expect("gate only declines when Some"),
+                                            schema_bytecode_id
+                                                .expect("gate only declines when Some"),
                                         ) {
                                             warn!(
                                                 %context_id,
@@ -792,7 +795,7 @@ impl SyncManager {
                                             id_obj,
                                             entry.clone(),
                                             index.clone(),
-                                            *schema_app_key,
+                                            *schema_bytecode_id,
                                         ));
                                         continue;
                                     }
@@ -834,7 +837,7 @@ impl SyncManager {
                                     let _ = received_keys.insert(entry_state_key);
                                     let _ = received_keys.insert(index_state_key);
                                     applied += 1;
-                                    if let Some(k) = schema_app_key {
+                                    if let Some(k) = schema_bytecode_id {
                                         observed_schema = Some(*k);
                                     }
 
@@ -1536,7 +1539,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     start_cursor: Option<&SnapshotCursor>,
     page_limit: u16,
     byte_limit: u32,
-    schema_app_key: Option<[u8; 32]>,
+    schema_bytecode_id: Option<[u8; 32]>,
 ) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
     // Pass 1 — single snapshot scan, memory bounded to keys + ids.
     //
@@ -1851,7 +1854,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // V2 page format (PR-6b): each record is length-framed
         // (`u32 LE len ‖ record_bytes`) so the receiver bounds each
         // record's decode to its own sub-slice. Without framing, the
-        // backward-compatible trailing `Entity.schema_app_key` (decoded
+        // backward-compatible trailing `Entity.schema_bytecode_id` (decoded
         // EOF-tolerantly) would, on a record that is NOT the last in the
         // page, read the next record's leading bytes instead of seeing a
         // clean EOF — desyncing the whole page.
@@ -1859,7 +1862,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             id: id_bytes,
             entry,
             index,
-            schema_app_key,
+            schema_bytecode_id,
         })?;
 
         // Page-break BEFORE adding this record if it would exceed
@@ -1899,7 +1902,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
 /// Encode one [`SnapshotRecord`] with a `u32` little-endian length prefix for
 /// the v2 page format. The length frames the borsh-encoded record so the
 /// receiver can bound its decode to exactly this record's bytes — making the
-/// EOF-tolerant trailing `Entity.schema_app_key` sound even for a non-terminal
+/// EOF-tolerant trailing `Entity.schema_bytecode_id` sound even for a non-terminal
 /// record.
 fn encode_framed_snapshot_record(record: &SnapshotRecord) -> Result<Vec<u8>> {
     let body = borsh::to_vec(record)?;
@@ -2013,11 +2016,11 @@ fn decompress_snapshot_page(payload: &[u8], uncompressed_len: u32) -> Result<Vec
 /// * **v2** (PR-6b / #2539) — the page begins with the
 ///   [`SNAPSHOT_PAGE_FORMAT_V2`] sentinel, followed by length-framed records
 ///   (`u32 LE len ‖ borsh(record)`). Each record decodes inside its own
-///   sub-slice, so the EOF-tolerant trailing `Entity.schema_app_key` reads a
+///   sub-slice, so the EOF-tolerant trailing `Entity.schema_bytecode_id` reads a
 ///   clean EOF at the sub-slice boundary instead of bleeding into the next
 ///   record — correct even for a non-terminal record.
 /// * **legacy** (pre-#2539) — the page is a back-to-back concatenation of
-///   borsh-encoded records with NO framing and NO trailing `schema_app_key`
+///   borsh-encoded records with NO framing and NO trailing `schema_bytecode_id`
 ///   byte. Such a page can never start with `0xFF` (a record starts with its
 ///   variant discriminant, `0`/`1`), so the absence of the sentinel selects
 ///   this path. Records are decoded with [`decode_legacy_record`], which stops
@@ -2046,7 +2049,7 @@ fn decode_framed_snapshot_records(mut remaining: &[u8]) -> Result<Vec<SnapshotRe
             .ok_or_else(|| eyre::eyre!("snapshot record length frame overruns page"))?;
         let body = &remaining[body_start..body_end];
         // Decode inside the exact record sub-slice: a clean EOF at `body`'s
-        // end is what makes the EOF-tolerant trailing `schema_app_key` sound.
+        // end is what makes the EOF-tolerant trailing `schema_bytecode_id` sound.
         let record = borsh::from_slice::<SnapshotRecord>(body)?;
         records.push(record);
         remaining = &remaining[body_end..];
@@ -2055,9 +2058,9 @@ fn decode_framed_snapshot_records(mut remaining: &[u8]) -> Result<Vec<SnapshotRe
 }
 
 /// Decode a **legacy** (pre-#2539) unframed page: records concatenated
-/// end-to-end with no trailing `schema_app_key`. Each record is self-delimiting
+/// end-to-end with no trailing `schema_bytecode_id`. Each record is self-delimiting
 /// (borsh `Vec` fields carry their own length), so we decode sequentially —
-/// but we must NOT peek for the trailing `Entity.schema_app_key` byte, because
+/// but we must NOT peek for the trailing `Entity.schema_bytecode_id` byte, because
 /// in a legacy page that byte is the NEXT record's leading byte.
 fn decode_legacy_snapshot_records(payload: &[u8]) -> Result<Vec<SnapshotRecord>> {
     let mut records = Vec::new();
@@ -2091,7 +2094,7 @@ fn decode_legacy_record<R: borsh::io::Read>(reader: &mut R) -> Result<SnapshotRe
                 id,
                 entry,
                 index,
-                schema_app_key: None,
+                schema_bytecode_id: None,
             })
         }
         1 => {
@@ -2147,7 +2150,7 @@ fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
 ///
 /// Resync is an explicit, force-gated request to adopt a peer's state, so it
 /// advances the activation marker and drops the stranded/resync markers. The
-/// marker is bound to `data_schema` — the `schema_app_key` the synced entities
+/// marker is bound to `data_schema` — the `schema_bytecode_id` the synced entities
 /// actually carried — NOT the group target: peer selection is automatic and
 /// the forced apply disables the schema fence, so the chosen peer may be BEHIND
 /// the target. Binding to the target over a behind peer's state would tell the
@@ -2184,7 +2187,7 @@ fn settle_snapshot_activation(
     }
 
     // Clear the one-shot resync marker + any stranded marker FIRST, so neither
-    // a missing group app_key below nor a failed activation write can leave the
+    // a missing group bytecode_id below nor a failed activation write can leave the
     // context stuck forcing snapshots / reporting failed.
     if let Err(err) = handle.delete(&resync_key) {
         warn!(%context_id, %err, "failed to clear resync marker after snapshot");
@@ -2202,7 +2205,7 @@ fn settle_snapshot_activation(
     // group target only when the snapshot carried no schema stamp.
     let bind = data_schema
         .filter(|k| *k != [0u8; 32])
-        .unwrap_or(meta.app_key);
+        .unwrap_or(meta.bytecode_id);
     if bind == [0u8; 32] {
         return None; // zero-key group: no bytecode signal to bind
     }
@@ -2216,7 +2219,7 @@ fn settle_snapshot_activation(
     if let Some(app_id) = calimero_context::activation::application_for_schema(
         &ladder,
         bind,
-        meta.app_key,
+        meta.bytecode_id,
         meta.target_application_id,
     ) {
         calimero_context::activation::reconcile_context_application(store, &context_id, app_id);
@@ -2785,7 +2788,7 @@ mod tests {
             id: [1u8; 32],
             entry: vec![10, 20, 30],
             index: vec![40, 50, 60],
-            schema_app_key: None,
+            schema_bytecode_id: None,
         };
         let encoded = build_snapshot_page_v2(std::slice::from_ref(&record));
 
@@ -2805,8 +2808,8 @@ mod tests {
 
     /// Regression (PR-6b Task 6b.7 review): a LEGACY (pre-#2539 / v1) page
     /// packs multiple `Entity` records back-to-back with NO trailing
-    /// `schema_app_key` byte and NO per-record length framing. A v2 reader
-    /// must decode every such record with `schema_app_key == None` and consume
+    /// `schema_bytecode_id` byte and NO per-record length framing. A v2 reader
+    /// must decode every such record with `schema_bytecode_id == None` and consume
     /// the whole page — never letting one record's missing trailing byte eat
     /// the next record's leading bytes (which previously desynced the stream
     /// at the second record).
@@ -2845,7 +2848,7 @@ mod tests {
                 id: [1u8; 32],
                 entry: vec![10, 20, 30],
                 index: vec![40, 50],
-                schema_app_key: None,
+                schema_bytecode_id: None,
             }
         );
         assert_eq!(
@@ -2854,7 +2857,7 @@ mod tests {
                 id: [2u8; 32],
                 entry: vec![60],
                 index: vec![70, 80, 90],
-                schema_app_key: None,
+                schema_bytecode_id: None,
             }
         );
     }
@@ -2869,7 +2872,7 @@ mod tests {
                 id: [3u8; 32],
                 entry: vec![1, 2],
                 index: vec![3, 4],
-                schema_app_key: Some([7u8; 32]),
+                schema_bytecode_id: Some([7u8; 32]),
             },
             SnapshotRecord::Auxiliary {
                 kind: snapshot_record_kind::ROTATION_LOG,
@@ -2886,7 +2889,7 @@ mod tests {
                 id: [3u8; 32],
                 entry: vec![1, 2],
                 index: vec![3, 4],
-                schema_app_key: Some([7u8; 32]),
+                schema_bytecode_id: Some([7u8; 32]),
             }
         );
         assert!(matches!(
@@ -2909,7 +2912,7 @@ mod tests {
             id: [1u8; 32],
             entry: vec![10],
             index: vec![20],
-            schema_app_key: None,
+            schema_bytecode_id: None,
         };
         let aux = SnapshotRecord::Auxiliary {
             kind: snapshot_record_kind::ROTATION_LOG,
@@ -2999,7 +3002,7 @@ mod tests {
     }
 
     #[test]
-    fn settle_snapshot_activation_binds_to_group_app_key_and_clears_markers() {
+    fn settle_snapshot_activation_binds_to_group_bytecode_id_and_clears_markers() {
         use calimero_context_config::types::ContextGroupId;
         use calimero_governance_store::{register_context_in_group, MetaRepository};
         use calimero_primitives::application::ApplicationId;
@@ -3008,7 +3011,7 @@ mod tests {
         use calimero_store::types::ContextMigrationFailed;
         use calimero_store::Store;
 
-        const APP_KEY: [u8; 32] = [0x2A; 32];
+        const BYTECODE_ID: [u8; 32] = [0x2A; 32];
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let gid = ContextGroupId::from([0x60; 32]);
         let ctx = ContextId::from([0x50; 32]);
@@ -3017,7 +3020,7 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    app_key: APP_KEY,
+                    bytecode_id: BYTECODE_ID,
                     target_application_id: ApplicationId::from([0xAA; 32]),
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
@@ -3047,8 +3050,8 @@ mod tests {
 
         assert_eq!(
             calimero_context::activation::activated_blob(&store, &ctx),
-            Some(APP_KEY),
-            "activation marker must bind to the group's current app_key"
+            Some(BYTECODE_ID),
+            "activation marker must bind to the group's current bytecode_id"
         );
         let handle = store.handle();
         assert!(
@@ -3087,7 +3090,7 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    app_key: [0x2B; 32],
+                    bytecode_id: [0x2B; 32],
                     target_application_id: ApplicationId::from([0xAB; 32]),
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x08; 32]),
@@ -3155,7 +3158,7 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    app_key: [0x2B; 32],
+                    bytecode_id: [0x2B; 32],
                     target_application_id: ApplicationId::from([0xAB; 32]),
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
@@ -3199,7 +3202,7 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    app_key: TARGET_KEY,
+                    bytecode_id: TARGET_KEY,
                     target_application_id: ApplicationId::from([0xAC; 32]),
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
@@ -3247,7 +3250,7 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    app_key: TARGET_KEY,
+                    bytecode_id: TARGET_KEY,
                     target_application_id: target_app,
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),

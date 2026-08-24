@@ -28,7 +28,7 @@ use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
     KemPublicKey, RootKeyHandoff, SignedDeviceRevocation,
 };
-use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
+use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -52,7 +52,7 @@ pub use wire::{
 /// `[u8; 32]`, no tag or length prefix — a serde newtype struct serializes as
 /// its inner value) so it is byte-compatible with the bare `[u8; 32]` these ids
 /// used to be, while making the distinct id kinds non-interchangeable. Serde
-/// parity with `AppKey`/`ContextGroupId` keeps the ids usable across the JSON
+/// parity with `BytecodeId`/`ContextGroupId` keeps the ids usable across the JSON
 /// API surface, not just the borsh op wire.
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
@@ -362,9 +362,9 @@ pub enum GroupOp {
     },
     /// Default capability bitmask for new members.
     DefaultCapabilitiesSet { capabilities: MemberCapabilities },
-    /// Update target application and app key in group metadata.
+    /// Update target application and bytecode id in group metadata.
     TargetApplicationSet {
-        app_key: AppKey,
+        bytecode_id: BytecodeId,
         target_application_id: ApplicationId,
     },
     /// Register a context index under this group (must match `ContextGroupRef` invariants).
@@ -463,15 +463,15 @@ pub enum GroupOp {
     /// `GroupMetaValue.owner_identity`. The previous owner remains a
     /// regular admin (no automatic role change beyond the owner field).
     TransferOwnership { new_owner: AccountId },
-    /// Atomic namespace cascade upgrade. Applies target_application_id, app_key,
+    /// Atomic namespace cascade upgrade. Applies target_application_id, bytecode_id,
     /// and migration in a SINGLE op per matched descendant (the
-    /// `from_app_key == descendant.app_key` walk predicate), so receivers cannot
+    /// `from_bytecode_id == descendant.bytecode_id` walk predicate), so receivers cannot
     /// reproduce the out-of-order apply bug. `cascade_hlc` is stamped once by the
     /// initiator so every node records an identical fence boundary.
     ///
-    /// `from_app_key` is the matching predicate, snapshotted at the emission
+    /// `from_bytecode_id` is the matching predicate, snapshotted at the emission
     /// peer's RPC-handling time and carried in the op so every receiver filters
-    /// its own tree state identically. Descendants on a different `app_key` are
+    /// its own tree state identically. Descendants on a different `bytecode_id` are
     /// skipped, so heterogeneous deployments stay untouched.
     ///
     /// `cascade_hlc` is the fence boundary read by the receive-path HLC fence
@@ -479,8 +479,8 @@ pub enum GroupOp {
     /// timestamp predates this value is rejected post-`Completed` to prevent
     /// offline-writer stale-schema state from overwriting migrated state.
     CascadeUpgrade {
-        from_app_key: AppKey,
-        app_key: AppKey,
+        from_bytecode_id: BytecodeId,
+        bytecode_id: BytecodeId,
         target_application_id: ApplicationId,
         /// Max ABI state version across the target's services. `0` when
         /// unresolvable, which the rollup pins to an unsatisfiable target.

@@ -202,7 +202,7 @@ mod tests {
 
         repo.save(&gid, &meta).unwrap();
         let loaded = repo.load(&gid).unwrap().expect("meta must round-trip");
-        assert_eq!(loaded.app_key, meta.app_key);
+        assert_eq!(loaded.bytecode_id, meta.bytecode_id);
         assert_eq!(loaded.admin_identity, meta.admin_identity);
     }
 

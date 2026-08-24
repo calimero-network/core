@@ -308,8 +308,8 @@ async fn a_member_sees_started_then_fleet_progress_then_completed() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: blobs.v1.into(),
-            app_key: blobs.v2_migrating.into(),
+            from_bytecode_id: blobs.v1.into(),
+            bytecode_id: blobs.v2_migrating.into(),
             target_application_id: app_id_v2(),
             to_state_version: 2,
             migration: Some(b"migrate_v1_to_v2".to_vec()),

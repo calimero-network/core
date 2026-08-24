@@ -126,13 +126,13 @@ pub(crate) fn apply(
 
     let meta_existed = MetaRepository::new(store).load(&gid)?.is_some();
     if !meta_existed {
-        // Inherit application ID AND app_key from the immediate parent.
+        // Inherit application ID AND bytecode_id from the immediate parent.
         // target_application_id is inherited (matches mero-drive folder
         // mental model: a subfolder runs the same app as its parent), so
-        // app_key (which on the originator is derived from that
+        // bytecode_id (which on the originator is derived from that
         // application's bytecode blob_id by `create_group::handle`) must
         // be inherited too — otherwise the cascade predicate
-        // (from_app_key == descendant.app_key) would silently skip every
+        // (from_bytecode_id == descendant.bytecode_id) would silently skip every
         // remote-created subgroup the originator added. Zero-init here
         // was the source of #2358-class cascade-skip bugs.
         // The op CARRIES the creator's account so a receiver can fold it without
@@ -153,7 +153,7 @@ pub(crate) fn apply(
             admin_identity: creator,
             owner_identity: creator,
             target_application_id: parent_meta.target_application_id,
-            app_key: parent_meta.app_key,
+            bytecode_id: parent_meta.bytecode_id,
             migration: None,
             created_at: 0,
             auto_join: false,

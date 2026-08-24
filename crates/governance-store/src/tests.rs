@@ -29,7 +29,7 @@ fn save_load_delete_group_meta() {
 
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     let loaded = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(loaded.app_key, meta.app_key);
+    assert_eq!(loaded.bytecode_id, meta.bytecode_id);
     assert_eq!(loaded.target_application_id, meta.target_application_id);
 
     MetaRepository::new(&store).delete(&gid).unwrap();
@@ -172,7 +172,7 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
         .set_target_application(&member_pk, &[0xAB; 32], &app_id)
         .unwrap();
     let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(meta.app_key, [0xAB; 32]);
+    assert_eq!(meta.bytecode_id, [0xAB; 32]);
     assert_eq!(meta.target_application_id, app_id);
 
     MetadataRepository::new(&store)
@@ -229,9 +229,9 @@ fn set_target_application_appends_upgrade_ladder_rung() {
 
     let rungs = UpgradeLadderRepository::new(&store).load(&gid).unwrap();
     assert_eq!(rungs.len(), 2);
-    assert_eq!(rungs[0].app_key, [0x02; 32]);
+    assert_eq!(rungs[0].bytecode_id, [0x02; 32]);
     assert_eq!(rungs[0].application_id, app_v2);
-    assert_eq!(rungs[1].app_key, [0x03; 32]);
+    assert_eq!(rungs[1].bytecode_id, [0x03; 32]);
     assert_eq!(rungs[1].application_id, app_v3);
 }
 
@@ -2680,7 +2680,7 @@ fn auto_group_node_identity_is_admin_member() {
         .save(
             &auto_group_id,
             &GroupMetaValue {
-                app_key: [0u8; 32],
+                bytecode_id: [0u8; 32],
                 target_application_id: ApplicationId::from([0xCC; 32]),
                 created_at: 1_700_000_000,
                 admin_identity: node_account,
@@ -4036,7 +4036,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
-        app_key: None,
+        bytecode_id: None,
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -5313,7 +5313,7 @@ fn signed_invitation_for(
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
-        app_key: None,
+        bytecode_id: None,
     }
 }
 
@@ -8478,7 +8478,7 @@ fn placeholder_admin_identity_never_equals_a_real_key() {
 /// `MemberCapabilitySet` cap-revoke on `D` that one replica has folded and the
 /// other has not. Under the old per-descendant LIVE pre-scan, the replica that
 /// folded the revoke BAILED the whole op while the other APPLIED it, permanently
-/// diverging `target_application_id`/`app_key`. The fix authorizes the cascade
+/// diverging `target_application_id`/`bytecode_id`. The fix authorizes the cascade
 /// once against the root admin, so the descendant's live caps no longer flip the
 /// outcome. Runs on the STANDALONE group-DAG path (`apply_local_signed_group_op`,
 /// LIVE fallback), so it proves convergence without relying on the at-cut
@@ -8496,8 +8496,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
 
     let root = ContextGroupId::from([0x70; 32]);
     let descendant = ContextGroupId::from([0xD1; 32]);
-    let from_app_key = [0x11; 32];
-    let to_app_key = [0x22; 32];
+    let from_bytecode_id = [0x11; 32];
+    let to_bytecode_id = [0x22; 32];
     let app_v1 = ApplicationId::from([0xC1; 32]);
     let app_v2 = ApplicationId::from([0xC2; 32]);
     // A different admin for `D`, so the signer is NOT admin-of-D via meta.
@@ -8511,20 +8511,20 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
         // the credential is the same, so both agree on the account.
         let admin = enrol_member(&store, &root, &admin_pk);
 
-        // Root: signer is a direct admin, on `from_app_key`.
+        // Root: signer is a direct admin, on `from_bytecode_id`.
         let mut root_meta = sample_meta_with_admin(admin);
-        root_meta.app_key = from_app_key;
+        root_meta.bytecode_id = from_bytecode_id;
         root_meta.target_application_id = app_v1;
         MetaRepository::new(&store).save(&root, &root_meta).unwrap();
         MembershipRepository::new(&store)
             .add_member(&root, &admin, GroupMemberRole::Admin)
             .unwrap();
 
-        // Descendant: matched (same `from_app_key`) but admin'd by someone else.
+        // Descendant: matched (same `from_bytecode_id`) but admin'd by someone else.
         // Left at the DEFAULT Restricted visibility, so the signer does NOT
         // inherit admin authority across the boundary.
         let mut d_meta = sample_meta_with_admin(other_admin);
-        d_meta.app_key = from_app_key;
+        d_meta.bytecode_id = from_bytecode_id;
         d_meta.target_application_id = app_v1;
         MetaRepository::new(&store)
             .save(&descendant, &d_meta)
@@ -8555,8 +8555,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             vec![],
             1,
             GroupOp::CascadeUpgrade {
-                from_app_key: from_app_key.into(),
-                app_key: to_app_key.into(),
+                from_bytecode_id: from_bytecode_id.into(),
+                bytecode_id: to_bytecode_id.into(),
                 target_application_id: app_v2,
                 to_state_version: 0,
                 migration: None,
@@ -8592,8 +8592,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             .unwrap()
             .expect("descendant meta");
         assert_eq!(
-            d.app_key, to_app_key,
-            "descendant must be cascaded to the new app_key on the {label} replica"
+            d.bytecode_id, to_bytecode_id,
+            "descendant must be cascaded to the new bytecode_id on the {label} replica"
         );
         assert_eq!(
             d.target_application_id, app_v2,
@@ -8631,8 +8631,8 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
     let admin_pk = admin_sk.public_key();
     let root = ContextGroupId::from([0xE1; 32]);
     let descendant = ContextGroupId::from([0xE2; 32]);
-    let from_app_key = [0x11u8; 32];
-    let to_app_key = [0x22u8; 32];
+    let from_bytecode_id = [0x11u8; 32];
+    let to_bytecode_id = [0x22u8; 32];
     let app_v2 = ApplicationId::from([0x33u8; 32]);
 
     // `with_prior_record` picks which apply branch runs: `false` exercises the
@@ -8644,7 +8644,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
         let admin = enrol_member(&store, &root, &admin_pk);
         for gid in [&root, &descendant] {
             let mut meta = sample_meta_with_admin(admin);
-            meta.app_key = from_app_key;
+            meta.bytecode_id = from_bytecode_id;
             MetaRepository::new(&store).save(gid, &meta).unwrap();
         }
         MembershipRepository::new(&store)
@@ -8682,8 +8682,8 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
             vec![],
             1,
             GroupOp::CascadeUpgrade {
-                from_app_key: from_app_key.into(),
-                app_key: to_app_key.into(),
+                from_bytecode_id: from_bytecode_id.into(),
+                bytecode_id: to_bytecode_id.into(),
                 target_application_id: app_v2,
                 to_state_version: 2,
                 migration: None,
@@ -8726,7 +8726,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
 mod apply_auth_at_cut {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
-    use calimero_context_config::types::AppKey;
+    use calimero_context_config::types::BytecodeId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_types::GroupOp;
 
@@ -8763,7 +8763,7 @@ mod apply_auth_at_cut {
 
     fn target_application_set_op() -> GroupOp {
         GroupOp::TargetApplicationSet {
-            app_key: AppKey::from([0x5A; 32]),
+            bytecode_id: BytecodeId::from([0x5A; 32]),
             target_application_id: ApplicationId::from([0x5B; 32]),
         }
     }
@@ -8896,7 +8896,7 @@ mod apply_auth_at_cut {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta.app_key, [0x5A; 32],
+            meta.bytecode_id, [0x5A; 32],
             "the mutation must actually land, not just be reported handled"
         );
     }
@@ -8927,7 +8927,7 @@ mod apply_auth_at_cut {
 
         let after = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            before.app_key, after.app_key,
+            before.bytecode_id, after.bytecode_id,
             "a rejected settings op must not mutate group meta"
         );
     }
@@ -8997,8 +8997,8 @@ mod apply_auth_at_cut {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_eq!(
-                meta.app_key, [0x5A; 32],
-                "{label}: both replicas must converge on the same app_key"
+                meta.bytecode_id, [0x5A; 32],
+                "{label}: both replicas must converge on the same bytecode_id"
             );
         }
     }
@@ -9145,12 +9145,12 @@ mod rotation_gate_alignment {
 mod undecidable_authority_parks {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, UnresolvableAuthorizer, TEST_CUT as CUT};
-    use calimero_context_config::types::AppKey;
+    use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::GroupOp;
 
     fn target_application_set_op() -> GroupOp {
         GroupOp::TargetApplicationSet {
-            app_key: AppKey::from([0x5A; 32]),
+            bytecode_id: BytecodeId::from([0x5A; 32]),
             target_application_id: ApplicationId::from([0x5B; 32]),
         }
     }
@@ -9215,7 +9215,7 @@ mod undecidable_authority_parks {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta.app_key, [0x5A; 32],
+            meta.bytecode_id, [0x5A; 32],
             "a parked op must not mutate state — it has not been authorized yet"
         );
     }
@@ -9328,7 +9328,7 @@ mod undecidable_authority_parks {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_ne!(
-                meta.app_key, [0x5A; 32],
+                meta.bytecode_id, [0x5A; 32],
                 "{label}: a parked op must leave state untouched"
             );
         }
@@ -9838,7 +9838,7 @@ mod self_leave_rotation_crypto {
         // traffic. Without this the negative assertion at the end proves nothing — a
         // decrypt that never worked would "fail" just as convincingly.
         let before_op = calimero_governance_types::GroupOp::TargetApplicationSet {
-            app_key: calimero_context_config::types::AppKey::from([0x11; 32]),
+            bytecode_id: calimero_context_config::types::BytecodeId::from([0x11; 32]),
             target_application_id: ApplicationId::from([0x12; 32]),
         };
         let sealed_before = GroupKeyring::encrypt_op(&key_before, &before_op).expect("encrypt");
@@ -9913,7 +9913,7 @@ mod self_leave_rotation_crypto {
 
         // --- What the group writes next. ---
         let after_op = calimero_governance_types::GroupOp::TargetApplicationSet {
-            app_key: calimero_context_config::types::AppKey::from([0x21; 32]),
+            bytecode_id: calimero_context_config::types::BytecodeId::from([0x21; 32]),
             target_application_id: ApplicationId::from([0x22; 32]),
         };
         let sealed_after = GroupKeyring::encrypt_op(&key_after, &after_op).expect("encrypt");
@@ -10087,7 +10087,7 @@ mod self_leave_rotation_crypto {
 mod parked_op_retries_to_success {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, UnresolvableAuthorizer};
-    use calimero_context_config::types::AppKey;
+    use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -10116,7 +10116,7 @@ mod parked_op_retries_to_success {
             vec![[0xAB; 32]],
             1,
             GroupOp::TargetApplicationSet {
-                app_key: AppKey::from([0x5A; 32]),
+                bytecode_id: BytecodeId::from([0x5A; 32]),
                 target_application_id: ApplicationId::from([0x5B; 32]),
             },
         )
@@ -10133,7 +10133,7 @@ mod parked_op_retries_to_success {
         // The park must be inert. Any residue here turns "retry later" into "never".
         let meta_after_park = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta_after_park.app_key, [0x5A; 32],
+            meta_after_park.bytecode_id, [0x5A; 32],
             "a parked op must not half-apply"
         );
         assert_eq!(
@@ -10151,7 +10151,7 @@ mod parked_op_retries_to_success {
 
         let meta_after_retry = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta_after_retry.app_key, [0x5A; 32],
+            meta_after_retry.bytecode_id, [0x5A; 32],
             "the retried op must actually take effect"
         );
         assert_eq!(

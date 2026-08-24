@@ -30,15 +30,15 @@ use calimero_store::Store;
 use super::walk_for_predicate;
 use crate::{MetaRepository, NamespaceRepository};
 
-const APP_KEY_A: [u8; 32] = [0xA1; 32];
+const BYTECODE_ID_A: [u8; 32] = [0xA1; 32];
 
 fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
 
-fn meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
+fn meta_with_bytecode_id(bytecode_id: [u8; 32]) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
         admin_identity: AccountId::from([0x01; 32]),
@@ -51,7 +51,7 @@ fn meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
 #[test]
 fn walk_handles_deep_nesting() {
     // Build a strictly-linear chain root → g1 → g2 → ... → g10, all on
-    // app_key A. The walk must emit 11 entries (root + 10 descendants),
+    // bytecode_id A. The walk must emit 11 entries (root + 10 descendants),
     // all matched.
     let store = test_store();
 
@@ -66,7 +66,7 @@ fn walk_handles_deep_nesting() {
         let gid = ContextGroupId::from(bytes);
         groups.push(gid);
         MetaRepository::new(&store)
-            .save(&gid, &meta_with_app_key(APP_KEY_A))
+            .save(&gid, &meta_with_bytecode_id(BYTECODE_ID_A))
             .unwrap();
     }
     for i in 0..10 {
@@ -75,7 +75,7 @@ fn walk_handles_deep_nesting() {
             .unwrap();
     }
 
-    let entries = walk_for_predicate(&store, groups[0], APP_KEY_A).unwrap();
+    let entries = walk_for_predicate(&store, groups[0], BYTECODE_ID_A).unwrap();
 
     assert_eq!(
         entries.len(),
@@ -85,7 +85,7 @@ fn walk_handles_deep_nesting() {
     );
     assert!(
         entries.iter().all(|e| e.matched),
-        "every entry on a uniform-app_key chain must match"
+        "every entry on a uniform-bytecode_id chain must match"
     );
 
     // Every fixture group must appear exactly once.
@@ -114,10 +114,10 @@ fn walk_no_infinite_loop_on_cycle() {
     let b = ContextGroupId::from([0xBBu8; 32]);
 
     MetaRepository::new(&store)
-        .save(&a, &meta_with_app_key(APP_KEY_A))
+        .save(&a, &meta_with_bytecode_id(BYTECODE_ID_A))
         .unwrap();
     MetaRepository::new(&store)
-        .save(&b, &meta_with_app_key(APP_KEY_A))
+        .save(&b, &meta_with_bytecode_id(BYTECODE_ID_A))
         .unwrap();
 
     // Plant A → B AND B → A directly in the child index. This bypasses
@@ -132,7 +132,7 @@ fn walk_no_infinite_loop_on_cycle() {
             .unwrap();
     }
 
-    let entries = walk_for_predicate(&store, a, APP_KEY_A)
+    let entries = walk_for_predicate(&store, a, BYTECODE_ID_A)
         .expect("visited-set must terminate traversal on cycled store");
 
     // Each visited group appears at most once.

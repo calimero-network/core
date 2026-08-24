@@ -2497,7 +2497,7 @@ mod tests {
                 },
                 inviter_signature: "deadbeef".to_string(),
                 application_id: None,
-                app_key: None,
+                bytecode_id: None,
             },
             account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
@@ -2576,7 +2576,7 @@ mod tests {
             },
             inviter_signature: "deadbeef".to_string(),
             application_id: None,
-            app_key: None,
+            bytecode_id: None,
         };
 
         let account = test_join_account_for(member);

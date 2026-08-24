@@ -472,7 +472,7 @@ pub async fn update_application_id(
         application,
     )?;
 
-    // Verify AppKey continuity (signerId match)
+    // Verify BytecodeId continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
     // Capture the pre-flip app id before finalize persists the new one, so the
@@ -531,7 +531,7 @@ fn activated_row_blob(node_client: &NodeClient, application: &Application) -> [u
         })
 }
 
-/// Verifies AppKey continuity by checking that the signerId matches between
+/// Verifies BytecodeId continuity by checking that the signerId matches between
 /// the currently installed application and the new application.
 ///
 ///  An update MUST be accepted only if:
@@ -548,19 +548,19 @@ fn verify_appkey_continuity(
     let handle = datastore.handle();
 
     // Get current application's metadata
-    let old_app_key = key::ApplicationMeta::new(context.application_id);
-    let Some(old_app_meta) = handle.get(&old_app_key)? else {
+    let old_bytecode_id = key::ApplicationMeta::new(context.application_id);
+    let Some(old_app_meta) = handle.get(&old_bytecode_id)? else {
         // If no old application exists (new context), allow the update
         debug!(
             context_id = %context.id,
-            "No existing application found, skipping AppKey continuity check"
+            "No existing application found, skipping BytecodeId continuity check"
         );
         return Ok(());
     };
 
     // Get new application's metadata
-    let new_app_key = key::ApplicationMeta::new(*new_application_id);
-    let Some(new_app_meta) = handle.get(&new_app_key)? else {
+    let new_bytecode_id = key::ApplicationMeta::new(*new_application_id);
+    let Some(new_app_meta) = handle.get(&new_bytecode_id)? else {
         bail!(
             "new application with id '{}' not found in database",
             new_application_id
@@ -591,10 +591,10 @@ fn verify_appkey_continuity(
             context_id = %context.id,
             old_signer_id = %old_signer_id,
             new_signer_id = %new_signer_id,
-            "AppKey continuity violation: signerId mismatch"
+            "BytecodeId continuity violation: signerId mismatch"
         );
         bail!(
-            "AppKey continuity violation: signerId mismatch. \
+            "BytecodeId continuity violation: signerId mismatch. \
              Cannot update from signerId '{}' to '{}'. \
              The same signing key must be used for application updates.",
             old_signer_id,
@@ -631,7 +631,7 @@ fn verify_appkey_continuity(
     debug!(
         context_id = %context.id,
         signer_id = %if old_signer_id.is_empty() { "<unsigned>" } else { old_signer_id },
-        "AppKey continuity check passed"
+        "BytecodeId continuity check passed"
     );
 
     Ok(())
@@ -640,7 +640,7 @@ fn verify_appkey_continuity(
 /// Update application with migration execution.
 ///
 /// This function implements the full migration flow:
-/// 1. Validates AppKey continuity (signerId match)
+/// 1. Validates BytecodeId continuity (signerId match)
 /// 2. Loads the NEW application WASM module
 /// 3. Executes the migration function
 /// 4. Writes returned state bytes to root storage key
@@ -671,7 +671,7 @@ pub(crate) async fn update_application_with_migration(
         application,
     )?;
 
-    // Verify AppKey continuity (signerId match)
+    // Verify BytecodeId continuity (signerId match)
     verify_appkey_continuity(&datastore, &context, &application_id)?;
 
     // Pre-flip app id, captured before finalize persists the new one (for the
@@ -1860,11 +1860,11 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity passes
+        // Verify BytecodeId continuity passes
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
-            "AppKey continuity check should pass with matching signerIds: {:?}",
+            "BytecodeId continuity check should pass with matching signerIds: {:?}",
             result.err()
         );
     }
@@ -1973,11 +1973,11 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity passes (new context case)
+        // Verify BytecodeId continuity passes (new context case)
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
-            "AppKey continuity check should pass for new context: {:?}",
+            "BytecodeId continuity check should pass for new context: {:?}",
             result.err()
         );
     }
@@ -2009,11 +2009,11 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity passes (unsigned to unsigned is allowed)
+        // Verify BytecodeId continuity passes (unsigned to unsigned is allowed)
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
-            "AppKey continuity check should pass for unsigned apps: {:?}",
+            "BytecodeId continuity check should pass for unsigned apps: {:?}",
             result.err()
         );
     }
@@ -2045,11 +2045,11 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity passes (unsigned to signed is allowed with warning)
+        // Verify BytecodeId continuity passes (unsigned to signed is allowed with warning)
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
-            "AppKey continuity check should pass when upgrading from unsigned to signed: {:?}",
+            "BytecodeId continuity check should pass when upgrading from unsigned to signed: {:?}",
             result.err()
         );
     }
@@ -2082,11 +2082,11 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity rejects signed-to-unsigned downgrade
+        // Verify BytecodeId continuity rejects signed-to-unsigned downgrade
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
-            "AppKey continuity check should reject downgrade from signed to unsigned: {result:?}"
+            "BytecodeId continuity check should reject downgrade from signed to unsigned: {result:?}"
         );
 
         // Verify the error message contains the expected content
@@ -2166,18 +2166,18 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity fails
+        // Verify BytecodeId continuity fails
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
-            "AppKey continuity check should fail with mismatched signerIds"
+            "BytecodeId continuity check should fail with mismatched signerIds"
         );
 
         // Verify the error message contains the expected content
         let error_message = result.unwrap_err().to_string();
         assert!(
-            error_message.contains("AppKey continuity violation"),
-            "Error should mention AppKey continuity violation: {error_message}"
+            error_message.contains("BytecodeId continuity violation"),
+            "Error should mention BytecodeId continuity violation: {error_message}"
         );
         assert!(
             error_message.contains("signerId mismatch"),
@@ -2206,11 +2206,11 @@ mod tests {
         let context_id = ContextId::from([1u8; 32]);
         let context = create_test_context(context_id, old_app_id);
 
-        // Verify AppKey continuity fails because new app doesn't exist
+        // Verify BytecodeId continuity fails because new app doesn't exist
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
-            "AppKey continuity check should fail when new app not found"
+            "BytecodeId continuity check should fail when new app not found"
         );
 
         // Verify the error message mentions the new app not being found
@@ -2256,7 +2256,7 @@ mod tests {
         let result = verify_appkey_continuity(&store, &context, &attacker_app_id);
         assert!(
             result.is_err(),
-            "AppKey continuity check should prevent hijacking attempt"
+            "BytecodeId continuity check should prevent hijacking attempt"
         );
 
         let error_message = result.unwrap_err().to_string();
@@ -2397,7 +2397,7 @@ mod tests {
 
     #[test]
     fn test_no_state_written_when_appkey_continuity_fails() {
-        // Setup: Verify that no state changes occur when AppKey continuity check fails
+        // Setup: Verify that no state changes occur when BytecodeId continuity check fails
         let store = create_test_store();
         let old_signer_id = "did:key:z6MkOldSignerKey123456789";
         let new_signer_id = "did:key:z6MkNewSignerKey987654321";
@@ -2435,9 +2435,9 @@ mod tests {
         // Create context
         let context = create_test_context(context_id, old_app_id);
 
-        // Attempt update that should fail AppKey continuity check
+        // Attempt update that should fail BytecodeId continuity check
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
-        assert!(result.is_err(), "AppKey continuity check should fail");
+        assert!(result.is_err(), "BytecodeId continuity check should fail");
 
         // Verify the original state is unchanged (no partial writes occurred)
         let handle = store.handle();
@@ -2452,7 +2452,7 @@ mod tests {
         let stored_bytes: &[u8] = stored_state.as_ref().unwrap().as_ref();
         assert_eq!(
             stored_bytes, initial_state,
-            "State should be unchanged after failed AppKey continuity check"
+            "State should be unchanged after failed BytecodeId continuity check"
         );
     }
 
@@ -2500,7 +2500,7 @@ mod tests {
 
         // Attempt update that should fail
         let result = verify_appkey_continuity(&store, &context, &new_app_id);
-        assert!(result.is_err(), "AppKey continuity check should fail");
+        assert!(result.is_err(), "BytecodeId continuity check should fail");
 
         // Verify context metadata is unchanged
         let handle = store.handle();
@@ -2585,7 +2585,7 @@ mod tests {
             let result = verify_appkey_continuity(&store, &context, &attacker_app_id);
             assert!(
                 result.is_err(),
-                "Attempt {} should fail AppKey continuity check",
+                "Attempt {} should fail BytecodeId continuity check",
                 i + 1
             );
         }

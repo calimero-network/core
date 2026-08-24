@@ -625,7 +625,7 @@ fn invitation_from(
         invitation,
         inviter_signature: hex::encode(signature.to_bytes()),
         application_id: None,
-        app_key: None,
+        bytecode_id: None,
     }
 }
 

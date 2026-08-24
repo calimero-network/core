@@ -402,12 +402,12 @@ pub(crate) fn apply(
 
     // ---- Establish the founder as admin == owner on the root meta. ----
     // Only the founding identity is authoritative here; we carry forward every
-    // OTHER meta field from `existing` (target_application_id / app_key /
+    // OTHER meta field from `existing` (target_application_id / bytecode_id /
     // migration / created_at / auto_join) rather than reset it.
     //
     // What this preserve actually covers:
     //   * ORIGINATOR case — the creating node may have written real
-    //     `app_key` / `target_application_id` (and friends) into the root meta
+    //     `bytecode_id` / `target_application_id` (and friends) into the root meta
     //     BEFORE this genesis op applied (e.g. the create_group handler's local
     //     meta write). Carrying them forward keeps those real bindings intact.
     //   * REPLICA case — a placeholder bootstrap seed
@@ -423,7 +423,10 @@ pub(crate) fn apply(
             .as_ref()
             .map(|m| m.target_application_id)
             .unwrap_or_else(|| calimero_primitives::application::ApplicationId::from([0u8; 32])),
-        app_key: existing.as_ref().map(|m| m.app_key).unwrap_or([0u8; 32]),
+        bytecode_id: existing
+            .as_ref()
+            .map(|m| m.bytecode_id)
+            .unwrap_or([0u8; 32]),
         migration: existing.as_ref().and_then(|m| m.migration.clone()),
         created_at: existing.as_ref().map(|m| m.created_at).unwrap_or(0),
         auto_join: existing.as_ref().map(|m| m.auto_join).unwrap_or(true),

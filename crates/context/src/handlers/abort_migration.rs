@@ -15,7 +15,7 @@ use crate::ContextManager;
 /// group's target back to the pre-migration app id, clear `meta.migration`,
 /// and drop its pending upgrade record. No snapshot, no restore —
 /// already-committed contexts are NOT recalled. A cascade applied the same
-/// migration to descendants matched on `app_key == from_app_key`, so the
+/// migration to descendants matched on `bytecode_id == from_bytecode_id`, so the
 /// abort walks the subtree and aborts each matched descendant too.
 /// Pure store I/O; idempotent (`aborted: false` when nothing is pending).
 pub fn abort_group_migration(
@@ -31,9 +31,9 @@ pub fn abort_group_migration(
         });
     };
 
-    // The cascade predicate matches descendants on the root's `app_key` (the
-    // cascade's `from_app_key`). Capture it before the root's meta is mutated.
-    let from_app_key = root_meta.app_key;
+    // The cascade predicate matches descendants on the root's `bytecode_id` (the
+    // cascade's `from_bytecode_id`). Capture it before the root's meta is mutated.
+    let from_bytecode_id = root_meta.bytecode_id;
 
     // Abort the requested root group first (preserving the original semantics).
     let mut aborted = abort_single_group(store, namespace_id, root_meta)?;
@@ -51,8 +51,8 @@ pub fn abort_group_migration(
             continue;
         };
         // Mirror the cascade predicate: only descendants the cascade migration
-        // actually applied to (same `app_key` as the root's `from_app_key`).
-        if descendant_meta.app_key != from_app_key {
+        // actually applied to (same `bytecode_id` as the root's `from_bytecode_id`).
+        if descendant_meta.bytecode_id != from_bytecode_id {
             continue;
         }
         if abort_single_group(store, &descendant_id, descendant_meta)? {
@@ -122,8 +122,8 @@ fn abort_single_group(
     // Drop the pending upgrade record (the migration marker) so a future
     // `get_migration_status` / lazy-upgrade pass sees no in-flight migration.
     // Per-context activation markers stay: the up-to-date rule is
-    // `marker == group.app_key`, so a re-issued upgrade (which moves the
-    // app_key forward again) re-fires on every not-yet-activated context,
+    // `marker == group.bytecode_id`, so a re-issued upgrade (which moves the
+    // bytecode_id forward again) re-fires on every not-yet-activated context,
     // while already-committed contexts stay correctly suppressed.
     upgrades_repo.delete(group_id)?;
 
@@ -181,9 +181,9 @@ mod tests {
 
     const V1_APP: [u8; 32] = [0x11; 32];
     const V2_APP: [u8; 32] = [0x22; 32];
-    /// An app_key belonging to an unrelated subgroup that the cascade never
-    /// matched (its `app_key != root.app_key`). Used to exercise the skip branch.
-    const OTHER_APP_KEY: [u8; 32] = [0x33; 32];
+    /// An bytecode_id belonging to an unrelated subgroup that the cascade never
+    /// matched (its `bytecode_id != root.bytecode_id`). Used to exercise the skip branch.
+    const OTHER_BYTECODE_ID: [u8; 32] = [0x33; 32];
     /// The v2 target of that unrelated subgroup's independent migration.
     const OTHER_V2_APP: [u8; 32] = [0x44; 32];
 
@@ -192,17 +192,17 @@ mod tests {
     }
 
     fn group_meta(target: [u8; 32], migration: Option<Vec<u8>>) -> GroupMetaValue {
-        group_meta_with_app_key(V1_APP, target, migration)
+        group_meta_with_bytecode_id(V1_APP, target, migration)
     }
 
-    fn group_meta_with_app_key(
-        app_key: [u8; 32],
+    fn group_meta_with_bytecode_id(
+        bytecode_id: [u8; 32],
         target: [u8; 32],
         migration: Option<Vec<u8>>,
     ) -> GroupMetaValue {
         let pk = PublicKey::from([0xAB; 32]);
         GroupMetaValue {
-            app_key,
+            bytecode_id,
             target_application_id: ApplicationId::from(target),
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&pk),
@@ -404,7 +404,7 @@ mod tests {
         install_v1_context(&store, &child_id, &child_ctx);
 
         // Both groups are mid-cascade-migration: target → v2, migration marker set,
-        // and (crucially) the same `app_key` (V1_APP) that the cascade predicate
+        // and (crucially) the same `bytecode_id` (V1_APP) that the cascade predicate
         // matched on.
         let meta_repo = MetaRepository::new(&store);
         meta_repo
@@ -459,20 +459,20 @@ mod tests {
     }
 
     /// **Cascade abort must NOT clobber an unrelated descendant.** The cascade
-    /// migration only ever touched descendants whose `app_key == root.app_key`
-    /// (the cascade's `from_app_key`). A subgroup nested under the root that runs
-    /// a *different* `app_key` and is independently mid-migration on its own
+    /// migration only ever touched descendants whose `bytecode_id == root.bytecode_id`
+    /// (the cascade's `from_bytecode_id`). A subgroup nested under the root that runs
+    /// a *different* `bytecode_id` and is independently mid-migration on its own
     /// (unrelated) app pair was NEVER part of this cascade — aborting the root
     /// must leave it fully intact. This exercises the load-bearing skip predicate
-    /// at `abort_migration.rs:86` (`descendant.app_key != from_app_key`): without
+    /// at `abort_migration.rs:86` (`descendant.bytecode_id != from_bytecode_id`): without
     /// it, the root abort would wrongly clear that subgroup's independent pending
     /// migration too.
     #[test]
-    fn abort_root_skips_descendant_on_different_app_key() {
+    fn abort_root_skips_descendant_on_different_bytecode_id() {
         let store = fresh_store();
         let root_id = ContextGroupId::from([0xF2; 32]);
-        // A cascade-matched descendant (same app_key as root) and an unrelated
-        // descendant on a different app_key with its own independent migration.
+        // A cascade-matched descendant (same bytecode_id as root) and an unrelated
+        // descendant on a different bytecode_id with its own independent migration.
         let matched_id = ContextGroupId::from([0xC3; 32]);
         let unrelated_id = ContextGroupId::from([0xE5; 32]);
         let root_ctx = ContextId::from([0xF1; 32]);
@@ -492,10 +492,10 @@ mod tests {
         install_v1_context(&store, &root_id, &root_ctx);
         install_v1_context(&store, &matched_id, &matched_ctx);
         // The unrelated descendant runs a context still on its own pre-migration app.
-        install_context(&store, &unrelated_id, &unrelated_ctx, OTHER_APP_KEY);
+        install_context(&store, &unrelated_id, &unrelated_ctx, OTHER_BYTECODE_ID);
 
         let meta_repo = MetaRepository::new(&store);
-        // Root + matched descendant: mid-cascade on app_key V1_APP, target → V2_APP.
+        // Root + matched descendant: mid-cascade on bytecode_id V1_APP, target → V2_APP.
         meta_repo
             .save(
                 &root_id,
@@ -508,13 +508,13 @@ mod tests {
                 &group_meta(V2_APP, Some(b"migrate_v1_v2".to_vec())),
             )
             .expect("save matched child meta");
-        // Unrelated descendant: a DIFFERENT app_key with its OWN independent pending
+        // Unrelated descendant: a DIFFERENT bytecode_id with its OWN independent pending
         // migration (different app pair, different migration method).
         meta_repo
             .save(
                 &unrelated_id,
-                &group_meta_with_app_key(
-                    OTHER_APP_KEY,
+                &group_meta_with_bytecode_id(
+                    OTHER_BYTECODE_ID,
                     OTHER_V2_APP,
                     Some(b"migrate_other_v1_v2".to_vec()),
                 ),
@@ -551,7 +551,7 @@ mod tests {
             "cascade-matched descendant marker must be dropped"
         );
 
-        // The unrelated descendant on a different app_key is left FULLY untouched:
+        // The unrelated descendant on a different bytecode_id is left FULLY untouched:
         // its target still points at its own v2, its migration marker is still set,
         // and its upgrade record is still present.
         let unrelated_meta = meta_repo

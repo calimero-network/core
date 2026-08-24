@@ -72,12 +72,12 @@ impl<'a> GroupSettingsService<'a> {
     pub fn set_target_application(
         &self,
         signer: &PublicKey,
-        app_key: &[u8; 32],
+        bytecode_id: &[u8; 32],
         target_application_id: &ApplicationId,
     ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_manage_application(signer, "set target application")?;
-        self.set_target_application_unchecked(app_key, target_application_id)
+        self.set_target_application_unchecked(bytecode_id, target_application_id)
     }
 
     /// Write the target-application mutation WITHOUT the per-group
@@ -91,11 +91,11 @@ impl<'a> GroupSettingsService<'a> {
     /// single-group op arm — use the checked [`Self::set_target_application`].
     pub(crate) fn set_target_application_unchecked(
         &self,
-        app_key: &[u8; 32],
+        bytecode_id: &[u8; 32],
         target_application_id: &ApplicationId,
     ) -> EyreResult<()> {
         let mut meta = self.load_required_meta()?;
-        meta.app_key = *app_key;
+        meta.bytecode_id = *bytecode_id;
         meta.target_application_id = *target_application_id;
         // Append the ladder rung BEFORE advancing meta. This is the one capture
         // point for the upgrade ladder a behind context replays rung by rung,
@@ -107,7 +107,7 @@ impl<'a> GroupSettingsService<'a> {
         UpgradeLadderRepository::new(self.store).append(
             &self.group_id,
             LadderRung {
-                app_key: *app_key,
+                bytecode_id: *bytecode_id,
                 application_id: *target_application_id,
             },
         )?;

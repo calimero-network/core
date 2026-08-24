@@ -103,7 +103,7 @@ mod tests {
     fn test_summary(namespace_id: [u8; 32]) -> NamespaceSummary {
         NamespaceSummary {
             namespace_id: namespace_id.into(),
-            app_key: [0x11; 32].into(),
+            bytecode_id: [0x11; 32].into(),
             target_application_id: ApplicationId::from([0x22; 32]),
             created_at: 1_700_000_000,
             name: None,
@@ -115,7 +115,7 @@ mod tests {
 
     fn test_meta(application_id: [u8; 32]) -> GroupMetaValue {
         GroupMetaValue {
-            app_key: [0xAA; 32],
+            bytecode_id: [0xAA; 32],
             target_application_id: ApplicationId::from(application_id),
             created_at: 1_700_000_000,
             admin_identity: calimero_account::AccountId::from([0x01; 32]),
@@ -201,7 +201,7 @@ mod tests {
         let node_identity_pk = node_identity_sk.public_key();
 
         let meta = GroupMetaValue {
-            app_key: [0x55; 32],
+            bytecode_id: [0x55; 32],
             target_application_id: ApplicationId::from([0x66; 32]),
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&node_identity_pk),

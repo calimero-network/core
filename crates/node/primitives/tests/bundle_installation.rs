@@ -1614,7 +1614,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     // ASSERTION 2: app_id_a == app_id_c (same package + signer = same ApplicationId)
-    // Version upgrades for the same AppKey should have the same ApplicationId.
+    // Version upgrades for the same BytecodeId should have the same ApplicationId.
     assert_eq!(
         app_id_a, app_id_c,
         "Same package with same signer should produce same ApplicationId (version upgrade).\n\

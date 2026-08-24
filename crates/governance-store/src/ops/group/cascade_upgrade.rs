@@ -1,6 +1,6 @@
 //! `GroupOp::CascadeUpgrade` apply handler.
 //!
-//! Sets `target_application_id`, `app_key`, AND `migration` in a
+//! Sets `target_application_id`, `bytecode_id`, AND `migration` in a
 //! SINGLE walk per matched descendant, so there is no intra-cascade
 //! ordering dependency a receiver can split across two applies. It also
 //! stamps a sticky `cascade_hlc` fence onto each matched descendant's
@@ -22,8 +22,8 @@ use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    from_app_key: &[u8; 32],
-    app_key: &[u8; 32],
+    from_bytecode_id: &[u8; 32],
+    bytecode_id: &[u8; 32],
     target_application_id: &ApplicationId,
     to_state_version: u32,
     migration: &Option<Vec<u8>>,
@@ -46,18 +46,18 @@ pub(crate) fn apply(
     // cap-revoke on a matched descendant BAILED the whole op (Err before the
     // nonce was recorded — no partial apply, not self-healing) while a peer that
     // hadn't APPLIED to root + all descendants: a permanent divergence on
-    // `target_application_id` / `app_key` / migration. Gating once at the root
+    // `target_application_id` / `bytecode_id` / migration. Gating once at the root
     // removes that per-descendant divergence on BOTH the namespace-envelope and
     // standalone paths.
     ctx.permissions()
         .require_manage_application(signer, "cascade upgrade")?;
 
     // Walk the descendant tree (incl. signed group) and apply the atomic
-    // mutation to every descendant whose current `app_key` matches
-    // `from_app_key`. Heterogeneous descendants are silently skipped —
+    // mutation to every descendant whose current `bytecode_id` matches
+    // `from_bytecode_id`. Heterogeneous descendants are silently skipped —
     // that skip is also the optimistic-concurrency guard for two cascade
     // ops racing the same subtree.
-    let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_app_key)?;
+    let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_bytecode_id)?;
 
     // The migration's expand-entry governance position: the namespace gov-head
     // sequence as it stands when this CascadeUpgrade applies (BEFORE the op's own
@@ -104,23 +104,23 @@ pub(crate) fn apply(
             tracing::debug!(
                 target: "calimero::cascade",
                 group_id = %hex::encode(entry.group_id.to_bytes()),
-                from_app_key = %hex::encode(from_app_key),
-                descendant_app_key = %hex::encode(entry.app_key),
-                "CascadeUpgrade: skip (app_key mismatch)"
+                from_bytecode_id = %hex::encode(from_bytecode_id),
+                descendant_bytecode_id = %hex::encode(entry.bytecode_id),
+                "CascadeUpgrade: skip (bytecode_id mismatch)"
             );
             continue;
         }
 
         let gid = entry.group_id;
 
-        // Atomic per-descendant mutation: target_application_id + app_key
+        // Atomic per-descendant mutation: target_application_id + bytecode_id
         // AND migration in one go, so no receiver can split the cascade across
         // two applies. UNCHECKED writes: the cascade was authorized once
         // against the root admin above, so per-descendant authority is not re-derived
         // here (doing so from live caps is the cross-replica divergence this
         // fix removes).
         let entry_settings = GroupSettingsService::new(store, gid);
-        entry_settings.set_target_application_unchecked(app_key, target_application_id)?;
+        entry_settings.set_target_application_unchecked(bytecode_id, target_application_id)?;
         entry_settings.set_group_migration_unchecked(migration)?;
 
         // Stamp the sticky cascade fence onto the per-group upgrade
@@ -158,8 +158,8 @@ pub(crate) fn apply(
         tracing::info!(
             target: "calimero::cascade",
             group_id = %hex::encode(gid.to_bytes()),
-            from_app_key = %hex::encode(from_app_key),
-            app_key = %hex::encode(app_key),
+            from_bytecode_id = %hex::encode(from_bytecode_id),
+            bytecode_id = %hex::encode(bytecode_id),
             %target_application_id,
             migration_bytes_len = migration.as_ref().map(|m| m.len()).unwrap_or(0),
             "CascadeUpgrade: applied"
@@ -176,7 +176,7 @@ pub(crate) fn apply(
         tracing::debug!(
             target: "calimero::cascade",
             signed_group = %hex::encode(group_id.to_bytes()),
-            from_app_key = %hex::encode(from_app_key),
+            from_bytecode_id = %hex::encode(from_bytecode_id),
             "CascadeUpgrade: no descendants matched"
         );
     }

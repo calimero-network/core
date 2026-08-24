@@ -39,7 +39,7 @@ use crate::NodeState;
 
 fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        app_key: [0xBB; 32],
+        bytecode_id: [0xBB; 32],
         target_application_id: ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -560,10 +560,10 @@ async fn create_restricted_subgroup(
 ) -> ContextGroupId {
     // The create handler resolves the target application from the parent's
     // `target_application_id` and reads back its `ApplicationMeta` row (to
-    // derive the group's `app_key` from the bytecode blob id). `sample_meta`
+    // derive the group's `bytecode_id` from the bytecode blob id). `sample_meta`
     // pins that id to `[0xCC; 32]`; seed a well-formed meta row for it so
     // `load_app_meta` succeeds. No real blob bytes are needed on the
-    // caller-omits-app_key path (only `verify_requested_app_key` touches blobs).
+    // caller-omits-bytecode_id path (only `verify_requested_bytecode_id` touches blobs).
     let app_id = ApplicationId::from([0xCCu8; 32]);
     let app_meta = ApplicationMetaValue::new(
         calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0xDDu8; 32])),
@@ -592,7 +592,7 @@ async fn create_restricted_subgroup(
         .context_client
         .create_group(CreateGroupRequest {
             group_id: Some(sub_gid),
-            app_key: None,
+            bytecode_id: None,
             application_id: app_id,
             name: Some("restricted-sub".to_owned()),
             parent_group_id: Some(*parent_ns),
@@ -688,7 +688,7 @@ async fn create_born_open_subgroup(
         .context_client
         .create_group(CreateGroupRequest {
             group_id: Some(sub_gid),
-            app_key: None,
+            bytecode_id: None,
             application_id: app_id,
             name: Some("born-open-sub".to_owned()),
             parent_group_id: Some(*parent_ns),

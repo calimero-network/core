@@ -1,7 +1,7 @@
 //! The per-context activation marker: which bytecode blob this context last
 //! ACTIVATED (a migration commit, or a code-only swap). One fact shared by
 //! the sync gate, the lazy trigger, and the migration rollup, with a single
-//! up-to-date rule: `marker == group.app_key`.
+//! up-to-date rule: `marker == group.bytecode_id`.
 
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -59,8 +59,8 @@ pub fn record_activated_state_version(store: &Store, context_id: &ContextId, sta
 }
 
 /// Whether this context's STATE has reached the bytecode its group records as
-/// current (`marker == group.app_key`), or `None` when there is no group
-/// bytecode signal to compare against - no group, no meta, or a zero `app_key`.
+/// current (`marker == group.bytecode_id`), or `None` when there is no group
+/// bytecode signal to compare against - no group, no meta, or a zero `bytecode_id`.
 ///
 /// An install never moves the marker, which is what makes this a migration
 /// signal where `ApplicationMeta.state_version` is only an install one.
@@ -72,7 +72,8 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
         .load(&group_id)
         .ok()
         .flatten()?;
-    (meta.app_key != [0u8; 32]).then(|| activated_blob(store, context_id) == Some(meta.app_key))
+    (meta.bytecode_id != [0u8; 32])
+        .then(|| activated_blob(store, context_id) == Some(meta.bytecode_id))
 }
 
 /// The next upgrade rung a context bound to `bound` must replay from the
@@ -86,24 +87,24 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
 pub fn next_rung(
     ladder: &[LadderRung],
     bound: [u8; 32],
-    group_app_key: [u8; 32],
+    group_bytecode_id: [u8; 32],
     group_target: ApplicationId,
 ) -> Option<LadderRung> {
-    if bound == group_app_key {
+    if bound == group_bytecode_id {
         return None;
     }
     let single_jump = LadderRung {
-        app_key: group_app_key,
+        bytecode_id: group_bytecode_id,
         application_id: group_target,
     };
-    match ladder.iter().rposition(|r| r.app_key == bound) {
+    match ladder.iter().rposition(|r| r.bytecode_id == bound) {
         Some(i) => Some(ladder.get(i + 1).cloned().unwrap_or(single_jump)),
         None => Some(ladder.first().cloned().unwrap_or(single_jump)),
     }
 }
 
 /// The `ApplicationId` the upgrade ladder pairs with bytecode blob `schema`,
-/// or the group target when `schema` is the group's current `app_key`. `None`
+/// or the group target when `schema` is the group's current `bytecode_id`. `None`
 /// when the ladder never recorded `schema`, so a caller leaves the existing
 /// binding untouched. Used by the resync settle to reconcile a context's bound
 /// id to the schema its synced state actually carries (single-wasm apps key a
@@ -111,16 +112,16 @@ pub fn next_rung(
 pub fn application_for_schema(
     ladder: &[LadderRung],
     schema: [u8; 32],
-    group_app_key: [u8; 32],
+    group_bytecode_id: [u8; 32],
     group_target: ApplicationId,
 ) -> Option<ApplicationId> {
-    if schema == group_app_key {
+    if schema == group_bytecode_id {
         return Some(group_target);
     }
     ladder
         .iter()
         .rev()
-        .find(|r| r.app_key == schema)
+        .find(|r| r.bytecode_id == schema)
         .map(|r| r.application_id)
 }
 
@@ -162,7 +163,7 @@ mod tests {
 
     fn rung(byte: u8) -> LadderRung {
         LadderRung {
-            app_key: [byte; 32],
+            bytecode_id: [byte; 32],
             application_id: ApplicationId::from([byte; 32]),
         }
     }
@@ -175,7 +176,7 @@ mod tests {
 
     #[test]
     fn up_to_date_returns_none() {
-        // Even with a populated ladder, bound == group app_key is terminal.
+        // Even with a populated ladder, bound == group bytecode_id is terminal.
         let ladder = vec![rung(0x01), rung(0x09)];
         assert_eq!(next_rung(&ladder, TARGET, TARGET, target_id()), None);
     }
@@ -210,7 +211,7 @@ mod tests {
         assert_eq!(
             next_rung(&[], [0x77; 32], TARGET, target_id()),
             Some(LadderRung {
-                app_key: TARGET,
+                bytecode_id: TARGET,
                 application_id: target_id(),
             })
         );
@@ -236,7 +237,7 @@ mod tests {
         assert_eq!(
             next_rung(&ladder, [0x02; 32], TARGET, target_id()),
             Some(LadderRung {
-                app_key: TARGET,
+                bytecode_id: TARGET,
                 application_id: target_id(),
             })
         );
@@ -245,7 +246,7 @@ mod tests {
     #[test]
     fn application_for_schema_resolves_target_ladder_and_unknown() {
         let ladder = vec![rung(0x01), rung(0x02), rung(0x09)];
-        // The group target app_key maps to the group target id.
+        // The group target bytecode_id maps to the group target id.
         assert_eq!(
             application_for_schema(&ladder, TARGET, TARGET, target_id()),
             Some(target_id())
@@ -318,7 +319,7 @@ mod tests {
             &calimero_primitives::identity::PublicKey::from([0x07; 32]),
         );
         let mut meta = GroupMetaValue {
-            app_key: [0u8; 32],
+            bytecode_id: [0u8; 32],
             target_application_id: ApplicationId::from([0xAA; 32]),
             created_at: 0,
             admin_identity: account,
@@ -331,11 +332,11 @@ mod tests {
                 .save(&gid, meta)
                 .unwrap();
         };
-        // A zero app_key carries no bytecode signal to compare against.
+        // A zero bytecode_id carries no bytecode signal to compare against.
         save(&meta);
         assert_eq!(activated_at_group_target(&store, &ctx), None);
 
-        meta.app_key = [0x02; 32];
+        meta.bytecode_id = [0x02; 32];
         save(&meta);
         // Group has a target blob, context has no marker: not there yet.
         assert_eq!(activated_at_group_target(&store, &ctx), Some(false));

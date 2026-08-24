@@ -66,7 +66,7 @@ mod tests {
 
     fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
         GroupMetaValue {
-            app_key: [0xBB; 32],
+            bytecode_id: [0xBB; 32],
             target_application_id: calimero_primitives::application::ApplicationId::from(
                 [0xCC; 32],
             ),
@@ -113,7 +113,7 @@ mod tests {
             invitation,
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
-            app_key: None,
+            bytecode_id: None,
         }
     }
 

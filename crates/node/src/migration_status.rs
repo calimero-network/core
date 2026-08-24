@@ -1878,19 +1878,19 @@ mod tests {
 
     /// Meta for a BUNDLE group: `target_application_id` is the version-stable id
     /// the context is already bound to, so the upgrade shows up only as a moved
-    /// `app_key` - the same-id shape the defect lives in.
+    /// `bytecode_id` - the same-id shape the defect lives in.
     fn seed_bundle_group_meta(
         store: &Store,
         group_id: &calimero_context_config::types::ContextGroupId,
         ctx: [u8; 32],
-        app_key: [u8; 32],
+        bytecode_id: [u8; 32],
     ) {
         let account = calimero_account::AccountId::from([0xACu8; 32]);
         calimero_governance_store::MetaRepository::new(store)
             .save(
                 group_id,
                 &calimero_store::key::GroupMetaValue {
-                    app_key,
+                    bytecode_id,
                     target_application_id: calimero_primitives::application::ApplicationId::from(
                         ctx,
                     ),

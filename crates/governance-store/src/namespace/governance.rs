@@ -979,7 +979,7 @@ impl<'a> NamespaceGovernance<'a> {
         let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {
-                app_key: [0u8; 32],
+                bytecode_id: [0u8; 32],
                 target_application_id: calimero_primitives::application::ApplicationId::from(
                     [0u8; 32],
                 ),
@@ -1787,9 +1787,9 @@ impl<'a> NamespaceGovernance<'a> {
             // ContextMeta here — that would cause has_context() to return true
             // and skip the bootstrap path in join_context.
             if *application_id != ZERO_APPLICATION_ID {
-                let app_key = calimero_store::key::ApplicationMeta::new(*application_id);
+                let bytecode_id = calimero_store::key::ApplicationMeta::new(*application_id);
                 let handle = self.store.handle();
-                if !handle.has(&app_key)? {
+                if !handle.has(&bytecode_id)? {
                     drop(handle);
                     let blob_meta = calimero_store::key::BlobMeta::new(*blob_id);
                     let effective_source = if source.starts_with("file://") || source.is_empty() {
@@ -1811,7 +1811,7 @@ impl<'a> NamespaceGovernance<'a> {
                         },
                     );
                     let mut wh = self.store.handle();
-                    wh.put(&app_key, &stub)?;
+                    wh.put(&bytecode_id, &stub)?;
                     tracing::info!(
                         %application_id,
                         blob_id = %blob_id,

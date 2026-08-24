@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::CreateGroupRequest;
-use calimero_context_config::types::AppKey;
+use calimero_context_config::types::BytecodeId;
 use calimero_server_primitives::admin::{
     CreateGroupApiRequest, CreateGroupApiResponse, CreateGroupApiResponseData,
 };
@@ -20,7 +20,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     ValidatedJson(req): ValidatedJson<CreateGroupApiRequest>,
 ) -> impl IntoResponse {
-    let app_key = match &req.app_key {
+    let bytecode_id = match &req.bytecode_id {
         Some(hex_str) => {
             let bytes: [u8; 32] = match hex::decode(hex_str)
                 .map_err(|_| ())
@@ -30,12 +30,12 @@ pub async fn handler(
                 Err(()) => {
                     return ApiError {
                         status_code: StatusCode::BAD_REQUEST,
-                        message: "Invalid app_key: expected hex-encoded 32 bytes".into(),
+                        message: "Invalid bytecode_id: expected hex-encoded 32 bytes".into(),
                     }
                     .into_response();
                 }
             };
-            Some(AppKey::from(bytes))
+            Some(BytecodeId::from(bytes))
         }
         None => None,
     };
@@ -58,7 +58,7 @@ pub async fn handler(
         .ctx_client
         .create_group(CreateGroupRequest {
             group_id,
-            app_key,
+            bytecode_id,
             application_id: req.application_id,
             name: req.name,
             parent_group_id,

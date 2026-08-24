@@ -195,7 +195,7 @@ impl NodeClient {
         // Bundle ids are version-stable (hash(package, signer)), so a new
         // version overwrites the row in place. The row is a download-cache
         // pointer ("latest fetched"); what a context executes is decided by
-        // its per-context binding (activation marker / group app_key), so no
+        // its per-context binding (activation marker / group bytecode_id), so no
         // displaced-blob breadcrumb is needed.
         let mut handle = self.datastore.handle();
         let key = key::ApplicationMeta::new(application_id);

@@ -26,7 +26,7 @@ fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
         },
         inviter_signature: "deadbeef".to_string(),
         application_id: None,
-        app_key: None,
+        bytecode_id: None,
     }
 }
 

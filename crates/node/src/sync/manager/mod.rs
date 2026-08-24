@@ -201,7 +201,7 @@ pub struct SyncManager {
     pub(crate) metrics: Option<Arc<dyn super::metrics::SyncMetricsCollector>>,
 
     /// Retry-backoff memo for target-blob pre-staging: (context, blob) ->
-    /// last attempt. A legacy group whose randomly-seeded `app_key` never
+    /// last attempt. A legacy group whose randomly-seeded `bytecode_id` never
     /// resolves to a real blob would otherwise issue one doomed BlobShare per
     /// sync tick forever; with the memo a failed stage retries at most every
     /// few minutes. Shared across clones (initiator/responder handles).
@@ -3928,7 +3928,7 @@ impl SyncManager {
     /// attempt when it is. A failed stage retries only after the backoff,
     /// and after `MAX_ATTEMPTS` consecutive failures the pair is parked for
     /// the process lifetime — a blob that never materialises (legacy
-    /// randomly-seeded `app_key`) costs a bounded number of doomed
+    /// randomly-seeded `bytecode_id`) costs a bounded number of doomed
     /// BlobShares, not one per window forever.
     fn should_attempt_stage(&self, context_id: ContextId, blob: [u8; 32]) -> bool {
         const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
@@ -4020,17 +4020,17 @@ impl SyncManager {
 }
 
 /// The bytecode blob worth pre-staging for an already-loaded group `meta`:
-/// the group's recorded target blob (`app_key`) when it differs from the
+/// the group's recorded target blob (`bytecode_id`) when it differs from the
 /// bytecode installed under the group's target application — i.e. an upgrade
 /// (migration-carrying or code-only) moved the blob under a version-stable
 /// bundle id and this node doesn't run it yet. `None` once the row catches
-/// up. A legacy group's randomly-seeded `app_key` reads as permanently
+/// up. A legacy group's randomly-seeded `bytecode_id` reads as permanently
 /// stale; the BlobShare retry memo caps what that can cost.
 fn stage_blob_for(
     store: &calimero_store::Store,
     meta: &calimero_store::key::GroupMetaValue,
 ) -> Option<[u8; 32]> {
-    if meta.app_key == [0u8; 32] {
+    if meta.bytecode_id == [0u8; 32] {
         return None;
     }
     let row_blob = store
@@ -4041,7 +4041,7 @@ fn stage_blob_for(
         .ok()
         .flatten()
         .map(|app| *app.bytecode.blob_id().as_ref())?;
-    (row_blob != meta.app_key).then_some(meta.app_key)
+    (row_blob != meta.bytecode_id).then_some(meta.bytecode_id)
 }
 
 /// One-load variant for `context_id` (group + meta resolved internally) —
@@ -4068,8 +4068,8 @@ pub(crate) fn pending_upgrade_stage_blob(
 ///   `ApplicationId = hash(package, signer)` is version-stable so the id
 ///   never moves; mirrors `maybe_lazy_upgrade`'s same-id condition. Keyed
 ///   off `meta.migration` + the per-context applied marker (NOT a raw
-///   `meta.app_key` blob comparison): groups created before `app_key` was
-///   blob-derived hold a random `app_key`, and a blob comparison would gate
+///   `meta.bytecode_id` blob comparison): groups created before `bytecode_id` was
+///   blob-derived hold a random `bytecode_id`, and a blob comparison would gate
 ///   their state sync forever.
 pub(crate) fn pending_upgrade_target_in(
     store: &calimero_store::Store,
@@ -4121,7 +4121,7 @@ pub(crate) fn pending_upgrade_info(
     // they never gate.) "Applied" is the per-context activation marker.
     let _migration_present = meta.migration.as_ref()?;
     let applied =
-        calimero_context::activation::activated_blob(store, context_id) == Some(meta.app_key);
+        calimero_context::activation::activated_blob(store, context_id) == Some(meta.bytecode_id);
     (!applied).then(|| (target, stage_blob_for(store, &meta)))
 }
 
@@ -4248,10 +4248,10 @@ mod pending_upgrade_tests {
     ) -> ContextGroupId {
         let group_id = ContextGroupId::from([0x42; 32]);
         // Never resolved here — this fixture drives the upgrade/migration path,
-        // which reads app keys rather than principals.
+        // which reads bytecode ids rather than principals.
         let admin = calimero_primitives::identity::AccountId::from([0x07; 32]);
         let meta = GroupMetaValue {
-            app_key: [0x11; 32],
+            bytecode_id: [0x11; 32],
             target_application_id: target,
             created_at: 1_700_000_000,
             admin_identity: admin,
@@ -4295,7 +4295,7 @@ mod pending_upgrade_tests {
     }
 
     // No migration on the group (never upgraded, or a legacy group with a
-    // random app_key): same id must NOT read as pending — gating here would
+    // random bytecode_id): same id must NOT read as pending — gating here would
     // freeze state sync for every group that never runs a migration.
     #[test]
     fn same_id_without_migration_is_not_pending() {
@@ -4306,7 +4306,7 @@ mod pending_upgrade_tests {
         assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
     }
 
-    // Once the per-context activation marker matches the group's app_key,
+    // Once the per-context activation marker matches the group's bytecode_id,
     // the gate lifts (state sync resumes after the lazy migrate).
     #[test]
     fn same_id_with_applied_migration_is_not_pending() {
@@ -4314,7 +4314,7 @@ mod pending_upgrade_tests {
         let ctx = ContextId::from([3u8; 32]);
         let app = ApplicationId::from([0xAA; 32]);
         let _gid = seed(&store, ctx, app, app, Some("migrate_v1_to_v2"));
-        // seed() stamps the group's app_key as [0x11; 32].
+        // seed() stamps the group's bytecode_id as [0x11; 32].
         calimero_context::activation::record_activation(&store, &ctx, [0x11; 32]);
         assert_eq!(pending_upgrade_target_in(&store, &ctx), None);
     }
@@ -4356,7 +4356,7 @@ mod pending_upgrade_tests {
         let _g = seed(&store, no_row, app, app, None);
         assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
 
-        // Row installed at a DIFFERENT blob than the group's app_key
+        // Row installed at a DIFFERENT blob than the group's bytecode_id
         // ([0x11; 32] in the fixture): the upgrade's bytecode is pending.
         let mut handle = store.handle();
         handle
@@ -4387,7 +4387,7 @@ mod pending_upgrade_tests {
             Some([0x11; 32])
         );
 
-        // Row caught up to the group's app_key: nothing to stage.
+        // Row caught up to the group's bytecode_id: nothing to stage.
         let mut handle = store.handle();
         handle
             .put(
