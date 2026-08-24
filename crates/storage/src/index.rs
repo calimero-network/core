@@ -775,6 +775,22 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(<ChildTrie<S>>::new(parent_id).children())
     }
 
+    /// How many children `parent_id` has, without enumerating them.
+    ///
+    /// One row read: the trie maintains a subtree count along the spine an
+    /// insert already walks. Callers that count on every write — a contract
+    /// deriving an id from `len()`, the ancestor-recompute log line — must use
+    /// this rather than `get_children_of(..).len()`, which is a full walk.
+    ///
+    /// Exists so the rest of the crate does not reach past `Index` into
+    /// `ChildTrie`. That type's public surface is earned by the callers that
+    /// reach the store directly with no `StorageAdaptor` — snapshot install and
+    /// the raw-DB diagnostics — not by intra-crate use.
+    #[must_use]
+    pub fn child_count(parent_id: Id) -> u64 {
+        <ChildTrie<S>>::new(parent_id).len()
+    }
+
     /// Returns (full_hash, own_hash) tuple for an entity.
     ///
     /// # Errors
@@ -813,7 +829,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// Checks if a collection has any children.
     ///
     /// Collection param ignored - just checks if entity has any children.
-    pub(crate) fn has_children(parent_id: Id) -> Result<bool, StorageError> {
+    pub fn has_children(parent_id: Id) -> Result<bool, StorageError> {
         let parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
@@ -896,7 +912,7 @@ impl<S: StorageAdaptor> Index<S> {
                 // `len()`, not `children().len()`: this runs on the ancestor
                 // recompute of every write, and enumerating the trie here made
                 // each write read every child of the parent.
-                let children_count = <ChildTrie<S>>::new(parent_id).len();
+                let children_count = Self::child_count(parent_id);
                 info!(
                     target: "storage::merkle",
                     parent_id = %parent_id,
@@ -946,7 +962,10 @@ impl<S: StorageAdaptor> Index<S> {
     /// Deletes entity data and creates a tombstone marker for a single entity.
     ///
     /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
-    fn delete_entity_and_create_tombstone(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+    pub(crate) fn delete_entity_and_create_tombstone(
+        id: Id,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
         // Tombstone first, then drop the data: if mark_deleted fails the entry
         // is left intact and the delete can be retried, instead of leaving the
         // data gone with no tombstone while the parent still lists it live.

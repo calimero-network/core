@@ -726,7 +726,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         if let Some(cached) = self.children_ids.borrow().as_ref() {
             return Ok(cached.len());
         }
-        Ok(<crate::child_trie::ChildTrie<S>>::new(self.id()).len() as usize)
+        Ok(crate::index::Index::<S>::child_count(self.id()) as usize)
     }
 
     fn entries(

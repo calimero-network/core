@@ -338,6 +338,61 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    /// `push` documents its return as the index of the entry it just wrote,
+    /// and `update`/`owner_of` address entries by that index — so a wrong one
+    /// is an ownership-gated write against the wrong element.
+    ///
+    /// It held because `insert` used to materialise the child cache and append
+    /// the new id at the END. It no longer does — that populate was an O(n)
+    /// read per insert and is most of what this branch removed — so the first
+    /// read materialises from the trie in `ChildInfo` order, `(created_at,
+    /// id)`.
+    ///
+    /// `created_at` is the execution timestamp, so it is CONSTANT for every
+    /// push within one contract call (and a flat 0 under merge mode, for
+    /// determinism). Every entry pushed in one call therefore ties, and the
+    /// random `id` decides position. A call that pushes once is unaffected —
+    /// the new entry has the largest `created_at` and does sort last — which is
+    /// why this is latent rather than immediately obvious.
+    ///
+    /// Ignored because it FAILS: it is the reproduction, not a guard. The fix
+    /// is a real tradeoff and should not be chosen under review pressure:
+    /// materialising the cache before insert restores the contract but puts the
+    /// O(n) read back on every push, which is the wall this branch exists to
+    /// remove; resolving the index from the written id costs the same walk;
+    /// giving `Metadata` a monotonic per-collection sequence to break the tie
+    /// is sound and O(1) — enumeration order is not hashed, so it cannot fork
+    /// replicas — but it is a layout change and a design call.
+    #[test]
+    #[ignore = "REPRODUCES A KNOWN BUG (see doc above): push's index contract is \
+                unsound now that enumeration is (created_at, id) ordered. Fixing \
+                it is an API/cost tradeoff, tracked separately — un-ignore with \
+                the fix."]
+    fn push_returns_the_index_of_the_entry_it_wrote() {
+        let mut v = AuthoredVector::<u64>::new();
+        let mut handed_out = Vec::new();
+        // Merge mode is the case that actually bites: `timestamp_for_operation`
+        // returns 0 there for determinism, so EVERY entry ties on `created_at`
+        // and the random id decides position. Outside it the test clock
+        // advances per call and trie order coincides with insertion order,
+        // which is why this passes without the wrapper and proves nothing.
+        crate::env::with_merge_mode(|| {
+            for n in 0..32_u64 {
+                let idx = v.push(n).expect("push");
+                handed_out.push((idx, n));
+            }
+        });
+        for (idx, want) in handed_out {
+            let got = v.get(idx).expect("get");
+            assert_eq!(
+                got,
+                Some(want),
+                "push handed back index {idx} for value {want}, which holds {got:?}"
+            );
+        }
+    }
+
     use calimero_account::AccountId;
     use serial_test::serial;
 

@@ -67,6 +67,18 @@ impl VMHostFunctions<'_> {
             return Ok(1);
         }
 
+        // Count the miss too. A miss is a real lookup — and for the child trie
+        // it is the DOMINANT one: linking a child probes DEPTH+1 spine rows
+        // that mostly do not exist yet. A hits-only counter would leave
+        // `Outcome::storage_reads`, which `cost_is_flat.rs` asserts against as
+        // the regression gate for exactly that pattern, structurally unable to
+        // see it. Bytes are the key alone, since no value came back.
+        let miss_bytes = key.len() as u64;
+        self.with_logic_mut(|logic| {
+            logic.storage_reads = logic.storage_reads.saturating_add(1);
+            logic.storage_read_bytes = logic.storage_read_bytes.saturating_add(miss_bytes);
+        });
+
         trace!(
             target: "runtime::host::storage",
             op = "read",

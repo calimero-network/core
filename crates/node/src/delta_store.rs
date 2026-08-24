@@ -1179,9 +1179,24 @@ pub(crate) fn load_rotation_log_direct(
             // and the log reads back EMPTY rather than erroring, collapsing the
             // writer set on every delta apply.
             let read_row = |key: StorageKey| -> Option<Vec<u8>> {
-                read_entity_value_direct(context_client, context_id, key)
-                    .ok()
-                    .flatten()
+                match read_entity_value_direct(context_client, context_id, key) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        // `children_with` reads `None` as "subtree absent" and
+                        // stops walking, so swallowing a store error here
+                        // silently SHORTENS the rotation log — and that log is
+                        // what resolves the writer set on every delta apply.
+                        // A quietly partial writer set is worse than a loud
+                        // failure, and every other partial-log case in this
+                        // function warns.
+                        warn!(
+                            %context_id, %entity_id, error = %e,
+                            "rotation-log trie row read failed; the writer set resolved \
+                             from this log may be INCOMPLETE"
+                        );
+                        None
+                    }
+                }
             };
             for child in calimero_storage::child_trie::ChildTrie::<
                 calimero_storage::store::MainStorage,

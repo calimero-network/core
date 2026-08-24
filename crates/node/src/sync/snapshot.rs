@@ -1452,20 +1452,55 @@ fn link_child_into_parent_trie(
     parent_id: Id,
     child: calimero_storage::entities::ChildInfo,
 ) -> Result<()> {
-    let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
-    {
-        let read = |key: StorageKey| -> Option<Vec<u8>> {
-            let k = ContextStateKey::new(context_id, key.to_bytes());
-            handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
-        };
-        calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
-            parent_id,
-            child,
-            read,
-            |key, bytes| writes.push((key, bytes.to_vec())),
-        );
+    link_children_into_parent_trie(handle, context_id, parent_id, vec![child])
+}
+
+/// Link many children of ONE parent, sharing a row cache across them.
+///
+/// Siblings collide on the same `DEPTH+1` spine rows by construction — that is
+/// what makes the trie bounded — so linking them one at a time re-reads and
+/// rewrites the same spine for every child. Buffering the parent's rows and
+/// flushing once cuts the store traffic by most of that factor.
+///
+/// Worth doing even though this runs on install rather than per operation: a
+/// context with tens of thousands of entities pays it in full on every
+/// bootstrap, and "one-time" is not the same as "free".
+///
+/// Correctness is unchanged: `insert_with` is a pure function of the rows it
+/// reads, so serving those rows from a cache that already holds this parent's
+/// pending writes gives exactly the sequence the uncached path would, one
+/// child at a time.
+fn link_children_into_parent_trie(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+    parent_id: Id,
+    children: Vec<calimero_storage::entities::ChildInfo>,
+) -> Result<()> {
+    let mut pending: BTreeMap<StorageKey, Vec<u8>> = BTreeMap::new();
+
+    for child in children {
+        let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
+        {
+            let read = |key: StorageKey| -> Option<Vec<u8>> {
+                if let Some(bytes) = pending.get(&key) {
+                    return Some(bytes.clone());
+                }
+                let k = ContextStateKey::new(context_id, key.to_bytes());
+                handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
+            };
+            calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
+                parent_id,
+                child,
+                read,
+                |key, bytes| writes.push((key, bytes.to_vec())),
+            );
+        }
+        for (key, bytes) in writes {
+            let _prev = pending.insert(key, bytes);
+        }
     }
-    for (key, bytes) in writes {
+
+    for (key, bytes) in pending {
         let k = ContextStateKey::new(context_id, key.to_bytes());
         let slice: Slice<'_> = bytes.into();
         handle.put(&k, &ContextStateValue::from(slice))?;
@@ -1535,8 +1570,15 @@ fn rebuild_child_tries_after_snapshot(
     }
 
     let linked = links.len();
+
+    // Group by parent so siblings share one pass over the spine rows they all
+    // touch, rather than each re-reading and rewriting them.
+    let mut by_parent: BTreeMap<Id, Vec<calimero_storage::entities::ChildInfo>> = BTreeMap::new();
     for (parent_id, child) in links {
-        link_child_into_parent_trie(handle, context_id, parent_id, child)?;
+        by_parent.entry(parent_id).or_default().push(child);
+    }
+    for (parent_id, children) in by_parent {
+        link_children_into_parent_trie(handle, context_id, parent_id, children)?;
     }
 
     Ok(linked)
@@ -2416,6 +2458,79 @@ mod tests {
     // node-primitives and is exercised only here (the sender never emits a
     // rotation-log auxiliary record — the log syncs as collection children).
     use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
+
+    /// Grouping siblings behind one row cache must be invisible in the result.
+    ///
+    /// The cache exists so siblings stop re-reading the `DEPTH+1` spine rows
+    /// they all share. That is a pure win only if serving a row from the cache
+    /// gives byte-identical output to reading it back from the store — if it
+    /// ever does not, a snapshot receiver builds a different trie than the
+    /// sender and diverges permanently, which is the failure this whole pass
+    /// exists to prevent.
+    #[test]
+    fn grouping_siblings_writes_what_linking_them_one_at_a_time_writes() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::store::Key as StorageKey;
+
+        let context_id = ContextId::from([4; 32]);
+        let parent_id = Id::new([2; 32]);
+        let children: Vec<ChildInfo> = (0..12_u8)
+            .map(|i| {
+                ChildInfo::new(
+                    Id::new([i.wrapping_mul(17).wrapping_add(3); 32]),
+                    [i; 32],
+                    Metadata::default(),
+                )
+            })
+            .collect();
+
+        // Grouped: one call, one shared cache.
+        let grouped_store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut grouped = grouped_store.handle();
+        link_children_into_parent_trie(&mut grouped, context_id, parent_id, children.clone())
+            .expect("grouped link");
+
+        // One at a time: the same code with a cache of size 1 each call.
+        let single_store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut single = single_store.handle();
+        for child in children.clone() {
+            link_child_into_parent_trie(&mut single, context_id, parent_id, child)
+                .expect("single link");
+        }
+
+        let rows_of = |store: &Store| -> BTreeMap<Vec<u8>, Vec<u8>> {
+            let mut out = BTreeMap::new();
+            let handle = store.handle();
+            let mut iter = handle.iter::<ContextStateKey>().expect("iter");
+            for (k, v) in iter.entries() {
+                let k = k.expect("key");
+                let v = v.expect("value");
+                let _prev = out.insert(k.state_key().to_vec(), v.value.as_ref().to_vec());
+            }
+            out
+        };
+
+        let a = rows_of(&grouped_store);
+        let b = rows_of(&single_store);
+        assert!(!a.is_empty(), "grouped link wrote nothing");
+        assert_eq!(a, b, "grouped and one-at-a-time must write identical rows");
+
+        // And both must actually hold the children.
+        let read = |key: StorageKey| -> Option<Vec<u8>> {
+            let k = ContextStateKey::new(context_id, key.to_bytes());
+            grouped_store
+                .handle()
+                .get(&k)
+                .ok()
+                .flatten()
+                .map(|v| v.as_ref().to_vec())
+        };
+        let enumerated = calimero_storage::child_trie::ChildTrie::<
+            calimero_storage::store::MainStorage,
+        >::children_with(parent_id, read);
+        assert_eq!(enumerated.len(), children.len());
+    }
 
     /// A snapshot receiver used to hold every entity and be able to enumerate
     /// none of them.

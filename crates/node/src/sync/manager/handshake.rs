@@ -78,11 +78,12 @@ impl SyncManager {
             // installed here today but silently yields a different id if that
             // ever stops being true — and the failure is a count of 1, not an
             // error.
-            let children = calimero_storage::index::Index::<
+            // Only the count is wanted, and the trie maintains one along the
+            // spine precisely so this is a single row read rather than a walk.
+            let entity_count = calimero_storage::index::Index::<
                 calimero_storage::store::MainStorage,
-            >::get_children_of(root_id)
-            .unwrap_or_default();
-            let entity_count = (children.len() as u64).max(1);
+            >::child_count(root_id)
+            .max(1);
 
             // Depth: 1 when root has data (consistent with fallback).
             // For deeper trees, we'd need recursive traversal — tracked in #2054.

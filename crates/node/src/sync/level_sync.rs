@@ -1098,9 +1098,12 @@ fn get_nodes_at_level(
             };
 
             let child_hash = child_index.full_hash();
-            let is_leaf = Index::<MainStorage>::get_children_of(child.id())
-                .unwrap_or_default()
-                .is_empty();
+            // `has_children`, not `get_children_of(..).is_empty()`: the latter
+            // walks every node and bucket row of that child's trie, allocates
+            // every ChildInfo and sorts them — per child, per level, on the sync
+            // hot path. For the ~1,600-child collection this work exists to fix,
+            // that is the linear read put back, just on the read side.
+            let is_leaf = !Index::<MainStorage>::has_children(child.id()).unwrap_or(false);
 
             // Determine parent_id for this node (None for level 0)
             let parent_id_bytes = if level == 0 {

@@ -63,8 +63,14 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 /// folded linearly.
 pub const DEPTH: usize = 4;
 
-/// Hash of an absent subtree. Distinct from the hash of an empty node so that
-/// "no children here" and "a node that exists but holds nothing" cannot collide.
+/// Hash of an absent subtree.
+///
+/// An empty node hashes to this too, deliberately: `TrieNode::hash` returns it
+/// when there are no slots, which is what lets `set` collapse a parent's slot
+/// when its subtree empties instead of leaving a slot pointing at a node that
+/// holds nothing. "Absent" and "present but empty" are therefore the same
+/// thing to the fold — which is what makes the root a function of the child SET
+/// rather than of the write history that produced it.
 pub const EMPTY: [u8; 32] = [0; 32];
 
 const DOMAIN_NODE: &[u8] = b"childtrie:v1:node";
@@ -427,6 +433,20 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// no spine left to refresh and paying `DEPTH+1` writes per child to
     /// maintain one would be pure waste.
     pub fn drop_all(&self) {
+        // A root row that is present but undecodable reads as an empty trie
+        // through `read_node`, which would delete one row and orphan every
+        // bucket beneath it — the exact ghost-children state this exists to
+        // prevent, reached by the one input it cannot tell from "empty".
+        if let Some(bytes) = S::storage_read(Key::ChildTrie(addr(self.parent, &[]))) {
+            if TrieNode::try_from_slice(&bytes).is_err() {
+                tracing::warn!(
+                    parent = ?self.parent,
+                    "child-trie root row present but undecodable; dropping what can be \
+                     reached, rows beneath it may be orphaned"
+                );
+            }
+        }
+
         let mut paths: Vec<Vec<u8>> = Vec::new();
         Self::collect_paths(self, &mut Vec::new(), &mut paths);
         for path in paths {

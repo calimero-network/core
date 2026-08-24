@@ -2756,9 +2756,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // under a tombstoned ancestor).
         <Index<S>>::tombstone_descendants_of(id, deleted_at)?;
 
-        // Deletion wins - apply it
-        let _ignored = S::storage_remove(Key::Entry(id));
-        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+        // Deletion wins - apply it, through the SAME helper the local delete
+        // uses. Inlining the remove + tombstone here is how the two paths
+        // drifted: the helper also drops the entity's child trie, and this one
+        // did not, so a locally-deleted entity lost its trie while a replayed
+        // delete kept it. Collection ids are deterministic, so the next
+        // re-creation (or an add-wins resurrection, which recomputes
+        // `full_hash_from_trie`) folded EMPTY on one replica and a ghost root
+        // on the other — a different hash for the same logical state,
+        // propagating to the context root with nothing reporting an error.
+        // Exactly what the comment below warns about, one operation earlier.
+        <Index<S>>::delete_entity_and_create_tombstone(id, deleted_at)?;
 
         // CRITICAL: Update parent's children list and recalculate hashes
         // Without this, the receiving node would have a different root hash than
