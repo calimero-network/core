@@ -1,0 +1,239 @@
+name: Fleet bump
+
+# Opens (or refreshes) one pull request per consumer repository, moving its
+# pinned Calimero SDK version to the release this repository just cut.
+#
+# All of the editing lives in .github/scripts/bump-fleet.sh, which knows nothing
+# about GitHub and is runnable by hand against a local checkout:
+#
+#   .github/scripts/bump-fleet.sh --surface cargo --version 0.11.0-rc.26 \
+#       --dir ../mero-design --no-lock --dry-run
+#
+# This file is only the plumbing around it: mint a token, check the consumer
+# out, run the script, push a branch, open the pull request.
+#
+# Two things here are load-bearing and easy to undo by accident:
+#
+#   * The pull request is created with a GitHub App installation token, NOT with
+#     GITHUB_TOKEN. A pull request opened by GITHUB_TOKEN does not trigger the
+#     target repository's workflows, so every bump would arrive with no CI at
+#     all and read as green because nothing ran.
+#
+#   * `gh pr create` is called without --base. The fleet is split between
+#     `master` and `main`, and letting each repository name its own default
+#     branch removes a whole category of silent failure.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The core version consumers should pin, e.g. 0.11.0-rc.26"
+        required: true
+        type: string
+      only:
+        description: "Comma-separated subset of fleet.json repos (blank = all)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Rewrite and print the diff, but push nothing"
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The core version consumers should pin, e.g. 0.11.0-rc.26"
+        required: true
+        type: string
+      only:
+        description: "Comma-separated subset of fleet.json repos (blank = all)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Rewrite and print the diff, but push nothing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Never cancel: a cancelled run can leave a branch pushed with no pull request
+# opened against it. Queue instead.
+concurrency:
+  group: fleet-bump-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Decide which repositories to touch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      repos: ${{ steps.pick.outputs.repos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select the cargo consumers
+        id: pick
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          repos=$(jq -c --arg only "${ONLY:-}" '
+            [ .consumers[] | select(.surfaces | index("cargo")) | .repo ]
+            | if $only == "" then .
+              else
+                ( $only | split(",") | map(sub("^ +";"") | sub(" +$";"")) ) as $want
+                | map(select(. as $r | $want | index($r)))
+              end
+          ' .github/fleet.json)
+          echo "repos=$repos" >> "$GITHUB_OUTPUT"
+          echo "Selected: $repos"
+          if [ "$repos" = "[]" ]; then
+            echo "::warning::No repositories selected — check the 'only' filter against .github/fleet.json"
+          fi
+
+  bump:
+    name: ${{ matrix.repo }}
+    needs: plan
+    if: needs.plan.outputs.repos != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One repository failing must not stop the other twelve from getting
+      # their pull request.
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.plan.outputs.repos) }}
+    steps:
+      - name: Check out this repository (for the bump script)
+        uses: actions/checkout@v4
+        with:
+          path: producer
+
+      # Scoped to the single repository this matrix leg touches, rather than to
+      # the whole fleet at once.
+      - name: Mint a token for ${{ matrix.repo }}
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+
+      - name: Check out ${{ matrix.repo }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ matrix.repo }}
+          token: ${{ steps.token.outputs.token }}
+          path: consumer
+
+      # Needed only for `cargo generate-lockfile`. No contract is compiled here;
+      # the consumer's own CI does that on the pull request.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rewrite the pins
+        id: bump
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set +e
+          producer/.github/scripts/bump-fleet.sh \
+            --surface cargo --version "$VERSION" --dir consumer
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "::notice::${{ matrix.repo }}: pins rewritten" ;;
+            3) echo "::notice::${{ matrix.repo }}: nothing here pins core — skipped" ;;
+            4) echo "::notice::${{ matrix.repo }}: already on $VERSION" ;;
+            *) echo "::error::${{ matrix.repo }}: bump script failed"; exit "$code" ;;
+          esac
+
+      - name: Show the diff
+        if: steps.bump.outputs.code == '0'
+        working-directory: consumer
+        run: git --no-pager diff
+
+      - name: Identify the app
+        if: steps.bump.outputs.code == '0' && inputs.dry_run != true
+        id: app
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+        run: echo "uid=$(gh api "/users/${SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or refresh the pull request
+        if: steps.bump.outputs.code == '0' && inputs.dry_run != true
+        working-directory: consumer
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          APP_UID: ${{ steps.app.outputs.uid }}
+        run: |
+          set -euo pipefail
+
+          branch="chore/core-$VERSION"
+
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${APP_UID}+${SLUG}[bot]@users.noreply.github.com"
+
+          git checkout -b "$branch"
+          git add -A
+          git commit \
+            -m "chore(deps): pin the Calimero SDK to $VERSION" \
+            -m "Generated by the fleet-bump workflow in calimero-network/core."
+
+          # The branch name is deterministic and the branch is machine-owned, so
+          # a re-run replaces it rather than opening a second pull request.
+          # Do not hand-edit it: push a fix to a branch of your own instead.
+          git push --force origin "$branch"
+
+          if gh pr view "$branch" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::notice::refreshed the existing pull request for $branch"
+            gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Written to a file rather than a shell string: the block scalar this
+          # runs inside would eat a heredoc's terminator indentation.
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Moves this repository's Calimero SDK pins to \`$VERSION\`.
+
+          Rewritten automatically by \`fleet-bump\` in
+          [calimero-network/core](https://github.com/calimero-network/core) when that
+          release was cut. Three things changed together, which is the point of doing
+          it mechanically:
+
+          - every \`calimero-*\` git dependency tag in \`logic/Cargo.toml\`, including
+            the \`[dev-dependencies]\` copy that is easy to miss by hand
+          - \`min-runtime-version\`, the floor a node checks before it will accept the
+            bundle at all — it trailed the tag by a release across six repositories
+            the last time this was done by hand
+          - \`logic/Cargo.lock\`, so the core revision \`deploy-bundle.yml\` records on
+            the published release names the right commit
+
+          **Merging this publishes a new version of the app.** \`deploy-bundle.yml\`
+          triggers on any default-branch push touching \`logic/**\`, and the registry
+          publish is not idempotent — so batch this with anything else pending rather
+          than merging several bumps in a row.
+
+          Before merging, check that the contract still builds and that the ABI
+          committed here still matches the rebuilt one.
+          PR_BODY
+
+          gh pr create \
+            --repo "$REPO" \
+            --head "$branch" \
+            --title "chore(deps): pin the Calimero SDK to $VERSION" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
+
+          gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
