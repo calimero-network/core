@@ -78,9 +78,8 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
     StreamReader::new(byte_stream).compat()
 }
 
-// Clients send `?hash=` as `Hash`'s base58 encoding, matching how `Hash`
-// is written everywhere else on the wire; only the digest bytes carry
-// over into the `ContentHash` that `add_blob` compares against.
+// Clients send `?hash=` base58, like every other `Hash` on the wire; only the
+// digest bytes carry over into the `ContentHash` that `add_blob` compares against.
 fn parse_expected_content_hash(hash_str: &str) -> Option<ContentHash> {
     let hash: Hash = hash_str.parse().ok()?;
     Some(ContentHash::from(*hash.as_bytes()))

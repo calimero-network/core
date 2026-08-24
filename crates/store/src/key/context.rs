@@ -223,9 +223,9 @@ impl Debug for ContextResyncRequested {
 /// Not synchronized; absence means "execute the application row's bytecode".
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct ContextExecutingBlob(Key<ContextId>);
+pub struct ContextExecutingBytecode(Key<ContextId>);
 
-impl ContextExecutingBlob {
+impl ContextExecutingBytecode {
     #[must_use]
     pub fn new(context_id: PrimitiveContextId) -> Self {
         Self(Key((*context_id).into()))
@@ -237,7 +237,7 @@ impl ContextExecutingBlob {
     }
 }
 
-impl AsKeyParts for ContextExecutingBlob {
+impl AsKeyParts for ContextExecutingBytecode {
     type Components = (ContextId,);
 
     fn column() -> Column {
@@ -249,7 +249,7 @@ impl AsKeyParts for ContextExecutingBlob {
     }
 }
 
-impl FromKeyParts for ContextExecutingBlob {
+impl FromKeyParts for ContextExecutingBytecode {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -257,9 +257,9 @@ impl FromKeyParts for ContextExecutingBlob {
     }
 }
 
-impl Debug for ContextExecutingBlob {
+impl Debug for ContextExecutingBytecode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ContextExecutingBlob")
+        f.debug_struct("ContextExecutingBytecode")
             .field("id", &self.context_id())
             .finish()
     }

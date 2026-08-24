@@ -54,8 +54,9 @@ use tokio::time::sleep;
 use crate::migration_status::{build_signed_heartbeat, MigrationFacts};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
-/// The app-keys the fixture runs on. Blob ids are content hashes, so the
-/// fixture seeds REAL blob bytes (a minimal wasm module with an embedded
+/// The bytecode ids the fixture runs on. A blob id is derived from the bytes it
+/// stores rather than chosen, so the fixture seeds REAL blob bytes (a minimal wasm
+/// module with an embedded
 /// `calimero_abi_v1` section) and uses the returned ids — the cascade
 /// dispatch resolves the migration decision from these very blobs.
 pub(crate) struct AppBlobs {

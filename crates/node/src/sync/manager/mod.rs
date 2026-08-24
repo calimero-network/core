@@ -1899,7 +1899,7 @@ impl SyncManager {
             .is_some();
 
         let store_for_gate = self.context_client.datastore_handle().into_inner();
-        if let (false, Some((target, gate_stage_blob))) = (
+        if let (false, Some((target, gate_stage_bytecode))) = (
             has_resync_requested,
             pending_upgrade_info(&store_for_gate, &context_id),
         ) {
@@ -1918,19 +1918,19 @@ impl SyncManager {
             // responder-side gate for exactly this. Failures are benign —
             // every sync attempt retries until the migrate lifts the gate.
             {
-                if let Some(stage) = gate_stage_blob {
-                    let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
-                    if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
+                if let Some(stage) = gate_stage_bytecode {
+                    let stage_bytecode = calimero_primitives::blobs::BlobId::from(stage);
+                    if !self.node_client.has_blob(&stage_bytecode).unwrap_or(true)
                         && self.should_attempt_stage(context_id, stage)
                     {
                         if let Err(err) = self
-                            .stage_target_bytecode(&context, stage_blob, chosen_peer)
+                            .stage_target_bytecode(&context, stage_bytecode, chosen_peer)
                             .await
                         {
                             warn!(
                                 %context_id,
                                 %chosen_peer,
-                                %stage_blob,
+                                %stage_bytecode,
                                 %err,
                                 "failed to pre-stage target app blob; will retry after backoff"
                             );
@@ -1938,7 +1938,7 @@ impl SyncManager {
                             self.clear_stage_attempt(context_id, stage);
                             info!(
                                 %context_id,
-                                %stage_blob,
+                                %stage_bytecode,
                                 "pre-staged target app bytecode for pending upgrade"
                             );
                         }
@@ -2025,15 +2025,15 @@ impl SyncManager {
         {
             let store = self.context_client.datastore_handle().into_inner();
             if let Some(stage) = pending_upgrade_staged_bytecode(&store, &context_id) {
-                let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
-                if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
+                let stage_bytecode = calimero_primitives::blobs::BlobId::from(stage);
+                if !self.node_client.has_blob(&stage_bytecode).unwrap_or(true)
                     && self.should_attempt_stage(context_id, stage)
                 {
                     match self
                         .initiate_blob_share_process(
                             &context,
                             our_identity,
-                            stage_blob,
+                            stage_bytecode,
                             0,
                             &mut stream,
                         )
@@ -2043,13 +2043,13 @@ impl SyncManager {
                             self.clear_stage_attempt(context_id, stage);
                             info!(
                                 %context_id,
-                                %stage_blob,
+                                %stage_bytecode,
                                 "staged target app bytecode for pending same-id upgrade"
                             );
                         }
                         Err(err) => warn!(
                             %context_id,
-                            %stage_blob,
+                            %stage_bytecode,
                             %err,
                             "failed to stage target app bytecode; will retry after backoff"
                         ),
@@ -4347,7 +4347,7 @@ mod pending_upgrade_tests {
     // application row — equal blobs (caught up) and a missing row both
     // surface nothing.
     #[test]
-    fn stage_blob_tracks_row_divergence() {
+    fn stage_bytecode_tracks_row_divergence() {
         let store = store();
         let app = ApplicationId::from([0xAA; 32]);
 

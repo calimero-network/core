@@ -180,11 +180,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             // Blob-keyed lookup: the read-only sets are keyed by the executing
             // bytecode blob (per-context binding), with the cached row blob as
             // fallback. A miss defaults to the write lock (fail-safe).
-            let Some(blob) = self.executing_blob_for_context(&context_id).or_else(|| {
-                self.applications
-                    .get(&application_id)
-                    .map(|app| app.blob.bytecode)
-            }) else {
+            let Some(blob) = self
+                .executing_bytecode_for_context(&context_id)
+                .or_else(|| {
+                    self.applications
+                        .get(&application_id)
+                        .map(|app| app.blob.bytecode)
+                })
+            else {
                 break 'ro false;
             };
             let Some(set) = self.read_only_methods.get(&(blob, service_name)).cloned() else {
@@ -494,7 +497,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }
             };
 
-        // Resolve the producing-app-key for the broadcast envelope. Runs
+        // Resolve the producing `bytecode_id` for the broadcast envelope. Runs
         // synchronously here so the `Option<[u8;32]>` (Copy) can be
         // captured by value in the async external_task closure below.
         // `get_group_for_context` is called a second time internally;
@@ -779,7 +782,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             // `bytecode_id` points at, else the application row (non-group
             // contexts, legacy groups). Cost: a couple of bloom-filtered
             // point-gets, noise next to the wasm call they precede.
-            let module_fut = match act.executing_blob_for_context(&context.id) {
+            let module_fut = match act.executing_bytecode_for_context(&context.id) {
                 Some(blob) => act
                     .get_module_for_blob(blob, context.service_name.clone())
                     .boxed_local(),
@@ -806,7 +809,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             // guest must not reach those via xcall (they are never
             // `#[app::xcall]`); the sync path itself carries no origin, so
             // legitimate state ops are unaffected.
-            let xcall_blob = act.executing_blob_for_context(&context.id).or_else(|| {
+            let xcall_blob = act.executing_bytecode_for_context(&context.id).or_else(|| {
                 act.applications
                     .get(&context.application_id)
                     .map(|app| app.blob.bytecode)
@@ -1898,7 +1901,7 @@ impl ContextManager {
     /// The bytecode blob this context executes (per-context binding):
     /// activation marker → group target blob (when locally present) →
     /// `None` (callers fall back to the application row).
-    pub(crate) fn executing_blob_for_context(
+    pub(crate) fn executing_bytecode_for_context(
         &self,
         context_id: &ContextId,
     ) -> Option<calimero_primitives::blobs::BlobId> {
@@ -2958,7 +2961,7 @@ mod tests {
     // blobs — the coexistence invariant the module cache re-key enables.
 
     #[test]
-    fn bound_blob_two_contexts_different_markers_resolve_different_blobs() {
+    fn bound_bytecode_two_contexts_different_markers_resolve_different_blobs() {
         let store = fresh_store();
         let group_id = ContextGroupId::from([0xB0; 32]);
         let ctx_a = ContextId::from([0xB1; 32]);
@@ -2984,7 +2987,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_blob_falls_back_to_group_bytecode_id_without_marker() {
+    fn bound_bytecode_falls_back_to_group_bytecode_id_without_marker() {
         let store = fresh_store();
         let group_id = ContextGroupId::from([0xB3; 32]);
         let ctx = ContextId::from([0xB4; 32]);
@@ -3001,7 +3004,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_blob_none_for_zero_bytecode_id_or_non_group_context() {
+    fn bound_bytecode_none_for_zero_bytecode_id_or_non_group_context() {
         let store = fresh_store();
         let group_id = ContextGroupId::from([0xB5; 32]);
         let ctx = ContextId::from([0xB6; 32]);

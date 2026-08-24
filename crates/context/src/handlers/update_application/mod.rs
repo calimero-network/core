@@ -507,7 +507,7 @@ pub async fn update_application_id(
     // present: a marker hard-binds execution to that bytecode, so naming a
     // missing blob would wedge the context AND stop the lazy retry (the
     // gate reads no-marker as "activation pending").
-    let activated = activated_row_blob(&node_client, &application);
+    let activated = activated_row_bytecode(&node_client, &application);
     if node_client
         .has_blob(&calimero_primitives::blobs::BlobId::from(activated))
         .unwrap_or(false)
@@ -522,7 +522,7 @@ pub async fn update_application_id(
 /// row. The `Application` passed through these handlers can be a cache
 /// snapshot taken before a same-id in-place install moved the row — recording
 /// its blob would mark the context as having activated the OLD bytecode.
-fn activated_row_blob(node_client: &NodeClient, application: &Application) -> [u8; 32] {
+fn activated_row_bytecode(node_client: &NodeClient, application: &Application) -> [u8; 32] {
     node_client
         .get_application(&application.id)
         .ok()
@@ -858,7 +858,7 @@ pub(crate) async fn update_application_with_migration(
     crate::activation::record_activation(
         &datastore,
         &context_id,
-        activated_row_blob(&node_client, &application),
+        activated_row_bytecode(&node_client, &application),
     );
 
     // Post-commit: recompute this node's owner's pending-authored count over the

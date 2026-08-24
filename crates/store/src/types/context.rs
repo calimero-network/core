@@ -345,7 +345,7 @@ mod context_local_key_isolation_tests {
     }
 }
 
-/// Value for [`key::ContextExecutingBlob`]: the bytecode blob this context's
+/// Value for [`key::ContextExecutingBytecode`]: the bytecode blob this context's
 /// committed state executes under, when it differs from the application
 /// row's (version-stable bundle id, row already overwritten in place by a
 /// newer version). Written on logical migration abort; deleted when a
@@ -356,13 +356,13 @@ mod context_local_key_isolation_tests {
     clippy::exhaustive_structs,
     reason = "single pin value; additions would need a migration"
 )]
-pub struct ContextExecutingBlob {
+pub struct ContextExecutingBytecode {
     pub blob: [u8; 32],
 }
 
-impl PredefinedEntry for key::ContextExecutingBlob {
+impl PredefinedEntry for key::ContextExecutingBytecode {
     type Codec = Borsh;
-    type DataType<'a> = ContextExecutingBlob;
+    type DataType<'a> = ContextExecutingBytecode;
 }
 
 /// Value for [`key::ContextActivatedBytecode`]: the bytecode blob this context

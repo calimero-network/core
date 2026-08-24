@@ -425,6 +425,8 @@ impl BlobManager {
                 self.persist_ref(
                     id,
                     blob.size as u64,
+                    // A leaf chunk's id IS sha256 of its own bytes, so this
+                    // relabels one digest - it is not a BlobId conversion.
                     ContentHash::from(*id),
                     Box::default(),
                     Some(&buf[..blob.size]),

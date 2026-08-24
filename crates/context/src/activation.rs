@@ -296,7 +296,7 @@ mod tests {
     /// leaves it on the application row, a `Some(false)` counts the context as
     /// outstanding. An absent bytecode signal must never manufacture either.
     #[test]
-    fn activated_at_group_target_reads_the_marker_against_the_group_blob() {
+    fn activated_at_group_target_reads_the_marker_against_the_group_bytecode() {
         use calimero_context_config::types::ContextGroupId;
         use calimero_store::key::GroupMetaValue;
 

@@ -959,7 +959,7 @@ const RETRY_BASE_DELAY_SECS: u64 = 5;
 /// mid-upgrade that IS the target, so an unresolvable context would read as
 /// already-on-target and be skipped while `propagate_upgrade` (which skips on
 /// application id, not blob) swaps it anyway.
-fn executing_blob(
+fn executing_bytecode(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
 ) -> eyre::Result<[u8; 32]> {
@@ -1005,7 +1005,7 @@ pub(crate) async fn resolve_resumed_migration(
     for context_id in
         calimero_governance_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?
     {
-        let current = executing_blob(datastore, &context_id)?;
+        let current = executing_bytecode(datastore, &context_id)?;
         if current == target_blob {
             continue;
         }

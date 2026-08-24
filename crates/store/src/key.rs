@@ -29,7 +29,7 @@ pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
     ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
-    ContextConfig, ContextDagDelta, ContextExecutingBlob, ContextIdentity, ContextLeftMarker,
+    ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
     ScopeUnifiedOp,
 };

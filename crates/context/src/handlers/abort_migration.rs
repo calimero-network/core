@@ -181,7 +181,7 @@ mod tests {
 
     const V1_APP: [u8; 32] = [0x11; 32];
     const V2_APP: [u8; 32] = [0x22; 32];
-    /// An bytecode_id belonging to an unrelated subgroup that the cascade never
+    /// A bytecode_id belonging to an unrelated subgroup that the cascade never
     /// matched (its `bytecode_id != root.bytecode_id`). Used to exercise the skip branch.
     const OTHER_BYTECODE_ID: [u8; 32] = [0x33; 32];
     /// The v2 target of that unrelated subgroup's independent migration.

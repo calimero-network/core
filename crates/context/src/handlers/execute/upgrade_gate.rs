@@ -1,7 +1,7 @@
 //! Cascade-upgrade write-gate decisions for context execution: whether a
 //! group-upgrade status blocks writes, whether a committed write should be
 //! rejected mid-upgrade, the lazy-on-access migration trigger, and the
-//! producing-app-key resolver. Extracted from the execute handler.
+//! producing-`bytecode_id` resolver. Extracted from the execute handler.
 
 use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
