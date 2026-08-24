@@ -265,6 +265,7 @@ the path parameter — these are reproduced exactly as routed below.
 | GET | `/admin-api/groups/:group_id/subgroups` | List subgroups. |
 | GET | `/admin-api/groups/:group_id/members` | List group members. |
 | POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account (64 hex, as the listing above returns) or by signing key (base58). |
+| GET | `/admin-api/groups/:group_id/devices` | List the device bindings behind this group's members. `?member=` narrows to one principal: an account lists its devices, a signing key lists the device presenting it — which is how a caller holding only a key learns the account to add. |
 | POST | `/admin-api/groups/:group_id/members/remove` | Remove group members. |
 | POST | `/admin-api/groups/:group_id/leave` | Leave a group. |
 | PUT | `/admin-api/groups/:group_id/members/:identity/role` | Update a member's role. |

@@ -56,6 +56,8 @@ pub enum MembersSubCommands {
     GetCapabilities(GetCapabilitiesCommand),
     #[command(about = "Check if an identity can join a context in this group")]
     CheckAccess(CheckAccessCommand),
+    #[command(about = "List the devices behind this group's members, or resolve one principal")]
+    Devices(DevicesCommand),
 }
 
 impl MembersCommand {
@@ -70,6 +72,7 @@ impl MembersCommand {
             MembersSubCommands::SetCapabilities,
             MembersSubCommands::GetCapabilities,
             MembersSubCommands::CheckAccess,
+            MembersSubCommands::Devices,
         )
     }
 }
@@ -89,6 +92,37 @@ impl ListMembersCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
         let response = client.list_group_members(&self.group_id).await?;
+
+        environment.output.write(&response);
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(about = "List the devices behind this group's members, or resolve one principal")]
+pub struct DevicesCommand {
+    #[clap(
+        name = "GROUP_ID",
+        value_parser = crate::cli::validation::group_id,
+        help = "The hex-encoded group ID"
+    )]
+    pub group_id: String,
+
+    #[clap(
+        name = "MEMBER",
+        help = "Optional: an account (64 hex chars) to list the devices of, or a \
+                signing key (base58) to learn the account it speaks for"
+    )]
+    pub member: Option<MemberPrincipal>,
+}
+
+impl DevicesCommand {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
+        let response = client
+            .list_group_devices(&self.group_id, self.member.as_ref())
+            .await?;
 
         environment.output.write(&response);
 

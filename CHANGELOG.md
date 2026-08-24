@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`GET admin-api/groups/:group_id/devices`** — the device bindings of the
+  namespace owning the group: `device`, `account`, `signingKey`, `deviceEpoch`.
+  `?member=` narrows to one principal in either encoding: an **account** lists
+  the devices that speak for it, a **signing key** lists the device presenting
+  it, which is how a caller holding only a key learns the account behind it.
+
+  That resolution had no home in the API before, and its absence is the only
+  reason `POST .../members` still accepts a key: the endpoint was doing double
+  duty as the sole key-to-account converter. With this, the key form is a
+  back-compat shim rather than load-bearing, and can be removed once
+  `calimero-client-py` and the merobox scenarios name accounts.
+
+  No KEM key is exposed. Scope-key deliveries are sealed to it, it is read from
+  the folded binding at the moment of wrapping, and it has never been on the
+  wire. Reading requires the node to be a member of the group (403 otherwise),
+  the same gate the member listing uses ([#3574])
+
 - **`POST admin-api/groups/:group_id/members` accepts an account.** The
   `identity` field now takes either an account (64 hex characters, exactly what
   `GET .../members` returns) or a signing key (base58) — the encoding says

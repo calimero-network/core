@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
-use wiremock::matchers::{body_json, header, method, path};
+use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::Client;
@@ -224,6 +224,51 @@ async fn a_caller_finds_itself_by_matching_its_account() {
             .any(|m| m.identity.to_string() == me.data.account_id),
         "a node's own account must be findable among the members it is returned",
     );
+}
+
+#[tokio::test]
+async fn list_group_devices_resolves_a_key_to_its_account() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/devices")))
+        // The whole point of the `member` filter: hand it the key you hold and
+        // read back the account to name in an add.
+        .and(query_param("member", ZERO_BS58))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "devices": [{
+                "device": ZERO_HEX_ACCOUNT,
+                "account": ZERO_HEX_ACCOUNT,
+                "signingKey": ZERO_BS58,
+                "deviceEpoch": 0,
+            }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let key = MemberPrincipal::Key(ZERO_BS58.parse().unwrap());
+    let response = client.list_group_devices(GID, Some(&key)).await.unwrap();
+
+    assert_eq!(response.devices[0].account.to_string(), ZERO_HEX_ACCOUNT);
+}
+
+#[tokio::test]
+async fn list_group_devices_without_a_filter_sends_no_query() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/devices")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "devices": [],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let response = client.list_group_devices(GID, None).await.unwrap();
+
+    assert!(response.devices.is_empty());
 }
 
 #[tokio::test]
@@ -1033,8 +1078,6 @@ async fn create_namespace_returns_err_on_server_error() {
 // and authenticator, using `node_name = Some(..)` so the auth path runs.
 
 use std::sync::{Arc, Mutex as StdMutex};
-
-use wiremock::matchers::query_param;
 
 use crate::connection::ConnectionInfo as Conn;
 

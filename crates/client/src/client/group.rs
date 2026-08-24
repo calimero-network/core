@@ -2,6 +2,7 @@
 
 use eyre::Result;
 
+use calimero_primitives::identity::MemberPrincipal;
 use calimero_server_primitives::admin::AbortMigrationApiResponse;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
@@ -22,6 +23,7 @@ use calimero_server_primitives::admin::LeaveContextApiResponse;
 use calimero_server_primitives::admin::LeaveGroupApiResponse;
 use calimero_server_primitives::admin::LeaveNamespaceApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
+use calimero_server_primitives::admin::ListGroupDevicesApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
 use calimero_server_primitives::admin::ListSubgroupsApiResponse;
 use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
@@ -81,6 +83,25 @@ where
             .connection
             .get(&format!("admin-api/groups/{group_id}/members"))
             .await?;
+        Ok(response)
+    }
+
+    /// The device bindings of the namespace owning `group_id`.
+    ///
+    /// `member` narrows to one principal, in either encoding: an account lists
+    /// its devices, a signing key lists the device presenting it — which is how
+    /// a caller holding only a key learns the account to name in
+    /// [`add_group_members`](Self::add_group_members).
+    pub async fn list_group_devices(
+        &self,
+        group_id: &str,
+        member: Option<&MemberPrincipal>,
+    ) -> Result<ListGroupDevicesApiResponse> {
+        let path = match member {
+            Some(member) => format!("admin-api/groups/{group_id}/devices?member={member}"),
+            None => format!("admin-api/groups/{group_id}/devices"),
+        };
+        let response = self.connection.get(&path).await?;
         Ok(response)
     }
 

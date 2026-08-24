@@ -5,13 +5,13 @@ use calimero_server_primitives::admin::{
     DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
     GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
     JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
-    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse,
-    SetMetadataApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupDevicesApiResponse,
+    ListGroupMembersApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    ListSubgroupsApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RemoveGroupMembersApiResponse,
+    ReparentGroupApiResponse, RevokeDeviceApiResponse, SetDefaultCapabilitiesApiResponse,
+    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
+    SyncGroupApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -321,6 +321,34 @@ impl Report for ListGroupMembersApiResponse {
                     member.identity.to_string(),
                     format!("{:?}", member.role),
                     member.name.clone().unwrap_or_else(|| "-".to_owned()),
+                ]);
+            }
+            println!("{table}");
+        }
+    }
+}
+
+impl Report for ListGroupDevicesApiResponse {
+    fn report(&self) {
+        if self.devices.is_empty() {
+            println!("No devices found");
+        } else {
+            let mut table = Table::new();
+            // Account first: it is the answer a caller is usually here for —
+            // either "which devices does this person have" or, coming in with a
+            // signing key, "who is this".
+            let _ = table.set_header(vec![
+                Cell::new("Account").fg(Color::Blue),
+                Cell::new("Device").fg(Color::Blue),
+                Cell::new("Signing key").fg(Color::Blue),
+                Cell::new("Epoch").fg(Color::Blue),
+            ]);
+            for device in &self.devices {
+                let _ = table.add_row(vec![
+                    device.account.to_string(),
+                    device.device.to_string(),
+                    device.signing_key.to_string(),
+                    device.device_epoch.to_string(),
                 ]);
             }
             println!("{table}");

@@ -18,15 +18,16 @@ use crate::group::{
     GetNamespaceIdentityRequest, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
     JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest,
     LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    ListGroupDevicesRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, PairDeviceCompleteRequest, PairDeviceInitRequest,
+    RemoveGroupMembersRequest, ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -397,6 +398,10 @@ pub enum ContextMessage {
     ListGroupMembers {
         request: ListGroupMembersRequest,
         outcome: oneshot::Sender<<ListGroupMembersRequest as Message>::Result>,
+    },
+    ListGroupDevices {
+        request: ListGroupDevicesRequest,
+        outcome: oneshot::Sender<<ListGroupDevicesRequest as Message>::Result>,
     },
     ListGroupContexts {
         request: ListGroupContextsRequest,

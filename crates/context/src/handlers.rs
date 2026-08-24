@@ -38,6 +38,7 @@ pub mod leave_group;
 pub mod leave_namespace;
 pub mod list_all_groups;
 pub mod list_group_contexts;
+pub mod list_group_devices;
 pub mod list_group_members;
 pub mod list_namespaces;
 pub mod list_namespaces_for_application;
@@ -122,6 +123,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ListGroupMembers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ListGroupDevices { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ListGroupContexts { request, outcome } => {

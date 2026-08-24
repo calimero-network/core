@@ -161,6 +161,57 @@ pub struct ListGroupMembersResponse {
     pub members: Vec<GroupMemberEntry>,
 }
 
+/// List the device bindings a namespace holds, optionally narrowed to one
+/// principal.
+///
+/// Bindings are what let the governance planes speak in accounts while nodes
+/// sign with keys, and until this existed they were readable only from inside
+/// the node. A caller holding a key had no way to learn the account it speaks
+/// for, which is the whole reason `add_group_members` still accepts a key at
+/// all: the endpoint was doing double duty as the only resolution service in
+/// the API.
+#[derive(Debug)]
+pub struct ListGroupDevicesRequest {
+    pub group_id: ContextGroupId,
+    /// Narrow to one principal, in either spelling:
+    ///
+    /// * an **account** lists the devices that speak for it;
+    /// * a **key** lists the device that presents it — which is how a caller
+    ///   holding only a key learns the account behind it.
+    ///
+    /// `None` lists every live binding in the namespace.
+    pub member: Option<MemberPrincipal>,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Message for ListGroupDevicesRequest {
+    type Result = eyre::Result<ListGroupDevicesResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct ListGroupDevicesResponse {
+    pub devices: Vec<GroupDeviceEntry>,
+}
+
+/// One device binding that is currently in force.
+///
+/// Deliberately carries no KEM key. That key is what scope-key deliveries are
+/// sealed to, it is read from the folded binding at the moment of wrapping, and
+/// it has never been on the wire — publishing it here would put a delivery
+/// target in reach of anything that can read a listing, for no caller's benefit.
+#[derive(Clone, Debug)]
+pub struct GroupDeviceEntry {
+    /// The device — also its CRDT replica id.
+    pub device: DeviceId,
+    /// The account it speaks for.
+    pub account: AccountId,
+    /// The key whose signature counts as this device's.
+    pub signing_key: PublicKey,
+    /// Key-rotation epoch, so a caller can tell a re-keyed device from a new one.
+    pub device_epoch: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct GroupMemberEntry {
     /// The member's ACCOUNT — the principal every governance row is keyed by.

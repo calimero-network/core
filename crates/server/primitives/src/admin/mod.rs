@@ -5,7 +5,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{AccountId, MemberPrincipal, PublicKey};
+use calimero_primitives::identity::{AccountId, DeviceId, MemberPrincipal, PublicKey};
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -1383,6 +1383,49 @@ pub struct GroupMemberApiEntry {
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// Query for `GET .../groups/:group_id/devices`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListGroupDevicesQuery {
+    /// Narrow to one principal, in either encoding — an account lists its
+    /// devices, a key lists the device that presents it. Omit to list every live
+    /// binding the namespace holds.
+    ///
+    /// A key here is how a caller holding nothing but a key learns the account it
+    /// speaks for. That resolution had no home in the API, which is the only
+    /// reason `POST .../members` still accepts a key at all.
+    pub member: Option<MemberPrincipal>,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListGroupDevicesApiResponse {
+    pub devices: Vec<GroupDeviceApiEntry>,
+}
+
+/// One device binding currently in force in the namespace owning the group.
+///
+/// No KEM key: scope-key deliveries are sealed to it, it is read from the folded
+/// binding at the moment of wrapping, and it has never travelled on the wire.
+/// Publishing it here would put a delivery target within reach of anything that
+/// can read a listing, and no caller needs it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupDeviceApiEntry {
+    /// The device, 64 hex characters — also its CRDT replica id.
+    pub device: DeviceId,
+    /// The ACCOUNT this device speaks for, 64 hex characters. The principal
+    /// every membership row is keyed by, and what `POST .../members` should be
+    /// given.
+    pub account: AccountId,
+    /// The base58 signing key whose signature counts as this device's.
+    pub signing_key: PublicKey,
+    /// Key-rotation epoch, so a re-keyed device is distinguishable from a new one.
+    pub device_epoch: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
