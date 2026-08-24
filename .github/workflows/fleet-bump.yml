@@ -72,43 +72,53 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      repos: ${{ steps.pick.outputs.repos }}
+      targets: ${{ steps.pick.outputs.targets }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select the cargo consumers
+      # Two surfaces move when core releases, and one repository can carry
+      # either. `cargo` is a contract pinning the SDK by git tag; `tauri` is the
+      # desktop app, which links no SDK but ships a merod BINARY named in
+      # merod-config.json and needs its own version bumped to ship it. Emitting
+      # {repo, surface} pairs keeps that a property of the fleet file rather
+      # than a second copy of this job.
+      - name: Select the targets
         id: pick
         env:
           ONLY: ${{ inputs.only }}
         run: |
           set -euo pipefail
-          repos=$(jq -c --arg only "${ONLY:-}" '
-            [ .consumers[] | select(.surfaces | index("cargo")) | .repo ]
+          targets=$(jq -c --arg only "${ONLY:-}" '
+            [ .consumers[]
+              | . as $c
+              | $c.surfaces[]
+              | select(. == "cargo" or . == "tauri")
+              | { repo: $c.repo, surface: . } ]
             | if $only == "" then .
               else
                 ( $only | split(",") | map(sub("^ +";"") | sub(" +$";"")) ) as $want
-                | map(select(. as $r | $want | index($r)))
+                | map(select(.repo as $r | $want | index($r)))
               end
           ' .github/fleet.json)
-          echo "repos=$repos" >> "$GITHUB_OUTPUT"
-          echo "Selected: $repos"
-          if [ "$repos" = "[]" ]; then
-            echo "::warning::No repositories selected — check the 'only' filter against .github/fleet.json"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Selected: $targets"
+          if [ "$targets" = "[]" ]; then
+            echo "::warning::No targets selected — check the 'only' filter against .github/fleet.json"
           fi
 
   bump:
-    name: ${{ matrix.repo }}
+    name: ${{ matrix.repo }} (${{ matrix.surface }})
     needs: plan
-    if: needs.plan.outputs.repos != '[]'
+    if: needs.plan.outputs.targets != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
-      # One repository failing must not stop the other twelve from getting
-      # their pull request.
+      # One repository failing must not stop the others from getting their
+      # pull request.
       fail-fast: false
       matrix:
-        repo: ${{ fromJSON(needs.plan.outputs.repos) }}
+        include: ${{ fromJSON(needs.plan.outputs.targets) }}
     steps:
       - name: Check out this repository (for the bump script)
         uses: actions/checkout@v4
@@ -134,24 +144,28 @@ jobs:
           path: consumer
 
       # Needed only for `cargo generate-lockfile`. No contract is compiled here;
-      # the consumer's own CI does that on the pull request.
+      # the consumer's own CI does that on the pull request. The tauri surface
+      # edits three JSON files and needs no toolchain at all.
       - name: Setup Rust
+        if: matrix.surface == 'cargo'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rewrite the pins
         id: bump
         env:
           VERSION: ${{ inputs.version }}
+          SURFACE: ${{ matrix.surface }}
+          CHANGED_FILES_OUT: ${{ runner.temp }}/changed.txt
         run: |
           set +e
           producer/.github/scripts/bump-fleet.sh \
-            --surface cargo --version "$VERSION" --dir consumer
+            --surface "$SURFACE" --version "$VERSION" --dir consumer
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
           case "$code" in
-            0) echo "::notice::${{ matrix.repo }}: pins rewritten" ;;
-            3) echo "::notice::${{ matrix.repo }}: nothing here pins core — skipped" ;;
+            0) echo "::notice::${{ matrix.repo }}: rewritten" ;;
+            3) echo "::notice::${{ matrix.repo }}: nothing here to bump for this surface — skipped" ;;
             4) echo "::notice::${{ matrix.repo }}: already on $VERSION" ;;
             *) echo "::error::${{ matrix.repo }}: bump script failed"; exit "$code" ;;
           esac
@@ -178,18 +192,38 @@ jobs:
           REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
           SLUG: ${{ steps.token.outputs.app-slug }}
           APP_UID: ${{ steps.app.outputs.uid }}
+          SURFACE: ${{ matrix.surface }}
         run: |
           set -euo pipefail
 
           branch="chore/core-$VERSION"
 
+          if [ "$SURFACE" = "tauri" ]; then
+            title="chore: bundle merod $VERSION and cut a new desktop version"
+          else
+            title="chore(deps): pin the Calimero SDK to $VERSION"
+          fi
+
           git config user.name "${SLUG}[bot]"
           git config user.email "${APP_UID}+${SLUG}[bot]@users.noreply.github.com"
 
           git checkout -b "$branch"
-          git add -A
+
+          # Only the paths the script says it changed. A package manager run as a
+          # side effect writes files of its own — pnpm's minimum-release-age gate
+          # creates a pnpm-workspace.yaml holding just a minimumReleaseAgeExclude
+          # when the version being installed was published minutes ago. `git add -A`
+          # committed that into repositories which had no workspace file, giving them
+          # one with no `packages:` key and breaking their own `pnpm install`.
+          git add --pathspec-from-file="$RUNNER_TEMP/changed.txt"
+
+          leftover=$(git status --porcelain --untracked-files=all | grep -vE '^[MA] ' || true)
+          if [ -n "$leftover" ]; then
+            echo "::warning::the tooling left files this bump does not claim; they were NOT committed:"
+            printf '%s\n' "$leftover"
+          fi
           git commit \
-            -m "chore(deps): pin the Calimero SDK to $VERSION" \
+            -m "$title" \
             -m "Generated by the fleet-bump workflow in calimero-network/core."
 
           # The branch name is deterministic and the branch is machine-owned, so
@@ -205,6 +239,27 @@ jobs:
 
           # Written to a file rather than a shell string: the block scalar this
           # runs inside would eat a heredoc's terminator indentation.
+          if [ "$SURFACE" = "tauri" ]; then
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Bundles merod \`$VERSION\` and cuts a new desktop version to ship it.
+
+          The desktop app links no Calimero SDK — it ships a merod **binary**.
+          \`merod-config.json\` names the version, \`src-tauri/build.rs\` embeds it as
+          \`MEROD_CONFIG_VERSION\` at compile time, and the app downloads that merod at
+          runtime. So a core release means two things here: bundle the new merod, and
+          cut a version that ships it.
+
+          The app version is carried in **two** files — \`apps/desktop/package.json\` and
+          \`apps/desktop/src-tauri/tauri.conf.json\`, the latter being what actually
+          stamps the built bundle. They have drifted apart before, so this takes the
+          higher of the two, increments the patch, and writes both. If the job log
+          mentions drift, this pull request also heals it.
+
+          Opened automatically by \`fleet-bump\` in
+          [calimero-network/core](https://github.com/calimero-network/core) when
+          \`$VERSION\` was released.
+          PR_BODY
+          else
           cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
           Moves this repository's Calimero SDK pins to \`$VERSION\`.
 
@@ -229,11 +284,12 @@ jobs:
           Before merging, check that the contract still builds and that the ABI
           committed here still matches the rebuilt one.
           PR_BODY
+          fi
 
           gh pr create \
             --repo "$REPO" \
             --head "$branch" \
-            --title "chore(deps): pin the Calimero SDK to $VERSION" \
+            --title "$title" \
             --body-file "$RUNNER_TEMP/pr-body.md"
 
           gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
