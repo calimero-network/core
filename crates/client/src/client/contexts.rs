@@ -4,7 +4,8 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, DeleteContextApiRequest, DeleteContextResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
-    GetContextsResponse, ResyncContextApiRequest, ResyncContextApiResponse, SyncContextResponse,
+    GetContextsResponse, PerformIntentApiRequest, PerformIntentApiResponse,
+    ResyncContextApiRequest, ResyncContextApiResponse, SyncContextResponse,
     UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use eyre::Result;
@@ -28,6 +29,25 @@ where
                 &format!("admin-api/contexts/{context_id}/application"),
                 request,
             )
+            .await?;
+        Ok(response)
+    }
+
+    /// Ask this node to run one method on a member's behalf, under a warrant
+    /// that member signed.
+    ///
+    /// The caller supplies only its own half — the warrant and the proof its
+    /// signing key is a device of the account it names. The node attaches its own
+    /// credential, so a client never has to learn which of the node's processes
+    /// runs the intent.
+    pub async fn perform_intent(
+        &self,
+        context_id: &str,
+        request: PerformIntentApiRequest,
+    ) -> Result<PerformIntentApiResponse> {
+        let response = self
+            .connection
+            .post(&format!("admin-api/contexts/{context_id}/intents"), request)
             .await?;
         Ok(response)
     }

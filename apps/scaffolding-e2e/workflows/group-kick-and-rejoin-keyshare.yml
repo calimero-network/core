@@ -126,10 +126,6 @@ steps:
     outputs:
       invite_node3: invitation
 
-  - name: Wait for namespace governance to gossip
-    type: wait
-    seconds: 10
-
   - name: Node-2 joins namespace
     # Default member capabilities include CAN_JOIN_OPEN_SUBGROUPS, so
     # node-2 inherits eligibility for any Open subgroup beneath this

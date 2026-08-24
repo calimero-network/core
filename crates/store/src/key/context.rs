@@ -711,6 +711,71 @@ impl FromKeyParts for ContextDagDelta {
     }
 }
 
+/// Highest warrant nonce accepted from one author device in one context:
+/// `context_id(32) ‖ author_device_key(32)`.
+///
+/// Keyed by the device's signing KEY, not by its account and not by `DeviceId`.
+/// Not by account, because two devices of one account are independent replicas
+/// that cannot coordinate on a counter. Not by `DeviceId`, because a device
+/// re-key would then have to continue a sequence the client must remember across
+/// the rotation; a fresh key starting a fresh sequence is safe, since a warrant
+/// names one key and is checked against that key's row.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextWarrantNonce(Key<(ContextId, PublicKeyComponent)>);
+
+impl ContextWarrantNonce {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, author_device_key: PrimitivePublicKey) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(GenericArray::from(*author_device_key))
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn author_device_key(&self) -> PrimitivePublicKey {
+        let mut key = [0; 32];
+        key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        key.into()
+    }
+}
+
+impl AsKeyParts for ContextWarrantNonce {
+    type Components = (ContextId, PublicKeyComponent);
+
+    fn column() -> Column {
+        Column::ContextWarrantNonce
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextWarrantNonce {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextWarrantNonce {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextWarrantNonce")
+            .field("context_id", &self.context_id())
+            .field("author_device_key", &self.author_device_key())
+            .finish()
+    }
+}
+
 /// Key for a unified causal-log op (cutover C2): `scope(32) ‖ op_id(32)`, in the
 /// [`Column::UnifiedOp`] column. The prefix is the op's **scope** (a
 /// `calimero_op::ScopeId`'s 32 bytes — a namespace root for governance ops, a

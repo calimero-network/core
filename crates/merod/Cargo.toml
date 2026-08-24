@@ -36,6 +36,7 @@ url = { workspace = true, features = ["serde"] }
 
 calimero-blobstore.workspace = true
 calimero-config.workspace = true
+calimero-crypto.workspace = true
 calimero-context.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node.workspace = true

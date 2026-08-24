@@ -84,6 +84,14 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 **Forward secrecy** — The guarantee that a removed member can read nothing authored after their removal, enforced by rotating the scope key and delivering the new one only to those who remain. See [Governance](/protocol/governance/).
 
+**Warrant** — An author's offline-signed statement that one specific request may be run on their behalf by one specific operator, binding context, `H(method ‖ args)`, executor account, nonce and expiry. It is what makes a write whose signer is not its author checkable rather than merely asserted. See [Delegated Authorship](/protocol/delegated-authorship/).
+
+**Delegation** — What travels on the wire beside a delegated delta: the warrant plus the certificate chains for both parties and the executor's signing key, so a peer can verify the whole arrangement from the account ids alone. See [Delegated Authorship](/protocol/delegated-authorship/).
+
+**Executor (relay)** — The node that runs a method under someone else's warrant and signs the resulting envelope with its own key. The change is attributed to the *author*, not to it, and it may do this only while holding the `CAN_AUTHOR_ON_BEHALF` capability. See [Delegated Authorship](/protocol/delegated-authorship/).
+
+**Warrant nonce window** — The per-`(context, author device)` ledger that makes a warrant single-use. A sliding window rather than a strictly-increasing counter, because a high-water mark would make acceptance depend on arrival order — two warrants crossing in the network would be accepted by one node and refused by another. See [Delegated Authorship](/protocol/delegated-authorship/).
+
 ## Governance, roles & authority
 
 **Role** — A member's coarse authority within a group: `Admin` (all governance operations), `Member` (read/write state, governance only with the matching capability), `ReadOnly` (reads; writes rejected locally and on peers), and `ReadOnlyTee` (a read-only, hardware-attested fleet node, evicted via self-purge). See [Governance](/protocol/governance/).

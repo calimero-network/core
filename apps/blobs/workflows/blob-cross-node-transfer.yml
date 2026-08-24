@@ -63,7 +63,6 @@ steps:
     type: create_mesh
     context_node: rust-blob-xfer-1
     application_id: "{{app_id}}"
-    path: "res/blobs.wasm"
     nodes:
       - rust-blob-xfer-2
     outputs:

@@ -49,6 +49,7 @@
   "HEAD /admin-api/blobs/:blob_id",
   "POST /admin-api/contexts",
   "POST /admin-api/contexts/:context_id/application",
+  "POST /admin-api/contexts/:context_id/intents",
   "POST /admin-api/contexts/:context_id/join",
   "POST /admin-api/contexts/:context_id/leave",
   "POST /admin-api/contexts/:context_id/resync",

@@ -89,12 +89,6 @@ steps:
     outputs:
       ns_invite: invitation
 
-  - name: Wait for namespace governance to gossip
-    # 10s matches the post-#2344 opaque-leaf-regression timing; covers
-    # invitation visibility so `join_namespace` doesn't 404.
-    type: wait
-    seconds: 10
-
   - name: Node-2 joins namespace
     # Default member capabilities include CAN_JOIN_OPEN_SUBGROUPS, so
     # node-2 inherits the right to join any Open subgroup beneath

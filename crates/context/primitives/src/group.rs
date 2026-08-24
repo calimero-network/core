@@ -848,6 +848,18 @@ pub struct PairDeviceCompleteResponse {
     /// value the request had to carry, echoed so the operator can see what the
     /// certificate actually names.
     pub confirmation_code: String,
+    /// The credential this pairing minted, for the device it certified.
+    ///
+    /// Returned because the paired device otherwise has no way to obtain it. The
+    /// certificate is published in the link op and is readable by any member of
+    /// the groups the account speaks in — but a thin client that never joined one
+    /// cannot read it there, and it needs the proof to present itself as a device
+    /// of this account. Handing it back to the device that was just certified is
+    /// the only path that does not require it to be a member first.
+    ///
+    /// Not a secret: a certificate is public data and proves nothing without the
+    /// device key it names.
+    pub credential: Box<calimero_account::AccountProof<calimero_account::DeviceCert>>,
 }
 
 impl PairDeviceCompleteResponse {
@@ -860,12 +872,14 @@ impl PairDeviceCompleteResponse {
         device: DeviceId,
         key_delivered: bool,
         confirmation_code: String,
+        credential: Box<calimero_account::AccountProof<calimero_account::DeviceCert>>,
     ) -> Self {
         Self {
             account,
             device,
             key_delivered,
             confirmation_code,
+            credential,
         }
     }
 }

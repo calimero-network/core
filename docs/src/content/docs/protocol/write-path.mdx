@@ -67,7 +67,8 @@ Follow one real chat write through the six steps. The context's current head is 
               delta_id = hash(parents ‖ artifact) = 0x3c08…9d
 
 3. sign     — delta_signature = Ed25519_sign(author_sk, payload of
-                 (b"calimero/delta/1", context_id, delta_id, author_id, governance_position))
+                 (b"calimero/delta/2", context_id, delta_id, author_id,
+                  governance_position, hlc))
               The chat entry is Public, so the action carries no per-action signature.
 
 4. persist  — one atomic write: { delta, meta(root=0x6e72…ff, heads=[0x3c08…9d]), state }
@@ -84,6 +85,10 @@ After step 4 the writer's own state already shows `"hi"` and its head has advanc
 ## What gets committed before the broadcast
 
 The ordering is deliberate: **persist, then broadcast**. By the time a single byte leaves the node, the operation is already durable locally and the author's own state already reflects it. If the network is down, or no peer is listening, nothing is lost — the operation sits in the local DAG and will be served to peers later through the [sync channel](/protocol/sync/). Convergence never depends on a broadcast being received; it only depends on the operation eventually being _available_.
+
+## The author is normally the signer — but need not be
+
+Step 4 above signs with the author's own key, and steps 3 and 4 quietly assume the same node does both jobs. A device that holds only a signing key can do neither: it cannot run the application and cannot decrypt the state. [Delegated authorship](/protocol/delegated-authorship/) is the variant that lets such a member still own its writes — the method runs on a relay, and the author's signed consent travels inside the envelope so every peer can check it. The path below is otherwise unchanged.
 
 ## Governance writes take the same path
 

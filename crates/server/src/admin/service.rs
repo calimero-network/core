@@ -26,8 +26,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, join_context, leave_context, resync_context, sync,
-    update_context_application,
+    get_contexts_with_executors_for_application, join_context, leave_context, perform_intent,
+    resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -124,6 +124,10 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/application",
             post(update_context_application::handler),
+        )
+        .route(
+            "/contexts/:context_id/intents",
+            post(perform_intent::handler),
         )
         .route(
             "/contexts/:context_id/resync",
@@ -640,6 +644,31 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // A warrant the gate refused, surfacing from inside the execute path. Every
+    // variant is about the caller's authorization rather than this node's health,
+    // and a replay is the one most likely to be hit in practice: a relay that
+    // re-presents a spent warrant should be told `403`, not handed a `500` that
+    // reads as "try again".
+    if let Some(refusal) =
+        err.downcast_ref::<calimero_governance_store::warrant_gate::WarrantRefusal>()
+    {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
+        };
+    }
+    // A delegated-intent refusal knows which kind of "no" it is — a malformed
+    // request versus missing authority — and those ask opposite things of the
+    // caller. Mapping both to the generic 500 below would tell a client the
+    // server broke when in fact its warrant did.
+    if let Some(refusal) =
+        err.downcast_ref::<crate::admin::handlers::context::perform_intent::IntentRefusal>()
+    {
+        return ApiError {
+            status_code: refusal.status(),
+            message: err.to_string(),
+        };
+    }
     // The node cannot decide this op's authority YET — it is missing history or a
     // key it is entitled to, and the apply burned nothing, so the identical call
     // succeeds once it has caught up. `503` rather than the generic `500` because
@@ -929,6 +958,86 @@ mod parse_api_error_tests {
         );
         assert!(waiting.status_code.is_server_error());
         assert!(refused.status_code.is_client_error());
+    }
+
+    /// A refused delegated intent is the caller's problem, and the status has to
+    /// say which kind. Before this mapping every refusal — an expired warrant, a
+    /// warrant for another context, a relay with no authorship grant — arrived as
+    /// `500`, so a client could not tell a malformed request from a broken node
+    /// and had no basis for deciding whether to retry.
+    #[test]
+    fn an_intent_refusal_is_a_client_error_not_a_500() {
+        use crate::admin::handlers::context::perform_intent::IntentRefusal;
+
+        let malformed = parse_api_error(eyre::eyre!(IntentRefusal::Malformed(
+            "delegation does not verify".to_owned()
+        )));
+        assert_eq!(malformed.status_code, StatusCode::BAD_REQUEST);
+
+        let unauthorized = parse_api_error(eyre::eyre!(IntentRefusal::NotAuthorized(
+            "an admin must grant CAN_AUTHOR_ON_BEHALF".to_owned()
+        )));
+        assert_eq!(unauthorized.status_code, StatusCode::FORBIDDEN);
+
+        // The message survives, unlike the generic arm's. These are written for
+        // the caller and say what to do next — which is the whole point of
+        // typing them rather than letting them fall through.
+        assert!(
+            unauthorized.message.contains("CAN_AUTHOR_ON_BEHALF"),
+            "the refusal should name the missing grant; got: {}",
+            unauthorized.message
+        );
+    }
+
+    /// "Your bytes are wrong" and "you are not allowed" must not collapse into
+    /// one answer: the first is fixed by re-minting a warrant, the second only
+    /// by an admin granting a capability. A client that cannot distinguish them
+    /// either retries something that can never work, or gives up on something a
+    /// grant would fix.
+    #[test]
+    fn malformed_and_unauthorized_intents_do_not_share_a_status() {
+        use crate::admin::handlers::context::perform_intent::IntentRefusal;
+
+        let malformed =
+            parse_api_error(eyre::eyre!(IntentRefusal::Malformed("bad hex".to_owned())));
+        let unauthorized = parse_api_error(eyre::eyre!(IntentRefusal::NotAuthorized(
+            "no grant".to_owned()
+        )));
+
+        assert_ne!(malformed.status_code, unauthorized.status_code);
+        assert!(malformed.status_code.is_client_error());
+        assert!(unauthorized.status_code.is_client_error());
+    }
+
+    /// A refused warrant keeps its status through the wrapper the handler adds.
+    ///
+    /// This is the assumption the mapping rests on, and it is not obvious: the
+    /// execute call is wrapped with `wrap_err("execution failed")`, so the
+    /// `WarrantRefusal` is a *cause* rather than the report's root. If
+    /// `downcast_ref` did not walk the chain, every replayed warrant would come
+    /// back as a `500` and the mapping above would be dead code that looks
+    /// alive. Asserting it here is cheaper than discovering it from a log.
+    #[test]
+    fn a_refused_warrant_keeps_its_status_through_the_execute_wrapper() {
+        use eyre::WrapErr as _;
+
+        let wrapped: eyre::Report = Err::<(), _>(
+            calimero_governance_store::warrant_gate::WarrantRefusal::NonceAlreadySpent,
+        )
+        .wrap_err("execution failed")
+        .expect_err("must be an error");
+
+        let api = parse_api_error(wrapped);
+        assert_eq!(
+            api.status_code,
+            StatusCode::FORBIDDEN,
+            "a spent warrant is the caller's problem, not a server fault"
+        );
+        assert!(
+            api.message.contains("already been spent"),
+            "the caller should learn the warrant was spent; got: {}",
+            api.message
+        );
     }
 
     #[test]

@@ -131,6 +131,12 @@ impl Report for PairDeviceCompleteApiResponse {
             &self.data.confirmation_code,
         ]);
         println!("{table}");
+        // Printed outside the table on purpose: it is long, and it has to survive
+        // a copy-paste to the device it certifies — which needs it to present
+        // itself and cannot read it off the DAG, being a member of nothing.
+        println!();
+        println!("Device credential (hand this to the paired device):");
+        println!("{}", self.data.credential);
     }
 }
 

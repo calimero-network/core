@@ -84,7 +84,6 @@ steps:
     type: create_mesh
     context_node: sync-autoresync-node-1
     application_id: '{{app_id}}'
-    path: res/scaffolding_e2e.wasm
     nodes:
       - sync-autoresync-node-2
     outputs:

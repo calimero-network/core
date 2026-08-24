@@ -80,7 +80,6 @@ steps:
     type: create_mesh
     context_node: rust-blob-size-1
     application_id: "{{app_id}}"
-    path: "res/blobs.wasm"
     nodes:
       - rust-blob-size-2
     outputs:

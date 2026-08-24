@@ -1,4 +1,3 @@
-use calimero_account::AccountId;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
 };
@@ -54,7 +53,10 @@ use crate::ContextManager;
 use calimero_context_client::group::MigrationFailureKind;
 use calimero_governance_store::metrics::ExecutionLabels;
 
+use self::principal::Principal;
+
 mod governance_position;
+pub(crate) mod principal;
 mod signing;
 pub mod storage;
 mod upgrade_gate;
@@ -96,6 +98,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             payload,
             atomic,
             xcall_origin,
+            delegation,
             xcall_depth,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
@@ -793,6 +796,12 @@ impl Handler<ExecuteRequest> for ContextManager {
         let execution_count = self.metrics.as_ref().map(|m| m.execution_count.clone());
         let execution_duration = self.metrics.as_ref().map(|m| m.execution_duration.clone());
 
+        // Cloned for the broadcast continuation, which is a sibling link in this
+        // chain rather than nested inside the execute closure — so it needs its
+        // own binding. Resolved here so the broadcast advertises exactly the
+        // bundle the envelope signature was bound to, never a re-derivation.
+        let broadcast_delegation = delegation.clone();
+
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
@@ -874,6 +883,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         block_writes_for_group,
                         &private_key,
                         xcall_origin,
+                        delegation.as_deref(),
                     )
                     .await?;
 
@@ -995,6 +1005,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 // Read-only snapshot for the xcall namespace check below.
                 let xcall_datastore = act.datastore.clone();
                 let scope_projections = std::sync::Arc::clone(&act.scope_projections);
+
                 // `datastore_for_broadcast` used to recompute the
                 // governance position at broadcast time — that recompute
                 // produced the persist-vs-broadcast signature mismatch
@@ -1265,6 +1276,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         // `MAX_XCALL_DEPTH`; `saturating_add`
                                         // keeps the arithmetic sound regardless.
                                         xcall_depth.saturating_add(1),
+                                        // An xcall is this node acting for
+                                        // itself in the target context, not for
+                                        // the original author: the warrant
+                                        // named one context, and honouring it
+                                        // across a hop would let one signed
+                                        // intent author in a context the member
+                                        // never authorized.
+                                        None,
                                     )
                                     .await;
 
@@ -1404,10 +1423,19 @@ impl Handler<ExecuteRequest> for ContextManager {
                             // reject the delta on signature mismatch.
                             let governance_position = signing_governance_position.clone();
 
+                            // The AUTHOR on the wire, which is the executor's
+                            // own key self-authored and the member's under a
+                            // warrant — matching the row and the signed
+                            // preimage. Diverging here would have peers verify
+                            // one author and store another.
+                            let broadcast_author = broadcast_delegation
+                                .as_ref()
+                                .map_or(executor, |d| d.warrant.author_device_key);
+
                             node_client
                                 .broadcast(
                                     &context,
-                                    &executor,
+                                    &broadcast_author,
                                     &encryption_key,
                                     outcome.artifact.clone(),
                                     the_delta.id,
@@ -1424,6 +1452,10 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     // async closure; `Option<[u8;32]>` is
                                     // Copy so captured by value automatically.
                                     producing_app_key,
+                                    // Matches the row persisted above. Both are
+                                    // `Some` together or a peer would verify one
+                                    // shape and store the other.
+                                    broadcast_delegation.as_deref().cloned(),
                                 )
                                 .await?;
                         }
@@ -1942,6 +1974,9 @@ async fn internal_execute(
     // runtime so the guest can read `env::xcall_origin()`. `None` for direct
     // calls.
     xcall_origin: Option<ContextId>,
+    // The author's consent, when this run is on someone else's behalf. Its
+    // presence is what makes the principal differ from the signer.
+    delegation: Option<&calimero_account::Delegation>,
 ) -> eyre::Result<(
     Outcome,
     Option<CausalDelta>,
@@ -1991,18 +2026,51 @@ async fn internal_execute(
             .is_authorized_for_context_state_op(&context.id, &executor)
             .unwrap_or(false);
 
-    // Resolved here rather than passed down from the RPC layer: the account is a
-    // fact about this node in this context's namespace, not something a caller may
-    // assert. `account_for_context` always yields a real account — see its docs for
-    // why there is no un-enrolled fallback.
-    let account = calimero_governance_store::account_for_context(&datastore, &context.id)?;
+    // The principal this run observes and is attributed to.
+    //
+    // Self-authored: resolved here rather than passed down from the RPC layer,
+    // because the account is a fact about this node in this context's namespace
+    // and not something a caller may assert. `account_for_context` always yields
+    // a real account — see its docs for why there is no un-enrolled fallback.
+    //
+    // Delegated: read off the WARRANT, which is still not a caller assertion —
+    // the bundle verified before reaching here, so the account is one the
+    // author's own root certified and the author's own device signed for. That
+    // is the whole reason the principal can differ from the signer without a
+    // caller being able to choose it.
+    let principal = match delegation {
+        None => Principal::new(
+            calimero_governance_store::account_for_context(&datastore, &context.id)?,
+            executor,
+        ),
+        Some(d) => {
+            // The same gate the receive path runs, on the authoring side, and it
+            // has to be HERE rather than at the persist below: `storage.commit()`
+            // makes the state durable before the delta row is written, so a
+            // refusal down there would leave a committed mutation with no delta
+            // to carry it — divergence from the peers that never accepted it.
+            //
+            // Under the execution lock, which is what makes this a real
+            // check-then-spend: two concurrent intents bearing one warrant
+            // serialize here, so the second reads the nonce the first spent.
+            calimero_governance_store::warrant_gate::check_delegated_delta(
+                &datastore,
+                &context.id,
+                d,
+            )?;
+            Principal::new(d.warrant.author_account, d.warrant.author_device_key)
+        }
+    };
+    let account = principal.account;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Still both derived from this node's own identity, so behaviour is
+    // unchanged. This is the single site that has to change for a run to be
+    // attributed to the caller instead — see `principal::Principal`.
     let (mut outcome, storage, private_storage) = execute(
         guard,
         module,
-        account,
-        executor,
+        principal,
         method.clone(),
         input,
         storage,
@@ -2395,14 +2463,33 @@ async fn internal_execute(
             // is persisted on the row and passed back to the broadcast
             // site so the gossip and DAG-catchup paths advertise the
             // same bytes.
-            let signature_payload =
-                calimero_node_primitives::sync::delta_auth::delta_signature_payload(
+            //
+            // Under a warrant the shape changes but the roles do not: the
+            // envelope names the AUTHOR and is signed by THIS node, which is
+            // exactly what the self-authored path forbids and what the warrant
+            // travelling beside it is what makes checkable. The two preimages
+            // are domain-separated, so neither signature verifies on the other's
+            // path and a relay cannot strip the warrant and pass the result off
+            // as self-authored.
+            let signature_payload = match delegation {
+                None => calimero_node_primitives::sync::delta_auth::delta_signature_payload(
                     context.id,
                     delta.id,
-                    executor,
+                    principal.device,
                     governance_position.as_ref(),
                     delta.hlc,
-                )?;
+                )?,
+                Some(d) => {
+                    calimero_node_primitives::sync::delta_auth::delegated_delta_signature_payload(
+                        context.id,
+                        delta.id,
+                        principal.device,
+                        d,
+                        governance_position.as_ref(),
+                        delta.hlc,
+                    )?
+                }
+            };
             let delta_signature = Some(identity_private_key.sign(&signature_payload)?.to_bytes());
             delta_signature_for_broadcast = delta_signature;
             // Pin the exact position the signature was bound to so
@@ -2421,11 +2508,37 @@ async fn internal_execute(
                     applied: true,
                     checkpoint_root_hash: None,
                     events: None, // No events stored for locally created deltas
-                    author_id: Some(executor),
+                    // The PRINCIPAL's device, not the signer's. They are the
+                    // same value on the self-authored path and deliberately
+                    // different under a warrant — this is the field the whole
+                    // split exists to make honest.
+                    author_id: Some(principal.device),
                     governance_position_blob,
                     delta_signature,
+                    delegation: delegation.cloned(),
                 },
             )?;
+
+            // Spend the nonce, now that the delta it authorizes is persisted.
+            //
+            // The authoring node has to do this itself. The receive path spends
+            // on apply, but a relay never applies its own delta through that
+            // path — so without this the warrant stayed unspent on the one node
+            // holding it, and the relay would re-run the same authorization on
+            // demand. Every peer would refuse the duplicate, so the divergence
+            // is one-sided: the relay applies twice, the network once.
+            //
+            // After the row, deliberately. If this write fails the nonce is
+            // merely still spendable — recoverable, and peers still refuse a
+            // duplicate. Spending first and failing to persist would burn the
+            // member's nonce for a write that never happened, which is not.
+            if let Some(delegation) = delegation {
+                calimero_governance_store::warrant_gate::spend_warrant_nonce(
+                    &store,
+                    &context.id,
+                    delegation,
+                )?;
+            }
 
             debug!(
                 context_id = %context.id,
@@ -2493,11 +2606,12 @@ async fn internal_execute(
 }
 
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
-pub async fn execute(
+pub(crate) async fn execute(
     context: &ContextGuard,
     module: calimero_runtime::Module,
-    account: AccountId,
-    executor: PublicKey,
+    // One argument, not two adjacent 32-byte ids that the compiler cannot tell
+    // apart. See `principal::Principal` for which layer consumes which half.
+    principal: Principal,
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
@@ -2519,8 +2633,8 @@ pub async fn execute(
                 let mut ro_private = ReadOnlyContextStorage::new(&mut private_storage);
                 module.run_with_origin(
                     context_id,
-                    account,
-                    executor,
+                    principal.account,
+                    principal.device,
                     &method,
                     &input,
                     &mut ro_storage,
@@ -2531,8 +2645,8 @@ pub async fn execute(
             } else {
                 module.run_with_origin(
                     context_id,
-                    account,
-                    executor,
+                    principal.account,
+                    principal.device,
                     &method,
                     &input,
                     &mut storage,

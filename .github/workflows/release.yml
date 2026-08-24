@@ -651,3 +651,21 @@ jobs:
           git push origin "${target_branch}"
 
           gh pr create -f || true
+
+  # Opens the pull request that moves every app in the fleet onto this release.
+  #
+  # Placed after `release-binaries`, not alongside `prepare`, and that ordering
+  # matters: the tag exists seconds into the release commit's run, but its
+  # binaries land roughly forty minutes later. A bump pull request opened at
+  # trigger time announces a version whose merod image nobody can pull yet, and
+  # the consumer's own e2e would fail trying.
+  fleet-bump:
+    name: Open SDK bump PRs
+    if: needs.prepare.outputs.binary_release == 'true'
+    needs: [prepare, release-binaries]
+    uses: ./.github/workflows/fleet-bump.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+    # GH_APP_PRIVATE_KEY, which the called workflow uses to mint a per-repository
+    # installation token.
+    secrets: inherit

@@ -1,0 +1,44 @@
+{
+  "_note": [
+    "Which repositories get an automatic dependency-bump pull request when this",
+    "repository publishes a release, and which surface each one has.",
+    "",
+    "  cargo — has logic/Cargo.toml pinning calimero-network/core by git tag",
+    "  npm   — declares @calimero-network/* packages in some package.json",
+    "",
+    "A repository's DEFAULT BRANCH is deliberately not recorded here. The fleet is",
+    "split roughly evenly between master and main, and a hand-maintained table of",
+    "which is which is exactly the kind of thing that goes stale and then fails",
+    "silently. The workflow checks out whatever the repository says its default",
+    "branch is and opens the pull request against that.",
+    "",
+    "Nor is the location of a repository's manifests recorded. bump-fleet.sh finds",
+    "every package.json that actually declares the dependency and walks up to the",
+    "nearest lockfile, so app/, apps/desktop/, packages/frontend/ and anything",
+    "added later all work without being listed."
+  ],
+
+  "consumers": [
+    { "repo": "mero-design", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-pixart", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-calendar", "surfaces": ["cargo", "npm"] },
+    { "repo": "merraria", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-blocks", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-issue-tracker", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-chat-pwa", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-ar", "surfaces": ["cargo"] },
+    { "repo": "mero-tag", "surfaces": ["cargo"] },
+    { "repo": "scaffolding-e2e-application", "surfaces": ["cargo"] },
+    { "repo": "mero-stream", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-meet", "surfaces": ["cargo", "npm"] },
+    { "repo": "tauri-app", "surfaces": ["npm", "tauri"] },
+    { "repo": "app-registry", "surfaces": ["npm"] }
+  ],
+
+  "_excluded": {
+    "battleships": "Pre-migration. Its contract does not compile against a current core (calimero_wasm_abi::emitter is gone) and its frontend is on mero-ui 0.3.x. Migrate it deliberately before adding it here.",
+    "auth-frontend": "Pre-migration, mero-ui 0.3.x.",
+    "mero-chat": "Abandoned 2026-08-19.",
+    "admin-dashboard": "Declares none of these packages."
+  }
+}
