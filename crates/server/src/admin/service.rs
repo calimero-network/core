@@ -26,8 +26,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, join_context, leave_context, resync_context, sync,
-    update_context_application,
+    get_contexts_with_executors_for_application, join_context, leave_context, perform_intent,
+    resync_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
 use crate::admin::handlers::network;
@@ -124,6 +124,10 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/application",
             post(update_context_application::handler),
+        )
+        .route(
+            "/contexts/:context_id/intents",
+            post(perform_intent::handler),
         )
         .route(
             "/contexts/:context_id/resync",

@@ -65,7 +65,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
 
 use crate::device::DeviceCert;
-use crate::domain::WARRANT_SIGN_DOMAIN;
+use crate::domain::{WARRANT_INTENT_DOMAIN, WARRANT_SIGN_DOMAIN};
 use crate::error::AccountError;
 use crate::signed::{sign_payload, AccountProof, Verified};
 
@@ -130,6 +130,31 @@ impl Warrant {
                 &not_after.to_le_bytes(),
             ],
         )
+    }
+
+    /// The commitment a warrant carries in place of the intent itself.
+    ///
+    /// Canonical, and it has to be: the client computes it before signing and
+    /// the executor recomputes it from what actually arrived, so a warrant only
+    /// authorises the intent it was minted for. Without one function producing
+    /// both, the two ends could disagree about what the field covers and the
+    /// warrant would authorise whatever the executor chose to run.
+    ///
+    /// The method is length-prefixed by `domain_hash`, so a method/args split
+    /// cannot be shifted across the boundary — `send("ab", x)` and `send("a",
+    /// "bx")` commit to different values.
+    #[must_use]
+    pub fn intent_hash(method: &str, args: &[u8]) -> [u8; 32] {
+        domain_hash(WARRANT_INTENT_DOMAIN, &[method.as_bytes(), args])
+    }
+
+    /// Whether this warrant was minted for exactly this intent.
+    ///
+    /// The executor's own check, and the one that stops a warrant being a blank
+    /// cheque: everything else establishes that the member signed *something*.
+    #[must_use]
+    pub fn covers_intent(&self, method: &str, args: &[u8]) -> bool {
+        self.intent_hash == Self::intent_hash(method, args)
     }
 
     /// Mint a warrant, signed by the author's device key.

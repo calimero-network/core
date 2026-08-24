@@ -351,3 +351,47 @@ fn boxing_the_proofs_is_invisible_on_the_wire() {
 
     assert_eq!(boxed, unboxed);
 }
+
+/// A warrant authorises one intent, not any intent. Without this the executor
+/// could run whatever it liked under a genuinely signed warrant.
+#[test]
+fn a_warrant_covers_only_the_intent_it_was_minted_for() {
+    let author = party(1, 2, 0x01);
+    let executor = party(3, 4, 0x02);
+    let args = br#"{"channel":"general","text":"on my way"}"#;
+
+    let warrant = Warrant::sign(
+        &author.device_sk,
+        ctx(CTX),
+        author.account(),
+        executor.account(),
+        Warrant::intent_hash("send_message", args),
+        7,
+        1_755_903_600,
+    )
+    .expect("signing must succeed");
+
+    assert!(
+        warrant.covers_intent("send_message", args),
+        "the intent it was minted for must be covered"
+    );
+    assert!(
+        !warrant.covers_intent("delete_channel", args),
+        "a different method must not be covered"
+    );
+    assert!(
+        !warrant.covers_intent("send_message", br#"{"channel":"general","text":"pwned"}"#),
+        "different arguments must not be covered"
+    );
+}
+
+/// The method is length-prefixed, so the split between method and arguments
+/// cannot be shifted across the boundary to forge a match.
+#[test]
+fn the_method_args_boundary_cannot_be_shifted() {
+    assert_ne!(
+        Warrant::intent_hash("ab", b"x"),
+        Warrant::intent_hash("a", b"bx"),
+        "moving a byte across the method/args boundary must change the commitment"
+    );
+}

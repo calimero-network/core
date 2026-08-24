@@ -26,7 +26,7 @@
 //! Checking it here would look like defence in depth and would actually be a
 //! convergence bug.
 
-use calimero_account::{Delegation, Warrant};
+use calimero_account::{AccountId, Delegation, Warrant};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::ContextId;
@@ -131,7 +131,7 @@ pub fn check_delegated_delta(
         return Err(WarrantRefusal::AuthorNotAMember.into());
     }
 
-    if !executor_may_author(store, &group_id, warrant)? {
+    if !holds_authorship(store, &group_id, warrant.executor)? {
         return Err(WarrantRefusal::ExecutorMayNotAuthor.into());
     }
 
@@ -161,19 +161,41 @@ pub fn spend_warrant_nonce(
     Ok(())
 }
 
-/// Whether the operator holds the authorship grant on `group_id`.
+/// Whether `account` holds the authorship grant on the group owning
+/// `context_id`.
 ///
-/// Read on the group that owns the context, which is deterministic here for the
-/// reason `CAN_AUTHOR_ON_BEHALF` documents: a peer applying a delta for a context
-/// is by definition a member of the owning group and holds its key, so every
-/// peer can read the row and every peer agrees.
-fn executor_may_author(
+/// Public because the relay needs the same answer *before* it executes, not only
+/// at apply: an intent for a context where it holds no grant must be refused at
+/// the API, never executed and published. Peers would drop the result, and to
+/// the member a silently dropped write is indistinguishable from data loss —
+/// which then gets diagnosed as a client bug.
+///
+/// Read on the group that OWNS the context, which is deterministic for the
+/// reason `CAN_AUTHOR_ON_BEHALF` documents: a peer applying a delta for a
+/// context is by definition a member of the owning group and holds its key, so
+/// every peer reads the same row and reaches the same verdict.
+///
+/// # Errors
+/// Propagates the store read failure. A context belonging to no group is not an
+/// error, it is simply no grant.
+pub fn account_may_author(
+    store: &Store,
+    context_id: &ContextId,
+    account: AccountId,
+) -> EyreResult<bool> {
+    let Some(group_id) = crate::get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    holds_authorship(store, &group_id, account)
+}
+
+/// Whether the operator holds the authorship grant on `group_id`.
+fn holds_authorship(
     store: &Store,
     group_id: &ContextGroupId,
-    warrant: &Warrant,
+    account: AccountId,
 ) -> EyreResult<bool> {
-    let Some(bits) =
-        CapabilitiesRepository::new(store).member_capability(group_id, &warrant.executor)?
+    let Some(bits) = CapabilitiesRepository::new(store).member_capability(group_id, &account)?
     else {
         // No row at all is no grant. Closed by default is the point.
         return Ok(false);

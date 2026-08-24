@@ -48,6 +48,14 @@ pub(crate) const WARRANT_SIGN_DOMAIN: &[u8] = b"calimero.warrant.v1";
 /// excluding its separators. Eight bytes of digest.
 pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
 
+/// Domain for the hash a warrant commits to instead of the intent itself.
+///
+/// Distinct from [`WARRANT_SIGN_DOMAIN`] because the two are different jobs on
+/// the same values: this one produces the commitment, that one signs over it.
+/// Sharing a domain would make the commitment a truncated disclosure of bytes
+/// something signs.
+pub(crate) const WARRANT_INTENT_DOMAIN: &[u8] = b"calimero.warrant.intent.v1";
+
 /// Every signing domain used by this crate, for the test that asserts they are
 /// pairwise distinct. A collision here would let a signature minted for one
 /// purpose be replayed as another.
@@ -62,4 +70,5 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     PAIRING_STATEMENT_SIGN_DOMAIN,
     PAIRING_CONFIRMATION_DOMAIN,
     WARRANT_SIGN_DOMAIN,
+    WARRANT_INTENT_DOMAIN,
 ];

@@ -1299,6 +1299,54 @@ pub struct GroupInfoApiResponseData {
     pub group_state_hash: String,
 }
 
+/// A member's request that this node perform one intent on their behalf.
+///
+/// The intent travels in the clear to THIS node, which is fine and is the whole
+/// point of the hop: the relay has to read the method and arguments to run them.
+/// What must not travel in the clear is the intent on the *gossip* wire, and it
+/// does not — the warrant commits to `H(method ‖ args)` and the detail is sealed
+/// beside the operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformIntentApiRequest {
+    /// The method to run.
+    pub method: String,
+    /// Its arguments, as the JSON the guest will receive.
+    pub args_json: serde_json::Value,
+    /// The author's consent, hex-encoded borsh of a `calimero_account::Delegation`.
+    ///
+    /// Opaque on this surface deliberately. It is a signed credential whose
+    /// canonical form is its borsh encoding, and re-describing its fields as
+    /// JSON would create a second spelling that could disagree with the bytes
+    /// the signature covers.
+    pub delegation: String,
+}
+
+impl Validate for PerformIntentApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.method.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "method" });
+        }
+        if self.delegation.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "delegation",
+            });
+        }
+        errors
+    }
+}
+
+/// Where the accepted intent landed, so a client can wait for it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformIntentApiResponse {
+    /// The delta this intent produced, if it wrote anything.
+    pub delta_id: Option<String>,
+    /// The method's own return value.
+    pub returns: Option<serde_json::Value>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddGroupMembersApiRequest {
