@@ -480,9 +480,22 @@ steps:
   # device-addressed, everything above would pass and then the node would
   # quietly re-fetch the rotated key on its next sync round.
 
-  - name: Give the recovery loop several rounds to try
-    type: wait
-    seconds: 20
+  - name: Wait for the recovered write to reach the revoked device's replacement
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - account-revoke-node-1
+      - account-revoke-node-3
+    timeout: 60
+    trigger_sync: true
+    # Waiting on the read itself, not just a converged hash: agreeing
+    # hashes can precede the delta actually applying.
+    expect:
+      method: get
+      args:
+        key: "from-laptop"
+      equals:
+        output: "laptop-wrote-this"
 
   # Asserted as the PROPERTY, not as a log signal, because this shape cannot
   # trigger the pull path at all. A node asks for a key when it is a member of a

@@ -299,10 +299,14 @@ steps:
     timeout: 90
     check_interval: 2
     trigger_sync: true
-
-  - name: Settle after reconciliation
-    type: wait
-    seconds: 5
+    # Waiting on the read itself, not just a converged hash: agreeing
+    # hashes can precede the delta actually applying.
+    expect:
+      method: get_user_simple_for
+      args:
+        user_key: "{{node1_account}}"
+      equals:
+        output: "node-1-profile-final"
 
   # --- Phase 5: read each entity back from node-2 and assert it
   #     reconciled to the final (post-update) value. Pre-redesign,

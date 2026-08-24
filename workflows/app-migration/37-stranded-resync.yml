@@ -185,9 +185,12 @@ steps:
     group_id: "{{group_id}}"
     target_application_id: "{{app_v2}}"
 
-  - name: Wait for v2 upgrade meta to gossip to node 2
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-strand-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Activate v2 on node 1 only (node 2 stays at v1 - never accessed)
     type: call
@@ -219,9 +222,12 @@ steps:
     group_id: "{{group_id}}"
     target_application_id: "{{app_v3}}"
 
-  - name: Wait for v3 upgrade meta to gossip to node 2
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-strand-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Activate v3 on node 1 only
     type: call

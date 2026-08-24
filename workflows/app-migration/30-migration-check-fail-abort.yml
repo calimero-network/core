@@ -145,9 +145,12 @@ steps:
     # The node resolves the migration from the target bundle's embedded ABI.
     cascade: true
 
-  - name: Wait for cascade op to gossip
-    type: wait
-    seconds: 5
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-check-fail-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   # Access the context → triggers the lazy migration: execute_migration produces
   # the lossy v2 root, the pre-commit migration_check runs on it and REJECTS it,

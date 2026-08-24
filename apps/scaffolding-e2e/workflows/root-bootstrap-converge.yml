@@ -182,10 +182,14 @@ steps:
     timeout: 60
     check_interval: 2
     trigger_sync: true
-
-  - name: Settle after convergence
-    type: wait
-    seconds: 3
+    # Waiting on the read itself, not just a converged hash: agreeing
+    # hashes can precede the delta actually applying.
+    expect:
+      method: get
+      args:
+        key: "alpha"
+      equals:
+        output: "from_node_1_first"
 
   # --- Phase 5: read back from both sides. Pre-fix, node-2 would
   # see only its own write (`delta_from_node2`) and none of

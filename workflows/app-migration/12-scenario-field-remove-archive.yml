@@ -193,11 +193,12 @@ steps:
     target_application_id: "{{app_v2}}"
     # The node resolves the migration from the target bundle's embedded ABI.
 
-  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale): lets the
-  # target+migration meta gossip to node 2 before its lazy read.
-  - name: Wait for upgrade meta to gossip to node 2
-    type: wait
-    seconds: 15
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   # These reads TRIGGER each node's lazy migration: schema_info is not
   # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
@@ -221,12 +222,6 @@ steps:
   # schema_info cannot prove a migration ran: the version string it returns is a
   # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
   # v1 bytes too. The rollup carries each member's ABI STATE version instead.
-  - name: Wait for both members to report the target ABI state version
-    type: assert_migration_complete
-    node: app-migration-archive-1
-    namespace_id: "{{namespace_id}}"
-    timeout_seconds: 90
-    poll_interval: 5
 
   - name: Read the migration-status rollup on node 1 (admin)
     type: get_migration_status

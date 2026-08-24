@@ -137,9 +137,12 @@ steps:
   # 15s to match the peer lazy scenarios (21/28): the cascade's migration commit
   # runs asynchronously after the upgrade_group RPC returns, so the abort below
   # must not race it — the context must be committed to v2 first.
-  - name: Wait for the migration to settle
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-admin-abort-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   # ── ABORT: native merobox abort_migration step ──
   # Calls abort_migration(namespace_id) against the node's RPC. The abort handler

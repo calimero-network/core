@@ -148,9 +148,12 @@ steps:
     group_id: "{{group_id}}"
     target_application_id: "{{app_v2}}"
 
-  - name: Wait for v2 upgrade meta to gossip to node 2
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Activate v2 on node 1
     type: call
@@ -190,9 +193,12 @@ steps:
     group_id: "{{group_id}}"
     target_application_id: "{{app_v3}}"
 
-  - name: Wait for v3 upgrade meta to gossip
-    type: wait
-    seconds: 10
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Install migration-suite-v4 on node 1
     type: install_application
@@ -208,9 +214,12 @@ steps:
     group_id: "{{group_id}}"
     target_application_id: "{{app_v4}}"
 
-  - name: Wait for v4 upgrade meta to gossip to node 2
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-chained-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   # Phase 6: ONE read per node triggers the chained replay v2 -> v3 -> v4.
   - name: Single read on node 2 chains both hops

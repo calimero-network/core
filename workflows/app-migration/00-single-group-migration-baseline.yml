@@ -170,16 +170,18 @@ steps:
     # ABI (declared by #[derive(app::Migrate)]). This workflow is the
     # regression guard for that resolution path.
 
-  # Fixed wait, NOT wait_for_sync: per-context migration apply is
   # asynchronous and a root_hash-based wait_for_sync polled here exits
   # vacuously synced because both nodes still hold the identical v1
   # root at the first poll. The fixed wait covers (a) per-context
   # migration apply on node 1, (b) context-sync gossip of the new
   # post-migration state to node 2, (c) docker stdout flush so
   # assert_log_present can see the "Executing migration" log line.
-  - name: Wait for upgrade + migration to apply + log flush
-    type: wait
-    seconds: 15
+  - name: Wait for both members to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Read the subgroup's upgrade record
     type: get_group_upgrade_status
@@ -220,12 +222,6 @@ steps:
   # schema_info cannot prove a migration ran: the version string it returns is a
   # constant compiled into the v2 binary, so it reads "2.0.0" over un-migrated
   # v1 bytes too. The rollup carries each member's ABI STATE version instead.
-  - name: Wait for both members to report the target ABI state version
-    type: assert_migration_complete
-    node: app-migration-baseline-1
-    namespace_id: "{{namespace_id}}"
-    timeout_seconds: 90
-    poll_interval: 5
 
   - name: Read the migration-status rollup on node 1 (admin)
     type: get_migration_status

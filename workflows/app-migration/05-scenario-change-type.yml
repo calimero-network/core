@@ -177,10 +177,12 @@ steps:
     target_application_id: "{{app_v5}}"
     # The node resolves the migration from the target bundle's embedded ABI.
 
-  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
-  - name: Wait for upgrade + migration to apply + log flush
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-typechange-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   # These reads TRIGGER each node's lazy migration: schema_info is not
   # a state op, so `maybe_lazy_upgrade` fires on each node, migrating

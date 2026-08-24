@@ -159,9 +159,12 @@ steps:
     # The node resolves the migration from the target bundle's embedded ABI.
     cascade: true
 
-  - name: Wait for cascade op to gossip + apply on both nodes
-    type: wait
-    seconds: 15
+  - name: Wait for the cohort to report the target ABI state version
+    type: assert_migration_complete
+    node: app-migration-mstatus-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Read post-migration schema_info on node 1 (triggers lazy migration)
     type: call
