@@ -4,6 +4,7 @@ pub mod alias;
 pub mod application;
 pub mod blobs;
 pub mod common;
+pub mod content_hash;
 pub mod context;
 pub mod crdt;
 pub mod events;

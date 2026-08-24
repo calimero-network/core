@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::bundle;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::content_hash::ContentHash;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use camino::Utf8PathBuf;
@@ -347,7 +348,7 @@ impl NodeClient {
         &self,
         url: Url,
         metadata: Vec<u8>,
-        expected_hash: Option<&Hash>,
+        expected_content_hash: Option<&ContentHash>,
     ) -> eyre::Result<ApplicationId> {
         let uri = url.as_str().parse()?;
 
@@ -403,7 +404,11 @@ impl NodeClient {
 
             let cursor = Cursor::new(&bundle_data[..]);
             let (bundle_blob_id, stored_size) = self
-                .add_blob(cursor, Some(bundle_data.len() as u64), expected_hash)
+                .add_blob(
+                    cursor,
+                    Some(bundle_data.len() as u64),
+                    expected_content_hash,
+                )
                 .await?;
 
             debug!(
@@ -430,7 +435,7 @@ impl NodeClient {
                     .map_err(io::Error::other)
                     .into_async_read(),
                 expected_size,
-                expected_hash,
+                expected_content_hash,
             )
             .await?;
 

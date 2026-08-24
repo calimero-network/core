@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::hash::Hash;
+use calimero_primitives::content_hash::ContentHash;
 use calimero_store::key::BlobMeta as BlobMetaKey;
 use calimero_store::types::BlobMeta as BlobMetaValue;
 use calimero_store::Store as DataStore;
@@ -123,7 +123,7 @@ pub struct BlobManager {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Value {
-    Full { hash: Hash, size: u64 },
+    Full { hash: ContentHash, size: u64 },
     Part { id: BlobId, _size: u64 },
     Overflow { found: u64, expected: u64 },
 }
@@ -300,7 +300,7 @@ impl BlobManager {
                 let links = meta.links;
                 self.data_store.handle().put(
                     &key,
-                    &BlobMetaValue::new(meta.size, meta.hash, links.clone(), remaining),
+                    &BlobMetaValue::new(meta.size, meta.content_hash, links.clone(), remaining),
                 )?;
                 Ok(RefRelease::Released { links })
             }
@@ -322,7 +322,7 @@ impl BlobManager {
         &self,
         id: BlobId,
         size: u64,
-        hash: [u8; 32],
+        content_hash: ContentHash,
         links: Box<[BlobMetaKey]>,
         contents: Option<&[u8]>,
     ) -> EyreResult<()> {
@@ -346,11 +346,11 @@ impl BlobManager {
 
         self.data_store
             .handle()
-            .put(&key, &BlobMetaValue::new(size, hash, links, refs))?;
+            .put(&key, &BlobMetaValue::new(size, content_hash, links, refs))?;
         Ok(())
     }
 
-    pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, Hash, u64)>
+    pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, ContentHash, u64)>
     where
         T: AsyncRead,
     {
@@ -361,7 +361,7 @@ impl BlobManager {
         &self,
         size: Option<Size>,
         stream: T,
-    ) -> EyreResult<(BlobId, Hash, u64)>
+    ) -> EyreResult<(BlobId, ContentHash, u64)>
     where
         T: AsyncRead,
     {
@@ -425,7 +425,7 @@ impl BlobManager {
                 self.persist_ref(
                     id,
                     blob.size as u64,
-                    *id,
+                    ContentHash::from(*id),
                     Box::default(),
                     Some(&buf[..blob.size]),
                 )
@@ -459,7 +459,7 @@ impl BlobManager {
                 };
             } else {
                 yield Value::Full {
-                    hash: Hash::from(*(AsRef::<[u8; 32]>::as_ref(&file.digest.finalize()))),
+                    hash: ContentHash::from(*(AsRef::<[u8; 32]>::as_ref(&file.digest.finalize()))),
                     size: file.size as u64,
                 };
             }
@@ -503,7 +503,7 @@ impl BlobManager {
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
-        self.persist_ref(id, size, *hash, links.into_boxed_slice(), None)
+        self.persist_ref(id, size, hash, links.into_boxed_slice(), None)
             .await?;
 
         debug!(
@@ -1178,13 +1178,23 @@ mod traversal_tests {
         handle
             .put(
                 &BlobMetaKey::new(a),
-                &BlobMetaValue::new(1, *a, vec![BlobMetaKey::new(b)].into_boxed_slice(), 1),
+                &BlobMetaValue::new(
+                    1,
+                    ContentHash::from(*a),
+                    vec![BlobMetaKey::new(b)].into_boxed_slice(),
+                    1,
+                ),
             )
             .unwrap();
         handle
             .put(
                 &BlobMetaKey::new(b),
-                &BlobMetaValue::new(1, *b, vec![BlobMetaKey::new(a)].into_boxed_slice(), 1),
+                &BlobMetaValue::new(
+                    1,
+                    ContentHash::from(*b),
+                    vec![BlobMetaKey::new(a)].into_boxed_slice(),
+                    1,
+                ),
             )
             .unwrap();
 
