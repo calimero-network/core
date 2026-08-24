@@ -1,4 +1,3 @@
-use calimero_account::AccountId;
 use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
 };
@@ -54,7 +53,10 @@ use crate::ContextManager;
 use calimero_context_client::group::MigrationFailureKind;
 use calimero_governance_store::metrics::ExecutionLabels;
 
+use self::principal::Principal;
+
 mod governance_position;
+pub(crate) mod principal;
 mod signing;
 pub mod storage;
 mod upgrade_gate;
@@ -1998,11 +2000,13 @@ async fn internal_execute(
     let account = calimero_governance_store::account_for_context(&datastore, &context.id)?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Still both derived from this node's own identity, so behaviour is
+    // unchanged. This is the single site that has to change for a run to be
+    // attributed to the caller instead — see `principal::Principal`.
     let (mut outcome, storage, private_storage) = execute(
         guard,
         module,
-        account,
-        executor,
+        Principal::new(account, executor),
         method.clone(),
         input,
         storage,
@@ -2493,11 +2497,12 @@ async fn internal_execute(
 }
 
 #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
-pub async fn execute(
+pub(crate) async fn execute(
     context: &ContextGuard,
     module: calimero_runtime::Module,
-    account: AccountId,
-    executor: PublicKey,
+    // One argument, not two adjacent 32-byte ids that the compiler cannot tell
+    // apart. See `principal::Principal` for which layer consumes which half.
+    principal: Principal,
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
@@ -2519,8 +2524,8 @@ pub async fn execute(
                 let mut ro_private = ReadOnlyContextStorage::new(&mut private_storage);
                 module.run_with_origin(
                     context_id,
-                    account,
-                    executor,
+                    principal.account,
+                    principal.device,
                     &method,
                     &input,
                     &mut ro_storage,
@@ -2531,8 +2536,8 @@ pub async fn execute(
             } else {
                 module.run_with_origin(
                     context_id,
-                    account,
-                    executor,
+                    principal.account,
+                    principal.device,
                     &method,
                     &input,
                     &mut storage,

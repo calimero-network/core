@@ -27,6 +27,7 @@ use tracing::{debug, error, warn};
 use crate::error::ContextError;
 
 use super::execute::execute;
+use super::execute::principal::Principal;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
 use crate::{BoundedCache, ContextLock, ContextManager, ContextMeta};
@@ -365,8 +366,7 @@ async fn create_context(
     let (outcome, storage, private_storage) = execute(
         &guard,
         module,
-        account,
-        identity,
+        Principal::new(account, identity),
         "init".into(),
         init_params.into(),
         storage,
