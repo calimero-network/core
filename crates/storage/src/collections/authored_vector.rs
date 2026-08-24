@@ -447,14 +447,16 @@ mod tests {
     /// the new entry has the largest `created_at` and does sort last — which is
     /// why this is latent rather than immediately obvious.
     ///
-    /// Ignored because it FAILS: it is the reproduction, not a guard. The fix
-    /// is a real tradeoff and should not be chosen under review pressure:
-    /// materialising the cache before insert restores the contract but puts the
-    /// O(n) read back on every push, which is the wall this branch exists to
-    /// remove; resolving the index from the written id costs the same walk;
-    /// giving `Metadata` a monotonic per-collection sequence to break the tie
-    /// is sound and O(1) — enumeration order is not hashed, so it cannot fork
-    /// replicas — but it is a layout change and a design call.
+    /// This was the reproduction while `push` returned an index. It is now the
+    /// guard: `push` returns the entry's ID, so the address it hands back names
+    /// the entry rather than describing where it currently sits, and stays
+    /// correct however the ties fall.
+    ///
+    /// Note what it does NOT cover. The positional API still enumerates in
+    /// `(created_at, id)` order, so entries pushed in one call still come back
+    /// in an arbitrary order — `get(0)` need not be the first push, and `pop`
+    /// need not return the last. That is a separate defect in `Vector`'s
+    /// documented semantics, not something an id-addressed `push` fixes.
     #[test]
     fn push_returns_an_address_that_resolves_to_the_entry_it_wrote() {
         let mut v = AuthoredVector::<u64>::new();

@@ -190,9 +190,24 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     }
 
     fn read_node(&self, path: &[u8]) -> TrieNode {
-        S::storage_read(Key::ChildTrie(addr(self.parent, path)))
-            .and_then(|bytes| TrieNode::try_from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let Some(bytes) = S::storage_read(Key::ChildTrie(addr(self.parent, path))) else {
+            return TrieNode::default();
+        };
+        TrieNode::try_from_slice(&bytes).unwrap_or_else(|error| {
+            // A row that is PRESENT but undecodable is not an empty subtree,
+            // and defaulting conflates the two. The consequences are silent:
+            // `len()` reports the collection empty, and `root()` returns EMPTY
+            // so the parent folds nothing and hashes as childless — a wrong
+            // hash propagating to the context root with nothing raised.
+            // Defaulting keeps the read infallible (these are hot paths), so
+            // say so loudly instead.
+            tracing::warn!(
+                parent = ?self.parent, ?path, %error,
+                "child-trie node row present but undecodable; treating the subtree as \
+                 empty, which UNDERSTATES this parent's children and its hash"
+            );
+            TrieNode::default()
+        })
     }
 
     fn write_node(&self, path: &[u8], node: &TrieNode) {
@@ -206,9 +221,19 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     }
 
     fn read_bucket(&self, path: &[u8]) -> TrieBucket {
-        S::storage_read(Key::ChildTrie(addr(self.parent, path)))
-            .and_then(|bytes| TrieBucket::try_from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let Some(bytes) = S::storage_read(Key::ChildTrie(addr(self.parent, path))) else {
+            return TrieBucket::default();
+        };
+        TrieBucket::try_from_slice(&bytes).unwrap_or_else(|error| {
+            // See `read_node`: absent and undecodable are different, and only
+            // one of them means "no children here".
+            tracing::warn!(
+                parent = ?self.parent, ?path, %error,
+                "child-trie bucket row present but undecodable; treating it as empty, \
+                 which DROPS the children it holds"
+            );
+            TrieBucket::default()
+        })
     }
 
     fn write_bucket(&self, path: &[u8], bucket: &TrieBucket) {

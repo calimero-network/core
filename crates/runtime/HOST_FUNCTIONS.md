@@ -333,7 +333,7 @@ non-owner `update`/`tombstone` returns `-1` with an ownership error message writ
 |----------|-----------|-------------|
 | `js_crdt_authored_vector_new` | `(register_id: u64) -> i32` | Creates a new attributed vector. |
 | `js_crdt_authored_vector_new_with_id` | `(id_ptr: u64, register_id: u64) -> i32` | Creates an attributed vector at a caller-supplied deterministic 32-byte ID. |
-| `js_crdt_authored_vector_push` | `(vector_id_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Pushes a value at the tail, stamping the caller as owner. Writes the new index (`u64`, little-endian) to the register; returns `1`. |
+| `js_crdt_authored_vector_push` | `(vector_id_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Pushes a value at the tail, stamping the caller as owner. Writes the new entry's **32-byte ID** to the register; returns `1`. Not an index — see the note below. |
 | `js_crdt_authored_vector_update` | `(vector_id_ptr: u64, index: u64, value_ptr: u64, register_id: u64) -> i32` | Owner-only. Replaces the value at a slot. Returns `1` on success; `-1` (error in register) for a non-owner or out-of-bounds index. |
 | `js_crdt_authored_vector_tombstone` | `(vector_id_ptr: u64, index: u64, register_id: u64) -> i32` | Owner-only. Retracts a slot (overwrites with an empty value). Returns `1` on success; `-1` (error in register) for a non-owner or out-of-bounds index. |
 | `js_crdt_authored_vector_get` | `(vector_id_ptr: u64, index: u64, register_id: u64) -> i32` | Retrieves a value by index (`1` found, `0` absent). |
@@ -341,6 +341,19 @@ non-owner `update`/`tombstone` returns `-1` with an ownership error message writ
 | `js_crdt_authored_vector_owned_by_me` | `(vector_id_ptr: u64, index: u64) -> i32` | Whether the current executor owns the slot (`1`/`0`; `0` for out-of-bounds slots). |
 | `js_crdt_authored_vector_iter` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Iterates all values in insertion order (`[count][len,value]...`). |
 | `js_crdt_authored_vector_len` | `(vector_id_ptr: u64, register_id: u64) -> i32` | Gets the entry count including tombstoned slots (`u64`, little-endian). |
+| `js_crdt_authored_vector_update_by_id` | `(vector_id_ptr: u64, entry_id_ptr: u64, value_ptr: u64, register_id: u64) -> i32` | Owner-only. Replaces the value of the entry named by `entry_id`. Returns `1`; `-1` (error in register) for a non-owner or unknown id. |
+| `js_crdt_authored_vector_tombstone_by_id` | `(vector_id_ptr: u64, entry_id_ptr: u64, register_id: u64) -> i32` | Owner-only. Retracts the entry named by `entry_id`. Returns `1`; `-1` (error in register) for a non-owner or unknown id. |
+| `js_crdt_authored_vector_get_by_id` | `(vector_id_ptr: u64, entry_id_ptr: u64, register_id: u64) -> i32` | Retrieves the value of the entry named by `entry_id` (`1` found, `0` absent). |
+| `js_crdt_authored_vector_owner_of_id` | `(vector_id_ptr: u64, entry_id_ptr: u64, register_id: u64) -> i32` | Writes the owner's 32-byte account id to the register (`1`); `0` with a cleared register if no such entry. |
+
+**Index vs ID on `AuthoredVector`.** `push` returns an **ID**, and the `_by_id`
+functions are the ones to use with it. An index describes where an entry
+currently sits in a set every peer inserts into, so a peer inserting ahead of it
+renumbers it — and since `update`/`tombstone` are ownership-gated *by the address
+they are given*, a stale index performs the owner check against, and writes to, a
+different entry (core#3637). The positional functions remain correct for
+enumeration and for an address resolved inside the same call; anything that
+carries an address across calls, or out to a client and back, must use an ID.
 
 #### Shared Storage Operations
 

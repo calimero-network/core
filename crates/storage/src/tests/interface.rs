@@ -720,6 +720,33 @@ mod snapshot_and_resync {
         let target_para = TargetInterface::find_by_id::<Paragraph>(para.id()).unwrap();
         assert!(target_para.is_some());
         assert_eq!(target_para.unwrap().text, "Source Para");
+
+        // The links, not just the values. Children live in `Key::ChildTrie`,
+        // their own keyspace — a snapshot that ships only entries and indexes
+        // installs every entity with no parent->child link at all. Asserting
+        // the two values above passes in exactly that state, which is how this
+        // went unnoticed: the target holds everything and can enumerate
+        // nothing, and cannot recover in place because re-applying
+        // byte-identical entities never re-links.
+        let source_children = Index::<SourceStorage>::get_children_of(page.id()).unwrap();
+        let target_children = Index::<TargetStorage>::get_children_of(page.id()).unwrap();
+        assert_eq!(
+            target_children.len(),
+            source_children.len(),
+            "the target must enumerate the same children as the source"
+        );
+        assert!(
+            target_children.iter().any(|c| c.id() == para.id()),
+            "the child must be reachable from its parent after the round trip"
+        );
+
+        // And the hash the parent commits to must match, since it folds the
+        // trie root — a link-less target hashes as childless.
+        assert_eq!(
+            Index::<TargetStorage>::get_hashes_for(page.id()).unwrap(),
+            Index::<SourceStorage>::get_hashes_for(page.id()).unwrap(),
+            "parent hashes must survive the round trip"
+        );
     }
 }
 

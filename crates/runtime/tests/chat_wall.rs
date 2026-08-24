@@ -28,6 +28,8 @@
 //!
 //! Override the guest with `CURB_WASM=/path/to/curb.wasm`.
 
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Instant;
 
 use calimero_account::AccountId;
@@ -35,10 +37,110 @@ use calimero_runtime::logic::{Outcome, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::Engine;
 
-const DEFAULT_WASM: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../../mero-chat-pwa/logic/target/wasm32-unknown-unknown/app-release/curb.wasm"
-);
+/// The real mero-chat contract, as a sibling checkout of this workspace.
+///
+/// Override with `CURB_LOGIC_DIR=/path/to/mero-chat-pwa/logic`.
+const DEFAULT_LOGIC_DIR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../mero-chat-pwa/logic");
+
+/// Every core crate mero-chat pulls from the published git source, which has to
+/// be redirected at THIS tree for the measurement to mean anything.
+const PATCHED_CRATES: [(&str, &str); 4] = [
+    ("calimero-sdk", "crates/sdk"),
+    ("calimero-storage", "crates/storage"),
+    ("calimero-storage-macros", "crates/storage-macros"),
+    ("calimero-wasm-abi", "crates/wasm-abi"),
+];
+
+/// The git source mero-chat names for those crates. `[patch]` keys match on the
+/// source URL, so this has to be byte-identical to its manifest.
+const CORE_GIT_SOURCE: &str = "https://github.com/calimero-network/core.git";
+
+/// Build the real contract against the core in THIS working tree.
+///
+/// mero-chat pins a published core (`calimero-sdk = { git = ..., tag = ... }`),
+/// so a stock build measures the branch's VM against an app compiled for a
+/// released storage layer — which is not the question. The patch is injected
+/// with `cargo --config` rather than written into mero-chat's manifest: that
+/// override is a workstation-only thing and must never be committed there, and
+/// a test that requires a human to have edited another repo first is a test
+/// that silently measures the wrong thing when they haven't.
+///
+/// Why not depend on mero-chat instead: it depends on core, so core cannot
+/// depend on it without a cycle. Driving its source from outside is the only
+/// direction that works.
+fn build_curb_wasm() -> Vec<u8> {
+    if let Ok(prebuilt) = std::env::var("CURB_WASM") {
+        return std::fs::read(&prebuilt)
+            .unwrap_or_else(|e| panic!("CURB_WASM={prebuilt} could not be read: {e}"));
+    }
+
+    let logic_dir = PathBuf::from(
+        std::env::var("CURB_LOGIC_DIR").unwrap_or_else(|_| DEFAULT_LOGIC_DIR.to_owned()),
+    );
+    assert!(
+        logic_dir.join("Cargo.toml").is_file(),
+        "no mero-chat logic crate at {}\n\
+         clone it beside this workspace, or set CURB_LOGIC_DIR",
+        logic_dir.display(),
+    );
+
+    // Absolute paths: `--config` values are resolved against the invoking
+    // directory, not the target manifest's.
+    let core_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("canonicalize core root");
+
+    // Build into OUR target dir, not mero-chat's. The measurement borrows that
+    // checkout; it should not leave artefacts in it.
+    let target_dir = core_root.join("target/curb-wall");
+
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.current_dir(&logic_dir)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .args([
+            "build",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--profile",
+            "app-release",
+        ]);
+    for (crate_name, rel) in PATCHED_CRATES {
+        let path = core_root.join(rel);
+        assert!(path.is_dir(), "missing core crate at {}", path.display());
+        cmd.arg("--config").arg(format!(
+            r#"patch."{CORE_GIT_SOURCE}".{crate_name}.path="{}""#,
+            path.display()
+        ));
+    }
+
+    // Patching changes dependency resolution, so cargo rewrites the lockfile.
+    // Put it back: the lock belongs to mero-chat, and a stray modification
+    // there is exactly the kind of thing that gets committed by accident.
+    let lock_path = logic_dir.join("Cargo.lock");
+    let lock_before = std::fs::read(&lock_path).ok();
+
+    let out = cmd.output().expect("failed to spawn cargo build for curb");
+
+    if let Some(bytes) = lock_before {
+        if std::fs::read(&lock_path).ok().as_ref() != Some(&bytes) {
+            let _ignored = std::fs::write(&lock_path, &bytes);
+        }
+    }
+
+    assert!(
+        out.status.success(),
+        "building the real mero-chat contract against this core failed:\n\
+         --- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let wasm_path = target_dir.join("wasm32-unknown-unknown/app-release/curb.wasm");
+    std::fs::read(&wasm_path)
+        .unwrap_or_else(|e| panic!("built, but no wasm at {}: {e}", wasm_path.display()))
+}
 
 /// Stop here even if nothing has walled, so a genuinely-flat build cannot run
 /// forever. Well clear of the 1,187 the trie alone reached.
@@ -76,12 +178,10 @@ fn call(
 #[test]
 #[ignore = "needs curb.wasm from mero-chat-pwa; see module docs"]
 fn how_many_messages_before_send_message_walls() {
-    let path = std::env::var("CURB_WASM").unwrap_or_else(|_| DEFAULT_WASM.to_owned());
-    let wasm = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("read guest at {path}: {e}\nbuild it first: (cd mero-chat-pwa/logic && cargo build --target wasm32-unknown-unknown --profile app-release)"));
+    let wasm = build_curb_wasm();
 
     let limits = VMLimits::default();
-    println!("guest:   {path}");
+    println!("guest:   real mero-chat contract, built against this core tree");
     println!("max_gas: {:?}", limits.max_gas);
 
     let module = Engine::with_limits(limits)
