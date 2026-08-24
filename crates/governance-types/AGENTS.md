@@ -6,7 +6,7 @@ Pure-data types for local (no-chain) group/namespace governance: signed operatio
 
 - **Crate**: `calimero-governance-types`
 - **Entry**: `src/lib.rs` (+ `src/wire.rs` submodule, `src/tests.rs`)
-- **Key deps**: `borsh` (wire format), `ed25519-dalek` (signature errors), `sha2` (op content hash), `blake3` (topic-scoped ack hash), `thiserror`, `calimero-context-config` (`AppKey`, `ContextGroupId`, `SignedGroupOpenInvitation`, `MemberCapabilities`, `VisibilityMode`), `calimero-primitives` (`PublicKey`/`PrivateKey`, `ContextId`, `GroupMemberRole`, `ApplicationId`, `BlobId`), `calimero-storage` (`HybridTimestamp` for the HLC cascade fence)
+- **Key deps**: `borsh` (wire format), `ed25519-dalek` (signature errors), `sha2` (op content hash), `blake3` (topic-scoped ack hash), `thiserror`, `calimero-context-config` (`BytecodeId`, `ContextGroupId`, `SignedGroupOpenInvitation`, `MemberCapabilities`, `VisibilityMode`), `calimero-primitives` (`PublicKey`/`PrivateKey`, `ContextId`, `GroupMemberRole`, `ApplicationId`, `BlobId`), `calimero-storage` (`HybridTimestamp` for the HLC cascade fence)
 - **Deliberately no `actix` dependency**: this crate is consumed by both `calimero-context-client` (actix runtime) and `calimero-governance-store`, which must not transitively re-acquire actix through the op-type dependency (#2479, epic #2300)
 
 ## Commands

@@ -9,9 +9,8 @@ const BYTES_LEN: usize = 32;
 
 /// The digest of a file's bytes, straight through: `sha256(content)`.
 ///
-/// Distinct from [`crate::blobs::BlobId`], which hashes the file's *chunk
-/// ids*. Both are 32 bytes off the same file and answer different
-/// questions, so there is deliberately no conversion between them.
+/// Distinct from [`crate::blobs::BlobId`] (which hashes the file's *chunk ids*):
+/// conversion is neither implicit nor single-step, so no accidental swap.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContentHash([u8; BYTES_LEN]);
@@ -76,23 +75,5 @@ mod tests {
     fn rejects_a_wrong_length_hex_string() {
         assert!("abcd".parse::<ContentHash>().is_err());
         assert!("zz".repeat(32).parse::<ContentHash>().is_err());
-    }
-
-    // The whole reason this type exists: a BlobId must not be usable where a
-    // ContentHash is wanted. There is no From impl between them, and this test
-    // documents that the omission is deliberate rather than an oversight.
-    #[test]
-    fn carries_no_conversion_to_or_from_a_blob_id() {
-        let bytes = [0x11_u8; 32];
-        let content = ContentHash::from(bytes);
-        let blob = crate::blobs::BlobId::from(bytes);
-        assert_ne!(
-            content.as_ref(),
-            &[0_u8; 32][..],
-            "sanity: the newtype carries its bytes"
-        );
-        // Both wrap 32 bytes, and that is exactly why neither converts to the
-        // other: they answer different questions about the same file.
-        assert_eq!(blob.as_ref().len(), content.as_ref().len());
     }
 }

@@ -12,7 +12,7 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 - **Snapshot boundary "negotiation".** Docs imply the requested cutoff is honored; it's ignored dead code — you always get the responder's current live root. `crates/node/src/sync/snapshot.rs:90,119,437`.
 - **Receive-path "key-pending buffer".** `receive-path.mdx` describes an indefinite wait for a missing key; actual path is a bounded 3s poll then bail to gossip/heartbeat. `crates/node/src/handlers/state_delta/crypto.rs:26`.
 - **Key-delivery seeds namespace admin.** `key-rotation.mdx:230` says the responder identity seeds the admin; replaced by the all-zeros placeholder-admin bootstrap (deliverer no longer trusted). `crates/governance-store/src/lib.rs:134`.
-- **AppKey terminology collision — resolved.** `glossary.mdx` used to name the governance bytecode-pointer field the same as code's `AppKey` type (`(package, signerId)`). That type is deleted; the field is now `bytecode_id`, distinct from the stable `ApplicationId`.
+- **Bytecode-pointer terminology collision — resolved.** `glossary.mdx` used to name the governance bytecode-pointer field after a since-deleted `(package, signerId)` identity type. The field is now `bytecode_id`, distinct from the stable `ApplicationId`.
 - **Minor:** `upgrades.mdx:118` Convergent row omits `SortedMap`/`SortedSet` (code classifies them Convergent).
 
 ## 1. Big undocumented subsystems (P1)

@@ -52,11 +52,12 @@ How the **application id** is derived depends on how the application entered the
 This table is about **`ApplicationId`** — which application. The exact build a
 context executes is tracked separately, as a group's **`bytecode_id`** (a `BlobId`
 over the bytecode, changing on every release; see [Upgrades](/protocol/upgrades/)),
-and a signed bundle's **`ContentHash`** (a digest of a file's raw bytes) is only
-ever supplied by a human, e.g. a CLI flag. `BlobId` and `ContentHash` are distinct
-types with no implicit conversion between them: assigning one to the other does
-not compile. Converting requires going through raw bytes explicitly, so a swap
-has to be written on purpose rather than happening by accident.
+and a signed bundle's **`ContentHash`** (a digest of a file's raw bytes, computed on
+every blob write; the only externally supplied one is the expected-hash check input,
+e.g. a CLI flag). `BlobId` and `ContentHash` are distinct types with no implicit
+conversion between them: assigning one to the other does not compile. Converting
+requires going through raw bytes explicitly, so a swap has to be written on purpose
+rather than happening by accident.
 
 Both are computed at install time in
 `crates/node/primitives/src/client/application/install.rs`. The raw-`.wasm` id folds

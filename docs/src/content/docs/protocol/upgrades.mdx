@@ -31,12 +31,12 @@ application from a content-addressed blob. Two distinct version markers matter:
 | **`bytecode_id`** | `GroupMeta.bytecode_id` = `blob_id(bytecode)` | the exact bytecode/schema a node is executing; changes on every code release |
 | **`state_version`** | embedded ABI manifest (`AppState::SCHEMA_VERSION`, from `#[app::state(version = N)]`) | the schema generation the binary targets; default `1`, readers treat a missing value as `1` |
 
-`bytecode_id` is a `BytecodeId` (itself a `BlobId`). It is a distinct type from
-`ContentHash` — the sha256 digest of a file's raw bytes, only ever supplied by a
-human, e.g. a CLI flag — with no implicit conversion between them: assigning one
-to the other does not compile. Converting requires going through raw bytes
-explicitly, so a swap has to be written on purpose rather than happening by
-accident.
+`bytecode_id` is a `BytecodeId`, which names a bytecode blob. It is a distinct type
+from `ContentHash` — the sha256 digest of a file's raw bytes, computed on every blob
+write and externally supplied only as the expected-hash check input, e.g. a CLI
+flag — with no implicit conversion between them: assigning one to the other does not
+compile. Converting requires going through raw bytes explicitly, so a swap has to be
+written on purpose rather than happening by accident.
 
 Because a bundle keeps the **same application id** while its bytecode (and therefore
 its `bytecode_id` and `state_version`) advances, the bytecode blob — not the application id
@@ -458,6 +458,7 @@ CascadeUpgrade {
     from_bytecode_id: BytecodeId,      // the walk predicate: match descendants on this bytecode_id
     bytecode_id: BytecodeId,           // the new bytecode blob id
     target_application_id: ApplicationId,
+    to_state_version: u32,             // max ABI state version across the target's services
     migration: Option<Vec<u8>>,        // the migrate method name (bytes)
     cascade_hlc: HybridTimestamp,      // the fence boundary, stamped once by the initiator
 }

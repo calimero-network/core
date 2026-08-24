@@ -60,7 +60,7 @@ src/
 | `ContextId` | `context` | Newtype over `Hash` identifying a context | 32 bytes, same encoding as `Hash` |
 | `ApplicationId` | `application` | Newtype over `Hash` identifying an application; `ZERO_APPLICATION_ID` sentinel | 32 bytes |
 | `BlobId` | `blobs` | Newtype over `Hash` identifying a stored blob | 32 bytes |
-| `ContentHash` | `content_hash` | `sha256(content)` over a file's raw bytes; no conversion to/from `BlobId` | 32 bytes; `Copy`; hex text, raw bytes for `borsh` |
+| `ContentHash` | `content_hash` | `sha256(content)` over a file's raw bytes; no implicit conversion to/from `BlobId` | 32 bytes; `Copy`; hex text, raw bytes for `borsh` |
 | `PublicKey` | `identity` | Newtype over `Hash`; Ed25519 verifying key | 32 bytes |
 | `PrivateKey` | `identity` | Raw `[u8; 32]` Ed25519 signing key; `ZeroizeOnDrop`, no `Clone`/`Copy`/serde | 32 bytes, never serialized |
 | `SignerId` | `application` | Non-empty `did:key:...` string identifying MPK bundle signer | variable-length string; length-prefixed under borsh |
