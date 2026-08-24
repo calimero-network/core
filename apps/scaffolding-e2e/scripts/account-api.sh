@@ -66,3 +66,38 @@ api_post() {
     }
     echo "${_resp}"
 }
+
+# GET an admin-api path on a node. Echoes the response body.
+api_get() {
+    _container="$1"
+    _path="$2"
+
+    _url=$(node_url "${_container}") || return 1
+    _token=$(node_token "${_url}") || return 1
+
+    _resp=$(curl -sS --fail-with-body "${_url}/admin-api/${_path}" \
+        -H "Authorization: Bearer ${_token}") || {
+        echo "GET ${_path} on ${_container} failed: ${_resp}" >&2
+        return 1
+    }
+    echo "${_resp}"
+}
+
+# PUT a JSON body to an admin-api path on a node. Echoes the response body.
+api_put() {
+    _container="$1"
+    _path="$2"
+    _body="$3"
+
+    _url=$(node_url "${_container}") || return 1
+    _token=$(node_token "${_url}") || return 1
+
+    _resp=$(curl -sS --fail-with-body -X PUT "${_url}/admin-api/${_path}" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${_token}" \
+        -d "${_body}") || {
+        echo "PUT ${_path} on ${_container} failed: ${_resp}" >&2
+        return 1
+    }
+    echo "${_resp}"
+}
