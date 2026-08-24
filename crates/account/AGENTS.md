@@ -100,6 +100,7 @@ This crate splits the identity half in two:
 
 ```text
    pairing.rs ──▶ device.rs ────┐
+   warrant.rs ──▶ device.rs ────┤     (DEVICE-signed, so not an AccountProof)
                                 ├──▶ root_key.rs ──▶ account.rs ──▶ domain.rs
    revocation.rs ───────────────┘     (chain walk)    (the anchor    (every signing domain,
         │              │                              + borsh        pairwise-distinct)
@@ -161,6 +162,13 @@ and a `Verified<T>` is one that has been checked.
 | `PairingOffer::new(…)` | fn | The verifying side's constructor, over key material that arrived |
 | `PairingOffer::verify_statement(sig)` | fn | Refuses a **partial** key substitution |
 | `PairingOffer::confirmation_code()` / `code_matches(supplied)` | fn | The 64-bit human-compared code; refuses a **wholesale** substitution |
+| `Warrant` | struct | An author's device-signed authorization for one executor to perform one intent, once. Names accounts **and** keys: `author_account`/`executor` are the authz subjects, `author_device_key` is what the signature verifies against |
+| `Warrant::sign(author_device_sk, …)` | fn | Mint one; the named device key is derived from the secret, so it cannot claim a key it does not hold |
+| `Warrant::verify_signature()` | fn | Authenticity of the warrant alone - says nothing about whether the key speaks for the account |
+| `Warrant::authorises(context, executor)` | fn | Whether this warrant was issued for *that* context and operator |
+| `Delegation` | struct | `{warrant, author_proof, executor_proof}` - the self-contained bundle that travels with a delegated change |
+| `Delegation::verify(executor_key)` | fn | Warrant signature **plus** both account bindings; yields `VerifiedWarrant` |
+| `VerifiedWarrant` | alias | `Verified<Warrant>` |
 | `AccountError` | enum | Why a credential failed |
 
 `verify_root_signed`, the one generic behind `verify_device_cert` and
@@ -181,6 +189,7 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 | `src/device.rs` | `KemPublicKey`, `DeviceCert` + `sign`, `VerifiedDeviceCert`, `verify_device_cert` |
 | `src/revocation.rs` | `DeviceRevocation` + `sign`, `SignedDeviceRevocation` (= `AccountProof<DeviceRevocation>`), `authorises`, `verify_device_revocation` |
 | `src/pairing.rs` | `PairingOffer` - the four values a pairing is about, and every question either end asks of them |
+| `src/warrant.rs` | `Warrant` + `sign`/`verify_signature`/`authorises`, `Delegation` + `verify`, `VerifiedWarrant` - delegated authorship |
 | `src/domain.rs` | Every signing/content-address domain in one place, so `signing_domains_are_pairwise_distinct` is a check over the whole set |
 | `src/error.rs` | `AccountError` |
 | `src/tests.rs` | Declares the test tree; every test in the crate lives under `src/tests/` |
@@ -200,6 +209,10 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 - **An account root is a member NOWHERE, on purpose.** It is kept offline so it survives losing every device, which is what makes recovery possible - so the link gate cannot ask "is the root a member?". `AccountMemberEndorsement` is how a granted member key vouches for the account instead. It takes both to enroll: only a member can endorse, only the root can certify a device, and neither alone is enough.
 - **`AccountMemberEndorsement::verify` is validity, not authority** - same split as `Verified<T>` versus "in force". Whether the endorser is a member is an at-cut question for the projection. Anyone may endorse any account (ids are public) and it grants nothing. It returns `VerifiedEndorsement` rather than `Result<(), _>` precisely so a gate reads the endorser's key off the wrapper instead of off a struct nobody checked.
 - **`AccountMemberEndorsement` does not implement `RootSigned`, deliberately.** It is signed by a granted *member* key, not the account root - which is the entire reason it exists. That difference used to live only in prose; keeping it outside the trait puts it in the type system.
+- **A `Delegation` must check the key a certificate is ABOUT, not just that it verifies.** `AccountProof::verify` establishes that a certificate genuinely came from an account's root; it says nothing about which key the certificate names. A proof for one of the account's *other* devices verifies perfectly and would otherwise vouch for a key the warrant never authorized. `Delegation::verify` therefore does two steps per proof, and `an_author_proof_for_a_different_device_of_the_same_account_is_refused` pins the second one - it is the failure that looks like success.
+- **A warrant is signed by a DEVICE key, so it is not an `AccountProof`.** Every other credential here is root-signed. This one is minted per request by the device making it, which is the point: authorizing a relay must not require the key that mints devices. Its domain is separate from `DEVICE_CERT_SIGN_DOMAIN` for that reason - a shared domain would let a device sign bytes a root-signed check would accept.
+- **`Delegation::verify` is authenticity, never authority** - the same split as `Verified<T>` versus "in force", and the list is longer here. Revocation, membership at the cut, the authorship capability, nonce reuse and `not_after` expiry all need a causal cut or a clock, so all five belong to the projection, `calimero-authz` and the receive path. A caller that checks only the bundle has checked who consented, not whether they may.
+- **`Warrant::executor` is an account, not a key, and that is load-bearing.** A relay re-keying keeps its replica slot by design; pinning a key here would void every warrant already issued to it, including ones sitting unspent on offline clients. Which *process* signed is recorded beside the change, and `Delegation::verify` ties the two together via `executor_proof`.
 - **`Verified<T>` cannot be built outside this crate.** Its field is private and every constructor sits behind a check. If you need to fabricate one in a test, that is a signal the check belongs in the test too - not a reason to widen the constructor.
 - **`AccountProof<T>` is borsh-identical to the loose fields it replaced.** Field order is `genesis, chain, statement`, matching the old `JoinAccountCredential { genesis, chain, cert }` and `SignedDeviceRevocation { genesis, chain, revocation }` exactly. `recorded_before_the_refactor` pins it against bytes captured before the change - if it fails, the encoding moved and that is a wire break needing a version bump, not a test to update.
 - **The end-to-end verifiers take a BORROWED chain on purpose.** `verify_device_cert` / `verify_device_revocation` are called from apply paths that hold a `&[RootKeyHandoff]`; making them methods on `AccountProof` would force those callers to allocate a proof per check just to discard it. A caller that already *has* a proof should use `AccountProof::verify`.

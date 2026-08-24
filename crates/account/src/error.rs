@@ -98,4 +98,27 @@ pub enum AccountError {
         /// The device the caller is withdrawing.
         expected: DeviceId,
     },
+    /// The warrant is not validly signed by the device key it names.
+    #[error("warrant has an invalid signature for the device key it names")]
+    WarrantSignatureInvalid,
+    /// The warrant was issued for a different context than the one it is being
+    /// presented in.
+    #[error("warrant is for a different context than the one it is presented in")]
+    WarrantContextMismatch,
+    /// The warrant authorises a different operator than the one presenting it.
+    #[error("warrant authorises {named}, not the {expected} presenting it")]
+    WarrantExecutorMismatch {
+        /// The operator the warrant actually authorises.
+        named: AccountId,
+        /// The operator presenting it.
+        expected: AccountId,
+    },
+    /// A certificate in a delegation verified against its account but certifies a
+    /// different key than the one it is supposed to vouch for.
+    ///
+    /// Its own variant because it is the failure that looks like success:
+    /// the proof is genuine and the account is right, so a check that stopped at
+    /// [`AccountProof::verify`](crate::AccountProof::verify) would accept it.
+    #[error("certificate verifies for its account but certifies a different key")]
+    WarrantProofKeyMismatch,
 }

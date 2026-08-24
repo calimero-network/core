@@ -15,4 +15,5 @@ mod pairing;
 mod revocation;
 mod root_key;
 mod signed;
+mod warrant;
 mod wire;
