@@ -28,7 +28,7 @@
 //!
 //! Override the guest with `CURB_WASM=/path/to/curb.wasm`.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use calimero_account::AccountId;
 use calimero_runtime::logic::{Outcome, VMLimits};
@@ -52,10 +52,6 @@ fn ceiling() -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_CEILING)
 }
-
-/// Report a running sample this often, so a slow climb is visible while the
-/// test runs rather than only in the final line.
-const SAMPLE_EVERY: usize = 100;
 
 fn call(
     module: &calimero_runtime::Module,
