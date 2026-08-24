@@ -809,7 +809,7 @@ mod tests {
         let mut value = serde_json::to_value(&signed).expect("serialize");
         let object = value.as_object_mut().expect("a JSON object");
         let bytecode_id = object.remove("bytecode_id").expect("field is present");
-        drop(object.insert("app_key".to_owned(), bytecode_id));
+        drop(object.insert("app_key".to_owned(), bytecode_id)); // pins alias = "app_key"
 
         let decoded: SignedGroupOpenInvitation =
             serde_json::from_value(value).expect("the pre-rename key must still deserialize");

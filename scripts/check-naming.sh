@@ -5,17 +5,20 @@ set -euo pipefail
 
 # The scan is over tracked files: a non-git checkout must fail loudly here
 # rather than silently pass a gate that never greps anything.
-git rev-parse --is-inside-work-tree >/dev/null
+# `git grep` only scans below the cwd, so a run from anywhere else would pass
+# vacuously.
+cd "$(git rev-parse --show-toplevel)"
 
-# The retired spellings are legitimate only as data: a serde/clap
-# `alias = "app_key"`, the back-compat tests pinning it, and the CLI reference
-# listing an accepted flag alias. Identifiers and prose are not exempt.
-readonly DELIBERATE='"(appKey|app-key|app_key)"|alias: `--app-key`'
+# The retired spellings are legitimate only where they are a back-compat shim:
+# a serde/clap `alias`, and the CLI reference listing an accepted flag alias.
+# `rename = "app_key"` would make a retired name canonical again - not exempt.
+readonly DELIBERATE='alias = "(appKey|app-key|app_key)"|alias: `--app-key`'
 
 # Stems, not whole identifiers, so a compound name cannot slip past.
 banned=(
   'app_key'
   'AppKey'
+  'appkey'
   'activated_blob'
   'bound_blob'
   'BoundBlobSource'

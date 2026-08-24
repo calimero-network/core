@@ -474,7 +474,7 @@ pub async fn update_application_id(
     )?;
 
     // Verify BytecodeId continuity (signerId match)
-    verify_appkey_continuity(&datastore, &context, &application_id)?;
+    verify_signer_continuity(&datastore, &context, &application_id)?;
 
     // Capture the pre-flip app id before finalize persists the new one, so the
     // post-commit AppVersionChanged carries the correct from/to versions.
@@ -541,7 +541,7 @@ fn activated_row_bytecode(node_client: &NodeClient, application: &Application) -
 /// - context governance explicitly authorizes a signer switch
 ///
 /// This check MUST occur BEFORE any migration logic executes.
-fn verify_appkey_continuity(
+fn verify_signer_continuity(
     datastore: &calimero_store::Store,
     context: &Context,
     new_application_id: &ApplicationId,
@@ -673,7 +673,7 @@ pub(crate) async fn update_application_with_migration(
     )?;
 
     // Verify BytecodeId continuity (signerId match)
-    verify_appkey_continuity(&datastore, &context, &application_id)?;
+    verify_signer_continuity(&datastore, &context, &application_id)?;
 
     // Pre-flip app id, captured before finalize persists the new one (for the
     // post-commit AppVersionChanged from/to versions).
@@ -1722,7 +1722,7 @@ mod tests {
     use super::ContextStorage;
     use super::{
         app_version_changed_event, application_version, authorize_update_application,
-        same_id_update_is_noop, verify_appkey_continuity,
+        same_id_update_is_noop, verify_signer_continuity,
     };
 
     /// Write a `ContextIdentity` row exactly as identity provisioning would, so
@@ -1835,7 +1835,7 @@ mod tests {
     // Test migration succeeds with valid signerId
 
     #[test]
-    fn test_appkey_continuity_passes_with_matching_signer_ids() {
+    fn test_signer_continuity_passes_with_matching_signer_ids() {
         // Setup: Create store and two applications with the same signerId
         let store = create_test_store();
         let signer_id = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -1862,7 +1862,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity passes
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
             "BytecodeId continuity check should pass with matching signerIds: {:?}",
@@ -1954,7 +1954,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_passes_for_new_context_without_old_app() {
+    fn test_signer_continuity_passes_for_new_context_without_old_app() {
         // Setup: Create store with only the new application
         let store = create_test_store();
         let new_signer_id = "did:key:z6MkNewSignerKey123456789";
@@ -1975,7 +1975,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity passes (new context case)
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
             "BytecodeId continuity check should pass for new context: {:?}",
@@ -1984,7 +1984,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_passes_with_empty_signer_ids_unsigned_apps() {
+    fn test_signer_continuity_passes_with_empty_signer_ids_unsigned_apps() {
         // Both sides unsigned: nothing to compare, so the update is allowed.
         let store = create_test_store();
 
@@ -2011,7 +2011,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity passes (unsigned to unsigned is allowed)
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
             "BytecodeId continuity check should pass for unsigned apps: {:?}",
@@ -2020,7 +2020,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_passes_when_upgrading_from_unsigned_to_signed() {
+    fn test_signer_continuity_passes_when_upgrading_from_unsigned_to_signed() {
         // Setup: upgrading from an unsigned to a signed application
         let store = create_test_store();
         let new_signer_id = "did:key:z6MkNewSignerKey123456789";
@@ -2047,7 +2047,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity passes (unsigned to signed is allowed with warning)
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
             "BytecodeId continuity check should pass when upgrading from unsigned to signed: {:?}",
@@ -2056,7 +2056,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_rejects_downgrade_from_signed_to_unsigned() {
+    fn test_signer_continuity_rejects_downgrade_from_signed_to_unsigned() {
         // Setup: downgrading from a signed to an unsigned application
         // Security: This is explicitly rejected to prevent security vulnerabilities
         let store = create_test_store();
@@ -2084,7 +2084,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity rejects signed-to-unsigned downgrade
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
             "BytecodeId continuity check should reject downgrade from signed to unsigned: {result:?}"
@@ -2103,7 +2103,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_passes_when_updating_same_application() {
+    fn test_signer_continuity_passes_when_updating_same_application() {
         // Setup: Test updating to a newer version of the same application (same signerId)
         let store = create_test_store();
         let signer_id = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -2129,7 +2129,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Standard upgrade should pass
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_ok(),
             "Standard application upgrade should pass: {:?}",
@@ -2140,7 +2140,7 @@ mod tests {
     // Test migration rejected with signerId mismatch
 
     #[test]
-    fn test_appkey_continuity_fails_with_mismatched_signer_ids() {
+    fn test_signer_continuity_fails_with_mismatched_signer_ids() {
         // Setup: Create store and two applications with different signerIds
         let store = create_test_store();
         let old_signer_id = "did:key:z6MkOldSignerKey123456789";
@@ -2168,7 +2168,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity fails
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
             "BytecodeId continuity check should fail with mismatched signerIds"
@@ -2187,7 +2187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_fails_when_new_app_not_found() {
+    fn test_signer_continuity_fails_when_new_app_not_found() {
         // Setup: Create store with only the old application
         let store = create_test_store();
         let old_signer_id = "did:key:z6MkOldSignerKey123456789";
@@ -2208,7 +2208,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Verify BytecodeId continuity fails because new app doesn't exist
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
             "BytecodeId continuity check should fail when new app not found"
@@ -2223,7 +2223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_prevents_hijacking_attempt() {
+    fn test_signer_continuity_prevents_hijacking_attempt() {
         // Setup: Simulate an attacker trying to hijack an app with a different signerId
         let store = create_test_store();
         let legitimate_signer = "did:key:z6MkLegitimatePublisher1234567890";
@@ -2254,7 +2254,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Attacker tries to update to their malicious application
-        let result = verify_appkey_continuity(&store, &context, &attacker_app_id);
+        let result = verify_signer_continuity(&store, &context, &attacker_app_id);
         assert!(
             result.is_err(),
             "BytecodeId continuity check should prevent hijacking attempt"
@@ -2268,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_is_case_sensitive() {
+    fn test_signer_continuity_is_case_sensitive() {
         // Security test: Verify that signerId comparison is case-sensitive
         // An attacker should not be able to bypass check by changing case
         let store = create_test_store();
@@ -2293,7 +2293,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Case-modified signerId should be rejected
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
             "SignerId comparison must be case-sensitive"
@@ -2301,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_fails_with_similar_looking_signer_ids() {
+    fn test_signer_continuity_fails_with_similar_looking_signer_ids() {
         // Security test: Verify that similar-looking signerIds are still rejected
         // Attackers might try using visually similar characters
         let store = create_test_store();
@@ -2326,7 +2326,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Similar-looking signerId should still be rejected
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
             "Similar-looking signerIds must still be rejected"
@@ -2334,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_fails_with_whitespace_differences() {
+    fn test_signer_continuity_fails_with_whitespace_differences() {
         // Security test: Verify that whitespace variations are rejected
         let store = create_test_store();
         let legitimate_signer = "did:key:z6MkPublisher123";
@@ -2358,7 +2358,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // SignerId with whitespace difference should be rejected
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(
             result.is_err(),
             "SignerIds with whitespace differences must be rejected"
@@ -2366,7 +2366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_appkey_continuity_rejects_prefix_attack() {
+    fn test_signer_continuity_rejects_prefix_attack() {
         // Security test: Attacker tries to use signerId that is a prefix/suffix
         let store = create_test_store();
         let legitimate_signer = "did:key:z6MkPublisher123456789";
@@ -2390,14 +2390,14 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Prefix signerId should be rejected
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(result.is_err(), "Prefix signerId attack must be rejected");
     }
 
     // Test rollback on migration failure
 
     #[test]
-    fn test_no_state_written_when_appkey_continuity_fails() {
+    fn test_no_state_written_when_signer_continuity_fails() {
         // Setup: Verify that no state changes occur when BytecodeId continuity check fails
         let store = create_test_store();
         let old_signer_id = "did:key:z6MkOldSignerKey123456789";
@@ -2437,7 +2437,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Attempt update that should fail BytecodeId continuity check
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(result.is_err(), "BytecodeId continuity check should fail");
 
         // Verify the original state is unchanged (no partial writes occurred)
@@ -2500,7 +2500,7 @@ mod tests {
         let context = create_test_context(context_id, old_app_id);
 
         // Attempt update that should fail
-        let result = verify_appkey_continuity(&store, &context, &new_app_id);
+        let result = verify_signer_continuity(&store, &context, &new_app_id);
         assert!(result.is_err(), "BytecodeId continuity check should fail");
 
         // Verify context metadata is unchanged
@@ -2583,7 +2583,7 @@ mod tests {
             }
 
             // Attempt update - should fail
-            let result = verify_appkey_continuity(&store, &context, &attacker_app_id);
+            let result = verify_signer_continuity(&store, &context, &attacker_app_id);
             assert!(
                 result.is_err(),
                 "Attempt {} should fail BytecodeId continuity check",
