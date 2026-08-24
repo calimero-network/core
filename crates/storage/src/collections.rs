@@ -637,6 +637,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // collection covers those paths too — not only the direct `map.insert`.
         let inherited = self.storage.metadata.storage_type.clone();
         self.insert_with_storage_type(id, item, inherited)
+            .map(|(_id, item)| item)
     }
 
     /// Inserts an item with a caller-provided fixed `id` and `field_name`,
@@ -667,12 +668,17 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     }
 
     /// Inserts an item into the collection with a specific StorageType.
+    ///
+    /// Returns the item alongside the element id it was stored under, because
+    /// the id is the only stable way to address the entry afterwards —
+    /// enumeration is `(created_at, id)` ordered over a set other replicas
+    /// insert into, so a position is not (core#3637).
     pub(crate) fn insert_with_storage_type(
         &mut self,
         id: Option<Id>,
         item: T,
         storage_type: StorageType,
-    ) -> StoreResult<T> {
+    ) -> StoreResult<(Id, T)> {
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
@@ -684,7 +690,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         collection.insert(&mut entry)?;
 
-        Ok(entry.item)
+        let stored_id = entry.storage.id();
+        Ok((stored_id, entry.item))
     }
 
     #[inline(never)]

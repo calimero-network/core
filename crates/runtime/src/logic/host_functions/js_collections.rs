@@ -2705,14 +2705,17 @@ impl VMHostFunctions<'_> {
             Err(message) => return self.write_error_message(dest_register_id, message),
         };
 
-        // `push` stamps the current executor as owner and returns the new index.
+        // `push` stamps the current executor as owner and returns the new
+        // entry's ID — 32 bytes, not an 8-byte index. A position describes
+        // where an entry currently sits in a set other replicas insert into,
+        // so it goes stale the moment someone inserts ahead of it; an id names
+        // the entry (core#3637).
         match vector.push(&value) {
-            Ok(index) => {
+            Ok(id) => {
                 if let Err(message) = save_js_instance(&mut vector) {
                     return self.write_error_message(dest_register_id, message);
                 }
-                let index_u64 = u64::try_from(index).map_err(|_| HostError::IntegerOverflow)?;
-                self.write_register_bytes(dest_register_id, &index_u64.to_le_bytes())?;
+                self.write_register_bytes(dest_register_id, &id)?;
                 Ok(1)
             }
             Err(err) => self.write_error_message(dest_register_id, err),
@@ -4164,12 +4167,11 @@ mod tests {
                 .unwrap(),
             1
         );
-        let bytes = host.borrow_logic().registers.get(reg).unwrap();
-        assert_eq!(
-            u64::from_le_bytes(bytes.try_into().unwrap()),
-            0,
-            "first push lands at index 0"
-        );
+        // push writes the new entry's 32-byte ID, not an 8-byte index: a
+        // position is only valid until someone inserts ahead of it, an id names
+        // the entry (core#3637).
+        let first_id = host.borrow_logic().registers.get(reg).unwrap().to_vec();
+        assert_eq!(first_id.len(), 32, "push must return a 32-byte entry id");
 
         put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"second");
         let reg_b = 3u64;
@@ -4178,12 +4180,9 @@ mod tests {
                 .unwrap(),
             1
         );
-        let bytes = host.borrow_logic().registers.get(reg_b).unwrap();
-        assert_eq!(
-            u64::from_le_bytes(bytes.try_into().unwrap()),
-            1,
-            "second push lands at index 1"
-        );
+        let second_id = host.borrow_logic().registers.get(reg_b).unwrap().to_vec();
+        assert_eq!(second_id.len(), 32, "push must return a 32-byte entry id");
+        assert_ne!(first_id, second_id, "each push must name a distinct entry");
 
         // get index 0.
         let reg_c = 4u64;

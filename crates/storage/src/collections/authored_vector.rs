@@ -24,6 +24,7 @@ use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, ValueRef, Vector};
+use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -110,9 +111,99 @@ where
     ///
     /// # Errors
     /// Returns any underlying storage error.
-    pub fn push(&mut self, value: V) -> Result<usize, StoreError> {
+    pub fn push(&mut self, value: V) -> Result<Id, StoreError> {
         let storage_type = super::authored_common::make_owner_stamp();
         self.inner.push_with_storage_type(value, storage_type)
+    }
+
+    /// Replaces the value stored under `id`. Only the entry's owner may call
+    /// this.
+    ///
+    /// Prefer this over the positional [`update`](Self::update) for anything
+    /// that does not resolve the position in the same call. An index describes
+    /// where an entry currently sits in a set other replicas insert into, so a
+    /// remote insert ahead of it silently renumbers it — and because `update`
+    /// is ownership-gated BY the address it is given, a stale index checks
+    /// ownership against, and writes to, a different entry (core#3637).
+    ///
+    /// # Errors
+    /// Returns `NotFound` if no entry is stored under `id`, `ActionNotAllowed`
+    /// if the current executor is not the stored owner, `InvalidData` if the
+    /// entry carries no owner stamp, or any underlying storage error.
+    pub fn update_by_id(&mut self, id: Id, value: V) -> Result<(), StoreError>
+    where
+        V: 'static,
+    {
+        let stored_owner = self.require_owner_of(id)?;
+
+        if !super::authored_common::writer_matches_owner(&stored_owner) {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "AuthoredVector::update_by_id: not entry owner".to_owned(),
+            )));
+        }
+
+        let _old = self
+            .inner
+            .update_by_id(id, value)?
+            .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+        Ok(())
+    }
+
+    /// Tombstones the entry stored under `id` by overwriting it with
+    /// `V::default()`. Only the entry's owner may call this.
+    ///
+    /// # Errors
+    /// Same as [`update_by_id`](Self::update_by_id).
+    pub fn tombstone_by_id(&mut self, id: Id) -> Result<(), StoreError>
+    where
+        V: Default + 'static,
+    {
+        self.update_by_id(id, V::default())
+    }
+
+    /// Returns the value stored under `id`, if any.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn get_by_id(&self, id: Id) -> Result<Option<V>, StoreError> {
+        Ok(self.inner.get_by_id(id)?.map(ValueRef::into_inner))
+    }
+
+    /// Returns the account that owns the entry stored under `id`, if it exists.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owner_of_id(&self, id: Id) -> Result<Option<AccountId>, StoreError> {
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(metadata.and_then(|m| match m.storage_type {
+            StorageType::User { owner, .. } => Some(owner),
+            _ => None,
+        }))
+    }
+
+    /// Returns whether the current executor owns the entry stored under `id`.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owned_by_me_id(&self, id: Id) -> Result<bool, StoreError> {
+        Ok(self
+            .owner_of_id(id)?
+            .as_ref()
+            .is_some_and(super::authored_common::writer_matches_owner))
+    }
+
+    /// The owner of record for `id`, or an error explaining why there is none.
+    fn require_owner_of(&self, id: Id) -> Result<AccountId, StoreError> {
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        match metadata {
+            Some(m) => match m.storage_type {
+                StorageType::User { owner, .. } => Ok(owner),
+                _ => Err(StoreError::StorageError(StorageError::InvalidData(
+                    "AuthoredVector entry missing User stamp".to_owned(),
+                ))),
+            },
+            None => Err(StoreError::StorageError(StorageError::NotFound(id))),
+        }
     }
 
     /// Replaces the value at `index`. Only the entry's owner may call this.
@@ -365,11 +456,7 @@ mod tests {
     /// is sound and O(1) — enumeration order is not hashed, so it cannot fork
     /// replicas — but it is a layout change and a design call.
     #[test]
-    #[ignore = "REPRODUCES A KNOWN BUG (see doc above): push's index contract is \
-                unsound now that enumeration is (created_at, id) ordered. Fixing \
-                it is an API/cost tradeoff, tracked separately — un-ignore with \
-                the fix."]
-    fn push_returns_the_index_of_the_entry_it_wrote() {
+    fn push_returns_an_address_that_resolves_to_the_entry_it_wrote() {
         let mut v = AuthoredVector::<u64>::new();
         let mut handed_out = Vec::new();
         // Merge mode is the case that actually bites: `timestamp_for_operation`
@@ -379,16 +466,16 @@ mod tests {
         // which is why this passes without the wrapper and proves nothing.
         crate::env::with_merge_mode(|| {
             for n in 0..32_u64 {
-                let idx = v.push(n).expect("push");
-                handed_out.push((idx, n));
+                let id = v.push(n).expect("push");
+                handed_out.push((id, n));
             }
         });
-        for (idx, want) in handed_out {
-            let got = v.get(idx).expect("get");
+        for (id, want) in handed_out {
+            let got = v.get_by_id(id).expect("get");
             assert_eq!(
                 got,
                 Some(want),
-                "push handed back index {idx} for value {want}, which holds {got:?}"
+                "push handed back an address for {want} that resolves to {got:?}"
             );
         }
     }
@@ -458,10 +545,9 @@ mod tests {
         env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
-        let idx = v.push(7).expect("push");
-        assert_eq!(idx, 0);
-        assert_eq!(v.get(0).unwrap(), Some(7));
-        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
+        let id = v.push(7).expect("push");
+        assert_eq!(v.get_by_id(id).unwrap(), Some(7));
+        assert_eq!(v.owner_of_id(id).unwrap(), Some(acct(ALICE)));
         assert_eq!(v.len().unwrap(), 1);
     }
 
@@ -479,10 +565,15 @@ mod tests {
         env::set_account_id(ALICE);
         let c = v.push(3).unwrap();
 
-        assert_eq!((a, b, c), (0, 1, 2));
-        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
-        assert_eq!(v.owner_of(1).unwrap(), Some(acct(BOB)));
-        assert_eq!(v.owner_of(2).unwrap(), Some(acct(ALICE)));
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        // Each id addresses ITS OWN entry's owner — which a position could not
+        // promise, since the three were pushed in one call and therefore tie on
+        // `created_at`.
+        assert_eq!(v.owner_of_id(a).unwrap(), Some(acct(ALICE)));
+        assert_eq!(v.owner_of_id(b).unwrap(), Some(acct(BOB)));
+        assert_eq!(v.owner_of_id(c).unwrap(), Some(acct(ALICE)));
     }
 
     #[test]

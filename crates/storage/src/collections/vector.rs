@@ -1,5 +1,6 @@
 //! This module provides functionality for the vector data structure.
 
+use crate::address::Id;
 use core::borrow::Borrow;
 use core::fmt;
 use std::mem;
@@ -165,21 +166,29 @@ where
     /// Push a value with an explicit `StorageType` on the new entry's element.
     ///
     /// Used by `AuthoredVector` to stamp each push with the executor as owner.
-    /// Returns the index of the newly inserted entry.
+    /// Returns the id of the newly inserted entry.
     pub(crate) fn push_with_storage_type(
         &mut self,
         value: V,
         storage_type: crate::entities::StorageType,
-    ) -> Result<usize, StoreError> {
-        let _ignored = self
+    ) -> Result<Id, StoreError> {
+        let (id, _item) = self
             .inner
             .insert_with_storage_type(None, value, storage_type)?;
-        let len = self.inner.len()?;
-        debug_assert!(
-            len >= 1,
-            "Vector::push_with_storage_type: len must be >= 1 after a successful push",
-        );
-        Ok(len - 1)
+        // The id, not `len - 1`.
+        //
+        // `len - 1` meant "the new entry is last", which held only while
+        // `insert` materialised the child cache and appended there. It no
+        // longer does — that populate was an O(n) read per insert — so
+        // enumeration comes from the child trie in `(created_at, id)` order,
+        // and `created_at` does not advance within a call. Entries pushed in
+        // one call therefore tie and the random id decides position, so
+        // `len - 1` could address a different entry (core#3637).
+        //
+        // An id is what the caller actually meant: it names the entry rather
+        // than describing where it currently sits, so it stays correct across a
+        // remote insert, which no positional answer can.
+        Ok(id)
     }
 
     /// Returns the storage id of the entry at `index`, or `None` if out of bounds.
@@ -272,6 +281,43 @@ where
         let old = mem::replace(&mut *entry, value);
 
         Ok(Some(old))
+    }
+
+    /// Replace the value stored under `id`, whatever position it occupies.
+    ///
+    /// The positional [`update`](Self::update) resolves `index` to an id and
+    /// then does exactly this. Callers that already hold the id should not go
+    /// back through a position: enumeration is `(created_at, id)` ordered over
+    /// a set other replicas insert into, so an index is only valid for as long
+    /// as no one else has inserted.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub(crate) fn update_by_id(&mut self, id: Id, mut value: V) -> Result<Option<V>, StoreError>
+    where
+        V: 'static,
+    {
+        // Same re-key as the positional path: two nodes concurrently replacing
+        // the same element with a freshly-built nested CRDT would otherwise
+        // mint divergent random internal ids.
+        super::rekey::rekey_nested_value(&mut value, id);
+
+        let Some(mut entry) = self.inner.get_mut(id)? else {
+            return Ok(None);
+        };
+
+        let old = mem::replace(&mut *entry, value);
+        Ok(Some(old))
+    }
+
+    /// Read the value stored under `id`, whatever position it occupies.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<ValueRef<V>>, StoreError> {
+        Ok(self.inner.get(id)?.map(ValueRef::new))
     }
 
     /// Get an iterator over the items in the vector.
