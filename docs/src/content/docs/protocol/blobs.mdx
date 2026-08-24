@@ -54,7 +54,7 @@ metadata in the `Blobs` column and the raw chunk files on disk.
 // crates/store/src/types/blobs.rs — value stored in the `Blobs` column
 pub struct BlobMeta {
     pub size: u64,                     // total size in bytes
-    pub content_hash: [u8; 32],        // SHA-256 over the whole file content
+    pub content_hash: ContentHash,     // SHA-256 over the whole file content
     pub links: Box<[key::BlobMeta]>,   // chunk blobs, in order (empty for a leaf chunk)
 }
 ```
@@ -76,9 +76,10 @@ BlobMeta.content_hash = hash( whole file content )      // distinct from BlobId
 ```
 
 :::caution
-`BlobId` and `BlobMeta.hash` are different values. `BlobId` addresses the blob
-through its chunk-id list; `BlobMeta.hash` is the digest of the raw content.
-Code that wants "the hash of the bytes" must read `hash`, not reuse the id.
+`BlobId` and `BlobMeta.content_hash` are different values. `BlobId` addresses the
+blob through its chunk-id list; `content_hash` is the digest of the raw content.
+They are separate types (`BlobId`, `ContentHash`) with no conversion between them,
+so the compiler enforces what this paragraph used to only ask for.
 :::
 
 Because a chunk's id is the hash of its bytes, two blobs that share identical

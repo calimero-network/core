@@ -49,6 +49,13 @@ How the **application id** is derived depends on how the application entered the
 | Raw `.wasm` | `hash_borsh(bytecode, size, source, metadata)` | tied to the exact bytes — any change is a new id |
 | Signed bundle | `hash_borsh(package, signer_id)` | **version-stable** — same `package` + signer keeps one id across releases |
 
+This table is about **`ApplicationId`** — which application. The exact build a
+context executes is tracked separately, as a group's **`bytecode_id`** (a `BlobId`
+over the bytecode, changing on every release; see [Upgrades](/protocol/upgrades/)),
+and a signed bundle's **`ContentHash`** (a digest of a file's raw bytes) is only
+ever supplied by a human, e.g. a CLI flag — a distinct type from both, with no
+conversion between them.
+
 Both are computed at install time in
 `crates/node/primitives/src/client/application/install.rs`. The raw-`.wasm` id folds
 in the bytecode blob id (already a content hash) together with size/source/metadata;
