@@ -29,8 +29,8 @@
     { "repo": "mero-ar", "surfaces": ["cargo"] },
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "scaffolding-e2e-application", "surfaces": ["cargo"] },
-    { "repo": "mero-stream", "surfaces": ["npm"] },
-    { "repo": "mero-meet", "surfaces": ["npm"] },
+    { "repo": "mero-stream", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-meet", "surfaces": ["cargo", "npm"] },
     { "repo": "tauri-app", "surfaces": ["npm"] },
     { "repo": "app-registry", "surfaces": ["npm"] }
   ],
