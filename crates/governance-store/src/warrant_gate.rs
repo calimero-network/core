@@ -74,30 +74,36 @@ pub enum WarrantRefusal {
 /// `verify_delta_envelope` establishes that and this function would otherwise be
 /// authorizing an unchecked claim.
 ///
-/// **Spends the nonce as a side effect, and only on success.** Every other check
-/// runs first so a delta refused for revocation or a missing grant does not burn
-/// the member's nonce — otherwise a relay could consume a member's whole
-/// sequence by publishing writes it knew would be refused.
+/// **Read-only.** It answers "may this apply", including whether the nonce is
+/// still spendable, and writes nothing. Spending is
+/// [`spend_warrant_nonce`], deliberately separate — see below.
 ///
-/// # Where this must be called, and it is not where the envelope check goes
+/// # Where this pair must be called, and why it is two functions
 ///
-/// Spending a nonce is a write, so this has an ordering constraint the
-/// signature check does not:
+/// Spending a nonce is a write, which gives this an ordering constraint the
+/// signature check does not have. Doing both in one call cannot satisfy it:
 ///
-/// * **After dedup.** A delta already in the DAG must never reach here. Its
-///   warrant's nonce is spent, so a second pass would refuse a delta this node
-///   has already applied — and on the gossip path a delta legitimately arrives
-///   more than once.
-/// * **Atomically with the apply.** If the nonce is spent and the apply then
-///   fails, the member's write is lost permanently: the retry presents the same
-///   warrant and is refused as a replay. The two writes belong in one batch.
+/// * Spend **before** the apply and a delta whose apply then fails has burned
+///   the member's nonce for nothing. The retry presents the same warrant and
+///   reads as a replay, so the write is lost permanently.
+/// * Spend **after** the apply, in one call with the checks, and a delta the
+///   checks refuse has already applied — unauthorized.
 ///
-/// Both point at the same place: the apply path, beside the row write — not the
-/// pre-decrypt envelope check, which runs before either condition holds.
+/// So: this runs before the apply and decides it, and `spend_warrant_nonce`
+/// runs after the apply succeeded. Both must be under the same lock the apply
+/// holds, or two concurrent deltas could each read the nonce as unspent —
+/// `Store::apply` is writes-only with no read set, so a batch does not make a
+/// read-modify-write atomic. The delta apply path already holds the DAG write
+/// lock and the per-context execution lock across apply and commit, which is
+/// exactly this ledger's key granularity.
+///
+/// A delta already known to the DAG must not reach either function: its
+/// warrant's nonce is spent, so a re-delivery over gossip would be refused as a
+/// replay of itself.
 ///
 /// # Errors
 /// [`WarrantRefusal`] for a delta that must not apply, or a store failure.
-pub fn admit_delegated_delta(
+pub fn check_delegated_delta(
     store: &Store,
     context_id: &ContextId,
     delegation: &Delegation,
@@ -129,7 +135,30 @@ pub fn admit_delegated_delta(
         return Err(WarrantRefusal::ExecutorMayNotAuthor.into());
     }
 
-    spend_nonce(store, context_id, warrant)
+    // Read-only: does the ledger still admit this nonce? The write is
+    // `spend_warrant_nonce`, after the apply.
+    let _admitted = next_nonce_state(store, context_id, warrant)?;
+    Ok(())
+}
+
+/// Record this warrant's nonce as spent.
+///
+/// Call only after [`check_delegated_delta`] passed AND the delta applied, under
+/// the same lock — see that function's docs for why the two are separate.
+///
+/// # Errors
+/// [`WarrantRefusal::NonceAlreadySpent`] if the nonce was spent between the
+/// check and here (which the shared lock is what prevents), or a store failure.
+pub fn spend_warrant_nonce(
+    store: &Store,
+    context_id: &ContextId,
+    delegation: &Delegation,
+) -> EyreResult<()> {
+    let warrant: &Warrant = &delegation.warrant;
+    let next = next_nonce_state(store, context_id, warrant)?;
+    let key = key::ContextWarrantNonce::new(*context_id, warrant.author_device_key);
+    store.handle().put(&key, &next)?;
+    Ok(())
 }
 
 /// Whether the operator holds the authorship grant on `group_id`.
@@ -153,23 +182,24 @@ fn executor_may_author(
         .contains(MemberCapabilities::CAN_AUTHOR_ON_BEHALF))
 }
 
-/// Record this warrant's nonce as spent, refusing a repeat.
+/// The ledger state that would result from accepting this warrant's nonce, or
+/// [`WarrantRefusal::NonceAlreadySpent`] if it may not be accepted.
 ///
-/// The window rather than a high-water mark, because gossip gives no ordering
+/// A window rather than a high-water mark, because gossip gives no ordering
 /// between two warrants from one device — see [`types::ContextWarrantNonce`].
-fn spend_nonce(store: &Store, context_id: &ContextId, warrant: &Warrant) -> EyreResult<()> {
+fn next_nonce_state(
+    store: &Store,
+    context_id: &ContextId,
+    warrant: &Warrant,
+) -> EyreResult<types::ContextWarrantNonce> {
     let key = key::ContextWarrantNonce::new(*context_id, warrant.author_device_key);
-    let mut handle = store.handle();
-
-    let next = match handle.get(&key)? {
+    match store.handle().get(&key)? {
         Some(seen) => {
             let seen: types::ContextWarrantNonce = seen;
-            seen.accept(warrant.nonce)
-                .ok_or(WarrantRefusal::NonceAlreadySpent)?
+            Ok(seen
+                .accept(warrant.nonce)
+                .ok_or(WarrantRefusal::NonceAlreadySpent)?)
         }
-        None => types::ContextWarrantNonce::first(warrant.nonce),
-    };
-
-    handle.put(&key, &next)?;
-    Ok(())
+        None => Ok(types::ContextWarrantNonce::first(warrant.nonce)),
+    }
 }
