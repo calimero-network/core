@@ -22,6 +22,8 @@ impl From<[u8; BYTES_LEN]> for ContentHash {
     }
 }
 
+// Beyond the wrapped byte array's own AsRef<[u8]>: bridges a ContentHash
+// back into a plain [u8; 32] field without an unwrap.
 impl From<ContentHash> for [u8; BYTES_LEN] {
     fn from(hash: ContentHash) -> Self {
         hash.0
