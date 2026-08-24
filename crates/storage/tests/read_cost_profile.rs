@@ -19,13 +19,13 @@ use calimero_storage::store::{Key, StorageAdaptor};
 type IndexKey = (Id, Vec<u8>);
 
 thread_local! {
-    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = RefCell::new(BTreeMap::new());
+    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static READS: RefCell<usize> = const { RefCell::new(0) };
     static WRITES: RefCell<usize> = const { RefCell::new(0) };
     static READ_BYTES: RefCell<usize> = const { RefCell::new(0) };
-    static DISTINCT: RefCell<BTreeSet<[u8; 32]>> = RefCell::new(BTreeSet::new());
-    static INDEX: RefCell<BTreeMap<IndexKey, Id>> = RefCell::new(BTreeMap::new());
-    static INDEX_META: RefCell<BTreeMap<Id, Vec<u8>>> = RefCell::new(BTreeMap::new());
+    static DISTINCT: RefCell<BTreeSet<[u8; 32]>> = const { RefCell::new(BTreeSet::new()) };
+    static INDEX: RefCell<BTreeMap<IndexKey, Id>> = const { RefCell::new(BTreeMap::new()) };
+    static INDEX_META: RefCell<BTreeMap<Id, Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static INDEX_EXAMINED: RefCell<usize> = const { RefCell::new(0) };
 }
 
@@ -231,7 +231,7 @@ fn profile_full_materialisation_vs_page() {
     let mut n = 0_usize;
     for &target in &CHECKPOINTS {
         while n < target {
-            let _ = v.push(make_msg(n, n % 10 == 0)).expect("push");
+            v.push(make_msg(n, n % 10 == 0)).expect("push");
             n += 1;
         }
         reset();
@@ -280,7 +280,7 @@ fn profile_unread_count_scan() {
     let mut n = 0_usize;
     for &target in &CHECKPOINTS {
         while n < target {
-            let _ = v.push(make_msg(n, n % 10 == 0)).expect("push");
+            v.push(make_msg(n, n % 10 == 0)).expect("push");
             n += 1;
         }
         let last_read = 1_700_000_000_000_u64 + (target as u64) - 10;
@@ -508,7 +508,7 @@ fn profile_cold_positional_get() {
     let mut n = 0_usize;
     for &target in &CHECKPOINTS {
         while n < target {
-            let _ = v.push(make_msg(n, false)).expect("push");
+            v.push(make_msg(n, false)).expect("push");
             n += 1;
         }
         let fresh: Root<Vector<MsgLite, Counting>, calimero_storage::store::MainStorage> =

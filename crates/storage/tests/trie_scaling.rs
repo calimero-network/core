@@ -15,7 +15,7 @@ use calimero_storage::store::{Key, StorageAdaptor};
 use sha2::{Digest, Sha256};
 
 thread_local! {
-    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = RefCell::new(BTreeMap::new());
+    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static WRITE_BYTES: RefCell<usize> = const { RefCell::new(0) };
     static READ_BYTES: RefCell<usize> = const { RefCell::new(0) };
     static ROWS: RefCell<usize> = const { RefCell::new(0) };

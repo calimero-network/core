@@ -661,7 +661,7 @@ mod tests {
             let seed = step.wrapping_mul(37).wrapping_add(11);
             match step % 5 {
                 // a genuinely new child (three in five, so the workload grows)
-                0 | 1 | 2 => {
+                0..=2 => {
                     let _root = trie.insert(child(seed, step));
                     let _inserted = live.insert(seed);
                 }
@@ -692,7 +692,7 @@ mod tests {
                 "count diverged from enumeration at step {step}"
             );
         }
-        assert!(trie.len() > 0, "the workload must leave children behind");
+        assert!(!trie.is_empty(), "the workload must leave children behind");
 
         // Same invariant through `insert_with`, which is where a
         // snapshot-built trie gets its counts and which nothing else covered.
@@ -889,7 +889,7 @@ mod cost {
     use std::collections::BTreeMap;
 
     thread_local! {
-        static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = RefCell::new(BTreeMap::new());
+        static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
         static BYTES_WRITTEN: RefCell<usize> = const { RefCell::new(0) };
         static ROWS_WRITTEN: RefCell<usize> = const { RefCell::new(0) };
     }

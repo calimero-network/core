@@ -11,13 +11,13 @@ use calimero_storage::collections::{Root, UnorderedMap, UnorderedSet, Vector};
 use calimero_storage::store::{Key, StorageAdaptor};
 
 thread_local! {
-    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = RefCell::new(BTreeMap::new());
+    static STORE: RefCell<BTreeMap<[u8; 32], Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     static READS: RefCell<usize> = const { RefCell::new(0) };
     static WRITES: RefCell<usize> = const { RefCell::new(0) };
     static READ_BYTES: RefCell<usize> = const { RefCell::new(0) };
     static DISTINCT: RefCell<std::collections::BTreeSet<[u8; 32]>> =
-        RefCell::new(std::collections::BTreeSet::new());
-    static REPEATS: RefCell<BTreeMap<[u8; 32], usize>> = RefCell::new(BTreeMap::new());
+        const { RefCell::new(std::collections::BTreeSet::new()) };
+    static REPEATS: RefCell<BTreeMap<[u8; 32], usize>> = const { RefCell::new(BTreeMap::new()) };
     static WRITE_BYTES: RefCell<usize> = const { RefCell::new(0) };
 }
 
@@ -76,11 +76,11 @@ fn profile_plain_vector_append() {
     for n in 0..600_u64 {
         if matches!(n, 50 | 150 | 300 | 450 | 599) {
             reset();
-            let _ = v.push(n).expect("push");
+            v.push(n).expect("push");
             let (r, w, rb, wb) = snapshot();
             println!("{n:>6} | {r:>6} | {w:>6} | {rb:>6} | {wb:>7}");
         } else {
-            let _ = v.push(n).expect("push");
+            v.push(n).expect("push");
         }
     }
 }
@@ -92,10 +92,14 @@ fn profile_plain_vector_append() {
 /// Writes were already bounded while reads grew with the collection — 7,682
 /// reads for a single insert at n=599 — because a logging block asked the trie
 /// to enumerate rather than count. Cost must be flat in n, not merely small.
+/// The two nested collections each record carries, kept alive for the
+/// duration of the profile so their rows stay in the store.
+type NestedPair = (UnorderedSet<[u8; 8], Counting>, Vector<u64, Counting>);
+
 #[test]
 fn profile_append_with_nested_collections() {
     let mut v = Root::new(Vector::<u64, Counting>::new);
-    let mut keep: Vec<(UnorderedSet<[u8; 8], Counting>, Vector<u64, Counting>)> = Vec::new();
+    let mut keep: Vec<NestedPair> = Vec::new();
     let mut samples: Vec<(u64, usize, usize, usize)> = Vec::new();
     println!("\n--- push + 2 nested collections per record ---");
     println!("     n |  reads | writes | read B | write B");
@@ -107,9 +111,9 @@ fn profile_append_with_nested_collections() {
         let mut set = UnorderedSet::<[u8; 8], Counting>::new();
         let _ = set.insert(n.to_be_bytes());
         let mut inner = Vector::<u64, Counting>::new();
-        let _ = inner.push(n);
+        drop(inner.push(n));
         keep.push((set, inner));
-        let _ = v.push(n).expect("push");
+        v.push(n).expect("push");
         if measure {
             let (r, w, rb, wb) = snapshot();
             let distinct = DISTINCT.with(|d| d.borrow().len());

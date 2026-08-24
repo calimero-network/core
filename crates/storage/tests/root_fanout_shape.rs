@@ -37,6 +37,10 @@ fn shape() -> (usize, usize, usize) {
     (direct, depth, total)
 }
 
+/// The nested collections each record carries, held for the duration of the
+/// profile so their rows stay in the store.
+type NestedTriple = (UnorderedSet<[u8; 8]>, Vector<u64>, Vector<u64>);
+
 #[test]
 fn root_fans_out_flat_when_records_carry_nested_collections() {
     // Mirrors a chat Message: a record whose fields are themselves collections.
@@ -45,7 +49,7 @@ fn root_fans_out_flat_when_records_carry_nested_collections() {
     let (base_direct, _, _) = shape();
 
     // 50 records, each constructing 3 nested collections, as a Message does.
-    let mut keep: Vec<(UnorderedSet<[u8; 8]>, Vector<u64>, Vector<u64>)> = Vec::new();
+    let mut keep: Vec<NestedTriple> = Vec::new();
     for i in 0_u32..50 {
         let mut set = UnorderedSet::<[u8; 8]>::new();
         let _ = set.insert(u64::from(i).to_be_bytes());

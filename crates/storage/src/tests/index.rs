@@ -1374,6 +1374,9 @@ mod minimal_struct_layout_compat {
     }
 
     #[derive(BorshDeserialize)]
+    // Fields exist to pin the borsh LAYOUT, not to be read: the decode
+    // succeeding in the declared order is the assertion.
+    #[allow(dead_code, reason = "borsh layout fidelity fixture")]
     struct ChildInfoMinimal {
         id: [u8; 32],
         merkle_hash: [u8; 32],
@@ -1381,6 +1384,9 @@ mod minimal_struct_layout_compat {
     }
 
     #[derive(BorshDeserialize)]
+    // Fields exist to pin the borsh LAYOUT, not to be read: the decode
+    // succeeding in the declared order is the assertion.
+    #[allow(dead_code, reason = "borsh layout fidelity fixture")]
     struct MetadataMinimal {
         created_at: u64,
         updated_at: u64,
