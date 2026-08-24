@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 borsh.workspace = true
 calimero-account.workspace = true
+calimero-crypto.workspace = true
 axum = { workspace = true, features = ["http1"] }
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }

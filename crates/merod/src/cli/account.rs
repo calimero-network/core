@@ -17,6 +17,7 @@
 
 use calimero_config::ConfigFile;
 use calimero_governance_store::{AccountRoot, NodeDeviceRepository};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::config::StoreConfig;
 use calimero_store::Store;
 use calimero_store_rocksdb::RocksDB;
@@ -40,6 +41,10 @@ enum AccountSubcommands {
     Import(ImportCommand),
     /// Sign a device revocation offline, to be published by any node
     RevokeProof(RevokeProofCommand),
+    /// Certify a device offline, for a client that holds no node
+    SignCert(SignCertCommand),
+    /// Sign a warrant offline, authorising one relay to perform one intent
+    Warrant(WarrantCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -112,7 +117,258 @@ impl AccountCommand {
             AccountSubcommands::Export(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Import(cmd) => cmd.run(root_args).await,
             AccountSubcommands::RevokeProof(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::SignCert(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::Warrant(cmd) => cmd.run(),
         }
+    }
+}
+
+/// Certify a device using only the account root, for a holder that is not a node.
+///
+/// The gap this closes: `pair-complete` mints a certificate, and it needs a
+/// running node that holds the account root to do it. A thin client — a phone, a
+/// script, anything that runs no application and joins no group — has no such
+/// node, so the credential it needs to present itself was unobtainable. Its
+/// device key was therefore useless, however legitimately the account holder
+/// wanted to grant it.
+///
+/// Same shape as [`RevokeProofCommand`] and for the same reason: the certificate
+/// is **self-certifying**, carrying the genesis and the root-key chain, so a
+/// verifier checks it from the account id alone with no folded state. It
+/// therefore does not matter who publishes or presents it, and with `--from` the
+/// root never has to reach a node at all — no home, no store, no init.
+///
+/// **It cannot check that the device id matches the keys.** `DeviceId` is
+/// `H(account ‖ nonce)` and deliberately excludes the keys, so a device survives
+/// a re-key. Nothing here can tell a mistyped id from a real one; a certificate
+/// naming a device the holder does not have is inert rather than dangerous.
+///
+/// **Epoch 0 only**, exactly as `revoke-proof` is: the certificate is signed at
+/// key epoch 0 with an empty handoff chain. An account whose root has rotated
+/// needs the chain up to the signing epoch, and nothing in this CLI produces one.
+#[derive(Debug, Parser)]
+pub struct SignCertCommand {
+    /// The device to certify, 64 hex chars — as printed by the client that minted it.
+    #[arg(
+        long = "device",
+        value_name = "HEX",
+        required_unless_present = "generate"
+    )]
+    device: Option<String>,
+
+    /// The device's Ed25519 signing key, 64 hex chars.
+    #[arg(
+        long = "sign-pk",
+        value_name = "HEX",
+        required_unless_present = "generate"
+    )]
+    sign_pk: Option<String>,
+
+    /// The device's X25519 agreement key, 64 hex chars. Scope keys are wrapped to it.
+    #[arg(
+        long = "kem-pk",
+        value_name = "HEX",
+        required_unless_present = "generate"
+    )]
+    kem_pk: Option<String>,
+
+    /// Mint the device here and certify it in one step, printing its SECRET.
+    ///
+    /// For provisioning a client that has no way to mint its own — a script, a
+    /// fresh install. It prints a signing key, so the holder is trusting this
+    /// machine with it; a client that can mint its own device should, because
+    /// then the secret never exists anywhere but there.
+    #[arg(long, conflicts_with_all = ["device", "sign_pk", "kem_pk"])]
+    generate: bool,
+
+    /// Key-rotation epoch for this device. Must exceed any epoch already folded
+    /// for it: the projection refuses a link that does not advance it, so
+    /// re-issuing at the same epoch is inert rather than a rollback.
+    #[arg(long, default_value_t = 0)]
+    device_epoch: u32,
+
+    /// Read the root from a recovery phrase at PATH instead of this node's store.
+    ///
+    /// Skips the datastore entirely, so it works on a machine with no node.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+/// Sign a warrant: authorise one relay to perform one intent, once.
+///
+/// Offline by construction — it opens no store and contacts no node, because a
+/// warrant is a statement about an intent rather than about any node's state.
+/// The device secret signs it here and is never sent; only the signature travels.
+///
+/// This lives beside `sign-cert` and `revoke-proof` for the same reason they do:
+/// they are the operations whose whole point is that the signing key does not
+/// have to reach a running node. It is a client operation, and `meroctl context
+/// intent` is the interactive form — this exists for a holder that has a shell
+/// and needs the bytes.
+///
+/// **`--executor` must be the account that will actually run it.** A warrant
+/// naming the wrong operator is refused by every peer, and nothing here can
+/// check it — ask the relay: `GET /admin-api/identity` reports the account it
+/// acts as.
+///
+/// **`--nonce` is the caller's to manage.** Peers refuse a repeat, so reusing one
+/// means the write is silently dropped; a gap in the sequence is how a member
+/// learns the relay withheld a request.
+#[derive(Debug, Parser)]
+pub struct WarrantCommand {
+    /// The context the intent runs in, 64 hex chars.
+    #[arg(long, value_name = "HEX")]
+    context: String,
+
+    /// The method to authorise.
+    #[arg(long)]
+    method: String,
+
+    /// Its arguments, as the exact JSON the relay will be given.
+    ///
+    /// Byte-exact: the commitment covers these bytes, so a relay handed
+    /// differently-formatted JSON with the same meaning is refused. Pass what
+    /// will be sent.
+    #[arg(long, default_value = "{}")]
+    args: String,
+
+    /// The operator account authorised to act, 64 hex chars.
+    #[arg(long, value_name = "HEX")]
+    executor: String,
+
+    /// Monotonic per device.
+    #[arg(long)]
+    nonce: u64,
+
+    /// Seconds from now that the warrant stays spendable.
+    #[arg(long, default_value_t = 300)]
+    valid_for: u64,
+
+    /// The device's signing secret, 64 hex chars. Signs the warrant; never sent.
+    #[arg(long, value_name = "HEX")]
+    device_secret: String,
+
+    /// The device's credential, as printed by `sign-cert`.
+    ///
+    /// Read for the account it names rather than taking that separately: the
+    /// certificate already carries it, and asking twice is a way for the two to
+    /// disagree.
+    #[arg(long, value_name = "HEX")]
+    credential: String,
+}
+
+impl WarrantCommand {
+    fn run(self) -> EyreResult<()> {
+        let context =
+            calimero_primitives::context::ContextId::from(parse_key(&self.context, "context")?);
+        let executor = calimero_account::AccountId::from(parse_key(&self.executor, "executor")?);
+        let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
+
+        let credential_bytes =
+            hex::decode(self.credential.trim()).wrap_err("--credential is not hex")?;
+        let credential: calimero_account::AccountProof<calimero_account::DeviceCert> =
+            borsh::from_slice(&credential_bytes)
+                .wrap_err("--credential is not a valid device credential")?;
+
+        // Refused here rather than by a peer, because a peer's refusal reads as a
+        // credential problem when it is really a mismatched pair.
+        if credential.statement.sign_pk != secret.public_key() {
+            eyre::bail!(
+                "the credential certifies a different key than --device-secret holds, so \
+                 the warrant it signs would be refused"
+            );
+        }
+
+        let args: serde_json::Value =
+            serde_json::from_str(&self.args).wrap_err("--args is not valid JSON")?;
+        let args_bytes = serde_json::to_vec(&args).wrap_err("--args could not be re-encoded")?;
+
+        let not_after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            .saturating_add(self.valid_for);
+
+        let warrant = calimero_account::Warrant::sign(
+            &secret,
+            context,
+            credential.statement.account,
+            executor,
+            calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
+            self.nonce,
+            not_after,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the warrant: {err}"))?;
+
+        println!(
+            "{}",
+            hex::encode(borsh::to_vec(&warrant).wrap_err("Failed to encode the warrant")?)
+        );
+
+        Ok(())
+    }
+}
+
+impl SignCertCommand {
+    async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+        let account = root.account();
+
+        // Minted here only with `--generate`; otherwise every value is the
+        // client's, and this command never sees a secret at all.
+        let mut generated_secret = None;
+        let (device, sign_pk, kem_pk) = if self.generate {
+            let mut nonce = [0u8; 16];
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+            let sign_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+            let kem_sk = calimero_crypto::X25519SecretKey::random(&mut rand::rngs::OsRng);
+            let sign = *AsRef::<[u8; 32]>::as_ref(&sign_sk.public_key());
+            let kem = *kem_sk.public_key().as_bytes();
+            generated_secret = Some(hex::encode(sign_sk.as_bytes()));
+            (calimero_account::DeviceId::mint(account, nonce), sign, kem)
+        } else {
+            (
+                parse_device(self.device.as_deref().unwrap_or_default())?,
+                parse_key(self.sign_pk.as_deref().unwrap_or_default(), "sign-pk")?,
+                parse_key(self.kem_pk.as_deref().unwrap_or_default(), "kem-pk")?,
+            )
+        };
+
+        let cert = calimero_account::DeviceCert::sign(
+            root.signing_key(),
+            account,
+            device,
+            &calimero_primitives::identity::PublicKey::from(sign_pk),
+            &calimero_account::KemPublicKey::from(kem_pk),
+            0,
+            self.device_epoch,
+        )
+        .map_err(|err| eyre::eyre!("failed to sign the certificate: {err}"))?;
+
+        let credential = calimero_account::AccountProof {
+            genesis: root.genesis(),
+            chain: vec![],
+            statement: cert,
+        };
+
+        let encoded =
+            hex::encode(borsh::to_vec(&credential).wrap_err("Failed to encode the credential")?);
+
+        println!("{encoded}");
+        println!();
+        println!("Account: {account}");
+        println!("Device:  {device}");
+        if let Some(secret) = &generated_secret {
+            println!("Secret:  {secret}");
+        }
+        println!();
+        println!(
+            "Hand this to the device it names. It presents it as its own \
+             credential — nothing needs to publish it first:"
+        );
+        println!();
+        println!("  meroctl context intent <CONTEXT_ID> --credential <the hex above> ...");
+
+        Ok(())
     }
 }
 
@@ -120,33 +376,7 @@ impl RevokeProofCommand {
     async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         let device = parse_device(&self.device)?;
 
-        // Parse the phrase before opening anything, as `import` does: a typo should
-        // fail on its own terms rather than after a store has been opened.
-        let root = match &self.from {
-            Some(path) => {
-                let phrase: Zeroizing<String> =
-                    Zeroizing::new(std::fs::read_to_string(path).wrap_err_with(|| {
-                        format!("Failed to read the recovery phrase from {path}")
-                    })?);
-                AccountRoot::from_mnemonic(&phrase)?
-            }
-            None => {
-                let store = open_store(root_args).await?;
-                // Not `ensure_account_root`: minting one here would sign a proof
-                // with a key that owns nothing, and it would verify against itself
-                // while authorising nothing anywhere.
-                NodeDeviceRepository::new(&store)
-                    .account_root()
-                    .wrap_err("Failed to read the account root")?
-                    .ok_or_else(|| {
-                        eyre::eyre!(
-                            "This node has no account root, so it can prove nothing \
-                             about any account. Pass --from with the recovery phrase \
-                             for the account that owns the device."
-                        )
-                    })?
-            }
-        };
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
 
         let account = root.account();
         let revocation =
@@ -431,6 +661,51 @@ fn write_owner_only(path: &camino::Utf8Path, contents: &str) -> EyreResult<bool>
         })?;
     file.write_all(contents.as_bytes())?;
     Ok(false)
+}
+
+/// The account root to sign with: a recovery phrase if given, else this node's own.
+///
+/// Shared by `revoke-proof` and `sign-cert` rather than written twice, because
+/// the interesting half is a refusal both must make identically — see below.
+async fn resolve_root(
+    root_args: &RootArgs,
+    from: Option<&camino::Utf8PathBuf>,
+) -> EyreResult<AccountRoot> {
+    // Parse the phrase before opening anything, as `import` does: a typo should
+    // fail on its own terms rather than after a store has been opened.
+    match from {
+        Some(path) => {
+            let phrase: Zeroizing<String> = Zeroizing::new(
+                std::fs::read_to_string(path)
+                    .wrap_err_with(|| format!("Failed to read the recovery phrase from {path}"))?,
+            );
+            AccountRoot::from_mnemonic(&phrase)
+        }
+        None => {
+            let store = open_store(root_args).await?;
+            // Not `ensure_account_root`: minting one here would sign with a key
+            // that owns nothing, and the result would verify against itself while
+            // authorising nothing anywhere.
+            NodeDeviceRepository::new(&store)
+                .account_root()
+                .wrap_err("Failed to read the account root")?
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "This node has no account root, so it can prove nothing about \
+                         any account. Pass --from with the recovery phrase for the \
+                         account that owns the device."
+                    )
+                })
+        }
+    }
+}
+
+/// Parse a 32-byte hex key, naming the argument it rejected.
+fn parse_key(raw: &str, arg: &str) -> EyreResult<[u8; 32]> {
+    let bytes = hex::decode(raw.trim()).wrap_err_with(|| format!("--{arg} is not hex"))?;
+    bytes
+        .try_into()
+        .map_err(|_ignored| eyre::eyre!("--{arg} is not 32 bytes (64 hex characters)"))
 }
 
 /// Parse a hex `DeviceId`.

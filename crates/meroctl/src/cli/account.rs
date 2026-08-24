@@ -3,6 +3,7 @@ use eyre::Result;
 
 use crate::cli::Environment;
 
+mod device_init;
 mod pair_complete;
 mod pair_init;
 mod revoke;
@@ -23,6 +24,7 @@ pub struct AccountCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AccountSubCommands {
+    DeviceInit(device_init::DeviceInitCommand),
     PairInit(pair_init::PairInitCommand),
     PairComplete(pair_complete::PairCompleteCommand),
     Revoke(revoke::RevokeCommand),
@@ -33,6 +35,7 @@ impl AccountCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
             AccountSubCommands::Show(cmd) => cmd.run(environment).await,
+            AccountSubCommands::DeviceInit(cmd) => cmd.run(environment),
             AccountSubCommands::PairInit(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairComplete(cmd) => cmd.run(environment).await,
             AccountSubCommands::Revoke(cmd) => cmd.run(environment).await,
