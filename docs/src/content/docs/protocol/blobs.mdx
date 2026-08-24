@@ -78,8 +78,10 @@ BlobMeta.content_hash = hash( whole file content )      // distinct from BlobId
 :::caution
 `BlobId` and `BlobMeta.content_hash` are different values. `BlobId` addresses the
 blob through its chunk-id list; `content_hash` is the digest of the raw content.
-They are separate types (`BlobId`, `ContentHash`) with no conversion between them,
-so the compiler enforces what this paragraph used to only ask for.
+They are distinct types (`BlobId`, `ContentHash`) with no implicit conversion
+between them: assigning one to the other does not compile. Converting requires
+going through raw bytes explicitly, so a swap has to be written on purpose
+rather than happening by accident.
 :::
 
 Because a chunk's id is the hash of its bytes, two blobs that share identical

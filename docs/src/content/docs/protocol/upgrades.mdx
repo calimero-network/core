@@ -33,7 +33,10 @@ application from a content-addressed blob. Two distinct version markers matter:
 
 `bytecode_id` is a `BytecodeId` (itself a `BlobId`). It is a distinct type from
 `ContentHash` — the sha256 digest of a file's raw bytes, only ever supplied by a
-human, e.g. a CLI flag — with no conversion between them.
+human, e.g. a CLI flag — with no implicit conversion between them: assigning one
+to the other does not compile. Converting requires going through raw bytes
+explicitly, so a swap has to be written on purpose rather than happening by
+accident.
 
 Because a bundle keeps the **same application id** while its bytecode (and therefore
 its `bytecode_id` and `state_version`) advances, the bytecode blob — not the application id
