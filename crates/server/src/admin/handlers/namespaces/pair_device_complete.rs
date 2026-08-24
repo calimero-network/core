@@ -106,6 +106,13 @@ pub async fn handler(
                         device_id: hex::encode(resp.device.as_bytes()),
                         key_delivered: resp.key_delivered,
                         confirmation_code: resp.confirmation_code,
+                        // Borsh, hex-encoded: the canonical form of a signed
+                        // credential is its encoding, and a JSON restatement
+                        // would be a second spelling that could disagree with
+                        // the bytes the root actually signed.
+                        credential: borsh::to_vec(&*resp.credential)
+                            .map(hex::encode)
+                            .unwrap_or_default(),
                     },
                 },
             }

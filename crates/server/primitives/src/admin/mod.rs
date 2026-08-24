@@ -1914,6 +1914,14 @@ pub struct PairDeviceCompleteApiResponseData {
     /// the request carried, echoed so the operator can see what the certificate
     /// names.
     pub confirmation_code: String,
+    /// Hex-encoded borsh of the `AccountProof<DeviceCert>` this pairing minted.
+    ///
+    /// The device that was just certified needs this to present itself as a
+    /// device of the account — and cannot read it off the DAG, because doing so
+    /// requires being a member of a group the account speaks in, which a thin
+    /// client never is. Not a secret: a certificate is public and proves nothing
+    /// without the device key it names.
+    pub credential: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
