@@ -1608,6 +1608,28 @@ impl JsAuthoredVector {
         self.vector.get_by_id(crate::address::Id::new(id))
     }
 
+    /// Tombstones the entry stored under `id` (overwrites it with an empty
+    /// value). Only the entry's owner may call this.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`update_by_id`](Self::update_by_id).
+    pub fn tombstone_by_id(&mut self, id: [u8; 32]) -> Result<(), StoreError> {
+        self.vector.tombstone_by_id(crate::address::Id::new(id))
+    }
+
+    /// The account that owns the entry stored under `id`, if it exists.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the storage read fails.
+    pub fn owner_of_id(&self, id: [u8; 32]) -> Result<Option<[u8; 32]>, StoreError> {
+        Ok(self
+            .vector
+            .owner_of_id(crate::address::Id::new(id))?
+            .map(|account| *account.as_bytes()))
+    }
+
     /// Replaces the value at `index`. Only the slot's owner may call this.
     ///
     /// # Errors

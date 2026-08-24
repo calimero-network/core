@@ -1061,6 +1061,60 @@ impl VMHostFunctions<'_> {
         })
     }
 
+    /// Updates the entry named by `entry_id`. Only its owner may call this.
+    pub fn js_crdt_authored_vector_update_by_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_update_by_id(
+                vector_id_ptr,
+                entry_id_ptr,
+                value_ptr,
+                dest_register_id,
+            )
+        })
+    }
+
+    /// Tombstones the entry named by `entry_id`. Only its owner may call this.
+    pub fn js_crdt_authored_vector_tombstone_by_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_tombstone_by_id(vector_id_ptr, entry_id_ptr, dest_register_id)
+        })
+    }
+
+    /// Reads the entry named by `entry_id`.
+    pub fn js_crdt_authored_vector_get_by_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_get_by_id(vector_id_ptr, entry_id_ptr, dest_register_id)
+        })
+    }
+
+    /// The owner of the entry named by `entry_id`.
+    pub fn js_crdt_authored_vector_owner_of_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        self.invoke_with_storage_env(|host| {
+            host.crdt_authored_vector_owner_of_id(vector_id_ptr, entry_id_ptr, dest_register_id)
+        })
+    }
+
     /// Tombstones a slot. Only the slot owner may call this.
     pub fn js_crdt_authored_vector_tombstone(
         &mut self,
@@ -2838,6 +2892,144 @@ impl VMHostFunctions<'_> {
         }
     }
 
+    /// Id-addressed counterpart of `crdt_authored_vector_update`.
+    ///
+    /// The positional form addresses an entry by where it currently sits in a
+    /// set every peer inserts into, so a caller that resolved the position in
+    /// an earlier call may now be pointing at a different entry — and since
+    /// the write is ownership-gated BY the address given, it would check
+    /// ownership against that other entry too (core#3637).
+    fn crdt_authored_vector_update_by_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        value_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+        let entry_id = match self.read_map_id(entry_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let value = self.read_buffer(value_ptr)?;
+
+        let mut vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        // Owner-only: a non-owner update yields `ActionNotAllowed`.
+        match vector.update_by_id(*entry_id.as_bytes(), &value) {
+            Ok(()) => match save_js_instance(&mut vector) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(dest_register_id, message),
+            },
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    /// Id-addressed counterpart of `crdt_authored_vector_tombstone`.
+    fn crdt_authored_vector_tombstone_by_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+        let entry_id = match self.read_map_id(entry_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let mut vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match vector.tombstone_by_id(*entry_id.as_bytes()) {
+            Ok(()) => match save_js_instance(&mut vector) {
+                Ok(()) => Ok(1),
+                Err(message) => self.write_error_message(dest_register_id, message),
+            },
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    /// Id-addressed counterpart of `crdt_authored_vector_get`.
+    fn crdt_authored_vector_get_by_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+        let entry_id = match self.read_map_id(entry_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match vector.get_by_id(*entry_id.as_bytes()) {
+            Ok(Some(value)) => {
+                self.write_register_bytes(dest_register_id, &value)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
+    /// Id-addressed counterpart of `crdt_authored_vector_owner_of`.
+    fn crdt_authored_vector_owner_of_id(
+        &mut self,
+        vector_id_ptr: u64,
+        entry_id_ptr: u64,
+        dest_register_id: u64,
+    ) -> VMLogicResult<i32> {
+        let vector_id = match self.read_map_id(vector_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+        let entry_id = match self.read_map_id(entry_id_ptr)? {
+            Ok(id) => id,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        let vector = match load_js_authored_vector_instance(vector_id) {
+            Ok(vector) => vector,
+            Err(message) => return self.write_error_message(dest_register_id, message),
+        };
+
+        match vector.owner_of_id(*entry_id.as_bytes()) {
+            Ok(Some(owner)) => {
+                self.write_register_bytes(dest_register_id, &owner)?;
+                Ok(1)
+            }
+            Ok(None) => {
+                self.clear_register(dest_register_id)?;
+                Ok(0)
+            }
+            Err(err) => self.write_error_message(dest_register_id, err),
+        }
+    }
+
     fn crdt_authored_vector_owned_by_me(
         &mut self,
         vector_id_ptr: u64,
@@ -4144,6 +4336,92 @@ mod tests {
     /// AuthoredVector: `push` returns the new index (u64 LE) and stamps the
     /// pusher as owner; `get`/`owner_of`/`owned_by_me` reflect that; a
     /// `tombstone` by the owner succeeds and preserves the slot's position.
+    /// The id-addressed host functions are the point of returning an id from
+    /// push: without them a JS app receives an address it cannot use and has to
+    /// fall back to the positional API, which is the unsound one (core#3637).
+    #[test]
+    fn test_js_crdt_authored_vector_id_addressed_round_trip() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let id: [u8; 32] = [73u8; 32];
+        put_buffer(&host, ID_DESC_PTR, ID_DATA_PTR, &id);
+        assert_eq!(
+            host.js_crdt_authored_vector_new_with_id(ID_DESC_PTR, 1)
+                .unwrap(),
+            0
+        );
+
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"first");
+        assert_eq!(
+            host.js_crdt_authored_vector_push(ID_DESC_PTR, VALUE_DESC_PTR, 2)
+                .unwrap(),
+            1
+        );
+        let entry_id: [u8; 32] = host
+            .borrow_logic()
+            .registers
+            .get(2)
+            .unwrap()
+            .try_into()
+            .expect("push must return a 32-byte entry id");
+
+        // Hand that id back across the host boundary as a buffer.
+        put_buffer(&host, KEY_DESC_PTR, KEY_DATA_PTR, &entry_id);
+
+        assert_eq!(
+            host.js_crdt_authored_vector_get_by_id(ID_DESC_PTR, KEY_DESC_PTR, 3)
+                .unwrap(),
+            1
+        );
+        assert_eq!(host.borrow_logic().registers.get(3).unwrap(), b"first");
+
+        put_buffer(&host, VALUE_DESC_PTR, VALUE_DATA_PTR, b"second");
+        assert_eq!(
+            host.js_crdt_authored_vector_update_by_id(ID_DESC_PTR, KEY_DESC_PTR, VALUE_DESC_PTR, 4)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            host.js_crdt_authored_vector_get_by_id(ID_DESC_PTR, KEY_DESC_PTR, 5)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            host.borrow_logic().registers.get(5).unwrap(),
+            b"second",
+            "update_by_id must land on the entry the id names"
+        );
+
+        assert_eq!(
+            host.js_crdt_authored_vector_owner_of_id(ID_DESC_PTR, KEY_DESC_PTR, 6)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            host.borrow_logic().registers.get(6).unwrap().len(),
+            32,
+            "owner_of_id must return an account id"
+        );
+
+        assert_eq!(
+            host.js_crdt_authored_vector_tombstone_by_id(ID_DESC_PTR, KEY_DESC_PTR, 7)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            host.js_crdt_authored_vector_get_by_id(ID_DESC_PTR, KEY_DESC_PTR, 8)
+                .unwrap(),
+            1
+        );
+        assert!(
+            host.borrow_logic().registers.get(8).unwrap().is_empty(),
+            "tombstone_by_id must clear the entry the id names"
+        );
+    }
+
     #[test]
     fn test_js_crdt_authored_vector_push_get_owner_and_tombstone() {
         let mut storage = SimpleMockStorage::new();
