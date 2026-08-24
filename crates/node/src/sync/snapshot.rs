@@ -1189,7 +1189,7 @@ impl SyncManager {
         // (`install_bundle_after_blob_sharing`) against the blob the activation
         // marker now points at, so the peer's installed version matches the
         // adopted one — exactly as a normally-upgraded peer ends up.
-        if let Some(bound) = calimero_context::activation::activated_blob(
+        if let Some(bound) = calimero_context::activation::activated_bytecode(
             self.context_client.datastore(),
             &context_id,
         ) {
@@ -3049,7 +3049,7 @@ mod tests {
         settle_snapshot_activation(&store, ctx, None);
 
         assert_eq!(
-            calimero_context::activation::activated_blob(&store, &ctx),
+            calimero_context::activation::activated_bytecode(&store, &ctx),
             Some(BYTECODE_ID),
             "activation marker must bind to the group's current bytecode_id"
         );
@@ -3132,7 +3132,7 @@ mod tests {
         // No group mapping → nothing to bind, no panic, no marker written.
         settle_snapshot_activation(&store, ctx, None);
         assert_eq!(
-            calimero_context::activation::activated_blob(&store, &ctx),
+            calimero_context::activation::activated_bytecode(&store, &ctx),
             None
         );
     }
@@ -3174,7 +3174,7 @@ mod tests {
         settle_snapshot_activation(&store, ctx, None);
 
         assert_eq!(
-            calimero_context::activation::activated_blob(&store, &ctx),
+            calimero_context::activation::activated_bytecode(&store, &ctx),
             None,
             "a non-resync snapshot must not bind the activation marker"
         );
@@ -3221,7 +3221,7 @@ mod tests {
         settle_snapshot_activation(&store, ctx, Some(BEHIND_KEY));
 
         assert_eq!(
-            calimero_context::activation::activated_blob(&store, &ctx),
+            calimero_context::activation::activated_bytecode(&store, &ctx),
             Some(BEHIND_KEY),
             "marker must bind to the synced data's real schema, not the group target"
         );

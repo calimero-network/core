@@ -1924,7 +1924,7 @@ impl SyncManager {
                         && self.should_attempt_stage(context_id, stage)
                     {
                         if let Err(err) = self
-                            .stage_target_blob(&context, stage_blob, chosen_peer)
+                            .stage_target_bytecode(&context, stage_blob, chosen_peer)
                             .await
                         {
                             warn!(
@@ -2024,7 +2024,7 @@ impl SyncManager {
         // their only staging point. Best-effort with retry backoff.
         {
             let store = self.context_client.datastore_handle().into_inner();
-            if let Some(stage) = pending_upgrade_stage_blob(&store, &context_id) {
+            if let Some(stage) = pending_upgrade_staged_bytecode(&store, &context_id) {
                 let stage_blob = calimero_primitives::blobs::BlobId::from(stage);
                 if !self.node_client.has_blob(&stage_blob).unwrap_or(true)
                     && self.should_attempt_stage(context_id, stage)
@@ -3992,7 +3992,7 @@ impl SyncManager {
     /// Used to pre-stage a pending upgrade's target bytecode while the
     /// state-sync gate is closed (the responder serves BlobShare during the
     /// gate window by design).
-    async fn stage_target_blob(
+    async fn stage_target_bytecode(
         &self,
         context: &calimero_primitives::context::Context,
         blob_id: calimero_primitives::blobs::BlobId,
@@ -4026,7 +4026,7 @@ impl SyncManager {
 /// bundle id and this node doesn't run it yet. `None` once the row catches
 /// up. A legacy group's randomly-seeded `bytecode_id` reads as permanently
 /// stale; the BlobShare retry memo caps what that can cost.
-fn stage_blob_for(
+fn staged_bytecode_for(
     store: &calimero_store::Store,
     meta: &calimero_store::key::GroupMetaValue,
 ) -> Option<[u8; 32]> {
@@ -4046,7 +4046,7 @@ fn stage_blob_for(
 
 /// One-load variant for `context_id` (group + meta resolved internally) —
 /// used by the mid-session stage step where no meta is already in hand.
-pub(crate) fn pending_upgrade_stage_blob(
+pub(crate) fn pending_upgrade_staged_bytecode(
     store: &calimero_store::Store,
     context_id: &ContextId,
 ) -> Option<[u8; 32]> {
@@ -4054,7 +4054,7 @@ pub(crate) fn pending_upgrade_stage_blob(
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    stage_blob_for(store, &meta)
+    staged_bytecode_for(store, &meta)
 }
 
 /// Store-level core of [`SyncManager::pending_upgrade_target`], extracted so
@@ -4112,7 +4112,7 @@ pub(crate) fn pending_upgrade_info(
     // bound application advances to `target`, which `maybe_lazy_upgrade` does
     // on the context's next access.
     if current_app != target {
-        return Some((target, stage_blob_for(store, &meta)));
+        return Some((target, staged_bytecode_for(store, &meta)));
     }
     // Same id: bundle-app upgrade. Gate state sync only while a MIGRATION is
     // pending for this context — until the lazy migrate runs on next access,
@@ -4120,9 +4120,9 @@ pub(crate) fn pending_upgrade_info(
     // already-migrated peers. (Code-only swaps carry no schema hazard, so
     // they never gate.) "Applied" is the per-context activation marker.
     let _migration_present = meta.migration.as_ref()?;
-    let applied =
-        calimero_context::activation::activated_blob(store, context_id) == Some(meta.bytecode_id);
-    (!applied).then(|| (target, stage_blob_for(store, &meta)))
+    let applied = calimero_context::activation::activated_bytecode(store, context_id)
+        == Some(meta.bytecode_id);
+    (!applied).then(|| (target, staged_bytecode_for(store, &meta)))
 }
 
 #[cfg(test)]
@@ -4354,7 +4354,10 @@ mod pending_upgrade_tests {
         // No application row at all: nothing to compare, nothing to stage.
         let no_row = ContextId::from([6u8; 32]);
         let _g = seed(&store, no_row, app, app, None);
-        assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
+        assert_eq!(
+            super::pending_upgrade_staged_bytecode(&store, &no_row),
+            None
+        );
 
         // Row installed at a DIFFERENT blob than the group's bytecode_id
         // ([0x11; 32] in the fixture): the upgrade's bytecode is pending.
@@ -4383,7 +4386,7 @@ mod pending_upgrade_tests {
             .expect("put app row");
         drop(handle);
         assert_eq!(
-            super::pending_upgrade_stage_blob(&store, &no_row),
+            super::pending_upgrade_staged_bytecode(&store, &no_row),
             Some([0x11; 32])
         );
 
@@ -4412,7 +4415,10 @@ mod pending_upgrade_tests {
             )
             .expect("put app row");
         drop(handle);
-        assert_eq!(super::pending_upgrade_stage_blob(&store, &no_row), None);
+        assert_eq!(
+            super::pending_upgrade_staged_bytecode(&store, &no_row),
+            None
+        );
     }
 }
 

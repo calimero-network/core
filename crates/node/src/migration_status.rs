@@ -2086,7 +2086,7 @@ mod tests {
         install_loaded_context(&store, ns, ctx, "1.0.0", 1);
         install_bundle_over_context(&store, ctx, V2_BLOB, 2);
         assert_eq!(
-            calimero_context::activation::activated_blob(&store, &ctx.into()),
+            calimero_context::activation::activated_bytecode(&store, &ctx.into()),
             None,
             "the join path stamps no marker - that is the whole premise"
         );

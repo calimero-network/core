@@ -211,7 +211,7 @@ impl NodeClient {
                     }
                 }
             }
-            let mut iter = handle.iter::<key::ContextActivatedBlob>()?;
+            let mut iter = handle.iter::<key::ContextActivatedBytecode>()?;
             let mut marker_rows = Vec::new();
             for (k, v) in iter.entries() {
                 let (k, marker) = (k?, v?);

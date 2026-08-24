@@ -365,7 +365,7 @@ impl PredefinedEntry for key::ContextExecutingBlob {
     type DataType<'a> = ContextExecutingBlob;
 }
 
-/// Value for [`key::ContextActivatedBlob`]: the bytecode blob this context
+/// Value for [`key::ContextActivatedBytecode`]: the bytecode blob this context
 /// last ACTIVATED — set when a migration commits or a code-only swap is
 /// applied, moved forward only. The single up-to-date check everywhere is
 /// `marker == group.bytecode_id`; it replaces the legacy method-name and
@@ -376,13 +376,13 @@ impl PredefinedEntry for key::ContextExecutingBlob {
     clippy::exhaustive_structs,
     reason = "single marker value; additions would need a migration"
 )]
-pub struct ContextActivatedBlob {
+pub struct ContextActivatedBytecode {
     pub blob: [u8; 32],
 }
 
-impl PredefinedEntry for key::ContextActivatedBlob {
+impl PredefinedEntry for key::ContextActivatedBytecode {
     type Codec = Borsh;
-    type DataType<'a> = ContextActivatedBlob;
+    type DataType<'a> = ContextActivatedBytecode;
 }
 
 /// Value for [`key::ContextActivatedStateVersion`]: the ABI state version the

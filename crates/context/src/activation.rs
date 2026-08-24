@@ -10,10 +10,12 @@ use calimero_store::Store;
 use tracing::debug;
 
 /// The blob this context last activated, if the marker is set.
-pub fn activated_blob(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
+pub fn activated_bytecode(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
     store
         .handle()
-        .get(&calimero_store::key::ContextActivatedBlob::new(*context_id))
+        .get(&calimero_store::key::ContextActivatedBytecode::new(
+            *context_id,
+        ))
         .ok()
         .flatten()
         .map(|v| v.blob)
@@ -25,8 +27,8 @@ pub fn activated_blob(store: &Store, context_id: &ContextId) -> Option<[u8; 32]>
 pub fn record_activation(store: &Store, context_id: &ContextId, blob: [u8; 32]) {
     let mut handle = store.handle();
     if let Err(err) = handle.put(
-        &calimero_store::key::ContextActivatedBlob::new(*context_id),
-        &calimero_store::types::ContextActivatedBlob { blob },
+        &calimero_store::key::ContextActivatedBytecode::new(*context_id),
+        &calimero_store::types::ContextActivatedBytecode { blob },
     ) {
         debug!(%context_id, %err, "failed to record activation marker");
     }
@@ -73,7 +75,7 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
         .ok()
         .flatten()?;
     (meta.bytecode_id != [0u8; 32])
-        .then(|| activated_blob(store, context_id) == Some(meta.bytecode_id))
+        .then(|| activated_bytecode(store, context_id) == Some(meta.bytecode_id))
 }
 
 /// The next upgrade rung a context bound to `bound` must replay from the
@@ -352,11 +354,11 @@ mod tests {
     fn marker_roundtrip() {
         let store = store();
         let ctx = ContextId::from([1u8; 32]);
-        assert_eq!(activated_blob(&store, &ctx), None);
+        assert_eq!(activated_bytecode(&store, &ctx), None);
         record_activation(&store, &ctx, [7u8; 32]);
-        assert_eq!(activated_blob(&store, &ctx), Some([7u8; 32]));
+        assert_eq!(activated_bytecode(&store, &ctx), Some([7u8; 32]));
         // Moves forward on re-activation.
         record_activation(&store, &ctx, [8u8; 32]);
-        assert_eq!(activated_blob(&store, &ctx), Some([8u8; 32]));
+        assert_eq!(activated_bytecode(&store, &ctx), Some([8u8; 32]));
     }
 }

@@ -1452,7 +1452,7 @@ impl ContextClient {
         let marker = {
             let handle = self.registry.datastore.handle();
             let marker = handle
-                .get(&key::ContextActivatedBlob::new(*context_id))
+                .get(&key::ContextActivatedBytecode::new(*context_id))
                 .ok()
                 .flatten()?
                 .blob;

@@ -270,9 +270,9 @@ impl Debug for ContextExecutingBlob {
 /// context, in its own column.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct ContextActivatedBlob(Key<ContextId>);
+pub struct ContextActivatedBytecode(Key<ContextId>);
 
-impl ContextActivatedBlob {
+impl ContextActivatedBytecode {
     #[must_use]
     pub fn new(context_id: PrimitiveContextId) -> Self {
         Self(Key((*context_id).into()))
@@ -284,10 +284,11 @@ impl ContextActivatedBlob {
     }
 }
 
-impl AsKeyParts for ContextActivatedBlob {
+impl AsKeyParts for ContextActivatedBytecode {
     type Components = (ContextId,);
 
     fn column() -> Column {
+        // The column keeps its on-disk name; see the variant's doc comment.
         Column::ContextActivatedBlob
     }
 
@@ -296,7 +297,7 @@ impl AsKeyParts for ContextActivatedBlob {
     }
 }
 
-impl FromKeyParts for ContextActivatedBlob {
+impl FromKeyParts for ContextActivatedBytecode {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -304,16 +305,16 @@ impl FromKeyParts for ContextActivatedBlob {
     }
 }
 
-impl Debug for ContextActivatedBlob {
+impl Debug for ContextActivatedBytecode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ContextActivatedBlob")
+        f.debug_struct("ContextActivatedBytecode")
             .field("id", &self.context_id())
             .finish()
     }
 }
 
 /// Per-context activated state-version key: the ABI state version the blob in
-/// [`ContextActivatedBlob`] declares. One key per context, in its own column.
+/// [`ContextActivatedBytecode`] declares. One key per context, in its own column.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextActivatedStateVersion(Key<ContextId>);

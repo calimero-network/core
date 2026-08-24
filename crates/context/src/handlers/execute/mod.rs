@@ -566,7 +566,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 // seed, a blocked hop would fall through to the group-target
                 // bytecode and run new code on un-migrated state.
                 LazyUpgradeAction::Replay { bound } => {
-                    if crate::activation::activated_blob(&act.datastore, &context_id).is_none() {
+                    if crate::activation::activated_bytecode(&act.datastore, &context_id).is_none() {
                         crate::activation::record_activation(&act.datastore, &context_id, bound);
                     }
                     act.replay_upgrade_ladder(
@@ -1511,7 +1511,7 @@ impl ContextManager {
             .flatten()
             .and_then(|gid| {
                 let meta = MetaRepository::new(&datastore).load(&gid).ok().flatten()?;
-                let bound = crate::activation::activated_blob(&datastore, &context_id)?;
+                let bound = crate::activation::activated_bytecode(&datastore, &context_id)?;
                 let ladder = UpgradeLadderRepository::new(&datastore)
                     .load(&gid)
                     .unwrap_or_default();
@@ -1873,25 +1873,25 @@ async fn ensure_blob_local(
 /// fall back to the application row.
 /// Where a context's bound bytecode blob was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundBlobSource {
+pub(crate) enum BoundBytecodeSource {
     /// The per-context activation marker — already executed locally.
     ActivationMarker,
     /// The group's recorded target blob — may not be fetched yet.
     GroupKey,
 }
 
-pub(crate) fn bound_blob_for_context(
+pub(crate) fn bound_bytecode_for_context(
     store: &Store,
     context_id: &ContextId,
-) -> Option<([u8; 32], BoundBlobSource)> {
-    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
-        return Some((blob, BoundBlobSource::ActivationMarker));
+) -> Option<([u8; 32], BoundBytecodeSource)> {
+    if let Some(blob) = crate::activation::activated_bytecode(store, context_id) {
+        return Some((blob, BoundBytecodeSource::ActivationMarker));
     }
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    (meta.bytecode_id != [0u8; 32]).then_some((meta.bytecode_id, BoundBlobSource::GroupKey))
+    (meta.bytecode_id != [0u8; 32]).then_some((meta.bytecode_id, BoundBytecodeSource::GroupKey))
 }
 
 impl ContextManager {
@@ -1902,9 +1902,9 @@ impl ContextManager {
         &self,
         context_id: &ContextId,
     ) -> Option<calimero_primitives::blobs::BlobId> {
-        let (blob, source) = bound_blob_for_context(&self.datastore, context_id)?;
+        let (blob, source) = bound_bytecode_for_context(&self.datastore, context_id)?;
         let blob_id = calimero_primitives::blobs::BlobId::from(blob);
-        if source == BoundBlobSource::GroupKey
+        if source == BoundBytecodeSource::GroupKey
             && !self.node_client.has_blob(&blob_id).unwrap_or(false)
         {
             // Legacy randomly-seeded bytecode_id (or not-yet-fetched target):
@@ -2974,12 +2974,12 @@ mod tests {
         crate::activation::record_activation(&store, &ctx_b, [0x22; 32]);
 
         assert_eq!(
-            super::bound_blob_for_context(&store, &ctx_a),
-            Some(([0x11; 32], super::BoundBlobSource::ActivationMarker))
+            super::bound_bytecode_for_context(&store, &ctx_a),
+            Some(([0x11; 32], super::BoundBytecodeSource::ActivationMarker))
         );
         assert_eq!(
-            super::bound_blob_for_context(&store, &ctx_b),
-            Some(([0x22; 32], super::BoundBlobSource::ActivationMarker))
+            super::bound_bytecode_for_context(&store, &ctx_b),
+            Some(([0x22; 32], super::BoundBytecodeSource::ActivationMarker))
         );
     }
 
@@ -2995,8 +2995,8 @@ mod tests {
             .expect("save group meta");
 
         assert_eq!(
-            super::bound_blob_for_context(&store, &ctx),
-            Some(([0x44; 32], super::BoundBlobSource::GroupKey))
+            super::bound_bytecode_for_context(&store, &ctx),
+            Some(([0x44; 32], super::BoundBytecodeSource::GroupKey))
         );
     }
 
@@ -3012,9 +3012,9 @@ mod tests {
             .expect("save group meta");
 
         // Zero bytecode_id (legacy) carries no blob identity — row fallback.
-        assert_eq!(super::bound_blob_for_context(&store, &ctx), None);
+        assert_eq!(super::bound_bytecode_for_context(&store, &ctx), None);
         // Non-group context — row fallback.
         let lone = ContextId::from([0xB7; 32]);
-        assert_eq!(super::bound_blob_for_context(&store, &lone), None);
+        assert_eq!(super::bound_bytecode_for_context(&store, &lone), None);
     }
 }

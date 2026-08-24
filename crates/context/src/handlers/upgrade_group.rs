@@ -963,7 +963,7 @@ fn executing_blob(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
 ) -> eyre::Result<[u8; 32]> {
-    if let Some(blob) = crate::activation::activated_blob(datastore, context_id) {
+    if let Some(blob) = crate::activation::activated_bytecode(datastore, context_id) {
         return Ok(blob);
     }
     let handle = datastore.handle();

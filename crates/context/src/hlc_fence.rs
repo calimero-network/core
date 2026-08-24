@@ -119,7 +119,7 @@ pub fn loaded_reader_bytecode_id(
     context_id: &ContextId,
 ) -> eyre::Result<Option<[u8; 32]>> {
     // Primary: the per-context activation marker — what this context executes.
-    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
+    if let Some(blob) = crate::activation::activated_bytecode(store, context_id) {
         return Ok(Some(blob));
     }
 

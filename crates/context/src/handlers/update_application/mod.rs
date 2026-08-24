@@ -99,7 +99,8 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
                         .ok()
                         .flatten()
                         .map(|app| *app.blob.bytecode.as_ref());
-                    let activated = crate::activation::activated_blob(&self.datastore, &context_id);
+                    let activated =
+                        crate::activation::activated_bytecode(&self.datastore, &context_id);
                     if same_id_update_is_noop(activated, installed) {
                         debug!(%context_id, "Application already set, installed bytecode already active, and no migration requested; skipping update");
                         return ActorResponse::reply(Ok(()));

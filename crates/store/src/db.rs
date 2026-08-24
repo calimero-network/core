@@ -91,6 +91,9 @@ pub enum Column {
     /// migrate succeeds. Own column for the same collision reason as above.
     /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
     ContextExecutingBlob,
+    /// Kept as `ContextActivatedBlob`, not `*Bytecode`: this variant's name is the
+    /// on-disk RocksDB column family (via `AsRefStr`), and renaming it would leave
+    /// existing rows in a column the new code never opens.
     ContextActivatedBlob,
     /// Node-local per-context record of the ABI state version the activated
     /// bytecode declares, resolved from its embedded schema when the context

@@ -91,7 +91,7 @@ pub(super) fn maybe_lazy_upgrade(
     };
 
     // 3. The activation marker decides both staleness and the mode below.
-    let activated = crate::activation::activated_blob(datastore, context_id);
+    let activated = crate::activation::activated_bytecode(datastore, context_id);
 
     // 4. Compare current vs target application
     if *current_application_id == meta.target_application_id {
