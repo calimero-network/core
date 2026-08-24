@@ -259,8 +259,14 @@ pub struct WarrantCommand {
 
 impl WarrantCommand {
     fn run(self) -> EyreResult<()> {
-        let context =
-            calimero_primitives::context::ContextId::from(parse_key(&self.context, "context")?);
+        // A context id is base58 and an account id is hex. Parsing the context as
+        // hex is what the first run of this command actually did, and it failed on
+        // the first non-hex character — which is the confusion class #3402 is
+        // about, caught here by an e2e rather than by a reviewer.
+        let context: calimero_primitives::context::ContextId =
+            self.context.trim().parse().wrap_err_with(|| {
+                format!("--context '{}' is not a valid context id", self.context)
+            })?;
         let executor = calimero_account::AccountId::from(parse_key(&self.executor, "executor")?);
         let secret = PrivateKey::from(parse_key(&self.device_secret, "device-secret")?);
 
@@ -827,5 +833,53 @@ mod tests {
         let device = parse_device(&format!("  {}  \n", "42".repeat(32)))
             .expect("a padded but valid id must parse");
         assert_eq!(device, DeviceId::from([0x42; 32]));
+    }
+
+    /// A context is written in base58 and an account in hex, and the two are
+    /// not interchangeable even though both are 32 bytes.
+    ///
+    /// This is a regression pin, not a hypothetical: `account warrant` parsed
+    /// `--context` as hex, which every hand-run happened to survive because a
+    /// hand-typed id came from a hex dump. It failed the moment a real context
+    /// id — base58, as every API and CLI surface prints one — reached it, and
+    /// only an end-to-end run found that. The assertion below is the same
+    /// check, for a hundredth of the wall clock.
+    #[test]
+    fn a_context_id_is_base58_and_an_account_id_is_hex() {
+        use calimero_primitives::context::ContextId;
+
+        let bytes: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let context = ContextId::from(bytes);
+
+        let base58 = context.to_string();
+        let hex = hex::encode(bytes);
+        assert_ne!(
+            base58, hex,
+            "the two spellings must differ to be confusable"
+        );
+
+        // The spelling a context prints is the spelling it parses.
+        assert_eq!(
+            base58.parse::<ContextId>().expect("base58 must parse"),
+            context
+        );
+
+        // And the hex spelling is NOT accepted as a context. Were it accepted,
+        // the two would silently interchange and the bug this pins would be
+        // invisible rather than loud.
+        assert!(
+            hex.parse::<ContextId>().is_err(),
+            "hex must not parse as a context id, or nothing distinguishes the two"
+        );
+
+        // The account side, mirrored: hex parses, base58 does not.
+        assert!(
+            hex.parse::<calimero_account::AccountId>().is_ok(),
+            "an account id is hex"
+        );
+        assert!(
+            base58.parse::<calimero_account::AccountId>().is_err(),
+            "base58 must not parse as an account id"
+        );
     }
 }
