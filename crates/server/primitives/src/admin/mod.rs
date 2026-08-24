@@ -1175,7 +1175,7 @@ impl Validate for CreateGroupApiRequest {
         if let Some(ref bytecode_id) = self.bytecode_id {
             if bytecode_id.is_empty() {
                 errors.push(ValidationError::EmptyField {
-                    field: "bytecode_id",
+                    field: "bytecodeId",
                 });
             }
         }
@@ -1280,7 +1280,8 @@ pub struct GroupInfoApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GroupInfoApiResponseData {
     pub group_id: String,
-    #[serde(alias = "appKey")]
+    // `appKey` on the wire: the rename is internal, the JSON is a client contract.
+    #[serde(rename = "appKey")]
     pub bytecode_id: String,
     pub target_application_id: ApplicationId,
     pub member_count: u64,
@@ -2216,7 +2217,8 @@ pub struct SyncGroupApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SyncGroupApiResponseData {
     pub group_id: String,
-    #[serde(alias = "appKey")]
+    // `appKey` on the wire: the rename is internal, the JSON is a client contract.
+    #[serde(rename = "appKey")]
     pub bytecode_id: String,
     pub target_application_id: ApplicationId,
     pub member_count: u64,
@@ -2917,7 +2919,8 @@ mod tests {
 #[serde(rename_all = "camelCase")]
 pub struct NamespaceApiResponse {
     pub namespace_id: String,
-    #[serde(alias = "appKey")]
+    // `appKey` on the wire: the rename is internal, the JSON is a client contract.
+    #[serde(rename = "appKey")]
     pub bytecode_id: String,
     pub target_application_id: String,
     pub created_at: u64,
@@ -2999,7 +3002,9 @@ pub struct ListNamespacesForApplicationQuery {
 
 #[cfg(test)]
 mod naming_back_compat_tests {
-    use super::{ApplicationId, CreateGroupApiRequest, GroupInfoApiResponseData};
+    use super::{
+        ApplicationId, CreateGroupApiRequest, CreateNamespaceApiRequest, GroupInfoApiResponseData,
+    };
 
     // A client on the old field name must keep working. The alias is the
     // contract; without it every existing caller breaks on a pure rename.
@@ -3019,10 +3024,10 @@ mod naming_back_compat_tests {
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
     }
 
-    // Responses serialize under the NEW name only. Emitting both would double
-    // the payload and leave no signal about which one is canonical.
+    // Responses keep the OLD wire name: the rename is internal, and every
+    // deployed client reads `appKey`. Requests take either name via the alias.
     #[test]
-    fn group_info_response_serializes_the_new_field_only() {
+    fn group_info_response_keeps_the_legacy_wire_name() {
         let data = GroupInfoApiResponseData {
             group_id: "g".to_owned(),
             bytecode_id: "b".to_owned(),
@@ -3036,7 +3041,15 @@ mod naming_back_compat_tests {
             group_state_hash: String::new(),
         };
         let json = serde_json::to_string(&data).expect("serialize");
-        assert!(json.contains("\"bytecodeId\""), "got: {json}");
-        assert!(!json.contains("\"appKey\""), "got: {json}");
+        assert!(json.contains("\"appKey\""), "got: {json}");
+        assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    #[test]
+    fn create_namespace_request_still_accepts_the_legacy_camel_case_alias() {
+        let json = r#"{"appKey":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let req: CreateNamespaceApiRequest =
+            serde_json::from_str(json).expect("legacy appKey must still deserialize");
+        assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
     }
 }
