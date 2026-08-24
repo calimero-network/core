@@ -71,15 +71,55 @@ pub async fn handler(
     }
 }
 
+/// This node's own signing identity in the context.
+async fn local_signer(
+    ctx_client: &ContextClient,
+    context_id: &ContextId,
+) -> eyre::Result<calimero_primitives::identity::PublicKey> {
+    let members = ctx_client.get_context_members(context_id, Some(true));
+    let mut members = std::pin::pin!(members);
+    members
+        .next()
+        .await
+        .transpose()?
+        .map(|(key, _)| key)
+        .ok_or_else(|| eyre::eyre!("this node owns no identity in this context"))
+}
+
 async fn perform(
     ctx_client: &ContextClient,
     context_id: ContextId,
     req: PerformIntentApiRequest,
 ) -> eyre::Result<PerformIntentApiResponse> {
-    let bytes = hex::decode(req.delegation.trim())
-        .map_err(|err| eyre::eyre!("delegation is not hex: {err}"))?;
-    let delegation: calimero_account::Delegation = borsh::from_slice(&bytes)
-        .map_err(|err| eyre::eyre!("delegation is not a valid credential: {err}"))?;
+    let warrant_bytes =
+        hex::decode(req.warrant.trim()).map_err(|err| eyre::eyre!("warrant is not hex: {err}"))?;
+    let warrant: calimero_account::Warrant = borsh::from_slice(&warrant_bytes)
+        .map_err(|err| eyre::eyre!("warrant is not a valid statement: {err}"))?;
+
+    let proof_bytes = hex::decode(req.author_proof.trim())
+        .map_err(|err| eyre::eyre!("authorProof is not hex: {err}"))?;
+    let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
+        borsh::from_slice(&proof_bytes)
+            .map_err(|err| eyre::eyre!("authorProof is not a valid credential: {err}"))?;
+
+    // The node attaches its OWN half. The author authorized an operator account
+    // and never has to learn which of its processes runs the intent — that is
+    // what `Warrant::executor` being an account buys, and asking a client for
+    // this node's process key would give it back.
+    let group_id =
+        calimero_governance_store::get_group_for_context(ctx_client.datastore(), &context_id)?
+            .ok_or_else(|| eyre::eyre!("this context belongs to no group"))?;
+    let signer = local_signer(ctx_client, &context_id).await?;
+    let executor_proof =
+        calimero_context::join_credential::build(ctx_client.datastore(), &group_id, &signer)
+            .map_err(|err| eyre::eyre!("this node could not present its own credential: {err}"))?;
+
+    let delegation = calimero_account::Delegation {
+        warrant: Box::new(warrant),
+        author_proof: Box::new(author_proof),
+        executor_proof,
+        executor_key: signer,
+    };
 
     // Authenticity first, so every later message is about a warrant that is
     // genuinely the member's rather than one a caller made up.
@@ -131,20 +171,9 @@ async fn perform(
         "performing intent on a member's behalf"
     );
 
-    // The executor identity passed here is this node's own, as it always is —
-    // what changes is that the run's PRINCIPAL comes from the warrant, so the
-    // application observes the member and the change is attributed to them.
-    let signer = {
-        let members = ctx_client.get_context_members(&context_id, Some(true));
-        let mut members = std::pin::pin!(members);
-        members
-            .next()
-            .await
-            .transpose()?
-            .map(|(key, _)| key)
-            .ok_or_else(|| eyre::eyre!("this node owns no identity in this context"))?
-    };
-
+    // The signer stays this node's own, as it always is — what changes is that
+    // the run's PRINCIPAL comes from the warrant, so the application observes
+    // the member and the change is attributed to them.
     let outcome = ctx_client
         .execute_with_origin(
             &context_id,

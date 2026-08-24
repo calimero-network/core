@@ -1313,13 +1313,22 @@ pub struct PerformIntentApiRequest {
     pub method: String,
     /// Its arguments, as the JSON the guest will receive.
     pub args_json: serde_json::Value,
-    /// The author's consent, hex-encoded borsh of a `calimero_account::Delegation`.
+    /// The author's consent: hex-encoded borsh of a `calimero_account::Warrant`.
     ///
-    /// Opaque on this surface deliberately. It is a signed credential whose
+    /// Opaque on this surface deliberately. It is a signed statement whose
     /// canonical form is its borsh encoding, and re-describing its fields as
     /// JSON would create a second spelling that could disagree with the bytes
     /// the signature covers.
-    pub delegation: String,
+    pub warrant: String,
+    /// Hex-encoded borsh of the author's `AccountProof<DeviceCert>`, proving the
+    /// key that signed the warrant is a device of the account it names.
+    ///
+    /// The author supplies only its OWN half. The executor's proof and signing
+    /// key are attached by the node from its own credentials, because the
+    /// warrant authorizes an operator ACCOUNT and the author has no business
+    /// knowing which of that operator's processes will run it — that is the
+    /// whole reason `Warrant::executor` is an account.
+    pub author_proof: String,
 }
 
 impl Validate for PerformIntentApiRequest {
@@ -1328,9 +1337,12 @@ impl Validate for PerformIntentApiRequest {
         if self.method.is_empty() {
             errors.push(ValidationError::EmptyField { field: "method" });
         }
-        if self.delegation.is_empty() {
+        if self.warrant.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "warrant" });
+        }
+        if self.author_proof.is_empty() {
             errors.push(ValidationError::EmptyField {
-                field: "delegation",
+                field: "authorProof",
             });
         }
         errors
