@@ -51,6 +51,7 @@
 //! | `root_key` | Root-key rotation: [`RootKeyHandoff`] and the chain walk, [`root_key_at_epoch`] |
 //! | `device` | Device credentials: [`KemPublicKey`], [`DeviceCert`], and its verification |
 //! | `revocation` | Withdrawing a device: [`DeviceRevocation`] and its self-contained proof |
+//! | `warrant` | Delegated authorship: [`Warrant`] and its self-contained [`Delegation`] |
 //! | `pairing` | Linking a new device: [`PairingOffer`], its statement, and the human-compared code |
 //! | `domain` | Every signing domain in one place, so they stay pairwise distinct |
 //! | `error` | [`AccountError`] — why a credential failed |
@@ -70,6 +71,7 @@ mod pairing;
 mod revocation;
 mod root_key;
 mod signed;
+mod warrant;
 
 #[cfg(test)]
 mod tests;
@@ -93,6 +95,7 @@ pub use crate::pairing::PairingOffer;
 pub use crate::revocation::{DeviceRevocation, SignedDeviceRevocation, VerifiedDeviceRevocation};
 pub use crate::root_key::{root_key_at_epoch, RootKeyHandoff, MAX_ROOT_KEY_HANDOFFS};
 pub use crate::signed::{AccountProof, RootSigned, Verified};
+pub use crate::warrant::{Delegation, VerifiedWarrant, Warrant};
 
 // The two end-to-end verifiers keep free-function form: each takes an anchor and a
 // BORROWED chain, which is what the apply paths hold, and a method would force them

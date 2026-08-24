@@ -126,6 +126,23 @@ pub enum Column {
     /// legacy delta rows retire (C2.5). Synchronized like the planes it will
     /// subsume. Auto-created from `Column::iter()` at `open_cf` (no DB migration).
     UnifiedOp,
+    /// Highest warrant nonce seen from one author device in one context, keyed
+    /// `context_id(32) ‖ author_device_key(32)` (see `ContextWarrantNonce`). One
+    /// `u64` per active author device per context.
+    ///
+    /// Its own column rather than a prefix in `ContextLocal`, for the reason the
+    /// other single-purpose context markers have theirs: the key is
+    /// `context_id`-prefixed and would otherwise collide with the same-shaped
+    /// identity key.
+    ///
+    /// **Node-local and deliberately not synchronized.** This is each peer's own
+    /// record of what it has already accepted, and single-use is a property each
+    /// peer enforces for itself — the relay is the party a warrant protects
+    /// against, so it cannot be trusted to report which nonces it has spent.
+    /// Replicating the ledger would make one node's view authoritative for
+    /// everyone and hand a compromised relay a way to erase the evidence.
+    /// Auto-created from `Column::iter()` (no DB migration).
+    ContextWarrantNonce,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

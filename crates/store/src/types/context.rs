@@ -227,6 +227,17 @@ pub struct ContextDagDelta {
     /// path before applying. `None` for snapshot checkpoints / genesis
     /// rows that have no author signature to record.
     pub delta_signature: Option<[u8; 64]>,
+    /// The author's consent and the two certificates behind it, for a delta
+    /// produced by an executor on the author's behalf. `None` for a
+    /// self-authored delta, which is every delta today.
+    ///
+    /// Persisted rather than left on the gossip envelope for the reason
+    /// `producing_bytecode_id` still cannot be bound into a signature: the
+    /// delegated preimage embeds the warrant, so a catchup or parent-fetch
+    /// responder that did not store it could not serve a delta any initiator
+    /// could verify. A field that is signed over has to survive every path the
+    /// delta can arrive by.
+    pub delegation: Option<calimero_account::Delegation>,
 }
 
 impl ContextDagDelta {
@@ -261,6 +272,118 @@ impl ContextDagDelta {
 impl PredefinedEntry for key::ContextDagDelta {
     type Codec = Borsh;
     type DataType<'a> = ContextDagDelta;
+}
+
+/// The warrant nonces this node has already accepted from one author device in
+/// one context, as a sliding replay window.
+///
+/// **Not a high-water mark, and that is the whole design.** A
+/// strictly-increasing rule is delivery-order dependent: a peer that sees nonce
+/// 7 before nonce 5 would refuse the 5, while a peer that saw them the other way
+/// round accepted both — the two peers then hold different state for the same
+/// history, which is divergence rather than replay protection. Gossip gives no
+/// ordering between two warrants from the same device, so the rule has to be
+/// order-independent.
+///
+/// A window is the standard answer and is bounded: 16 bytes per active author
+/// device per context, whatever the nonce values are.
+///
+/// # Why not `calimero_governance_store::NonceWindow`
+///
+/// That type solves the same shape for governance-op nonces and is strictly
+/// better there: a contiguous floor plus a sparse set of applied nonces above
+/// it, so a late nonce is never wrongly refused however far behind it is. It can
+/// afford the sparse set because a signer's governance ops are DAG ancestors of
+/// each other, so gaps fill and the set collapses back into the floor.
+///
+/// Warrant nonces have no such guarantee, and the reason is adversarial rather
+/// than incidental: a relay withholding one of a member's requests is an
+/// explicit part of what this ledger exists to detect. A withheld nonce is a gap
+/// that never fills, so the set above the floor grows without bound — one entry
+/// per warrant the relay chose to drop, per author device, per context. That is
+/// a cheap remote memory-growth primitive handed to exactly the party the
+/// warrant protects against.
+///
+/// A fixed window pays for that bound with a real cost, stated on
+/// [`Self::WINDOW`]: a warrant delayed past the window is refused. The trade is
+/// deliberate and the two types should not be merged without revisiting it.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContextWarrantNonce {
+    /// The highest nonce accepted so far. Always a member of the accepted set.
+    pub high_water: u64,
+    /// Bitmap of the 64 nonces below [`Self::high_water`]: bit `i` set means
+    /// `high_water - 1 - i` has been accepted.
+    pub window: u64,
+}
+
+impl ContextWarrantNonce {
+    /// Window width. A nonce further below the high-water mark than this is
+    /// refused because this node can no longer tell whether it was already
+    /// spent, and guessing in the accepting direction is what a replay wants.
+    ///
+    /// The residual is that a delta delayed by more than 64 of its author's own
+    /// warrants is refused, and refused only on the peers that fell behind. That
+    /// is a real cost and it is the bounded end of the trade: the alternative is
+    /// an unbounded set of seen nonces per device.
+    pub const WINDOW: u64 = 64;
+
+    /// The state after accepting `nonce`, or `None` if it must be refused.
+    ///
+    /// Pure, so the rule can be tested without a store — and it is the whole
+    /// safety property, so it is worth testing directly.
+    #[must_use]
+    pub const fn accept(self, nonce: u64) -> Option<Self> {
+        if nonce > self.high_water {
+            let advance = nonce - self.high_water;
+            // The old high-water mark becomes a set bit, and everything shifts
+            // down by the distance moved. `checked_shl` handles a jump wider
+            // than the window: nothing below the new mark is known any more.
+            let shifted = match advance {
+                d if d >= Self::WINDOW => 0,
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "guarded above: advance < WINDOW == 64"
+                )]
+                d => (self.window << (d as u32)) | (1u64 << (d as u32 - 1)),
+            };
+            return Some(Self {
+                high_water: nonce,
+                window: shifted,
+            });
+        }
+
+        let below = self.high_water - nonce;
+        if below == 0 || below > Self::WINDOW {
+            // Already the mark, or too old to judge.
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "guarded above: 0 < below <= WINDOW == 64"
+        )]
+        let bit = 1u64 << (below as u32 - 1);
+        if self.window & bit != 0 {
+            return None;
+        }
+        Some(Self {
+            high_water: self.high_water,
+            window: self.window | bit,
+        })
+    }
+
+    /// The state after accepting `nonce` as the first one ever seen.
+    #[must_use]
+    pub const fn first(nonce: u64) -> Self {
+        Self {
+            high_water: nonce,
+            window: 0,
+        }
+    }
+}
+
+impl PredefinedEntry for key::ContextWarrantNonce {
+    type Codec = Borsh;
+    type DataType<'a> = ContextWarrantNonce;
 }
 
 /// Raw-bytes value for a unified causal-log op row (cutover C2): the
@@ -401,4 +524,111 @@ pub struct ContextActivatedStateVersion {
 impl PredefinedEntry for key::ContextActivatedStateVersion {
     type Codec = Borsh;
     type DataType<'a> = ContextActivatedStateVersion;
+}
+
+#[cfg(test)]
+mod warrant_nonce_tests {
+    use super::ContextWarrantNonce as W;
+
+    /// The base case: one warrant, then the next.
+    #[test]
+    fn a_fresh_nonce_above_the_mark_is_accepted_once() {
+        let w = W::first(7);
+        let w = w.accept(8).expect("8 is above the mark");
+        assert_eq!(w.high_water, 8);
+        assert!(w.accept(8).is_none(), "8 must not be spendable twice");
+        assert!(w.accept(7).is_none(), "7 was the previous mark");
+    }
+
+    /// The property a high-water mark cannot give: arrival order must not change
+    /// the verdict, or two peers that saw the same warrants in different orders
+    /// end up in different states.
+    #[test]
+    fn the_verdict_is_independent_of_arrival_order() {
+        let forward = {
+            let mut w = W::first(1);
+            for n in [2, 3, 5, 8, 13] {
+                w = w.accept(n).expect("each is new");
+            }
+            w
+        };
+        let backward = {
+            let mut w = W::first(13);
+            for n in [8, 5, 3, 2, 1] {
+                w = w.accept(n).expect("each is new, arriving late");
+            }
+            w
+        };
+        assert_eq!(
+            forward, backward,
+            "the same set of nonces must leave the same state whichever order it arrived in"
+        );
+
+        // And in both, every one of them is now spent.
+        for n in [1, 2, 3, 5, 8, 13] {
+            assert!(forward.accept(n).is_none(), "{n} must be spent");
+            assert!(backward.accept(n).is_none(), "{n} must be spent");
+        }
+    }
+
+    /// A late warrant inside the window is still accepted — this is the case a
+    /// strictly-increasing rule got wrong.
+    #[test]
+    fn a_late_nonce_inside_the_window_is_accepted() {
+        let w = W::first(100);
+        let w = w
+            .accept(100 - W::WINDOW + 1)
+            .expect("just inside the window");
+        assert_eq!(w.high_water, 100, "a late nonce must not move the mark");
+    }
+
+    /// And the boundary, both sides of it. `WINDOW` counts the nonces BELOW the
+    /// mark, so `high_water - WINDOW` is the oldest one still judgeable and
+    /// `high_water - WINDOW - 1` is the first that is not.
+    #[test]
+    fn the_window_boundary_is_where_it_says_it_is() {
+        let w = W::first(100);
+        assert!(
+            w.accept(100 - W::WINDOW).is_some(),
+            "the oldest nonce inside the window must still be accepted"
+        );
+        assert!(
+            w.accept(100 - W::WINDOW - 1).is_none(),
+            "the first nonce past the window must be refused"
+        );
+        assert!(
+            w.accept(1).is_none(),
+            "far below the window must be refused"
+        );
+    }
+
+    /// A jump wider than the window clears it: nothing below the new mark is
+    /// known any more, so nothing below it may be accepted on a guess.
+    #[test]
+    fn a_jump_past_the_window_forgets_what_it_can_no_longer_judge() {
+        let w = W::first(1);
+        let w = w.accept(2).expect("2 is new");
+        let jumped = w.accept(1_000).expect("a big jump is still a new nonce");
+        assert_eq!(jumped.window, 0, "the window must not carry stale bits");
+        assert!(
+            jumped.accept(2).is_none(),
+            "a nonce below the window must be refused, not re-accepted"
+        );
+    }
+
+    /// Saturation: a full window must not wrap around and start accepting.
+    #[test]
+    fn a_full_window_keeps_refusing() {
+        let mut w = W::first(W::WINDOW + 1);
+        for n in 2..=W::WINDOW {
+            w = w.accept(n).expect("filling the window");
+        }
+        for n in 2..=(W::WINDOW + 1) {
+            assert!(w.accept(n).is_none(), "{n} is spent and must stay refused");
+        }
+        assert!(
+            w.accept(W::WINDOW + 2).is_some(),
+            "the next one still works"
+        );
+    }
 }

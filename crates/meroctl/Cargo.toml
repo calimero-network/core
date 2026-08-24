@@ -10,7 +10,9 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+borsh.workspace = true
 calimero-account.workspace = true
+calimero-crypto.workspace = true
 axum = { workspace = true, features = ["http1"] }
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }

@@ -2276,6 +2276,7 @@ impl SyncManager {
                                     // attempt — the peer simply doesn't have
                                     // it, so it can't be a "rejection".
                                     delta_signature: response_delta_signature,
+                                    delegation,
                                 },
                             ..
                         }) => {
@@ -2367,8 +2368,9 @@ impl SyncManager {
                                     hlc: storage_delta.hlc,
                                     kind: calimero_dag::DeltaKind::Regular,
                                 };
-                                if let Err(e) =
-                                    delta_store_ref.add_delta(dag_delta, None, None, None).await
+                                if let Err(e) = delta_store_ref
+                                    .add_delta(dag_delta, None, None, None, None)
+                                    .await
                                 {
                                     warn!(
                                         ?e,
@@ -2441,10 +2443,11 @@ impl SyncManager {
                                 }
                             };
                             if let Err(err) =
-                                calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
                                     context_id,
                                     storage_delta.id,
                                     author,
+                                    delegation.as_ref(),
                                     pos.as_ref(),
                                     storage_delta.hlc,
                                     &sig_for_head,
@@ -2569,6 +2572,11 @@ impl SyncManager {
                                     Some(author),
                                     persisted_gov_blob,
                                     response_delta_signature,
+                                    // Bound from the DeltaResponse above, so a
+                                    // delegated delta fetched by catchup is
+                                    // stored with the bundle it was signed with
+                                    // and can be re-served to the next peer.
+                                    delegation,
                                 )
                                 .await
                             {

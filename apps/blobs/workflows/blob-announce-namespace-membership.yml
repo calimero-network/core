@@ -65,7 +65,6 @@ steps:
     type: create_mesh
     context_node: rust-blob-announce-1
     application_id: "{{app_id}}"
-    path: "res/blobs.wasm"
     nodes:
       - rust-blob-announce-2
     outputs:

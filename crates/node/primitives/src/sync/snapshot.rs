@@ -827,6 +827,18 @@ pub enum BroadcastMessage<'a> {
         /// wire additions). `BroadcastMessage` is transient gossip and
         /// is not persisted, so no stored-data migration is required.
         producing_bytecode_id: Option<[u8; 32]>,
+
+        /// The author's consent, for a delta an executor produced on the
+        /// author's behalf. `None` is the self-authored path, byte-identical
+        /// to what it was.
+        ///
+        /// Cleartext beside `author_id`, and it has to be: the envelope
+        /// signature is verified BEFORE decryption on the gossip path, because
+        /// the author-keyed gates must not run until the authorship claim is
+        /// established — so the warrant a delegated signature commits to has
+        /// to be readable there too. It carries only an intent HASH for
+        /// exactly this reason.
+        delegation: Option<calimero_account::Delegation>,
     },
 
     /// Hash heartbeat for divergence detection

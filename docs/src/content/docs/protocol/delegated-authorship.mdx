@@ -1,0 +1,149 @@
+---
+title: Delegated Authorship
+description: How a device that cannot run the application still owns the writes it asks for.
+sidebar:
+  order: 45
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+## The problem: authorship and execution are not the same act
+
+Everything in [the write path](/protocol/write-path/) assumes one node does both jobs — it runs the application and it signs the result. For a laptop running `merod` that assumption is free. For a phone, a browser tab, or an agent holding nothing but a key, it is not available at all, for two independent reasons:
+
+- **It cannot execute.** The runtime is a WASM JIT. Running a method means compiling and running the application, against materialized state, under an execution lock. That is not something a thin client does.
+- **It cannot decrypt.** State deltas are sealed under the [scope key](/protocol/encryption/). A device that never joined the group never received one, so even the inputs are unintelligible to it.
+
+The naive fix is to let the node write on the member's behalf and label the result with the member's name. That is not delegation, it is impersonation: nothing in the operation records that the member ever asked, so any holder of the group key could mint writes in anyone's name and no peer could tell the difference.
+
+Delegated authorship closes that gap with one idea: **the member's consent is itself a signed object, and it travels with the change.** "Somebody else ran this for me" becomes a claim the author made and every peer can check, rather than an assertion the executor makes and no one can.
+
+## Before and after
+
+|  | Self-authored | Delegated |
+| --- | --- | --- |
+| who runs the method | the author's node | the executor ("relay") |
+| who signs the envelope | the author's device key | the executor's device key |
+| `author_id` on the delta | the signer | **not** the signer |
+| what proves the author consented | the signature itself | the warrant inside the envelope |
+| what the author must hold | a node, a scope key, the app | one signing key |
+| what the executor may do without a grant | — | nothing |
+
+The last row is the one to keep hold of. Being a member does not let you author for others, and neither does being an admin.
+
+## The warrant
+
+A **warrant** is the author's signed statement that a specific request may be run by a specific operator on their behalf. It is minted offline — no node is contacted, nothing is published — and it binds exactly the things that would otherwise be substitutable:
+
+| Field | Binds | Why it must be bound |
+| --- | --- | --- |
+| `context` | where | Otherwise it authorizes the same request in every context at once. |
+| `author_account` | who it is *for* | The [authorization subject](/protocol/accounts/), carried rather than re-derived: re-deriving at apply time asks a different question than the author answered, so a disagreement has to be refusable instead of silently resolved. |
+| `author_device_key` | which replica | The CRDT replica the change is attributed to, and the key whose signature this is. |
+| `executor` | who may run it | An **account**, not a key — so one of the operator's processes re-keying does not void warrants already issued to it. |
+| `intent_hash` | what | `H(method ‖ args)`. The hash, never the plaintext — see below. |
+| `nonce` | once | Monotonic per author **device**. Per device rather than per account because two devices of one account are independent replicas and cannot coordinate on a shared counter. |
+| `not_after` | until when | Checked by the relay at admission. Deliberately *not* checked by peers at apply — see below. |
+
+The intent travels in the clear to the relay, and that is the whole point of the hop: it has to read the method and arguments to run them. What must not travel in the clear is the intent on the **gossip** wire, and it does not — the warrant commits to `H(method ‖ args)`, and the detail stays sealed beside the operations like any other delta.
+
+## Two signatures, two domains
+
+A delegated delta carries two independent signatures at different layers, and keeping them apart is what makes the arrangement checkable.
+
+<SeqDiagram
+  id="d-deleg"
+  title="A delegated write"
+  lanes={[
+    { label: 'Author (key only)', color: '#f0883e' },
+    { label: 'Relay', color: '#3fb950' },
+    { label: 'Store', color: '#39d0d8' },
+    { label: 'Peer', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'sign warrant: context, intent_hash, executor, nonce', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'POST intents { method, args, warrant, author_proof }' },
+    { from: 1, to: 1, label: 'verify warrant + covers(method,args) + not_after' },
+    { from: 1, to: 1, label: 'refuse unless executor may author on behalf', color: '#ff7b72' },
+    { from: 1, to: 1, label: 'execute WASM as the AUTHOR principal' },
+    { from: 1, to: 1, label: 'sign envelope with RELAY key, warrant embedded', color: '#a5ff11' },
+    { from: 1, to: 2, label: 'atomic write: delta(author_id=author) + nonce spent' },
+    { from: 1, to: 3, label: 'broadcast delta + delegation' },
+    { from: 3, to: 3, label: 'verify both layers, authorize at the cut, spend nonce' },
+  ]}
+/>
+
+<Steps>
+
+1. **The warrant** is signed by the author's device key under its own domain, and says *what may be done for me, by whom*. It is minted before the relay is ever contacted and is valid regardless of how the request reaches it.
+
+2. **The envelope** is signed by the *executor's* device key under `calimero/deleg/1`, and says *I ran this, and here is the consent that let me*. The warrant is embedded **whole** in the signed bytes rather than hashed, so a relay holding two warrants for the same author cannot swap them between deltas and have each still verify.
+
+</Steps>
+
+A self-authored envelope signs under `calimero/delta/2` instead. The two domains are separate for a wire-compatibility reason as much as a cryptographic one: borsh writes a tag byte for an `Option`, so adding one field to the shared payload would have changed the signed bytes of every self-authored delta ever produced. A separate domain leaves those bytes untouched — and means a self-authored signature can never verify as a delegated one, which would drop the warrant in flight.
+
+## What the relay must be granted
+
+Authoring for others is a capability of its own, `CAN_AUTHOR_ON_BEHALF`, and it is granted like any other — see [capability inheritance](/protocol/capability-inheritance/). It is not implied by membership, and not implied by admin. A relay that has not been granted it gets a clean refusal at the API, before anything is executed or published, which matters: a delta peers would reject is worse than a request that never happened.
+
+## Replay, and why the ledger is a window
+
+A warrant's signature stays valid forever — that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device)` ledger and spends the nonce as part of admitting the delta.
+
+The ledger is a **sliding window** (64 wide), not a strictly-increasing counter, and the reason is convergence. A high-water mark that only accepts `nonce > seen` makes acceptance depend on *arrival order*: two warrants that cross paths in the network would be accepted by one node and refused by another, and the two would never agree again. A window accepts any unseen nonce within it, so the verdict is a function of the set received, not the order.
+
+The same reasoning explains `not_after`. It is checked by the **relay**, at admission, against its own clock — and never by peers at apply. Wall-clock at apply time would make acceptance node-dependent: the same delta arriving either side of an expiry would be applied by one peer and refused by another, which is divergence rather than security. Expiry limits how long a *relay* will spend a warrant; the nonce ledger is what bounds it on the network.
+
+## What this is not
+
+- **Not a key handoff.** The author's signing key never leaves their machine and is never sent. Only signatures are.
+- **Not a standing grant.** A warrant authorizes one intent, once. Nothing accumulates.
+- **Not a way to bypass authorization.** The write is authorized as the **author** — at the cut, against the folded membership, like any other. A warrant lets someone act *as* you; it does not let them act *beyond* you.
+- **Not the executor's write.** The result is attributed to the author's account and device: their replica slot, their membership, their name in the app.
+
+## A worked example
+
+The author holds one key and nothing else. Its account is already a member of the group; its device joined nothing.
+
+```text
+1. mint     — offline, on the author's machine, no node involved:
+              warrant = { context=0x0102…1f, author_account=0x0e2c…5e30,
+                          author_device_key=0x4d07…3803, executor=<relay account>,
+                          intent_hash=H("set" ‖ {"key":"delegated",…}),
+                          nonce=1, not_after=now+300 }
+              signature = Ed25519_sign(author_device_sk, b"calimero.warrant.v1" ‖ …)
+
+2. present  — POST /admin-api/contexts/<id>/intents
+              { method: "set", argsJson: {...}, warrant: <hex>, authorProof: <hex> }
+              The author sends only its OWN proof. The relay attaches its own
+              credential — which of its processes runs this is not the author's
+              problem.
+
+3. admit    — relay checks: the delegation verifies, the warrant names THIS
+              context, it covers THIS (method, args), it has not expired, and
+              the relay may author on behalf. Any failure → refusal, no delta.
+
+4. execute  — WASM runs with the AUTHOR as principal, so every write inside is
+              owned by the author's account and keyed to the author's device.
+
+5. sign     — delta_signature = Ed25519_sign(relay_device_sk, payload of
+                 (b"calimero/deleg/1", context_id, delta_id, author_id,
+                  executor_key, warrant, governance_position, hlc))
+
+6. persist  — one atomic write, under the DAG lock: the delta with
+              author_id = the author's device, and the spent nonce. Both or
+              neither — a spent nonce with no delta would silently burn the
+              author's request.
+
+7. broadcast — the delta and the delegation together. A peer re-runs both
+               signature layers, authorizes the write as the AUTHOR at the cut,
+               spends the nonce in its own ledger, and applies.
+```
+
+Step 7 is the half a relay cannot fake. Everything before it happens on one machine; only a peer accepting the result proves the network agrees the author consented.
+
+## Where this leads
+
+The delta is now an ordinary member of the log. [The receive & apply path](/protocol/receive-path/) treats it like any other from here — the only difference is that verification had two layers instead of one, and that the `author_id` it carries was never the key that signed it.

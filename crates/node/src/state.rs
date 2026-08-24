@@ -974,6 +974,7 @@ mod tests {
             delta_signature: None,
             governance_drain_attempts: 0,
             producing_bytecode_id: None,
+            delegation: None,
         }
     }
 

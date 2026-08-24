@@ -203,6 +203,8 @@ impl SubCommands {
                 | ContextSubCommands::Identity(_)
                 | ContextSubCommands::Alias(_)
                 | ContextSubCommands::Use(_)
+                // A write, even though the caller supplies the authorization.
+                | ContextSubCommands::Intent(_)
                 | ContextSubCommands::Sync(_) => TokenScope::Admin,
             },
             // Everything else (mutations, key/node management, call, and the

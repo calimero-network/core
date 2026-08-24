@@ -95,15 +95,6 @@ steps:
     outputs:
       invitation: invitation
 
-  - name: Wait for the group governance + invitation to gossip
-    # Lets node-2 form the namespace mesh and see the invitation before it
-    # joins. Kept modest (not generous) so a genuine join/mesh-timing
-    # regression still surfaces rather than being masked by a long sleep.
-    type: wait
-    seconds: 8
-
-  # ── The reported flow: node-2 joins the group via the invitation ──────
-
   - name: Node-2 joins the group (join_group / JoinGroupRequest path)
     type: join_namespace
     node: joinlist-node-2

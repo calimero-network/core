@@ -238,6 +238,15 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             )));
         }
 
+        // Kept before the op takes ownership: the device this certifies needs the
+        // proof to present itself, and cannot read it off the DAG until it is a
+        // member somewhere — which for a thin client is never.
+        let credential = Box::new(calimero_account::AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        });
+
         let link = GroupOp::AccountDeviceLinked {
             genesis,
             chain: vec![],
@@ -379,6 +388,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                     device,
                     key_delivered,
                     confirmation_code,
+                    credential,
                 ))
             }
             .into_actor(self),

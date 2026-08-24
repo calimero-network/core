@@ -152,6 +152,7 @@ mod tests {
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,
             producing_bytecode_id: Some([2; 32]),
+            delegation: None,
             leaf: None,
             entity: None,
             pending_application: None,

@@ -70,6 +70,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         key_id,
                         delta_signature,
                         producing_bytecode_id,
+                        delegation,
                     } => {
                         info!(
                             %context_id,
@@ -106,6 +107,12 @@ impl Handler<NetworkEvent> for NodeManager {
                                 // through so the fence check (Tasks 8/9) can
                                 // read it inside the apply path.
                                 producing_bytecode_id,
+                                // The author's consent, carried into the apply
+                                // path so the envelope check can take the
+                                // delegated branch. Dropping it here would make
+                                // every delegated delta look self-authored and
+                                // fail its signature check.
+                                delegation,
                             },
                         };
 

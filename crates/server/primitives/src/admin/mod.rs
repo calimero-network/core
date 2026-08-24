@@ -1315,6 +1315,89 @@ pub struct GroupInfoApiResponseData {
     pub group_state_hash: String,
 }
 
+/// A member's request that this node perform one intent on their behalf.
+///
+/// The intent travels in the clear to THIS node, which is fine and is the whole
+/// point of the hop: the relay has to read the method and arguments to run them.
+/// What must not travel in the clear is the intent on the *gossip* wire, and it
+/// does not — the warrant commits to `H(method ‖ args)` and the detail is sealed
+/// beside the operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformIntentApiRequest {
+    /// The method to run.
+    pub method: String,
+    /// Its arguments, as the JSON the guest will receive.
+    pub args_json: serde_json::Value,
+    /// The author's consent: hex-encoded borsh of a `calimero_account::Warrant`.
+    ///
+    /// Opaque on this surface deliberately. It is a signed statement whose
+    /// canonical form is its borsh encoding, and re-describing its fields as
+    /// JSON would create a second spelling that could disagree with the bytes
+    /// the signature covers.
+    pub warrant: String,
+    /// Hex-encoded borsh of the author's `AccountProof<DeviceCert>`, proving the
+    /// key that signed the warrant is a device of the account it names.
+    ///
+    /// The author supplies only its OWN half. The executor's proof and signing
+    /// key are attached by the node from its own credentials, because the
+    /// warrant authorizes an operator ACCOUNT and the author has no business
+    /// knowing which of that operator's processes will run it — that is the
+    /// whole reason `Warrant::executor` is an account.
+    pub author_proof: String,
+}
+
+impl Validate for PerformIntentApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.method.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "method" });
+        }
+        if self.warrant.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "warrant" });
+        }
+        if self.author_proof.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "authorProof",
+            });
+        }
+        errors
+    }
+}
+
+/// Where the accepted intent landed, so a client can wait for it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformIntentApiResponseData {
+    /// The context's scope root after the run.
+    ///
+    /// This was a `deltaId` that the handler had no way to populate, so it was
+    /// always `null` — a field that reports nothing is worse than no field,
+    /// because a caller reasonably reads it as "no delta was produced". The
+    /// execute path does not hand a delta id back (`ExecuteResponse` carries
+    /// none), but it does return the new root, which answers the question a
+    /// caller actually has: did this change anything?
+    pub root_hash: String,
+    /// The method's own return value.
+    pub returns: Option<serde_json::Value>,
+}
+
+/// Wrapped in `data` like every neighbouring response, and
+/// `NodeIdentityApiResponse` in particular — the closest sibling to this route,
+/// added in the same account work.
+///
+/// The wrapper is not decoration. `mero-js`'s admin client types every call as
+/// `post<{ data: T }>` and runs the result through one `unwrap`, so a flat
+/// response is the one shape its generated method cannot consume without a
+/// special case — and 51 of the 79 response structs here already wrap. Cheaper
+/// to match the convention than to explain the exception in three client
+/// libraries.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformIntentApiResponse {
+    pub data: PerformIntentApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddGroupMembersApiRequest {
@@ -1870,6 +1953,14 @@ pub struct PairDeviceCompleteApiResponseData {
     /// the request carried, echoed so the operator can see what the certificate
     /// names.
     pub confirmation_code: String,
+    /// Hex-encoded borsh of the `AccountProof<DeviceCert>` this pairing minted.
+    ///
+    /// The device that was just certified needs this to present itself as a
+    /// device of the account — and cannot read it off the DAG, because doing so
+    /// requires being a member of a group the account speaks in, which a thin
+    /// client never is. Not a secret: a certificate is public and proves nothing
+    /// without the device key it names.
+    pub credential: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -1,0 +1,222 @@
+name: E2E Scaffolding - Delegated Authorship
+description: >
+  A member that holds no node writes into a context, through a relay that runs
+  the method on its behalf.
+
+  This is the case the whole feature exists for and the one nothing else covers:
+  the author is a device holding only a signing key. It never joins the group,
+  never receives a scope key, and could not execute the application if it wanted
+  to — the runtime is a JIT compiler. What makes the write its own is a warrant
+  it signs, which travels with the change so every peer verifies it consented.
+
+  The scenario is deliberately shaped so that each assertion can only pass for
+  the right reason:
+
+    1. The author's ACCOUNT is added as a member; its device joins nothing. A
+       device-keyed membership check would refuse every write below, because a
+       thin client's key is in no group's binding rows.
+    2. The intent is refused BEFORE the relay is granted authorship. The grant is
+       not implied by membership or by admin, and this is what proves it.
+    3. The same warrant is then accepted once the grant is made — same bytes,
+       same signature, different verdict, so the grant is what changed it.
+    4. Re-presenting that warrant is refused. The signature is still perfectly
+       valid: replay is not forgery, which is why the nonce ledger has to exist
+       and why the envelope check cannot be what stops it.
+    5. The write is then read back from a SECOND node, which is what proves peers
+       accepted a delta whose author is not its signer. A relay could satisfy
+       everything above locally and still be producing deltas the network drops.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: delegated-node
+
+steps:
+  - name: Login on delegated-node-1
+    type: login
+    node: delegated-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on delegated-node-2
+    type: login
+    node: delegated-node-2
+    username: dev
+    password: dev-password
+
+  # --- Setup: a namespace with two node members and a shared context ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: delegated-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: delegated-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: delegated-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: delegated-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      account_node2: memberAccount
+
+  - name: Create a context in the namespace
+    type: create_context
+    node: delegated-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{context_id}})"
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: delegated-node-2
+    context_id: '{{context_id}}'
+
+  # No `expect` here, and that is not an omission: nothing has been written yet,
+  # so there is no materialized value to wait on. This only has to establish that
+  # node-2 is in the context before the delegated write happens.
+  - name: Both nodes are in the context before anything is delegated
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - delegated-node-1
+      - delegated-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # --- The delegated write ---
+  #
+  # One script, because the author is a key rather than a node and no workflow
+  # step can hold one. It performs steps 1-4 of the description and fails the run
+  # on any of them: an accepted write before the grant, a refusal after it, or an
+  # accepted replay are each a security regression rather than a flaky step.
+  - name: A member with no node writes through the relay
+    type: script
+    script: scripts/delegated-intent.sh
+    target: local
+    args:
+      - delegated-node-1
+      - '{{context_id}}'
+      - '{{namespace_id}}'
+      - '1'
+
+  # --- The half a relay cannot fake ---
+  #
+  # Everything above happened on the relay. This is what proves the network took
+  # it: node-2 verified an envelope whose author is not its signer, authorized it
+  # at the cut, spent the nonce, and applied it.
+  # `expect` is what makes this a barrier rather than a hope. Converging on a
+  # state hash only proves the nodes agree on a claim ABOUT state — a hash can be
+  # published ahead of the state behind it, and even truthful hashes agree
+  # milliseconds before a pending delta finishes applying. Waiting on the read
+  # itself cannot pass early, which matters more here than anywhere: a delegated
+  # delta is the one thing a peer might verify, authorize, and then still refuse.
+  - name: The delegated write reaches the other node
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - delegated-node-1
+      - delegated-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "delegated"
+      equals:
+        output: "from-a-member-with-no-node"
+
+  - name: Node-2 reads back what the member wrote
+    type: call
+    node: delegated-node-2
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: delegated
+    outputs:
+      delegated_value: result
+
+  # The ENVELOPE, not the value. `outputs: <name>: result` captures merobox's
+  # whole result object, so the captured value is `{"output": ...}` and comparing
+  # it to a bare string never matches. `result.output` would capture the value
+  # itself; every other scenario in this suite spells it the way it is spelled
+  # here, and this comment exists because the bare-string form looks correct.
+  - name: Assert the member's write is present on the peer
+    type: json_assert
+    statements:
+      - 'json_equal({{delegated_value}}, {"output": "from-a-member-with-no-node"})'
+
+  # A self-authored write still works alongside it. The delegated path must not
+  # have disturbed the ordinary one — they share every surface it touches.
+  - name: Node-2 writes as itself
+    type: call
+    node: delegated-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: self-authored
+      value: still-works
+
+  - name: Converge after the self-authored write
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - delegated-node-1
+      - delegated-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: "self-authored"
+      equals:
+        output: "still-works"
+
+  - name: Node-1 reads the self-authored write
+    type: call
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: self-authored
+    outputs:
+      self_value: result
+
+  - name: Assert the self-authored path is unaffected
+    type: json_assert
+    statements:
+      - 'json_equal({{self_value}}, {"output": "still-works"})'

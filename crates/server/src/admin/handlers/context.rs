@@ -9,6 +9,7 @@ pub mod get_contexts_for_application;
 pub mod get_contexts_with_executors_for_application;
 pub mod join_context;
 pub mod leave_context;
+pub mod perform_intent;
 pub mod resync_context;
 pub mod sync;
 pub mod update_context_application;

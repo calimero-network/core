@@ -3,6 +3,7 @@
   "GET /admin-api/groups/:group_id/members/:account/metadata",
   "GET /admin-api/identity",
   "GET /admin-api/ready",
+  "POST /admin-api/contexts/:context_id/intents",
   "POST /admin-api/groups/:group_id/members",
   "POST /admin-api/groups/:group_id/members/remove",
   "POST /admin-api/namespaces/:namespace_id/account/pair-complete",

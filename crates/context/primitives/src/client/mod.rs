@@ -1611,7 +1611,7 @@ impl ContextClient {
         payload: Vec<u8>,
         atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
-        self.execute_with_origin(context_id, executor, method, payload, atomic, None, 0)
+        self.execute_with_origin(context_id, executor, method, payload, atomic, None, 0, None)
             .await
     }
 
@@ -1629,6 +1629,7 @@ impl ContextClient {
         atomic: Option<ContextAtomic>,
         xcall_origin: Option<ContextId>,
         xcall_depth: u32,
+        delegation: Option<Box<calimero_account::Delegation>>,
     ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
@@ -1642,6 +1643,7 @@ impl ContextClient {
                     atomic,
                     xcall_origin,
                     xcall_depth,
+                    delegation,
                 },
                 outcome: sender,
             })
@@ -2340,6 +2342,7 @@ mod atomic_persist_tests {
             author_id: None,
             governance_position_blob: None,
             delta_signature: None,
+            delegation: None,
         };
         (key, record)
     }

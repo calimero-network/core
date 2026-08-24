@@ -71,10 +71,6 @@ steps:
     outputs:
       namespace_invitation: invitation
 
-  - name: Wait for subgroup visibility + context-registered ops to gossip
-    type: wait
-    seconds: 10
-
   - name: Node 2 joins namespace
     type: join_namespace
     node: app-migration-shared-2
@@ -192,6 +188,15 @@ steps:
     method: schema_info
     outputs:
       v2_schema_node2: result
+
+  # The reads above trigger each node's lazy migration, so this is the
+  # first point at which "did the cohort finish" has an answer.
+  - name: Assert every member finished migrating
+    type: assert_migration_complete
+    node: app-migration-shared-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 5
 
   - name: Assert lazy migration ran on node 1
     type: assert_log_present
