@@ -986,7 +986,10 @@ fn get_local_hashes_at_level(
             // Level 0: get direct children of root
             {
                 let _ = &root_index;
-                for child in Index::<MainStorage>::get_children_of(Id::root()).unwrap_or_default() {
+                // `root_id`, not `Id::root()`: the latter derives the context
+                // from the `RUNTIME_ENV` thread-local, and a divergence there
+                // yields silently empty level-0 hashes rather than an error.
+                for child in Index::<MainStorage>::get_children_of(root_id).unwrap_or_default() {
                     let child_id = *child.id().as_bytes();
                     if let Some(child_hash) = Index::<MainStorage>::get_hashes_for(child.id())
                         .ok()

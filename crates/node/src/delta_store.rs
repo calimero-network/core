@@ -1169,10 +1169,23 @@ pub(crate) fn load_rotation_log_direct(
         let mut entries = Vec::new();
         {
             let _ = &index;
-            for child in calimero_storage::index::Index::<
+            // Walk the anchor's ChildTrie with the SAME direct reader the rest
+            // of this function uses.
+            //
+            // Not `Index::<MainStorage>::get_children_of`: `MainStorage` routes
+            // through the `RUNTIME_ENV` thread-local, which is not installed
+            // here — that is the entire reason this function exists. With no env
+            // it falls back to the process-local mock store, so the lookup misses
+            // and the log reads back EMPTY rather than erroring, collapsing the
+            // writer set on every delta apply.
+            let read_row = |key: StorageKey| -> Option<Vec<u8>> {
+                read_entity_value_direct(context_client, context_id, key)
+                    .ok()
+                    .flatten()
+            };
+            for child in calimero_storage::child_trie::ChildTrie::<
                 calimero_storage::store::MainStorage,
-            >::get_children_of(map_id)
-            .unwrap_or_default()
+            >::children_with(map_id, read_row)
             {
                 // P3: each child is an `UnorderedMap` entry, so its stored value
                 // is `borsh(Entry<([u8;32], RotationLogEntry)>)` — decode the

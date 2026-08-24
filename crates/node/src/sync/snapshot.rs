@@ -430,12 +430,25 @@ impl SyncManager {
                     linked,
                     "Rebuilt child-trie links for snapshot-installed entities"
                 ),
-                Err(e) => warn!(
-                    %context_id,
-                    error = %e,
-                    "Failed to rebuild child-trie links after snapshot; collections \
-                     will read back empty until the next full resync"
-                ),
+                // Fail the sync rather than warn. There is no "next resync" to
+                // wait for: `verified_snapshot_root` below reads the ROOT
+                // index's SHIPPED `full_hash`, so a node with an unlinked trie
+                // still verifies, still publishes a root matching its peers,
+                // and therefore never looks like it needs repair. Returning
+                // here leaves the sync-in-progress marker set, exactly as the
+                // I7 arms do, so crash-recovery retries instead.
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        error = %e,
+                        "Failed to rebuild child-trie links after snapshot; failing the \
+                         sync for retry rather than publishing a root whose collections \
+                         read back empty"
+                    );
+                    return Err(eyre::eyre!(
+                        "snapshot: child-trie rebuild failed for {context_id}: {e}"
+                    ));
+                }
             }
         }
 
@@ -1400,7 +1413,64 @@ pub(crate) fn persist_buffered_snapshot_entity(
     handle.put(&entry_key, &ContextStateValue::from(entry_slice))?;
     handle.put(&index_key, &ContextStateValue::from(index_slice))?;
 
+    // Link into the parent's child trie HERE, not only in the one-shot rebuild
+    // after the snapshot pages land.
+    //
+    // This path runs from `drain_absorbed_leaves`, which fires on a later delta
+    // once the loaded reader has advanced to the entity's schema — long after
+    // `rebuild_child_tries_after_snapshot` has already run. An entity that lands
+    // now would otherwise be present but unenumerable from its parent forever,
+    // because (as that rebuild's own doc notes) re-applying byte-identical
+    // entities never re-links: it goes through the update path, not
+    // `add_child_to`. That is the same permanent, self-stable divergence the
+    // rebuild exists to prevent, arriving through the late door.
+    if let Some(parent_id) = index_entity.parent_id() {
+        link_child_into_parent_trie(
+            handle,
+            context_id,
+            parent_id,
+            calimero_storage::entities::ChildInfo::new(
+                index_entity.id(),
+                index_entity.full_hash(),
+                index_entity.metadata.clone(),
+            ),
+        )?;
+    }
+
     Ok(SnapshotEntityDrainOutcome::Persisted)
+}
+
+/// Insert one parent→child link into the parent's `ChildTrie`, through a raw
+/// store handle.
+///
+/// Shared by the post-snapshot rebuild and the late buffered-entity drain so
+/// the two cannot drift in how a link is written — they are the same operation
+/// arriving at different times.
+fn link_child_into_parent_trie(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+    parent_id: Id,
+    child: calimero_storage::entities::ChildInfo,
+) -> Result<()> {
+    let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
+    {
+        let read = |key: StorageKey| -> Option<Vec<u8>> {
+            let k = ContextStateKey::new(context_id, key.to_bytes());
+            handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
+        };
+        calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
+            parent_id,
+            child,
+            read,
+            |key, bytes| writes.push((key, bytes.to_vec())),
+        );
+    }
+    for (key, bytes) in writes {
+        let k = ContextStateKey::new(context_id, key.to_bytes());
+        let slice: Slice<'_> = bytes.into();
+        handle.put(&k, &ContextStateValue::from(slice))?;
+    }
+    Ok(())
 }
 
 /// Rebuild every installed entity's link into its parent's child trie.
@@ -1466,24 +1536,7 @@ fn rebuild_child_tries_after_snapshot(
 
     let linked = links.len();
     for (parent_id, child) in links {
-        let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
-        {
-            let read = |key: StorageKey| -> Option<Vec<u8>> {
-                let k = ContextStateKey::new(context_id, key.to_bytes());
-                handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
-            };
-            calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
-                parent_id,
-                child,
-                read,
-                |key, bytes| writes.push((key, bytes.to_vec())),
-            );
-        }
-        for (key, bytes) in writes {
-            let k = ContextStateKey::new(context_id, key.to_bytes());
-            let slice: Slice<'_> = bytes.into();
-            handle.put(&k, &ContextStateValue::from(slice))?;
-        }
+        link_child_into_parent_trie(handle, context_id, parent_id, child)?;
     }
 
     Ok(linked)
@@ -2363,6 +2416,105 @@ mod tests {
     // node-primitives and is exercised only here (the sender never emits a
     // rotation-log auxiliary record — the log syncs as collection children).
     use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
+
+    /// A snapshot receiver used to hold every entity and be able to enumerate
+    /// none of them.
+    ///
+    /// Snapshot installs an entity by writing its `Entry` and `Index` rows
+    /// verbatim. While a parent's children lived INSIDE its index row, that
+    /// shipped the parent->child links for free. Moving children into
+    /// `Key::ChildTrie` broke that silently: discovery finds entities by
+    /// deserialising `EntityIndex`, and a trie row never will.
+    ///
+    /// It never healed either, which is what makes this worth a test rather
+    /// than a one-off measurement. Hash comparison re-applied entities that
+    /// were already byte-identical, and that goes through the update path
+    /// rather than `add_child_to`, so no link was ever created — a stable
+    /// fixpoint, re-syncing every ~10s forever.
+    #[test]
+    fn rebuilding_after_snapshot_relinks_children_the_install_did_not() {
+        use calimero_storage::address::Id;
+        use calimero_storage::child_trie::ChildTrie;
+        use calimero_storage::store::{Key as StorageKey, MainStorage};
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut handle = store.handle();
+        let context_id = ContextId::from([9; 32]);
+
+        let parent_id = Id::new([1; 32]);
+        let child_ids: Vec<Id> = (0..5_u8).map(|i| Id::new([10 + i; 32])).collect();
+
+        // Install rows the way snapshot does: verbatim, no linking.
+        let put_index = |handle: &mut calimero_store::Handle<Store>, index: &EntityIndex| {
+            let key = ContextStateKey::new(context_id, StorageKey::Index(index.id()).to_bytes());
+            let bytes = borsh::to_vec(index).expect("serialise index");
+            let slice: Slice<'_> = bytes.into();
+            handle
+                .put(&key, &ContextStateValue::from(slice))
+                .expect("put index row");
+        };
+
+        put_index(&mut handle, &EntityIndex::minimal_for_test(parent_id));
+        for (i, id) in child_ids.iter().enumerate() {
+            put_index(
+                &mut handle,
+                &EntityIndex::minimal_for_test_with_parent(*id, parent_id, [20 + i as u8; 32]),
+            );
+        }
+
+        let read = |key: StorageKey| -> Option<Vec<u8>> {
+            let k = ContextStateKey::new(context_id, key.to_bytes());
+            store
+                .handle()
+                .get(&k)
+                .ok()
+                .flatten()
+                .map(|v| v.as_ref().to_vec())
+        };
+
+        // The bug: every entity present, none enumerable.
+        assert!(
+            ChildTrie::<MainStorage>::children_with(parent_id, read).is_empty(),
+            "precondition: a verbatim install links nothing"
+        );
+
+        let linked = rebuild_child_tries_after_snapshot(&mut handle, context_id)
+            .expect("rebuild must succeed");
+        assert_eq!(linked, child_ids.len(), "every parented row must be linked");
+
+        let rebuilt = ChildTrie::<MainStorage>::children_with(parent_id, read);
+        assert_eq!(
+            rebuilt.len(),
+            child_ids.len(),
+            "children must enumerate after the rebuild"
+        );
+
+        let got: BTreeSet<Id> = rebuilt
+            .iter()
+            .map(calimero_storage::entities::ChildInfo::id)
+            .collect();
+        let want: BTreeSet<Id> = child_ids.iter().copied().collect();
+        assert_eq!(
+            got, want,
+            "the rebuilt trie must hold exactly the shipped children"
+        );
+
+        // The rebuild replays the SENDER's full_hash per child, so the
+        // reconstructed trie has to reproduce the sender's root exactly —
+        // that equality is the whole point, not a side effect.
+        for (i, child) in rebuilt.iter().enumerate() {
+            let expected = child_ids
+                .iter()
+                .position(|id| *id == child.id())
+                .expect("child id known");
+            let _ = i;
+            assert_eq!(
+                child.merkle_hash(),
+                [20 + expected as u8; 32],
+                "the shipped full_hash must be what lands in the trie"
+            );
+        }
+    }
 
     #[test]
     fn snapshot_progress_unknown_total_yields_no_estimate() {
