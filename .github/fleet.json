@@ -25,6 +25,7 @@
     { "repo": "merraria", "surfaces": ["cargo", "npm"] },
     { "repo": "mero-blocks", "surfaces": ["cargo", "npm"] },
     { "repo": "mero-issue-tracker", "surfaces": ["cargo", "npm"] },
+    { "repo": "mero-chat-pwa", "surfaces": ["cargo", "npm"] },
     { "repo": "mero-ar", "surfaces": ["cargo"] },
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "scaffolding-e2e-application", "surfaces": ["cargo"] },
