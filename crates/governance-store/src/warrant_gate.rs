@@ -225,3 +225,220 @@ fn next_nonce_state(
         None => Ok(types::ContextWarrantNonce::first(warrant.nonce)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_store::Store;
+
+    use super::{account_may_author, check_delegated_delta, spend_warrant_nonce, WarrantRefusal};
+    use crate::test_fixtures::{
+        enrol_member, real_join_account, sample_meta_with_admin, test_store,
+    };
+    use crate::{CapabilitiesRepository, MembershipRepository, MetaRepository};
+    use calimero_account::{Delegation, Warrant};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::context::ContextId;
+
+    const GROUP: [u8; 32] = [0xC0; 32];
+    const CONTEXT: [u8; 32] = [0xC1; 32];
+    const AUTHOR_KEY: [u8; 32] = [0x0A; 32];
+    const RELAY_KEY: [u8; 32] = [0x0B; 32];
+
+    struct World {
+        store: Store,
+        group: ContextGroupId,
+        context: ContextId,
+        delegation: Delegation,
+    }
+
+    /// A group with the author as a member and the relay holding authorship —
+    /// the state in which a delegated write is supposed to be accepted.
+    fn seed(nonce: u64) -> World {
+        let store = test_store();
+        let group = ContextGroupId::from(GROUP);
+        let context = ContextId::from(CONTEXT);
+
+        MetaRepository::new(&store)
+            .save(
+                &group,
+                &sample_meta_with_admin(calimero_account::AccountId::from([0xEE; 32])),
+            )
+            .expect("save meta");
+        crate::contexts::register_context_in_group(&store, &group, &context)
+            .expect("register context");
+
+        let author_pk = PublicKey::from(AUTHOR_KEY);
+        let relay_pk = PublicKey::from(RELAY_KEY);
+        let author = enrol_member(&store, &group, &author_pk);
+        let relay = enrol_member(&store, &group, &relay_pk);
+
+        let membership = MembershipRepository::new(&store);
+        membership
+            .add_member(&group, &author, GroupMemberRole::Member)
+            .expect("add the author");
+        membership
+            .add_member(&group, &relay, GroupMemberRole::Member)
+            .expect("add the relay");
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &group,
+                &relay,
+                MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+            )
+            .expect("grant authorship");
+
+        let author_device_sk = PrivateKey::from(AUTHOR_KEY);
+        let warrant = Warrant::sign(
+            &author_device_sk,
+            context,
+            author,
+            relay,
+            Warrant::intent_hash("send_message", b"{}"),
+            nonce,
+            u64::MAX,
+        )
+        .expect("warrant must sign");
+
+        let delegation = Delegation {
+            warrant: Box::new(warrant),
+            author_proof: real_join_account(&author_pk),
+            executor_proof: real_join_account(&relay_pk),
+            executor_key: relay_pk,
+        };
+
+        World {
+            store,
+            group,
+            context,
+            delegation,
+        }
+    }
+
+    /// The accept direction, which every other test in this file assumes and
+    /// none of them prove. A gate that refused everything would leave the
+    /// refusal tests green and the feature entirely broken.
+    #[test]
+    fn a_well_formed_delegated_delta_is_admitted() {
+        let w = seed(7);
+
+        check_delegated_delta(&w.store, &w.context, &w.delegation)
+            .expect("a member's write via an authorized relay must be admitted");
+    }
+
+    /// And the relay's grant is what makes it so — the same delta with the
+    /// capability withdrawn must be refused, or the grant means nothing.
+    #[test]
+    fn the_same_delta_is_refused_once_authorship_is_withdrawn() {
+        let w = seed(7);
+        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("precondition");
+
+        let relay = w.delegation.warrant.executor;
+        CapabilitiesRepository::new(&w.store)
+            .set_member_capability(&w.group, &relay, MemberCapabilities::empty().bits())
+            .expect("withdraw authorship");
+
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+            .expect_err("withdrawing the grant must refuse the write");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::ExecutorMayNotAuthor)
+        );
+    }
+
+    /// Closed by default: a relay that was never granted anything is refused,
+    /// so the absence of a row is not read as permission.
+    #[test]
+    fn a_relay_with_no_capability_row_may_not_author() {
+        let w = seed(7);
+        let other = ContextId::from([0xDD; 32]);
+
+        assert!(
+            account_may_author(&w.store, &w.context, w.delegation.warrant.executor)
+                .expect("read the grant"),
+            "precondition: the seeded relay holds the grant here"
+        );
+        assert!(
+            !account_may_author(&w.store, &other, w.delegation.warrant.executor)
+                .expect("read the grant"),
+            "a context in no group must not be readable as a grant"
+        );
+    }
+
+    /// The author must be a member. This is the check that would silently pass
+    /// if it were keyed by device rather than by account — a thin client's
+    /// device is in no group's rows.
+    #[test]
+    fn an_author_who_is_not_a_member_is_refused() {
+        let w = seed(7);
+        let author = w.delegation.warrant.author_account;
+        MembershipRepository::new(&w.store)
+            .remove_member(&w.group, &author)
+            .expect("remove the author");
+
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+            .expect_err("a non-member's write must be refused");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::AuthorNotAMember)
+        );
+    }
+
+    /// The pair's contract: checking does not spend, so a delta refused after
+    /// the check would not have burned the member's nonce.
+    #[test]
+    fn checking_does_not_spend_the_nonce() {
+        let w = seed(7);
+
+        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("first check");
+        check_delegated_delta(&w.store, &w.context, &w.delegation)
+            .expect("a second check must still pass — checking is read-only");
+    }
+
+    /// And spending does, exactly once.
+    #[test]
+    fn spending_refuses_the_second_presentation_of_one_warrant() {
+        let w = seed(7);
+
+        check_delegated_delta(&w.store, &w.context, &w.delegation).expect("check");
+        spend_warrant_nonce(&w.store, &w.context, &w.delegation).expect("first spend");
+
+        let err = check_delegated_delta(&w.store, &w.context, &w.delegation)
+            .expect_err("a spent warrant must not be admitted again");
+        assert_eq!(
+            err.downcast_ref::<WarrantRefusal>(),
+            Some(&WarrantRefusal::NonceAlreadySpent)
+        );
+    }
+
+    /// A different warrant from the same author still applies — spending one
+    /// nonce must not wall off the sequence.
+    #[test]
+    fn spending_one_nonce_does_not_block_the_next() {
+        let first = seed(7);
+        check_delegated_delta(&first.store, &first.context, &first.delegation).expect("check");
+        spend_warrant_nonce(&first.store, &first.context, &first.delegation).expect("spend");
+
+        // Same author, same relay, same store — a later warrant.
+        let author_device_sk = PrivateKey::from(AUTHOR_KEY);
+        let next_warrant = Warrant::sign(
+            &author_device_sk,
+            first.context,
+            first.delegation.warrant.author_account,
+            first.delegation.warrant.executor,
+            Warrant::intent_hash("send_message", b"{\"n\":2}"),
+            8,
+            u64::MAX,
+        )
+        .expect("warrant must sign");
+        let next = Delegation {
+            warrant: Box::new(next_warrant),
+            ..first.delegation.clone()
+        };
+
+        check_delegated_delta(&first.store, &first.context, &next)
+            .expect("the next warrant in the sequence must still be admitted");
+    }
+}
