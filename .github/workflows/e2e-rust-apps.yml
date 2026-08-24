@@ -1030,7 +1030,8 @@ jobs:
               # in node logs, so the raw pattern never matches.
               grep -rhE "Application panic occurred|thread '[^']*' panicked at" docker-logs/ \
                 | sed -E 's/\x1b\[[0-9;]*m//g' \
-                | grep -oE "panic\.message=[^ ]*|thread '[^']*' panicked at [^ ]*" \
+                | sed -E "s/.*(panic\.message=.*) panic\.thread=.*/\\1/; \
+                         s/.*(thread '[^']*' panicked at [^,]*).*/\\1/" \
                 | sort | uniq -c | head -10
               exit 1
           else
