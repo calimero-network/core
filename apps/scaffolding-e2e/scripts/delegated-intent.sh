@@ -138,12 +138,12 @@ echo "intent performed: ${accepted}"
 # advanced no state, and the run sailed past it to fail four steps later on a
 # value that was never written. The root hash is the endpoint's own claim that
 # something changed, so check it rather than the status.
-# Both spellings, because the admin API has two envelopes: `ApiResponse`
-# serializes its payload at the top level (its own source carries a TODO about
-# adding the wrapper), while other handlers nest under `data`. Reading only one
-# turns a correct response into a failure — which is exactly what happened here
-# on the first run that got this far.
-accepted_root=$(printf '%s' "${accepted}" | jq -r '.rootHash // .data.rootHash // empty')
+# `.data` first, because that is the convention this endpoint now follows — the
+# response is wrapped like `NodeIdentityApiResponse` and every other neighbour.
+# The un-wrapped spelling stays as a fallback rather than being deleted: it is
+# what the endpoint returned for one commit, and reading only one shape is how a
+# correct response got reported as a failure on the first run that reached here.
+accepted_root=$(printf '%s' "${accepted}" | jq -r '.data.rootHash // .rootHash // empty')
 if [ -z "${accepted_root}" ] || [ "${accepted_root}" = "null" ]; then
     echo "the intent was accepted but advanced no state: ${accepted}" >&2
     exit 1

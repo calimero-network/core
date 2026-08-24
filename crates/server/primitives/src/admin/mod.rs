@@ -1352,7 +1352,7 @@ impl Validate for PerformIntentApiRequest {
 /// Where the accepted intent landed, so a client can wait for it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PerformIntentApiResponse {
+pub struct PerformIntentApiResponseData {
     /// The context's scope root after the run.
     ///
     /// This was a `deltaId` that the handler had no way to populate, so it was
@@ -1364,6 +1364,22 @@ pub struct PerformIntentApiResponse {
     pub root_hash: String,
     /// The method's own return value.
     pub returns: Option<serde_json::Value>,
+}
+
+/// Wrapped in `data` like every neighbouring response, and
+/// `NodeIdentityApiResponse` in particular — the closest sibling to this route,
+/// added in the same account work.
+///
+/// The wrapper is not decoration. `mero-js`'s admin client types every call as
+/// `post<{ data: T }>` and runs the result through one `unwrap`, so a flat
+/// response is the one shape its generated method cannot consume without a
+/// special case — and 51 of the 79 response structs here already wrap. Cheaper
+/// to match the convention than to explain the exception in three client
+/// libraries.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformIntentApiResponse {
+    pub data: PerformIntentApiResponseData,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

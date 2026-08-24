@@ -137,6 +137,7 @@ impl Report for PerformIntentApiResponse {
         let _ = table.add_row(vec![
             "Returned",
             &self
+                .data
                 .returns
                 .as_ref()
                 .map_or_else(|| "(nothing)".to_owned(), ToString::to_string),
@@ -144,7 +145,7 @@ impl Report for PerformIntentApiResponse {
         // The new scope root, which is what tells a caller the run actually
         // changed something. It replaced a delta id the endpoint could never
         // populate, so this row used to be unreachable.
-        let _ = table.add_row(vec!["Root", &self.root_hash]);
+        let _ = table.add_row(vec!["Root", &self.data.root_hash]);
         println!("{table}");
     }
 }

@@ -34,7 +34,9 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::{PerformIntentApiRequest, PerformIntentApiResponse};
+use calimero_server_primitives::admin::{
+    PerformIntentApiRequest, PerformIntentApiResponse, PerformIntentApiResponseData,
+};
 use eyre::WrapErr as _;
 use futures_util::StreamExt;
 use tracing::{info, warn};
@@ -267,11 +269,13 @@ async fn perform(
         .wrap_err("execution failed")?;
 
     Ok(PerformIntentApiResponse {
-        root_hash: outcome.root_hash.to_string(),
-        returns: outcome
-            .returns
-            .ok()
-            .flatten()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok()),
+        data: PerformIntentApiResponseData {
+            root_hash: outcome.root_hash.to_string(),
+            returns: outcome
+                .returns
+                .ok()
+                .flatten()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok()),
+        },
     })
 }
