@@ -396,6 +396,45 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         }
     }
 
+    /// Remove every row of this trie.
+    ///
+    /// A deleted entity's trie must go with it. Its rows live in their own
+    /// keyspace, so nothing else reaches them: dropping the entity's `Entry`
+    /// and tombstoning its `Index` leaves the trie behind, and because
+    /// collection ids are deterministic (`compute_collection_id(parent,
+    /// field_name)`), deleting and later re-creating the same field would find
+    /// a trie still holding the OLD children — ids whose `Entry` rows are gone,
+    /// folded into the parent's hash as a ghost root.
+    ///
+    /// Walks the node structure to find the occupied rows rather than
+    /// removing children one at a time: this drops the whole trie, so there is
+    /// no spine left to refresh and paying `DEPTH+1` writes per child to
+    /// maintain one would be pure waste.
+    pub fn drop_all(&self) {
+        let mut paths: Vec<Vec<u8>> = Vec::new();
+        Self::collect_paths(self, &mut Vec::new(), &mut paths);
+        for path in paths {
+            let _ignored = S::storage_remove(Key::ChildTrie(addr(self.parent, &path)));
+        }
+    }
+
+    fn collect_paths(&self, path: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {
+        if path.len() == DEPTH {
+            out.push(path.clone());
+            return;
+        }
+        let node = self.read_node(path);
+        if node.slots.is_empty() && !path.is_empty() {
+            return;
+        }
+        out.push(path.clone());
+        for (nib, _) in node.slots {
+            path.push(nib);
+            self.collect_paths(path, out);
+            let _popped = path.pop();
+        }
+    }
+
     /// Enumerate a parent's children using a caller-supplied reader.
     ///
     /// For callers that reach the store directly rather than through a
@@ -439,13 +478,6 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         walk(parent, &mut Vec::new(), &read, &mut out);
         out.sort();
         out
-    }
-
-    /// Drop the whole trie.
-    pub fn clear(&self) {
-        for child in self.children() {
-            let _root = self.remove(child.id());
-        }
     }
 }
 
@@ -503,6 +535,113 @@ mod tests {
             "same child set inserted in opposite orders must give the same root"
         );
         assert_ne!(forward.root(), EMPTY);
+    }
+
+    /// `insert_with` re-derives by hand what `insert` + `refresh_spine` do,
+    /// because snapshot sync reaches the store directly rather than through a
+    /// `StorageAdaptor`. Two implementations of one spine walk is a latent
+    /// fork, and the consequence is precisely the bug the snapshot half of
+    /// this work exists to fix: a receiver that reconstructs a DIFFERENT root
+    /// from the sender, permanently, because re-applying byte-identical
+    /// entities never re-links anything.
+    ///
+    /// So pin them against each other directly. Same parent, same child set,
+    /// one through each path — then require the rows to be byte-identical and
+    /// the roots, counts and enumerations to agree. Anything that changes one
+    /// walk without the other fails here instead of in a divergent context.
+    #[test]
+    fn insert_with_writes_exactly_what_insert_writes() {
+        use std::cell::RefCell;
+        use std::collections::BTreeMap;
+
+        let parent = parent(30);
+        let children: Vec<ChildInfo> = (0..40_u8).map(|i| child(i, i)).collect();
+
+        // Path A: the StorageAdaptor walk.
+        let trie = ChildTrie::<crate::store::MainStorage>::new(parent);
+        for c in &children {
+            let _root = trie.insert(c.clone());
+        }
+
+        // Path B: the caller-supplied-rows walk, over its own store. Same
+        // parent id, so both paths address rows identically — a row written by
+        // one is directly comparable to the other's.
+        let rows: RefCell<BTreeMap<Key, Vec<u8>>> = RefCell::new(BTreeMap::new());
+        for c in &children {
+            ChildTrie::<crate::store::MainStorage>::insert_with(
+                parent,
+                c.clone(),
+                |k| rows.borrow().get(&k).cloned(),
+                |k, v| {
+                    let _prev = rows.borrow_mut().insert(k, v.to_vec());
+                },
+            );
+        }
+
+        let rows = rows.into_inner();
+        assert!(!rows.is_empty(), "insert_with wrote nothing");
+
+        for (key, value) in &rows {
+            let via_adaptor = crate::store::MainStorage::storage_read(*key);
+            assert_eq!(
+                via_adaptor.as_ref(),
+                Some(value),
+                "row {key:?} differs between insert and insert_with"
+            );
+        }
+
+        let root_b = TrieNode::try_from_slice(
+            rows.get(&Key::ChildTrie(addr(parent, &[])))
+                .expect("insert_with wrote no root node"),
+        )
+        .expect("root node decodes");
+
+        assert_eq!(trie.root(), root_b.hash(), "roots must agree");
+        assert_eq!(trie.len(), root_b.count, "counts must agree");
+        assert_eq!(
+            trie.children(),
+            ChildTrie::<crate::store::MainStorage>::children_with(parent, |k| rows
+                .get(&k)
+                .cloned()),
+            "enumerations must agree"
+        );
+    }
+
+    /// A deleted entity's trie must not outlive it.
+    ///
+    /// Trie rows are their own keyspace, so dropping the entity's `Entry` and
+    /// tombstoning its `Index` does not touch them, and tombstone GC never
+    /// sees them (it requires a row to decode as a tombstoned `EntityIndex`).
+    /// Collection ids are deterministic, so a field that is deleted and later
+    /// re-created lands on the SAME trie — and would inherit the old children:
+    /// ids whose data is gone, folded into the parent's hash as a ghost root,
+    /// with nothing anywhere reporting an error.
+    #[test]
+    fn dropping_a_trie_leaves_nothing_for_a_later_incarnation_to_inherit() {
+        let id = parent(40);
+
+        let trie = ChildTrie::<crate::store::MainStorage>::new(id);
+        for i in 0..25_u8 {
+            let _root = trie.insert(child(i, i));
+        }
+        assert_eq!(trie.len(), 25);
+        assert_ne!(trie.root(), EMPTY);
+
+        trie.drop_all();
+
+        // A fresh handle on the same id — which is what re-creating a
+        // deterministically-named collection produces.
+        let reborn = ChildTrie::<crate::store::MainStorage>::new(id);
+        assert_eq!(
+            reborn.root(),
+            EMPTY,
+            "a re-created collection must start empty"
+        );
+        assert_eq!(reborn.len(), 0, "and must not inherit the old count");
+        assert!(
+            reborn.children().is_empty(),
+            "and must not enumerate the previous incarnation's children"
+        );
     }
 
     #[test]

@@ -378,11 +378,26 @@ impl EntityIndex {
     ///
     /// A context's ROOT index carries the hash that
     /// `ContextRegistry::compute_root_hash` reads, so a test that needs the
-    /// state-derived root to *move* has to be able to set it. Kept childless so
-    /// the reader stays on its offset fast path.
+    /// state-derived root to *move* has to be able to set it.
     #[must_use]
     pub fn minimal_for_test_with_full_hash(id: Id, full_hash: [u8; 32]) -> Self {
         Self {
+            full_hash,
+            ..Self::minimal_for_test(id)
+        }
+    }
+
+    /// Like [`Self::minimal_for_test`] but parented, and with a chosen
+    /// `full_hash`.
+    ///
+    /// Snapshot install writes index rows verbatim, so a test for the
+    /// receive-side trie rebuild has to be able to produce a row that names its
+    /// parent — that link is the only thing the rebuild has to work from.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn minimal_for_test_with_parent(id: Id, parent_id: Id, full_hash: [u8; 32]) -> Self {
+        Self {
+            parent_id: Some(parent_id),
             full_hash,
             ..Self::minimal_for_test(id)
         }
@@ -491,12 +506,7 @@ impl<S: StorageAdaptor> Index<S> {
             .deleted_children
             .retain(|id| *id != added_child_id);
 
-        let mut hasher = Sha256::new();
-        hasher.update(parent_index.own_hash);
-        if trie_root != child_trie::EMPTY {
-            hasher.update(trie_root);
-        }
-        parent_index.full_hash = hasher.finalize().into();
+        parent_index.full_hash = Self::full_hash_from_root(parent_index.own_hash, trie_root);
         Self::save_index(&parent_index)?;
 
         Self::recalculate_ancestor_hashes_for(parent_id)?;
@@ -539,7 +549,19 @@ impl<S: StorageAdaptor> Index<S> {
     /// The trie root is order-independent, so this is a pure function of the
     /// child set — which is what two replicas must agree on.
     pub(crate) fn full_hash_from_trie(id: Id, own_hash: [u8; 32]) -> [u8; 32] {
-        let root = <ChildTrie<S>>::new(id).root();
+        Self::full_hash_from_root(own_hash, <ChildTrie<S>>::new(id).root())
+    }
+
+    /// The fold itself: `own_hash`, then the trie root unless it is empty.
+    ///
+    /// One definition on purpose. Callers that have just written the trie hold
+    /// the new root already and should not pay a row read to get it back, so
+    /// they cannot go through [`full_hash_from_trie`](Self::full_hash_from_trie)
+    /// — but the RULE they apply (field order, and skipping an empty root so a
+    /// childless entity hashes as itself) has to be the same one, because a
+    /// copy that drifts forks replicas silently: both sides compute a hash,
+    /// they just compute different ones.
+    pub(crate) fn full_hash_from_root(own_hash: [u8; 32], root: [u8; 32]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(own_hash);
         if root != child_trie::EMPTY {
@@ -930,6 +952,12 @@ impl<S: StorageAdaptor> Index<S> {
         // data gone with no tombstone while the parent still lists it live.
         Self::mark_deleted(id, deleted_at)?;
         let _ignored = S::storage_remove(Key::Entry(id));
+        // The entity's own child trie goes with its data. Nothing else reaches
+        // those rows — they are their own keyspace, so tombstone GC (which
+        // requires a row to decode as a tombstoned `EntityIndex`) never sees
+        // them. Left behind, they resurrect as ghost children the next time a
+        // deterministically-named collection is re-created at the same id.
+        <ChildTrie<S>>::new(id).drop_all();
         Ok(())
     }
 
@@ -1099,12 +1127,7 @@ impl<S: StorageAdaptor> Index<S> {
         }
 
         // Recalculate parent's hash from the trie root.
-        let mut hasher = Sha256::new();
-        hasher.update(parent_index.own_hash);
-        if trie_root != child_trie::EMPTY {
-            hasher.update(trie_root);
-        }
-        parent_index.full_hash = hasher.finalize().into();
+        parent_index.full_hash = Self::full_hash_from_root(parent_index.own_hash, trie_root);
         Self::save_index(&parent_index)?;
 
         Ok(())
