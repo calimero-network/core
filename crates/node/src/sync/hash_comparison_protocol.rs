@@ -55,6 +55,7 @@ use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
+use calimero_storage::child_trie::ChildTrie;
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::Index;
 use calimero_storage::interface::Interface;
@@ -1306,8 +1307,15 @@ fn collect_leaves_recursive(
         }
     };
 
-    let children_ids: Vec<[u8; 32]> = Index::<MainStorage>::get_children_of(entity_id)
-        .unwrap_or_default()
+    // Read the trie directly. `get_children_of` re-reads and re-borsh-decodes
+    // the index row this function has already decoded — a doubled read per
+    // entity on the sync hot path — and returns a `Result` whose only failure
+    // here is that re-read, so `unwrap_or_default` would swallow a
+    // `DeserializationError` on a row the caller just proved decodable, turning
+    // a corrupt row into "leaf with no children" and pushing it as leaf data.
+    // The existence check it performs is already satisfied: `index` is in hand.
+    let children_ids: Vec<[u8; 32]> = ChildTrie::<MainStorage>::new(entity_id)
+        .children()
         .iter()
         .map(|c| *c.id().as_bytes())
         .collect();
@@ -1563,8 +1571,15 @@ pub(crate) fn get_local_tree_node(
     };
 
     let full_hash = index.full_hash();
-    let children_ids: Vec<[u8; 32]> = Index::<MainStorage>::get_children_of(entity_id)
-        .unwrap_or_default()
+    // Read the trie directly. `get_children_of` re-reads and re-borsh-decodes
+    // the index row this function has already decoded — a doubled read per
+    // entity on the sync hot path — and returns a `Result` whose only failure
+    // here is that re-read, so `unwrap_or_default` would swallow a
+    // `DeserializationError` on a row the caller just proved decodable, turning
+    // a corrupt row into "leaf with no children" and pushing it as leaf data.
+    // The existence check it performs is already satisfied: `index` is in hand.
+    let children_ids: Vec<[u8; 32]> = ChildTrie::<MainStorage>::new(entity_id)
+        .children()
         .iter()
         .map(|c| *c.id().as_bytes())
         .collect();

@@ -225,6 +225,17 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             let path: Vec<u8> = (0..level).map(|i| nibble(child, i)).collect();
             let mut node = self.read_node(&path);
             node.set(nibble(child, level), below);
+            // `saturating_add_signed` clamps rather than wrapping, which is the
+            // right production behaviour — but a clamp here is a book-keeping
+            // bug that nothing else can detect: `count` is deliberately not
+            // folded into the hash, so drift does not fork the root, it just
+            // makes `len()` quietly lie. A contract that derives an id from
+            // `len()` then mints duplicate ids with no mismatch anywhere.
+            debug_assert!(
+                delta >= 0 || node.count >= delta.unsigned_abs(),
+                "child-trie count underflow at level {level}: {} + {delta}",
+                node.count
+            );
             node.count = node.count.saturating_add_signed(delta);
             self.write_node(&path, &node);
             below = node.hash();
@@ -365,7 +376,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             .and_then(|bytes| TrieBucket::try_from_slice(&bytes).ok())
             .unwrap_or_default();
 
-        let delta = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
+        let delta: i64 = match bucket.entries.binary_search_by_key(&id, ChildInfo::id) {
             Ok(i) => {
                 bucket.entries[i] = child;
                 0
@@ -388,6 +399,11 @@ impl<S: StorageAdaptor> ChildTrie<S> {
                 .and_then(|bytes| TrieNode::try_from_slice(&bytes).ok())
                 .unwrap_or_default();
             node.set(nibble(id, level), below);
+            debug_assert!(
+                delta >= 0 || node.count >= delta.unsigned_abs(),
+                "child-trie count underflow at level {level}: {} + {delta}",
+                node.count
+            );
             node.count = node.count.saturating_add_signed(delta);
             if let Ok(bytes) = to_vec(&node) {
                 write(key, &bytes);
@@ -616,6 +632,113 @@ mod tests {
     /// re-created lands on the SAME trie — and would inherit the old children:
     /// ids whose data is gone, folded into the parent's hash as a ghost root,
     /// with nothing anywhere reporting an error.
+    /// `count` went from derived to maintained, and nothing can detect drift.
+    ///
+    /// It is deliberately not folded into the hash — hashing a book-keeping
+    /// value would give a slip the power to fork the root — so a wrong count
+    /// does not diverge anything. `len()` simply lies. Follow that through:
+    /// `Collection::len` reads this count, and the contract that motivated the
+    /// whole change derives a message id from `len()` on every write. A count
+    /// that drifts LOW mints duplicate ids: silent data loss, no hash mismatch,
+    /// no warning, nothing to alert on.
+    ///
+    /// So pin the invariant directly, over a mixed sequence rather than a happy
+    /// path — inserts, replacements (delta 0), removals, removals of absent
+    /// ids (also delta 0), and re-inserts — checking after every step, through
+    /// both the adaptor walk and the caller-supplied-rows walk that snapshot
+    /// sync uses.
+    #[test]
+    fn the_count_never_drifts_from_the_number_of_children() {
+        use std::cell::RefCell;
+        use std::collections::BTreeMap;
+
+        let id = parent(50);
+        let trie = ChildTrie::<crate::store::MainStorage>::new(id);
+
+        // A deterministic mixed workload: seed i decides the operation.
+        let mut live: std::collections::BTreeSet<u8> = std::collections::BTreeSet::new();
+        for step in 0..120_u8 {
+            let seed = step.wrapping_mul(37).wrapping_add(11);
+            match step % 5 {
+                // a genuinely new child (three in five, so the workload grows)
+                0 | 1 | 2 => {
+                    let _root = trie.insert(child(seed, step));
+                    let _inserted = live.insert(seed);
+                }
+                // RE-insert one already present. This is the case that made an
+                // earlier version of this test useless: the seed is a bijection
+                // over `step`, so every insert was new and a replacement
+                // counting as +1 passed unnoticed. Caught by mutation.
+                3 => {
+                    let victim = live.iter().next().copied().unwrap_or(seed);
+                    let _root = trie.insert(child(victim, step));
+                    let _inserted = live.insert(victim);
+                }
+                // remove a live one
+                4 => {
+                    let victim = live.iter().next().copied().unwrap_or(seed);
+                    let _root = trie.remove(Id::new(Sha256::digest([victim]).into()));
+                    let _removed = live.remove(&victim);
+                }
+                _ => unreachable!("step % 5 is exhaustive above"),
+            }
+
+            // Removing an id that was never inserted must also be delta 0.
+            let _root = trie.remove(Id::new(Sha256::digest([seed ^ 0x5A]).into()));
+
+            assert_eq!(
+                trie.len() as usize,
+                trie.children().len(),
+                "count diverged from enumeration at step {step}"
+            );
+        }
+        assert!(trie.len() > 0, "the workload must leave children behind");
+
+        // Same invariant through `insert_with`, which is where a
+        // snapshot-built trie gets its counts and which nothing else covered.
+        let rows: RefCell<BTreeMap<Key, Vec<u8>>> = RefCell::new(BTreeMap::new());
+        let other = parent(51);
+        for i in 0..40_u8 {
+            ChildTrie::<crate::store::MainStorage>::insert_with(
+                other,
+                child(i, i),
+                |k| rows.borrow().get(&k).cloned(),
+                |k, v| {
+                    let _prev = rows.borrow_mut().insert(k, v.to_vec());
+                },
+            );
+            // Re-inserting the same child must not double-count.
+            ChildTrie::<crate::store::MainStorage>::insert_with(
+                other,
+                child(i, i.wrapping_add(1)),
+                |k| rows.borrow().get(&k).cloned(),
+                |k, v| {
+                    let _prev = rows.borrow_mut().insert(k, v.to_vec());
+                },
+            );
+        }
+
+        let rows = rows.into_inner();
+        let root = TrieNode::try_from_slice(
+            rows.get(&Key::ChildTrie(addr(other, &[])))
+                .expect("root node written"),
+        )
+        .expect("root node decodes");
+        let enumerated =
+            ChildTrie::<crate::store::MainStorage>::children_with(other, |k| rows.get(&k).cloned());
+
+        assert_eq!(
+            root.count as usize,
+            enumerated.len(),
+            "insert_with's count must match what it can enumerate"
+        );
+        assert_eq!(
+            enumerated.len(),
+            40,
+            "replacements must not inflate the count"
+        );
+    }
+
     #[test]
     fn dropping_a_trie_leaves_nothing_for_a_later_incarnation_to_inherit() {
         let id = parent(40);
