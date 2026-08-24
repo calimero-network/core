@@ -99,19 +99,6 @@ steps:
     outputs:
       ns_invite: invitation
 
-  - name: Wait for namespace governance to gossip
-    # Namespace governance DAG needs to propagate to node-2 before the
-    # join op (otherwise `join_namespace` 404s on the invitation). 10s
-    # matches mero-drive's e2e and is enough for *invitation visibility*
-    # specifically. The longer membership-state-propagation race that
-    # bit `bdc61af` (node-2 rejecting node-1's sync streams as
-    # "inbound stream for unknown context") is now handled inside the
-    # responder via a bounded materialisation wait in
-    # `sync::manager::internal_handle_opened_stream` — no workflow-level
-    # guard needed.
-    type: wait
-    seconds: 10
-
   - name: Node-2 joins namespace
     type: join_namespace
     node: sync-regression-node-2
