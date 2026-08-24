@@ -1007,6 +1007,36 @@ jobs:
               echo "no gov_divergence_pull_triggered markers — no scope_root governance divergence pulled this run"
           fi
 
+      - name: Assert no node panicked (HARD gate)
+        if: always()
+        run: |
+          # merod installs a panic hook that logs `Application panic occurred`
+          # with the message, thread and location as fields, then chains to the
+          # default hook, so a panic leaves Rust's `thread '...' panicked at` too.
+          # Match either: the structured line is absent for a panic raised before
+          # the hook is installed, and the default line is what a non-merod
+          # process leaves.
+          #
+          # Nothing else fails on this. A node that panics and is restarted, or
+          # panics on a path the scenario does not assert against, leaves a green
+          # run today: exactly one scenario in the suite greps for panics.
+          if grep -rlE "Application panic occurred|thread '[^']*' panicked at" docker-logs/ 2>/dev/null | grep -q .; then
+              count=$(grep -rhoE "Application panic occurred|thread '[^']*' panicked at" docker-logs/ | wc -l | tr -d ' ')
+              echo "::error::node panic in ${{ matrix.workflow }} — $count occurrence(s); a panicking node is a bug even when the scenario still passes"
+              echo "where:"
+              grep -rlE "Application panic occurred|thread '[^']*' panicked at" docker-logs/ | head -10
+              echo "messages:"
+              # Strip ANSI first: escapes sit between the field name and its `=`
+              # in node logs, so the raw pattern never matches.
+              grep -rhE "Application panic occurred|thread '[^']*' panicked at" docker-logs/ \
+                | sed -E 's/\x1b\[[0-9;]*m//g' \
+                | grep -oE "panic\.message=[^ ]*|thread '[^']*' panicked at [^ ]*" \
+                | sort | uniq -c | head -10
+              exit 1
+          else
+              echo "no panic markers across docker-logs/ — no node panicked this run"
+          fi
+
       - name: List docker-logs/ before upload (debug)
         if: always()
         run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"
