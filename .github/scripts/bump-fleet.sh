@@ -40,6 +40,25 @@ die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*" >&2; }
 head_note() { printf '%s\n' "$*" >&2; }
 
+# Every path this script means to change, repo-relative, one per line. The
+# caller stages exactly these and nothing else.
+#
+# This exists because `git add -A` is wrong here. A package manager run as a
+# side effect of a bump will happily write files of its own — pnpm's
+# minimum-release-age gate creates a pnpm-workspace.yaml carrying only a
+# `minimumReleaseAgeExclude` when the version being installed was published
+# minutes ago, and a repository that had no workspace file then acquires one
+# with no `packages:` key, which makes its own `pnpm install` die with
+# "packages field missing or empty". Committing whatever happens to be in the
+# tree turns a dependency bump into an unrelated broken config.
+CHANGED=""
+record_change() {
+  case " $CHANGED " in
+    *" $1 "*) ;;
+    *) CHANGED="$CHANGED $1" ;;
+  esac
+}
+
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
@@ -166,6 +185,8 @@ $stale"
     note "WARNING: no min-runtime-version key — this bundle declares no runtime floor"
   fi
 
+  record_change "logic/Cargo.toml"
+
   if [ "$NO_LOCK" -eq 1 ]; then
     note "skipping Cargo.lock refresh (--no-lock)"
     return 0
@@ -179,6 +200,7 @@ $stale"
   # afterthought.
   note "refreshing logic/Cargo.lock"
   ( cd "$DIR/logic" && cargo generate-lockfile --quiet )
+  record_change "logic/Cargo.lock"
 }
 
 # ---------------------------------------------------------------------------
@@ -273,6 +295,7 @@ bump_npm() {
         s{("\Q$ENV{NAME}\E"\s*:\s*")[^"]*(")}{$1$ENV{VAL}$2}g;
       ' "$m"
       note "$rel: $name $current -> $prefix$ver"
+      record_change "$rel"
       touched=$((touched + 1))
       case " $changed_manifests " in
         *" $m "*) ;;
@@ -334,6 +357,8 @@ bump_npm() {
       sed 's/^/      /' "$TMPDIR_RUN/pnpm.log" >&2
       die "lockfile refresh failed for ${root#$DIR/}"
     fi
+    lock="${root#$DIR/}/pnpm-lock.yaml"
+    record_change "${lock#/}"
   done
 }
 
@@ -365,6 +390,14 @@ case "$SURFACE" in
     ;;
   *) die "--surface must be cargo or npm (got '$SURFACE')" ;;
 esac
+
+# Hand the caller the exact set of paths to stage. Anything else the tooling
+# left behind is deliberately not listed, and the caller reports it rather than
+# committing it.
+if [ -n "${CHANGED_FILES_OUT:-}" ]; then
+  : > "$CHANGED_FILES_OUT"
+  for f in $CHANGED; do printf '%s\n' "$f" >> "$CHANGED_FILES_OUT"; done
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   head_note ""
