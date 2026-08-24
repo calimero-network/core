@@ -1353,8 +1353,15 @@ impl Validate for PerformIntentApiRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PerformIntentApiResponse {
-    /// The delta this intent produced, if it wrote anything.
-    pub delta_id: Option<String>,
+    /// The context's scope root after the run.
+    ///
+    /// This was a `deltaId` that the handler had no way to populate, so it was
+    /// always `null` — a field that reports nothing is worse than no field,
+    /// because a caller reasonably reads it as "no delta was produced". The
+    /// execute path does not hand a delta id back (`ExecuteResponse` carries
+    /// none), but it does return the new root, which answers the question a
+    /// caller actually has: did this change anything?
+    pub root_hash: String,
     /// The method's own return value.
     pub returns: Option<serde_json::Value>,
 }

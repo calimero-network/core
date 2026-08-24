@@ -133,23 +133,42 @@ accepted=$(api_post "${relay}" "contexts/${context}/intents" "${body}") || {
 }
 echo "intent performed: ${accepted}"
 
+# A 2xx is not enough, and this assertion exists because that gap already hid a
+# real bug: the endpoint reported `{"deltaId":null}` for an intent that had
+# advanced no state, and the run sailed past it to fail four steps later on a
+# value that was never written. The root hash is the endpoint's own claim that
+# something changed, so check it rather than the status.
+accepted_root=$(printf '%s' "${accepted}" | jq -r '.data.rootHash // empty')
+case "${accepted_root}" in
+    "" | null | 00000000000000000000000000000000000000000000)
+        echo "the intent was accepted but advanced no state: ${accepted}" >&2
+        exit 1
+        ;;
+esac
+echo "state advanced to ${accepted_root}"
+
 echo "--- and it is single-use"
 
 # The nonce is spent. A relay re-presenting the same authorization is the attack
 # the ledger exists for, and it must fail even though the warrant is still
 # perfectly valid — replay is not forgery.
-# No status pinned here, unlike the check above, and the asymmetry is deliberate.
-# The pre-grant refusal is a decision this endpoint makes itself, so it owes a
-# 403. A replay is caught by the nonce ledger inside the apply, where 5xx is a
-# legitimate answer — the node may also be unable to resolve authority yet. What
-# must hold is only that it is not accepted.
+# 403, not merely "some error". The endpoint asks the gate before executing
+# precisely so this answer is its own rather than an opaque failure surfacing
+# from inside the actor — everything in there returns through
+# `ExecuteError::InternalError`, which carries no cause, so a warrant refused
+# there would reach the caller as a bare 500 that reads like "retry me".
 replay=$(api_post_status "${relay}" "contexts/${context}/intents" "${body}")
 case "${replay}" in
     *2[0-9][0-9]*)
         echo "a spent warrant was accepted a second time: ${replay}" >&2
         exit 1
         ;;
-    *) echo "the replay was refused: ${replay}" ;;
+    *403*) echo "the replay was refused with 403, as it must be" ;;
+    *)
+        echo "the replay was refused, but not with 403 — a spent warrant is the" >&2
+        echo "caller's problem and the status has to say so; got: ${replay}" >&2
+        exit 1
+        ;;
 esac
 
 echo "delegated write completed: author ${author_account} via relay ${relay_account}"

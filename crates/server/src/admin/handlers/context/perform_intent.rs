@@ -35,6 +35,7 @@ use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{PerformIntentApiRequest, PerformIntentApiResponse};
+use eyre::WrapErr as _;
 use futures_util::StreamExt;
 use tracing::{info, warn};
 
@@ -220,6 +221,22 @@ async fn perform(
         )));
     }
 
+    // The full gate, before executing. The authoritative call is the one the
+    // execute path makes under the context lock — this one cannot be, because a
+    // concurrent request could spend the nonce between here and there.
+    //
+    // It runs anyway for a reason worth stating: everything inside the actor
+    // returns through `ExecuteError::InternalError`, which carries no cause, so
+    // a warrant refused in there reaches the caller as an opaque `500`. Asking
+    // the same question here is what lets a replayed warrant — the common case,
+    // and the one a relay is most likely to hit — come back as a typed `403`
+    // that says the nonce was spent.
+    calimero_governance_store::warrant_gate::check_delegated_delta(
+        ctx_client.datastore(),
+        &context_id,
+        &delegation,
+    )?;
+
     info!(
         %context_id,
         method = %req.method,
@@ -243,10 +260,14 @@ async fn perform(
             Some(Box::new(delegation)),
         )
         .await
-        .map_err(|err| eyre::eyre!("execution failed: {err}"))?;
+        // `wrap_err`, not `eyre!("{err}")`: the latter flattens the cause to a
+        // string, and the gate's `WarrantRefusal` inside it is what tells
+        // `parse_api_error` a replayed warrant is the caller's problem rather
+        // than this node's. Formatting it away turns a clean 403 into a 500.
+        .wrap_err("execution failed")?;
 
     Ok(PerformIntentApiResponse {
-        delta_id: None,
+        root_hash: outcome.root_hash.to_string(),
         returns: outcome
             .returns
             .ok()

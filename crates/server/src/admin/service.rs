@@ -644,6 +644,19 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // A warrant the gate refused, surfacing from inside the execute path. Every
+    // variant is about the caller's authorization rather than this node's health,
+    // and a replay is the one most likely to be hit in practice: a relay that
+    // re-presents a spent warrant should be told `403`, not handed a `500` that
+    // reads as "try again".
+    if let Some(refusal) =
+        err.downcast_ref::<calimero_governance_store::warrant_gate::WarrantRefusal>()
+    {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
+        };
+    }
     // A delegated-intent refusal knows which kind of "no" it is — a malformed
     // request versus missing authority — and those ask opposite things of the
     // caller. Mapping both to the generic 500 below would tell a client the
@@ -994,6 +1007,37 @@ mod parse_api_error_tests {
         assert_ne!(malformed.status_code, unauthorized.status_code);
         assert!(malformed.status_code.is_client_error());
         assert!(unauthorized.status_code.is_client_error());
+    }
+
+    /// A refused warrant keeps its status through the wrapper the handler adds.
+    ///
+    /// This is the assumption the mapping rests on, and it is not obvious: the
+    /// execute call is wrapped with `wrap_err("execution failed")`, so the
+    /// `WarrantRefusal` is a *cause* rather than the report's root. If
+    /// `downcast_ref` did not walk the chain, every replayed warrant would come
+    /// back as a `500` and the mapping above would be dead code that looks
+    /// alive. Asserting it here is cheaper than discovering it from a log.
+    #[test]
+    fn a_refused_warrant_keeps_its_status_through_the_execute_wrapper() {
+        use eyre::WrapErr as _;
+
+        let wrapped: eyre::Report = Err::<(), _>(
+            calimero_governance_store::warrant_gate::WarrantRefusal::NonceAlreadySpent,
+        )
+        .wrap_err("execution failed")
+        .expect_err("must be an error");
+
+        let api = parse_api_error(wrapped);
+        assert_eq!(
+            api.status_code,
+            StatusCode::FORBIDDEN,
+            "a spent warrant is the caller's problem, not a server fault"
+        );
+        assert!(
+            api.message.contains("already been spent"),
+            "the caller should learn the warrant was spent; got: {}",
+            api.message
+        );
     }
 
     #[test]

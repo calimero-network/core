@@ -2043,7 +2043,23 @@ async fn internal_execute(
             calimero_governance_store::account_for_context(&datastore, &context.id)?,
             executor,
         ),
-        Some(d) => Principal::new(d.warrant.author_account, d.warrant.author_device_key),
+        Some(d) => {
+            // The same gate the receive path runs, on the authoring side, and it
+            // has to be HERE rather than at the persist below: `storage.commit()`
+            // makes the state durable before the delta row is written, so a
+            // refusal down there would leave a committed mutation with no delta
+            // to carry it — divergence from the peers that never accepted it.
+            //
+            // Under the execution lock, which is what makes this a real
+            // check-then-spend: two concurrent intents bearing one warrant
+            // serialize here, so the second reads the nonce the first spent.
+            calimero_governance_store::warrant_gate::check_delegated_delta(
+                &datastore,
+                &context.id,
+                d,
+            )?;
+            Principal::new(d.warrant.author_account, d.warrant.author_device_key)
+        }
     };
     let account = principal.account;
     let storage = ContextStorage::from(datastore.clone(), context.id);
@@ -2502,6 +2518,27 @@ async fn internal_execute(
                     delegation: delegation.cloned(),
                 },
             )?;
+
+            // Spend the nonce, now that the delta it authorizes is persisted.
+            //
+            // The authoring node has to do this itself. The receive path spends
+            // on apply, but a relay never applies its own delta through that
+            // path — so without this the warrant stayed unspent on the one node
+            // holding it, and the relay would re-run the same authorization on
+            // demand. Every peer would refuse the duplicate, so the divergence
+            // is one-sided: the relay applies twice, the network once.
+            //
+            // After the row, deliberately. If this write fails the nonce is
+            // merely still spendable — recoverable, and peers still refuse a
+            // duplicate. Spending first and failing to persist would burn the
+            // member's nonce for a write that never happened, which is not.
+            if let Some(delegation) = delegation {
+                calimero_governance_store::warrant_gate::spend_warrant_nonce(
+                    &store,
+                    &context.id,
+                    delegation,
+                )?;
+            }
 
             debug!(
                 context_id = %context.id,
