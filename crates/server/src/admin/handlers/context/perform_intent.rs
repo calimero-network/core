@@ -29,6 +29,7 @@
 use std::sync::Arc;
 
 use axum::extract::Path;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
@@ -45,6 +46,50 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// Why an intent was refused, so the status code can say which kind of "no".
+///
+/// Every variant here is a *caller* precondition, not a server fault, and
+/// without this they all fell through `parse_api_error`'s generic arm as `500`.
+/// That is the one answer none of them means: a client cannot tell "your
+/// warrant is malformed" from "this node is broken", so it cannot know whether
+/// retrying is pointless or the only sensible move. DAR-11 asks for a clean
+/// refusal at the API, and a `500` is not one.
+///
+/// The split is by who has to change something:
+///
+/// * `400` — the request is wrong and re-sending it unchanged cannot help.
+/// * `403` — the request is well-formed and genuinely signed, but authority is
+///   missing. Someone else (an admin granting the capability) or something else
+///   (a fresh warrant) has to change, not the bytes.
+#[derive(Debug)]
+pub enum IntentRefusal {
+    /// The warrant, proof, or arguments could not be made sense of, or the
+    /// delegation's signatures do not check out.
+    Malformed(String),
+    /// Genuinely signed, but it does not authorize *this*.
+    NotAuthorized(String),
+}
+
+impl core::fmt::Display for IntentRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Malformed(message) | Self::NotAuthorized(message) => f.write_str(message),
+        }
+    }
+}
+
+impl core::error::Error for IntentRefusal {}
+
+impl IntentRefusal {
+    /// The status this refusal deserves.
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::Malformed(_) => StatusCode::BAD_REQUEST,
+            Self::NotAuthorized(_) => StatusCode::FORBIDDEN,
+        }
+    }
 }
 
 pub async fn handler(
@@ -96,11 +141,17 @@ async fn perform(
     let warrant: calimero_account::Warrant = borsh::from_slice(&warrant_bytes)
         .map_err(|err| eyre::eyre!("warrant is not a valid statement: {err}"))?;
 
-    let proof_bytes = hex::decode(req.author_proof.trim())
-        .map_err(|err| eyre::eyre!("authorProof is not hex: {err}"))?;
+    let proof_bytes = hex::decode(req.author_proof.trim()).map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "authorProof is not hex: {err}"
+        )))
+    })?;
     let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
-        borsh::from_slice(&proof_bytes)
-            .map_err(|err| eyre::eyre!("authorProof is not a valid credential: {err}"))?;
+        borsh::from_slice(&proof_bytes).map_err(|err| {
+            eyre::eyre!(IntentRefusal::Malformed(format!(
+                "authorProof is not a valid credential: {err}"
+            )))
+        })?;
 
     // The node attaches its OWN half. The author authorized an operator account
     // and never has to learn which of its processes runs the intent — that is
@@ -123,30 +174,36 @@ async fn perform(
 
     // Authenticity first, so every later message is about a warrant that is
     // genuinely the member's rather than one a caller made up.
-    let warrant = delegation
-        .verify()
-        .map_err(|err| eyre::eyre!("delegation does not verify: {err}"))?;
+    let warrant = delegation.verify().map_err(|err| {
+        eyre::eyre!(IntentRefusal::Malformed(format!(
+            "delegation does not verify: {err}"
+        )))
+    })?;
 
     if warrant.context != context_id {
-        eyre::bail!("this warrant authorises a different context than the one it was presented in");
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this warrant authorises a different context than the one it was presented in"
+                .to_owned()
+        ));
     }
 
     let args = serde_json::to_vec(&req.args_json)
         .map_err(|err| eyre::eyre!("arguments could not be encoded: {err}"))?;
     if !warrant.covers_intent(&req.method, &args) {
-        eyre::bail!(
+        eyre::bail!(IntentRefusal::NotAuthorized(
             "this warrant does not cover the intent presented with it: it commits to a \
              different method or arguments"
-        );
+                .to_owned()
+        ));
     }
 
     // The one clock check in the system. See the module header.
     let now = now_secs();
     if warrant.not_after < now {
-        eyre::bail!(
+        eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this warrant expired at {} and it is now {now}; mint a fresh one",
             warrant.not_after
-        );
+        )));
     }
 
     // Refuse rather than publish something peers will drop.
@@ -156,11 +213,11 @@ async fn perform(
         &context_id,
         executor,
     )? {
-        eyre::bail!(
+        eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this node holds no authorship grant on the group owning this context, so it \
              cannot act for a member here — an admin must grant CAN_AUTHOR_ON_BEHALF to \
              {executor}"
-        );
+        )));
     }
 
     info!(

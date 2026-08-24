@@ -644,6 +644,18 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // A delegated-intent refusal knows which kind of "no" it is — a malformed
+    // request versus missing authority — and those ask opposite things of the
+    // caller. Mapping both to the generic 500 below would tell a client the
+    // server broke when in fact its warrant did.
+    if let Some(refusal) =
+        err.downcast_ref::<crate::admin::handlers::context::perform_intent::IntentRefusal>()
+    {
+        return ApiError {
+            status_code: refusal.status(),
+            message: err.to_string(),
+        };
+    }
     // The node cannot decide this op's authority YET — it is missing history or a
     // key it is entitled to, and the apply burned nothing, so the identical call
     // succeeds once it has caught up. `503` rather than the generic `500` because
@@ -933,6 +945,55 @@ mod parse_api_error_tests {
         );
         assert!(waiting.status_code.is_server_error());
         assert!(refused.status_code.is_client_error());
+    }
+
+    /// A refused delegated intent is the caller's problem, and the status has to
+    /// say which kind. Before this mapping every refusal — an expired warrant, a
+    /// warrant for another context, a relay with no authorship grant — arrived as
+    /// `500`, so a client could not tell a malformed request from a broken node
+    /// and had no basis for deciding whether to retry.
+    #[test]
+    fn an_intent_refusal_is_a_client_error_not_a_500() {
+        use crate::admin::handlers::context::perform_intent::IntentRefusal;
+
+        let malformed = parse_api_error(eyre::eyre!(IntentRefusal::Malformed(
+            "delegation does not verify".to_owned()
+        )));
+        assert_eq!(malformed.status_code, StatusCode::BAD_REQUEST);
+
+        let unauthorized = parse_api_error(eyre::eyre!(IntentRefusal::NotAuthorized(
+            "an admin must grant CAN_AUTHOR_ON_BEHALF".to_owned()
+        )));
+        assert_eq!(unauthorized.status_code, StatusCode::FORBIDDEN);
+
+        // The message survives, unlike the generic arm's. These are written for
+        // the caller and say what to do next — which is the whole point of
+        // typing them rather than letting them fall through.
+        assert!(
+            unauthorized.message.contains("CAN_AUTHOR_ON_BEHALF"),
+            "the refusal should name the missing grant; got: {}",
+            unauthorized.message
+        );
+    }
+
+    /// "Your bytes are wrong" and "you are not allowed" must not collapse into
+    /// one answer: the first is fixed by re-minting a warrant, the second only
+    /// by an admin granting a capability. A client that cannot distinguish them
+    /// either retries something that can never work, or gives up on something a
+    /// grant would fix.
+    #[test]
+    fn malformed_and_unauthorized_intents_do_not_share_a_status() {
+        use crate::admin::handlers::context::perform_intent::IntentRefusal;
+
+        let malformed =
+            parse_api_error(eyre::eyre!(IntentRefusal::Malformed("bad hex".to_owned())));
+        let unauthorized = parse_api_error(eyre::eyre!(IntentRefusal::NotAuthorized(
+            "no grant".to_owned()
+        )));
+
+        assert_ne!(malformed.status_code, unauthorized.status_code);
+        assert!(malformed.status_code.is_client_error());
+        assert!(unauthorized.status_code.is_client_error());
     }
 
     #[test]

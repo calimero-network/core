@@ -48,6 +48,28 @@ node_token() {
     echo "${_token}"
 }
 
+# POST a JSON body and echo "<status> <body>" instead of failing on an error.
+#
+# For asserting that a request was refused for the RIGHT reason. `api_post`
+# collapses every failure into a non-zero exit, so a test written on it passes
+# just as happily on an unrelated `500` as on the `403` it meant to check — which
+# makes a negative assertion nearly worthless, since a broken node satisfies it.
+api_post_status() {
+    _container="$1"
+    _path="$2"
+    _body="$3"
+
+    _url=$(node_url "${_container}") || return 1
+    _token=$(node_token "${_url}") || return 1
+
+    # `-o -` with `-w` puts the body first and the status last; no --fail, so a
+    # 4xx is data here rather than an error.
+    curl -sS -X POST "${_url}/admin-api/${_path}" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${_token}" \
+        -d "${_body}" -w ' %{http_code}' 2>/dev/null | tr '\n' ' '
+}
+
 # POST a JSON body to an admin-api path on a node. Echoes the response body.
 api_post() {
     _container="$1"

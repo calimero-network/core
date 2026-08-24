@@ -102,11 +102,22 @@ warrant=$(run_in_relay merod --node "${relay}" account warrant \
 
 body="{\"method\":\"set\",\"argsJson\":${args},\"warrant\":\"${warrant}\",\"authorProof\":\"${credential}\"}"
 
-if early=$(api_post "${relay}" "contexts/${context}/intents" "${body}" 2>/dev/null); then
-    echo "the relay performed an intent WITHOUT an authorship grant: ${early}" >&2
-    exit 1
-fi
-echo "refused before the grant, as it must be"
+# Asserting the STATUS, not merely that it failed. "Any error counts" would be
+# satisfied by a node that crashed on the request, which is the opposite of the
+# clean refusal DAR-11 asks for — and would let a real regression pass here.
+early=$(api_post_status "${relay}" "contexts/${context}/intents" "${body}")
+case "${early}" in
+    *403*) echo "refused with 403 before the grant, as it must be" ;;
+    *2[0-9][0-9]*)
+        echo "the relay performed an intent WITHOUT an authorship grant: ${early}" >&2
+        exit 1
+        ;;
+    *)
+        echo "refused, but not with 403 — a clean refusal is part of the contract" >&2
+        echo "  got: ${early}" >&2
+        exit 1
+        ;;
+esac
 
 # CAN_AUTHOR_ON_BEHALF is bit 9, so 512 on its own — granting authorship and
 # nothing else, which is the posture the capability exists to make possible.
@@ -127,10 +138,18 @@ echo "--- and it is single-use"
 # The nonce is spent. A relay re-presenting the same authorization is the attack
 # the ledger exists for, and it must fail even though the warrant is still
 # perfectly valid — replay is not forgery.
-if replay=$(api_post "${relay}" "contexts/${context}/intents" "${body}" 2>/dev/null); then
-    echo "a spent warrant was accepted a second time: ${replay}" >&2
-    exit 1
-fi
-echo "the replay was refused, as it must be"
+# No status pinned here, unlike the check above, and the asymmetry is deliberate.
+# The pre-grant refusal is a decision this endpoint makes itself, so it owes a
+# 403. A replay is caught by the nonce ledger inside the apply, where 5xx is a
+# legitimate answer — the node may also be unable to resolve authority yet. What
+# must hold is only that it is not accepted.
+replay=$(api_post_status "${relay}" "contexts/${context}/intents" "${body}")
+case "${replay}" in
+    *2[0-9][0-9]*)
+        echo "a spent warrant was accepted a second time: ${replay}" >&2
+        exit 1
+        ;;
+    *) echo "the replay was refused: ${replay}" ;;
+esac
 
 echo "delegated write completed: author ${author_account} via relay ${relay_account}"
