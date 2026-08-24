@@ -100,11 +100,6 @@ steps:
     outputs:
       ns_invite: invitation
 
-  - name: Wait for namespace governance to gossip to node 2
-    # Namespace governance DAG needs to propagate before the join.
-    type: wait
-    seconds: 10
-
   - name: Node 2 joins namespace
     type: join_namespace
     node: ephemeral-node-2

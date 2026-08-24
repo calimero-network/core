@@ -121,10 +121,6 @@ steps:
     outputs:
       invitation_node2: invitation
 
-  - name: Wait for namespace gossip
-    type: wait
-    seconds: 5
-
   - name: Node-2 joins namespace
     type: join_namespace
     node: cold-ctx-node-2

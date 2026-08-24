@@ -87,10 +87,6 @@ steps:
     outputs:
       ns_invite: invitation
 
-  - name: Wait for namespace governance to gossip
-    type: wait
-    seconds: 10
-
   - name: Node-2 joins namespace
     type: join_namespace
     node: join-inherit-node-2

@@ -143,10 +143,6 @@ steps:
     outputs:
       invitation: invitation
 
-  - name: Wait for namespace gossip
-    type: wait
-    seconds: 5
-
   - name: Node-2 joins namespace
     type: join_namespace
     node: e2e-node-2
