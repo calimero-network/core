@@ -33,6 +33,7 @@
 //! the action bytes via the hash chain.
 
 use borsh::BorshSerialize;
+use calimero_account::Warrant;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -74,6 +75,57 @@ pub struct DeltaSignaturePayload<'a> {
     /// id determinism), so `content_address_matches` cannot cover it. Its only
     /// consumer is the local clock, which caps remote drift at 5s — bounded, but
     /// there is no reason to leave a signable field unsigned.
+    pub hlc: HybridTimestamp,
+}
+
+/// Domain separator for a DELEGATED delta-envelope signature.
+///
+/// A second domain rather than a field on [`DeltaSignaturePayload`], and the
+/// reason is a wire-compatibility one rather than a cryptographic one: borsh
+/// writes a tag byte for an `Option`, so adding one field to the payload above
+/// would change the signed bytes of every SELF-AUTHORED delta and invalidate
+/// every `delta_signature` already recorded. Keeping the two payloads separate
+/// leaves the self-authored preimage byte-identical.
+///
+/// It is also the right cryptographic answer: a self-authored signature must
+/// never verify as a delegated one or the warrant could be dropped in flight,
+/// and vice versa.
+///
+/// The literal string is part of the protocol — never change it without a
+/// wire-format version bump.
+pub const DOMAIN_SEPARATOR_DELEGATED: &[u8; 16] = b"calimero/deleg/1";
+
+/// Canonical payload for a delegated delta-envelope signature, signed by the
+/// EXECUTOR rather than by the author.
+///
+/// This is the deliberate re-opening of the gap [`DeltaSignaturePayload`] was
+/// built to close: a delta whose `author_id` is not the key that signed it. What
+/// makes it safe is that the author's own signature travels with it, inside
+/// `warrant` — so "somebody else wrote this for me" is a claim the author made
+/// and every peer can check, instead of one a group-key holder can assert.
+///
+/// Both new fields exist to stop the parts being recombined:
+///
+/// * `executor_key` binds WHICH process signed, so a signature cannot be lifted
+///   onto a delta claiming a different executor.
+/// * `warrant` binds the consent itself, embedded whole rather than hashed —
+///   the bytes are on the wire anyway, so the verifier reconstructs them
+///   exactly. Without it a relay holding two warrants for the same author could
+///   swap them between deltas, and each delta would still verify.
+#[derive(BorshSerialize)]
+pub struct DelegatedDeltaSignaturePayload<'a> {
+    pub domain: [u8; 16],
+    pub context_id: ContextId,
+    pub delta_id: [u8; 32],
+    /// The member the change is attributed to. Same meaning and same consumers
+    /// as on the self-authored path — it must equal `warrant.author_device_key`,
+    /// which [`verify_delegated_delta_signature`] checks rather than assumes.
+    pub author_id: PublicKey,
+    /// The key that produced this signature.
+    pub executor_key: PublicKey,
+    /// The author's consent, embedded whole.
+    pub warrant: &'a Warrant,
+    pub governance_position: Option<&'a GovernanceParentEdge>,
     pub hlc: HybridTimestamp,
 }
 
@@ -165,6 +217,97 @@ pub fn verify_delta_signature(
     author_id
         .verify_raw_signature(&payload, signature)
         .map_err(|err| eyre::eyre!("delta envelope signature verification failed: {err}"))
+}
+
+/// Borsh-serialize the canonical delegated payload. Used at sign time on the
+/// relay and at verify time on every receive path.
+///
+/// # Errors
+/// Only if borsh fails on the in-memory buffer.
+pub fn delegated_delta_signature_payload(
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    author_id: PublicKey,
+    executor_key: PublicKey,
+    warrant: &Warrant,
+    governance_position: Option<&GovernanceParentEdge>,
+    hlc: HybridTimestamp,
+) -> Result<Vec<u8>, borsh::io::Error> {
+    let payload = DelegatedDeltaSignaturePayload {
+        domain: *DOMAIN_SEPARATOR_DELEGATED,
+        context_id,
+        delta_id,
+        author_id,
+        executor_key,
+        warrant,
+        governance_position,
+        hlc,
+    };
+    borsh::to_vec(&payload)
+}
+
+/// Verify a delegated envelope signature, and the two claims that hold the
+/// pieces together.
+///
+/// Checks, in order:
+///
+/// 1. `author_id` is the device the warrant was signed by. Without this the
+///    envelope could name one member while the warrant authorised another, and
+///    the author-keyed gates downstream would run against the wrong principal.
+/// 2. the warrant names `context_id` — a warrant is scoped, or it authorises the
+///    same intent everywhere.
+/// 3. `executor_key` signed this exact payload, warrant included.
+///
+/// **What it does not check**, and must not, because it has no cut and no clock:
+/// whether the warrant's own signature is valid and whether both keys belong to
+/// the accounts it names (that is `Delegation::verify`), whether either device is
+/// revoked, whether the author is a member at the cut, whether the executor holds
+/// the authorship capability, whether this nonce was already spent, and whether
+/// `not_after` has passed. A caller that stops here has checked that the bytes
+/// hang together, not that the write is allowed.
+///
+/// # Errors
+/// If the envelope does not match the warrant, if the warrant is for another
+/// context, or if the signature does not verify.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one parameter per bound field plus the signature; a struct here \
+              would let a caller build it with a field it never checked"
+)]
+pub fn verify_delegated_delta_signature(
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    author_id: PublicKey,
+    executor_key: PublicKey,
+    warrant: &Warrant,
+    governance_position: Option<&GovernanceParentEdge>,
+    hlc: HybridTimestamp,
+    signature: &[u8; 64],
+) -> eyre::Result<()> {
+    if warrant.author_device_key != author_id {
+        eyre::bail!(
+            "delegated delta names author {author_id} but its warrant was signed by {}",
+            warrant.author_device_key
+        );
+    }
+    if warrant.context != context_id {
+        eyre::bail!("delegated delta is in context {context_id} but its warrant is for another");
+    }
+
+    let payload = delegated_delta_signature_payload(
+        context_id,
+        delta_id,
+        author_id,
+        executor_key,
+        warrant,
+        governance_position,
+        hlc,
+    )
+    .map_err(|err| eyre::eyre!("failed to serialize delegated delta payload: {err}"))?;
+
+    executor_key
+        .verify_raw_signature(&payload, signature)
+        .map_err(|err| eyre::eyre!("delegated delta envelope signature verification failed: {err}"))
 }
 
 #[cfg(test)]
@@ -284,5 +427,226 @@ mod tests {
             verify_delta_signature(context_id, delta_id, pk, Some(&edge_other), hlc(), &sig)
                 .is_err()
         );
+    }
+
+    // ---------------------------------------------------------------- delegated
+
+    use calimero_account::{AccountId, Warrant};
+
+    /// A warrant from a fixed author device to a fixed executor account.
+    fn warrant_for(context_id: ContextId, author_sk: &PrivateKey) -> Warrant {
+        Warrant::sign(
+            author_sk,
+            context_id,
+            AccountId::from([0x51; 32]),
+            AccountId::from([0x52; 32]),
+            [0xab; 32],
+            7,
+            1_755_903_600,
+        )
+        .expect("signing must succeed")
+    }
+
+    fn delegated_fixture() -> (
+        ContextId,
+        [u8; 32],
+        PrivateKey,
+        PublicKey,
+        PrivateKey,
+        Warrant,
+    ) {
+        let (context_id, delta_id, author_sk, author_id) = fixture();
+        let executor_sk = PrivateKey::from([0x21; 32]);
+        let warrant = warrant_for(context_id, &author_sk);
+        (
+            context_id,
+            delta_id,
+            author_sk,
+            author_id,
+            executor_sk,
+            warrant,
+        )
+    }
+
+    #[test]
+    fn a_delegated_envelope_verifies_under_the_executor_that_signed_it() {
+        let (ctx, delta, _author_sk, author_id, ex_sk, warrant) = delegated_fixture();
+        let ex_pk = ex_sk.public_key();
+
+        let payload =
+            delegated_delta_signature_payload(ctx, delta, author_id, ex_pk, &warrant, None, hlc())
+                .unwrap();
+        let sig = ex_sk.sign(&payload).unwrap().to_bytes();
+
+        verify_delegated_delta_signature(ctx, delta, author_id, ex_pk, &warrant, None, hlc(), &sig)
+            .expect("a delegated envelope must verify under the executor key");
+    }
+
+    /// The whole point of a second domain: the two paths must not be
+    /// interchangeable, or a relay could strip the warrant and present the
+    /// result as self-authored.
+    #[test]
+    fn a_self_authored_signature_does_not_verify_as_delegated() {
+        let (ctx, delta, author_sk, author_id, ex_sk, warrant) = delegated_fixture();
+
+        // A genuine self-authored signature by the author.
+        let self_payload = delta_signature_payload(ctx, delta, author_id, None, hlc()).unwrap();
+        let self_sig = author_sk.sign(&self_payload).unwrap().to_bytes();
+
+        // Presented as delegated, claiming the author also signed as executor.
+        let _refused = verify_delegated_delta_signature(
+            ctx,
+            delta,
+            author_id,
+            author_id,
+            &warrant,
+            None,
+            hlc(),
+            &self_sig,
+        )
+        .expect_err("a self-authored signature must not verify on the delegated path");
+
+        // ...and the reverse: a delegated signature must not pass as self-authored.
+        let ex_pk = ex_sk.public_key();
+        let deleg_payload =
+            delegated_delta_signature_payload(ctx, delta, author_id, ex_pk, &warrant, None, hlc())
+                .unwrap();
+        let deleg_sig = ex_sk.sign(&deleg_payload).unwrap().to_bytes();
+        let _also_refused = verify_delta_signature(ctx, delta, ex_pk, None, hlc(), &deleg_sig)
+            .expect_err("a delegated signature must not verify on the self-authored path");
+    }
+
+    /// The envelope's author and the warrant's author are separate fields on the
+    /// wire, so they can disagree. If they did and nothing checked, the
+    /// author-keyed gates downstream would run against a principal who never
+    /// consented.
+    #[test]
+    fn an_envelope_naming_a_different_author_than_the_warrant_is_refused() {
+        let (ctx, delta, _author_sk, author_id, ex_sk, warrant) = delegated_fixture();
+        let ex_pk = ex_sk.public_key();
+        let stranger = PrivateKey::from([0x31; 32]).public_key();
+
+        // Sign honestly for the stranger, so only the author/warrant mismatch
+        // can be what rejects it.
+        let payload =
+            delegated_delta_signature_payload(ctx, delta, stranger, ex_pk, &warrant, None, hlc())
+                .unwrap();
+        let sig = ex_sk.sign(&payload).unwrap().to_bytes();
+
+        let err = verify_delegated_delta_signature(
+            ctx,
+            delta,
+            stranger,
+            ex_pk,
+            &warrant,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("the envelope author must match the warrant's signer");
+        assert!(
+            err.to_string().contains("warrant was signed by"),
+            "expected the author/warrant mismatch, got: {err}"
+        );
+        let _unused = author_id;
+    }
+
+    /// A warrant is scoped. Spending one in another context has to fail even
+    /// when the executor signed that other context honestly.
+    #[test]
+    fn a_warrant_for_another_context_is_refused() {
+        let (_ctx, delta, _author_sk, author_id, ex_sk, warrant) = delegated_fixture();
+        let ex_pk = ex_sk.public_key();
+        let elsewhere = ContextId::from([0x41; 32]);
+
+        let payload = delegated_delta_signature_payload(
+            elsewhere,
+            delta,
+            author_id,
+            ex_pk,
+            &warrant,
+            None,
+            hlc(),
+        )
+        .unwrap();
+        let sig = ex_sk.sign(&payload).unwrap().to_bytes();
+
+        let err = verify_delegated_delta_signature(
+            elsewhere,
+            delta,
+            author_id,
+            ex_pk,
+            &warrant,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("a warrant must not be spendable in another context");
+        assert!(
+            err.to_string().contains("its warrant is for another"),
+            "expected the context mismatch, got: {err}"
+        );
+    }
+
+    /// Swapping the warrant between two deltas by the same executor for the same
+    /// author is the recombination the embedded warrant exists to stop.
+    #[test]
+    fn a_signature_does_not_carry_over_to_a_different_warrant() {
+        let (ctx, delta, author_sk, author_id, ex_sk, warrant) = delegated_fixture();
+        let ex_pk = ex_sk.public_key();
+
+        let payload =
+            delegated_delta_signature_payload(ctx, delta, author_id, ex_pk, &warrant, None, hlc())
+                .unwrap();
+        let sig = ex_sk.sign(&payload).unwrap().to_bytes();
+
+        // A second, equally genuine warrant from the same author for the same
+        // executor — differing only in the intent it authorises.
+        let other = Warrant::sign(
+            &author_sk,
+            ctx,
+            warrant.author_account,
+            warrant.executor,
+            [0xcd; 32],
+            8,
+            warrant.not_after,
+        )
+        .unwrap();
+
+        let _refused = verify_delegated_delta_signature(
+            ctx,
+            delta,
+            author_id,
+            ex_pk,
+            &other,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("a signature must not verify against a substituted warrant");
+    }
+
+    #[test]
+    fn a_delegated_signature_does_not_carry_over_to_a_different_executor_key() {
+        let (ctx, delta, _author_sk, author_id, ex_sk, warrant) = delegated_fixture();
+        let ex_pk = ex_sk.public_key();
+
+        let payload =
+            delegated_delta_signature_payload(ctx, delta, author_id, ex_pk, &warrant, None, hlc())
+                .unwrap();
+        let sig = ex_sk.sign(&payload).unwrap().to_bytes();
+
+        let other_ex = PrivateKey::from([0x22; 32]).public_key();
+        let _refused = verify_delegated_delta_signature(
+            ctx,
+            delta,
+            author_id,
+            other_ex,
+            &warrant,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("a signature must not verify under a different executor key");
     }
 }
