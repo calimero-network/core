@@ -35,7 +35,7 @@ src/
 ├── hash.rs          # Hash - the 32-byte digest every ID newtype wraps
 ├── identity.rs      # PrivateKey, PublicKey, AccountId, DeviceId
 ├── context.rs        # ContextId, Context, ContextConfigParams, GroupMemberRole
-├── application.rs    # ApplicationId, SignerId, AppKey, Application, ApplicationBlob, Version (semver), ApplicationSource
+├── application.rs    # ApplicationId, SignerId, Application, ApplicationBlob, Version (semver), ApplicationSource
 ├── blobs.rs           # BlobId, BlobInfo, BlobMetadata
 ├── crdt.rs             # CrdtType - merge-semantics tag shared by storage + sync
 ├── alias.rs             # Alias<T> - fixed-size human-readable name, scoped by ScopedAlias
@@ -62,7 +62,6 @@ src/
 | `PublicKey` | `identity` | Newtype over `Hash`; Ed25519 verifying key | 32 bytes |
 | `PrivateKey` | `identity` | Raw `[u8; 32]` Ed25519 signing key; `ZeroizeOnDrop`, no `Clone`/`Copy`/serde | 32 bytes, never serialized |
 | `SignerId` | `application` | Non-empty `did:key:...` string identifying MPK bundle signer | variable-length string; length-prefixed under borsh |
-| `AppKey` | `application` | `(app_id, signer_id)` pair; `Display`/`FromStr` as `"appId:signerId"` | text format; length-prefixed fields under borsh |
 | `Version` (application) | `application` | Validated `major.minor.patch[-pre][+build]` semver string | newtype `Box<str>`; no borsh impl |
 | `Version` (version) | `version` | Build/release metadata (version, build, commit, rustc) | serde/borsh; borsh decode caps each string at `MAX_VERSION_STRING_LEN` (256) |
 | `Alias<T>` | `alias` | Fixed-capacity human-readable name, phantom-scoped to a `ScopedAlias` type | fixed `[u8; 50]` buffer + `u8` len; text over serde, no borsh impl |
