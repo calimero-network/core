@@ -9,6 +9,7 @@ pub mod create;
 pub mod delete;
 pub mod get;
 pub mod identity;
+pub mod intent;
 pub mod list;
 pub mod sync;
 pub mod update;
@@ -51,12 +52,14 @@ pub enum ContextSubCommands {
     Alias(alias::ContextAliasCommand),
     Use(alias::UseCommand),
     Sync(sync::SyncCommand),
+    Intent(intent::IntentCommand),
 }
 
 impl ContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
             ContextSubCommands::Create(create) => create.run(environment).await,
+            ContextSubCommands::Intent(cmd) => cmd.run(environment).await,
             ContextSubCommands::Delete(delete) => delete.run(environment).await,
             ContextSubCommands::Get(get) => get.run(environment).await,
             ContextSubCommands::List(list) => list.run(environment).await,
