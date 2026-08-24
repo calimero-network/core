@@ -1,7 +1,7 @@
 use calimero_server_primitives::admin::{
     CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
     GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse,
-    GetContextsResponse, GetPeersCountResponse, SyncContextResponse,
+    GetContextsResponse, GetPeersCountResponse, PerformIntentApiResponse, SyncContextResponse,
     UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
@@ -125,6 +125,28 @@ impl Report for GetContextsResponse {
 
             println!("{table}");
         }
+    }
+}
+
+impl Report for PerformIntentApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Intent Performed").fg(Color::Green)]);
+        // The node ran it and published the result attributed to the author. What
+        // a caller most wants next is the method's own answer.
+        let _ = table.add_row(vec![
+            "Returned",
+            &self
+                .data
+                .returns
+                .as_ref()
+                .map_or_else(|| "(nothing)".to_owned(), ToString::to_string),
+        ]);
+        // The new scope root, which is what tells a caller the run actually
+        // changed something. It replaced a delta id the endpoint could never
+        // populate, so this row used to be unreachable.
+        let _ = table.add_row(vec!["Root", &self.data.root_hash]);
+        println!("{table}");
     }
 }
 

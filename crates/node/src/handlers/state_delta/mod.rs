@@ -62,6 +62,8 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) governance_position: Option<GovernanceParentEdge>,
     pub(crate) key_id: [u8; 32],
     pub(crate) delta_signature: Option<[u8; 64]>,
+    /// The author's consent for a delegated delta.
+    pub(crate) delegation: Option<calimero_account::Delegation>,
     /// The `GroupMeta.app_key` the sender was executing under. `None` for
     /// non-group contexts or when the sender could not resolve the meta row.
     /// Receivers use this to fence stale-schema deltas.
@@ -100,6 +102,7 @@ fn state_delta_message_from_buffered(
         // Carry the stamped producing_app_key through so the HLC fence can still
         // act on a buffered stale-schema delta. `None` only for legacy deltas.
         producing_app_key: buffered.producing_app_key,
+        delegation: buffered.delegation,
     }
 }
 
@@ -165,6 +168,7 @@ pub(crate) async fn apply_authorized_state_delta(
         governance_position,
         key_id,
         delta_signature,
+        delegation,
         producing_app_key,
     } = message;
 
@@ -195,10 +199,11 @@ pub(crate) async fn apply_authorized_state_delta(
             return Ok(());
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         context_id,
         delta_id,
         author_id,
+        delegation.as_ref(),
         governance_position.as_ref(),
         hlc,
         &sig,
@@ -239,6 +244,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 key_id,
                 governance_position: governance_position.clone(),
                 delta_signature,
+                delegation: delegation.clone(),
                 governance_drain_attempts: 0,
                 producing_app_key: Some(producing_app_key),
             },
@@ -300,6 +306,7 @@ pub(crate) async fn apply_authorized_state_delta(
             key_id,
             governance_position: governance_position.clone(),
             delta_signature,
+            delegation: delegation.clone(),
             governance_drain_attempts: 0,
             producing_app_key,
         };
@@ -335,6 +342,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 key_id,
                 governance_position: governance_position.clone(),
                 delta_signature,
+                delegation: delegation.clone(),
                 governance_drain_attempts: 0,
                 producing_app_key,
             };
@@ -397,6 +405,7 @@ pub(crate) async fn apply_authorized_state_delta(
                     key_id,
                     governance_position: governance_position.clone(),
                     delta_signature,
+                    delegation: delegation.clone(),
                     governance_drain_attempts: 0,
                     producing_app_key,
                 },
@@ -565,6 +574,7 @@ pub(crate) async fn apply_authorized_state_delta(
             Some(author_id),
             governance_position_blob.clone(),
             delta_signature,
+            delegation.clone(),
         )
         .await?;
     let mut applied = add_result.applied;
@@ -1072,6 +1082,7 @@ pub async fn handle_state_delta(
         governance_position,
         key_id,
         delta_signature,
+        delegation,
         producing_app_key,
     } = message;
 
@@ -1287,6 +1298,7 @@ pub async fn handle_state_delta(
                 key_id,
                 governance_position: governance_position.clone(),
                 delta_signature,
+                delegation: delegation.clone(),
                 governance_drain_attempts: 0,
                 producing_app_key,
             };
@@ -1319,6 +1331,7 @@ pub async fn handle_state_delta(
             governance_position,
             key_id,
             delta_signature,
+            delegation: delegation.clone(),
             // Carry the stamped producing_app_key through to the apply path,
             // where the fence reads it. Orthogonal to the cross-DAG check above.
             producing_app_key,
@@ -1488,6 +1501,7 @@ async fn request_missing_deltas(
                             author_id: response_author,
                             governance_position_blob,
                             delta_signature: response_delta_signature,
+                            delegation,
                         },
                     ..
                 }) => {
@@ -1625,10 +1639,11 @@ async fn request_missing_deltas(
                         }
                     };
                     if let Err(err) =
-                        calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                        calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
                             context_id,
                             storage_delta.id,
                             response_author,
+                            delegation.as_ref(),
                             governance_position.as_ref(),
                             storage_delta.hlc,
                             &sig_for_parent,
@@ -1828,6 +1843,11 @@ async fn request_missing_deltas(
                     author_id,
                     governance_position_blob,
                     delta_signature,
+                    // This path reconstructs a delta from a parent-fetch, which
+                    // carries no envelope of its own; a delegated parent is
+                    // served with its bundle by the responder and threaded via
+                    // `FetchedDelta` instead.
+                    None,
                 )
                 .await
             {
@@ -1970,10 +1990,11 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             return Ok(false);
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         context_id,
         delta_id,
         buffered.author_id,
+        buffered.delegation.as_ref(),
         buffered.governance_position.as_ref(),
         buffered.hlc,
         &sig_for_replay,
@@ -2293,6 +2314,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 Some(buffered.author_id),
                 buffered_gov_blob,
                 buffered.delta_signature,
+                buffered.delegation.clone(),
             )
             .await?
     };
@@ -2575,6 +2597,7 @@ mod tests {
                 delta_signature: Some([7; 64]),
                 governance_drain_attempts: 0,
                 producing_app_key: Some(producing_app_key),
+                delegation: None,
             }
         }
 

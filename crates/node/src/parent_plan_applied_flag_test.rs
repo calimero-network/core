@@ -69,6 +69,7 @@ fn persist_unapplied_row(store: &Store, delta_id: [u8; 32], parents: Vec<[u8; 32
                 author_id: Some(PublicKey::from([0xBB; 32])),
                 governance_position_blob: None,
                 delta_signature: None,
+                delegation: None,
             },
         )
         .expect("persist ContextDagDelta row");
@@ -118,7 +119,7 @@ async fn a_parent_that_goes_pending_keeps_its_unapplied_row() {
 
     // The DAG wants `parent`, so it shows up as potentially-missing.
     let applied = delta_store
-        .add_delta(delta(child_id, vec![parent_id]), None, None, None)
+        .add_delta(delta(child_id, vec![parent_id]), None, None, None, None)
         .await
         .expect("child is accepted");
     assert!(
@@ -159,7 +160,7 @@ async fn the_absent_ancestor_behind_a_pending_parent_is_still_reported_missing()
 
     persist_unapplied_row(&store, parent_id, vec![ABSENT_ANCESTOR]);
     let _ = delta_store
-        .add_delta(delta(child_id, vec![parent_id]), None, None, None)
+        .add_delta(delta(child_id, vec![parent_id]), None, None, None, None)
         .await
         .expect("child is accepted");
 

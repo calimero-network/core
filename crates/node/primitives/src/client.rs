@@ -601,6 +601,9 @@ impl NodeClient {
         // `GroupMeta.app_key` the sender is executing under. `None` for
         // non-group contexts or when the meta row could not be resolved.
         producing_app_key: Option<[u8; 32]>,
+        // The author's consent, when this node executed on someone else's
+        // behalf. `None` is the self-authored path.
+        delegation: Option<calimero_account::Delegation>,
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -650,6 +653,7 @@ impl NodeClient {
             key_id,
             delta_signature,
             producing_app_key,
+            delegation,
         };
 
         let payload = borsh::to_vec(&payload)?;

@@ -66,6 +66,7 @@ mod permission_checker;
 mod reentry;
 mod tee;
 pub mod unified_op_decode;
+pub mod warrant_gate;
 pub use crate::unified_op_decode::{
     op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
 };

@@ -27,6 +27,7 @@ use tracing::{debug, error, warn};
 use crate::error::ContextError;
 
 use super::execute::execute;
+use super::execute::principal::Principal;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
 use crate::{BoundedCache, ContextLock, ContextManager, ContextMeta};
@@ -365,8 +366,7 @@ async fn create_context(
     let (outcome, storage, private_storage) = execute(
         &guard,
         module,
-        account,
-        identity,
+        Principal::new(account, identity),
         "init".into(),
         init_params.into(),
         storage,
@@ -504,6 +504,8 @@ async fn create_context(
             governance_position_blob: None,
             // Genesis has no author signature to record.
             delta_signature: None,
+            // `init` runs as the creator, never on anyone's behalf.
+            delegation: None,
         };
 
         debug!(

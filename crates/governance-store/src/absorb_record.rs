@@ -50,6 +50,11 @@ pub struct AbsorbRecord {
     pub governance_drain_attempts: u8,
     /// App-schema key the sender stamped onto the state-delta wire.
     pub producing_app_key: Option<[u8; 32]>,
+    /// The author's consent, for a delegated delta. Mirrored because this
+    /// record is a LOSSLESS copy of the buffered delta: the delegated
+    /// signature preimage embeds the warrant, so a record that dropped it
+    /// would drain into a delta nothing could verify.
+    pub delegation: Option<calimero_account::Delegation>,
     /// Set when this record holds a buffered sync-repair leaf rather than a
     /// straggler delta. The sync-repair paths bypass the gossip state-delta
     /// fence, so a receiver on an older reader buffers a future-schema leaf here
@@ -128,6 +133,7 @@ impl AbsorbRecord {
             delta_signature: bd.delta_signature,
             governance_drain_attempts: bd.governance_drain_attempts,
             producing_app_key: bd.producing_app_key,
+            delegation: bd.delegation.clone(),
             leaf: None,
             entity: None,
             pending_application: None,
@@ -155,6 +161,8 @@ impl AbsorbRecord {
             delta_signature: None,
             governance_drain_attempts: 0,
             producing_app_key: Some(schema_app_key),
+            // Leaf-shaped: there is no delta, so no authorship to mirror.
+            delegation: None,
             leaf: Some(AbsorbedLeaf {
                 leaf_bytes,
                 schema_app_key,
@@ -190,6 +198,8 @@ impl AbsorbRecord {
             delta_signature: None,
             governance_drain_attempts: 0,
             producing_app_key: Some(schema_app_key),
+            // Entity-shaped: as above, nothing to mirror.
+            delegation: None,
             leaf: None,
             entity: Some(AbsorbedEntity {
                 id,
@@ -246,6 +256,7 @@ impl AbsorbRecord {
             delta_signature: self.delta_signature,
             governance_drain_attempts: self.governance_drain_attempts,
             producing_app_key: self.producing_app_key,
+            delegation: self.delegation,
         })
     }
 }
@@ -275,6 +286,7 @@ mod tests {
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,
             producing_app_key: Some([2; 32]),
+            delegation: None,
         }
     }
 

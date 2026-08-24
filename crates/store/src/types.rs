@@ -13,7 +13,7 @@ pub use blobs::BlobMeta;
 pub use context::{
     ContextActivatedBlob, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextConfig,
     ContextDagDelta, ContextExecutingBlob, ContextIdentity, ContextLeftMarker, ContextMeta,
-    ContextMigrationFailed, ContextPrivateState, ContextState, ScopeUnifiedOp,
+    ContextMigrationFailed, ContextPrivateState, ContextState, ContextWarrantNonce, ScopeUnifiedOp,
 };
 pub use generic::GenericData;
 

@@ -64,6 +64,10 @@ pub(crate) struct FetchedDelta {
     pub author_id: PublicKey,
     pub governance_position_blob: Option<Vec<u8>>,
     pub delta_signature: Option<[u8; 64]>,
+    /// The author's consent for a delegated delta, served alongside
+    /// `delta_signature` so a catchup initiator can reconstruct the
+    /// executor's signed payload.
+    pub delegation: Option<calimero_account::Delegation>,
 }
 
 /// Outcome of verifying a parent delta pulled in Phase 2 of DAG-catchup.
@@ -181,10 +185,11 @@ fn verify_fetched_parent(
             return VerifiedParent::Skip;
         }
     };
-    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+    if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_envelope(
         *context_id,
         delta_id,
         fetched.author_id,
+        fetched.delegation.as_ref(),
         pos.as_ref(),
         fetched.delta.hlc,
         &sig,
@@ -439,6 +444,7 @@ impl SyncManager {
                             author_id: Some(fetched.author_id),
                             governance_position_blob,
                             delta_signature: fetched.delta_signature,
+                            delegation: fetched.delegation.clone(),
                         });
                         if delta_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
                             flush_delta_batch(
@@ -546,6 +552,7 @@ impl SyncManager {
                         author_id,
                         governance_position_blob,
                         delta_signature,
+                        delegation,
                     },
                 ..
             }) => {
@@ -573,6 +580,7 @@ impl SyncManager {
                     author_id,
                     governance_position_blob: governance_position_blob.map(|cow| cow.into_owned()),
                     delta_signature,
+                    delegation,
                 }))
             }
             Some(StreamMessage::Message {
@@ -680,6 +688,11 @@ impl SyncManager {
                             .governance_position_blob
                             .map(Into::into),
                         delta_signature: stored_delta.delta_signature,
+                        // Served off the row for the same reason it is stored
+                        // there: the delegated preimage embeds the warrant, so
+                        // an initiator that received the delta this way could
+                        // not otherwise reconstruct what the executor signed.
+                        delegation: stored_delta.delegation,
                     }
                 }
             }

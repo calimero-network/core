@@ -31,7 +31,7 @@ pub use context::{
     ContextActivatedBlob, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextConfig,
     ContextDagDelta, ContextExecutingBlob, ContextIdentity, ContextLeftMarker, ContextMeta,
     ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
-    ScopeUnifiedOp,
+    ContextWarrantNonce, ScopeUnifiedOp,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};
 pub use group::{

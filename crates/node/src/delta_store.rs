@@ -32,7 +32,7 @@ use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
 use indexmap::IndexMap;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::sync::rotation_log_reader;
 
@@ -89,6 +89,9 @@ pub struct BatchDeltaInput {
     pub author_id: Option<PublicKey>,
     pub governance_position_blob: Option<Vec<u8>>,
     pub delta_signature: Option<[u8; 64]>,
+    /// The author's consent for a delegated delta. Travels with
+    /// `delta_signature` because the delegated preimage embeds it.
+    pub delegation: Option<calimero_account::Delegation>,
 }
 
 /// Resolves a signing key to the account it speaks for, at one causal cut.
@@ -1347,6 +1350,38 @@ struct CascadePersistOutcome {
     forwarded_events: Vec<([u8; 32], Vec<u8>)>,
 }
 
+/// Whether a delta needs the delegated at-cut gate, and its verdict.
+///
+/// `Some(delegation)` means the caller must call
+/// `warrant_gate::spend_warrant_nonce` once the apply has succeeded. `None`
+/// means there is nothing to spend: the delta is self-authored, or the DAG
+/// already knows it.
+///
+/// The already-known case is not an optimization. A delegated delta's nonce is
+/// spent the first time it applies, so re-running the gate on a re-delivery —
+/// which the gossip path produces routinely — would refuse the delta as a replay
+/// of itself.
+fn delegated_gate<'a>(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    delegation: Option<&'a calimero_account::Delegation>,
+    dag: &calimero_dag::DagStore<Vec<calimero_storage::action::Action>>,
+    delta_id: [u8; 32],
+) -> eyre::Result<Option<&'a calimero_account::Delegation>> {
+    let Some(delegation) = delegation else {
+        return Ok(None);
+    };
+    if dag.has_delta(&delta_id) {
+        return Ok(None);
+    }
+    calimero_governance_store::warrant_gate::check_delegated_delta(
+        context_client.datastore(),
+        &context_id,
+        delegation,
+    )?;
+    Ok(Some(delegation))
+}
+
 impl DeltaStore {
     /// Arm the key→account resolver used for the next delta(s) applied through
     /// this store.
@@ -1595,6 +1630,7 @@ impl DeltaStore {
                     author_id: stored_delta.author_id,
                     governance_position_blob: stored_delta.governance_position_blob.clone(),
                     delta_signature: stored_delta.delta_signature,
+                    delegation: stored_delta.delegation.clone(),
                 });
             }
         }
@@ -1775,6 +1811,7 @@ impl DeltaStore {
                         input.author_id,
                         input.governance_position_blob,
                         input.delta_signature,
+                        input.delegation.clone(),
                     )
                     .await
                 {
@@ -1838,6 +1875,7 @@ impl DeltaStore {
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
+        delegation: Option<calimero_account::Delegation>,
     ) -> Result<AddDeltaResult> {
         self.add_delta_internal(
             delta,
@@ -1845,6 +1883,7 @@ impl DeltaStore {
             author_id,
             governance_position_blob,
             delta_signature,
+            delegation,
         )
         .await
     }
@@ -1858,6 +1897,7 @@ impl DeltaStore {
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
+        delegation: Option<calimero_account::Delegation>,
     ) -> Result<bool> {
         let result = self
             .add_delta_internal(
@@ -1866,6 +1906,7 @@ impl DeltaStore {
                 author_id,
                 governance_position_blob,
                 delta_signature,
+                delegation,
             )
             .await?;
         Ok(result.applied)
@@ -1929,6 +1970,7 @@ impl DeltaStore {
                             author_id: input.author_id,
                             governance_position_blob: input.governance_position_blob.clone(),
                             delta_signature: input.delta_signature,
+                            delegation: input.delegation.clone(),
                         },
                     )
                     .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -1980,12 +2022,61 @@ impl DeltaStore {
                 .author_slot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = input.author_id;
+            // Same gate as the single-delta path, per input: authorize before
+            // the apply, spend after it succeeds. A refusal skips this delta and
+            // keeps registering the rest, exactly as an apply error does — the
+            // batch must not abort on one bad input.
+            let gate = match delegated_gate(
+                &self.applier.context_client,
+                self.applier.context_id,
+                input.delegation.as_ref(),
+                &dag,
+                input.delta.id,
+            ) {
+                Ok(gate) => gate,
+                Err(err) => {
+                    *self
+                        .applier
+                        .author_slot
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = None;
+                    warn!(
+                        context_id = %self.applier.context_id,
+                        delta_id = ?input.delta.id,
+                        %err,
+                        "refusing delegated delta at the cut during batch"
+                    );
+                    let _ = failed_ids.insert(input.delta.id);
+                    continue;
+                }
+            };
+
             let outcome = dag.add_delta(dag_delta, &*self.applier).await;
             *self
                 .applier
                 .author_slot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = None;
+            if outcome.is_ok() {
+                if let Some(delegation) = gate {
+                    if let Err(err) = calimero_governance_store::warrant_gate::spend_warrant_nonce(
+                        self.applier.context_client.datastore(),
+                        &self.applier.context_id,
+                        delegation,
+                    ) {
+                        // The delta applied, so refusing it now would leave
+                        // storage ahead of the ledger. Log loudly instead: the
+                        // shared lock is what makes this unreachable, so
+                        // reaching it means that assumption broke.
+                        error!(
+                            context_id = %self.applier.context_id,
+                            delta_id = ?input.delta.id,
+                            %err,
+                            "delegated delta applied but its nonce could not be spent"
+                        );
+                    }
+                }
+            }
             if let Err(e) = outcome {
                 warn!(
                     ?e,
@@ -2082,6 +2173,7 @@ impl DeltaStore {
                     author_id: input.author_id,
                     governance_position_blob: input.governance_position_blob.clone(),
                     delta_signature: input.delta_signature,
+                    delegation: input.delegation.clone(),
                 },
             ));
         }
@@ -2309,6 +2401,7 @@ impl DeltaStore {
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
+        delegation: Option<calimero_account::Delegation>,
     ) -> Result<AddDeltaResult> {
         // Orphan-member buffering (liveness): if this delta writes a
         // `SharedMember` whose anchor hasn't synced, the member's writers can't
@@ -2319,7 +2412,7 @@ impl DeltaStore {
         // half-state. Best-effort: if it's already buffered or the buffer is
         // full, `buffer` hands ownership back and we fall through to the normal
         // (fail-closed + re-fetch) path, which still converges.
-        let (delta, events, author_id, governance_position_blob, delta_signature) =
+        let (delta, events, author_id, governance_position_blob, delta_signature, delegation) =
             match self.first_missing_anchor(&delta) {
                 Some(anchor) => {
                     let input = BatchDeltaInput {
@@ -2328,6 +2421,7 @@ impl DeltaStore {
                         author_id,
                         governance_position_blob,
                         delta_signature,
+                        delegation,
                     };
                     match self.anchor_pending.write().await.buffer(anchor, input) {
                         Ok(()) => {
@@ -2347,6 +2441,7 @@ impl DeltaStore {
                             returned.author_id,
                             returned.governance_position_blob,
                             returned.delta_signature,
+                            returned.delegation,
                         ),
                     }
                 }
@@ -2356,6 +2451,7 @@ impl DeltaStore {
                     author_id,
                     governance_position_blob,
                     delta_signature,
+                    delegation,
                 ),
             };
 
@@ -2400,6 +2496,7 @@ impl DeltaStore {
                         author_id,
                         governance_position_blob: governance_position_blob.clone(),
                         delta_signature,
+                        delegation: delegation.clone(),
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -2465,6 +2562,38 @@ impl DeltaStore {
             .author_slot
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = author_id;
+
+        // A delegated delta is authorized at the cut here, under the `dag` write
+        // lock, and only if the DAG does not already know it — a re-delivery
+        // would otherwise be refused as a replay of itself. The nonce is spent
+        // after the apply succeeds, not now: see `check_delegated_delta`.
+        let gate = match delegated_gate(
+            &self.applier.context_client,
+            self.applier.context_id,
+            delegation.as_ref(),
+            &dag,
+            delta_id,
+        ) {
+            Ok(gate) => gate,
+            Err(err) => {
+                *self
+                    .applier
+                    .author_slot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
+                self.applier
+                    .retain_apply_lock
+                    .store(false, std::sync::atomic::Ordering::Release);
+                warn!(
+                    context_id = %self.applier.context_id,
+                    delta_id = ?delta_id,
+                    %err,
+                    "refusing delegated delta at the cut"
+                );
+                return Err(err);
+            }
+        };
+
         let add_outcome = dag.add_delta(delta, &*self.applier).await;
         *self
             .applier
@@ -2493,6 +2622,19 @@ impl DeltaStore {
         // is therefore read above, under the write lock we already hold.
         let apply_lock_guard = self.applier.lock_apply_slot().take();
         let result = add_outcome?;
+
+        // The apply succeeded, so the warrant is spent — and not before, or a
+        // delta whose apply failed would have burned the member's nonce and the
+        // retry would read as a replay. Still under the `dag` write lock, which
+        // is what makes the read-modify-write on the ledger atomic: a batch
+        // would not, `Store::apply` being writes-only with no read set.
+        if let Some(delegation) = gate {
+            calimero_governance_store::warrant_gate::spend_warrant_nonce(
+                self.applier.context_client.datastore(),
+                &self.applier.context_id,
+                delegation,
+            )?;
+        }
 
         // Update context's dag_heads after the DAG has been updated
         let heads = dag.get_heads();
@@ -2580,6 +2722,7 @@ impl DeltaStore {
                     author_id,
                     governance_position_blob,
                     delta_signature,
+                    delegation: delegation.clone(),
                 },
             ))
         } else {
@@ -2727,6 +2870,7 @@ impl DeltaStore {
                         input.author_id,
                         input.governance_position_blob,
                         input.delta_signature,
+                        input.delegation.clone(),
                     ))
                     .await
                     {
@@ -3225,6 +3369,7 @@ impl DeltaStore {
                     author_id: None,
                     governance_position_blob: None,
                     delta_signature: None,
+                    delegation: None,
                 };
                 records.push((db_key, record));
             }
@@ -3538,6 +3683,7 @@ impl DeltaStore {
                     author_id: None,
                     governance_position_blob: None,
                     delta_signature: None,
+                    delegation: None,
                 },
             ));
         }
@@ -3764,6 +3910,7 @@ mod anchor_pending_tests {
             author_id: None,
             governance_position_blob: None,
             delta_signature: None,
+            delegation: None,
         }
     }
 
