@@ -85,6 +85,18 @@ pub struct ExecuteRequest {
     /// otherwise-unbounded local recursion (a cycle A→B→A would never
     /// terminate) and the `B^depth` fan-out.
     pub xcall_depth: u32,
+    /// The author's consent, when this execution is being performed on someone
+    /// else's behalf. `None` is the ordinary self-authored call.
+    ///
+    /// Boxed because the request is passed by value through the actor mailbox and
+    /// the bundle is the largest thing in it by an order of magnitude, so an
+    /// `Option<Box<_>>` keeps every self-authored `ExecuteRequest` the size it
+    /// was.
+    ///
+    /// The caller supplies the warrant, never the principal: which identity the
+    /// run observes is derived from this bundle after it verifies, not read from
+    /// a field a caller could set.
+    pub delegation: Option<Box<calimero_account::Delegation>>,
 }
 
 #[derive(Debug)]
