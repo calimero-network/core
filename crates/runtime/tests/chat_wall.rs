@@ -42,7 +42,16 @@ const DEFAULT_WASM: &str = concat!(
 
 /// Stop here even if nothing has walled, so a genuinely-flat build cannot run
 /// forever. Well clear of the 1,187 the trie alone reached.
-const CEILING: usize = 20_000;
+const DEFAULT_CEILING: usize = 20_000;
+
+/// Raise it to chase a wall that has moved out of the default range:
+///   CHAT_WALL_CEILING=60000 cargo test ... -- --ignored --nocapture
+fn ceiling() -> usize {
+    std::env::var("CHAT_WALL_CEILING")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_CEILING)
+}
 
 /// Report a running sample this often, so a slow climb is visible while the
 /// test runs rather than only in the final line.
@@ -104,10 +113,14 @@ fn how_many_messages_before_send_message_walls() {
     // Geometric read probes: get_messages is O(n) in the app, so probing it
     // every append would dominate the run. These points are enough to see the
     // curve and to catch the first failure within a factor of two.
-    let probes: Vec<usize> = vec![
+    let ceiling = ceiling();
+    let probes: Vec<usize> = [
         100, 250, 500, 1_000, 2_000, 2_200, 2_400, 2_600, 2_800, 3_000, 4_000, 8_000, 16_000,
-        20_000,
-    ];
+        20_000, 24_000, 28_000, 30_000, 32_000, 36_000, 40_000, 50_000, 60_000,
+    ]
+    .into_iter()
+    .filter(|p| *p <= ceiling)
+    .collect();
     let mut next_probe = 0_usize;
 
     let mut landed = 0_usize;
@@ -117,7 +130,7 @@ fn how_many_messages_before_send_message_walls() {
 
     println!("\n  n        write_gas      w_reads   write_ms | read_gas        r_reads   read_ms");
 
-    for i in 0..CEILING {
+    for i in 0..ceiling {
         let started = Instant::now();
         let outcome = call(
             &module,
@@ -204,7 +217,7 @@ fn how_many_messages_before_send_message_walls() {
     println!("messages appended:  {landed}");
     match write_wall {
         Some(n) => println!("write wall (send_message):  {n}"),
-        None => println!("write wall (send_message):  none below {CEILING}"),
+        None => println!("write wall (send_message):  none below {ceiling}"),
     }
     match (last_read_ok, read_wall) {
         (Some(ok), Some(bad)) => {
