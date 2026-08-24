@@ -1,5 +1,4 @@
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::content_hash::ContentHash;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{InstallApplicationRequest, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
@@ -32,7 +31,7 @@ pub struct InstallCommand {
         alias = "hash",
         help = "Expected content hash of the application"
     )]
-    pub content_hash: Option<ContentHash>,
+    pub content_hash: Option<Hash>,
 
     #[clap(long, short = 'w', requires = "path")]
     pub watch: bool,
@@ -80,7 +79,7 @@ impl InstallCommand {
         } else if let Some(app_url) = self.url.as_ref() {
             let request = InstallApplicationRequest::new(
                 Url::parse(app_url)?,
-                self.content_hash.map(|h| Hash::from(<[u8; 32]>::from(h))),
+                self.content_hash,
                 metadata,
                 Some(self.package.clone()),
                 Some(self.version.clone()),
