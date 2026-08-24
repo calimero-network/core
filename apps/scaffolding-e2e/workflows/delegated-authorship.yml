@@ -169,10 +169,15 @@ steps:
     outputs:
       delegated_value: result
 
+  # The ENVELOPE, not the value. `outputs: <name>: result` captures merobox's
+  # whole result object, so the captured value is `{"output": ...}` and comparing
+  # it to a bare string never matches. `result.output` would capture the value
+  # itself; every other scenario in this suite spells it the way it is spelled
+  # here, and this comment exists because the bare-string form looks correct.
   - name: Assert the member's write is present on the peer
     type: json_assert
     statements:
-      - 'json_equal({{delegated_value}}, "from-a-member-with-no-node")'
+      - 'json_equal({{delegated_value}}, {"output": "from-a-member-with-no-node"})'
 
   # A self-authored write still works alongside it. The delegated path must not
   # have disturbed the ordinary one — they share every surface it touches.
@@ -214,4 +219,4 @@ steps:
   - name: Assert the self-authored path is unaffected
     type: json_assert
     statements:
-      - 'json_equal({{self_value}}, "still-works")'
+      - 'json_equal({{self_value}}, {"output": "still-works"})'
