@@ -1,30 +1,45 @@
 #!/usr/bin/env bash
-# Fails while any retired bytecode/hash identifier survives in Rust sources.
+# Fails while any retired bytecode/hash identifier survives in tracked sources.
 # One name per concept: ApplicationId, BytecodeId, ContentHash.
 set -euo pipefail
 
+# The scan is over tracked files: a non-git checkout must fail loudly here
+# rather than silently pass a gate that never greps anything.
+git rev-parse --is-inside-work-tree >/dev/null
+
+# The retired spellings are legitimate only as data: a serde/clap
+# `alias = "app_key"`, the back-compat tests pinning it, and the CLI reference
+# listing an accepted flag alias. Identifiers and prose are not exempt.
+readonly DELIBERATE='"(appKey|app-key|app_key)"|alias: `--app-key`'
+
+# Stems, not whole identifiers, so a compound name cannot slip past.
 banned=(
   'app_key'
   'AppKey'
-  'InvalidAppKey'
   'activated_blob'
-  'bound_blob_for_context'
+  'bound_blob'
   'BoundBlobSource'
-  'stage_blob_for'
+  'stage_blob'
   'stage_target_blob'
-  'pending_upgrade_stage_blob'
 )
 
 status=0
+report() {
+  echo "retired bytecode naming still present ($1):"
+  echo "$2"
+  status=1
+}
+
 for name in "${banned[@]}"; do
-  # `alias = "appKey"` and `alias = "app-key"` are the deliberate
-  # back-compat shims; everything else is a leftover.
-  if hits=$(grep -rn --include='*.rs' -- "$name" crates/ \
-            | grep -v 'alias = "appKey"' \
-            | grep -v 'alias = "app-key"'); then
-    echo "retired identifier '$name' still present:"
-    echo "$hits"
-    status=1
+  if hits=$(git grep -nIE -e "$name" -- '*.rs' | grep -vE "$DELIBERATE"); then
+    report "$name" "$hits"
   fi
 done
+
+# Prose spells the same concept its own ways: appKey, app-key, app key.
+if hits=$(git grep -nIEi -e 'app[-_ ]?key' -- '*.md' '*.mdx' '*.yml' \
+          | grep -vE "$DELIBERATE"); then
+  report "app key in docs" "$hits"
+fi
+
 exit $status

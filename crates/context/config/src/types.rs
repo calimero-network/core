@@ -698,7 +698,7 @@ pub struct SignedGroupOpenInvitation {
     /// further cascade-gated semantics keyed on `bytecode_id` must keep this
     /// in mind — or move to always re-deriving locally and ignoring the
     /// wire value, which would close the forge vector entirely.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "app_key")]
     pub bytecode_id: Option<[u8; 32]>,
 }
 
@@ -786,6 +786,35 @@ mod tests {
         assert_eq!(decoded.application_id, None);
         assert_eq!(decoded.blob_id, None);
         assert_eq!(decoded.source, None);
+    }
+
+    // This struct has no `rename_all`, so its pre-rename wire key was the bare
+    // snake_case field name, which pasted invitations still carry.
+    #[test]
+    fn signed_group_open_invitation_accepts_the_pre_rename_wire_key() {
+        let signed = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: Some([0x55; 32]),
+        };
+
+        let mut value = serde_json::to_value(&signed).expect("serialize");
+        let object = value.as_object_mut().expect("a JSON object");
+        let bytecode_id = object.remove("bytecode_id").expect("field is present");
+        drop(object.insert("app_key".to_owned(), bytecode_id));
+
+        let decoded: SignedGroupOpenInvitation =
+            serde_json::from_value(value).expect("the pre-rename key must still deserialize");
+        assert_eq!(decoded.bytecode_id, Some([0x55; 32]));
+        assert_eq!(decoded.application_id, Some([0x44; 32]));
     }
 
     #[test]
