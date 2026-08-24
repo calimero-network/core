@@ -138,13 +138,16 @@ echo "intent performed: ${accepted}"
 # advanced no state, and the run sailed past it to fail four steps later on a
 # value that was never written. The root hash is the endpoint's own claim that
 # something changed, so check it rather than the status.
-accepted_root=$(printf '%s' "${accepted}" | jq -r '.data.rootHash // empty')
-case "${accepted_root}" in
-    "" | null | 00000000000000000000000000000000000000000000)
-        echo "the intent was accepted but advanced no state: ${accepted}" >&2
-        exit 1
-        ;;
-esac
+# Both spellings, because the admin API has two envelopes: `ApiResponse`
+# serializes its payload at the top level (its own source carries a TODO about
+# adding the wrapper), while other handlers nest under `data`. Reading only one
+# turns a correct response into a failure — which is exactly what happened here
+# on the first run that got this far.
+accepted_root=$(printf '%s' "${accepted}" | jq -r '.rootHash // .data.rootHash // empty')
+if [ -z "${accepted_root}" ] || [ "${accepted_root}" = "null" ]; then
+    echo "the intent was accepted but advanced no state: ${accepted}" >&2
+    exit 1
+fi
 echo "state advanced to ${accepted_root}"
 
 echo "--- and it is single-use"
