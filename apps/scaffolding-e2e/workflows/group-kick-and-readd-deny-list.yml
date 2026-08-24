@@ -113,10 +113,6 @@ steps:
     outputs:
       invite_node3: invitation
 
-  - name: Wait for namespace governance to gossip
-    type: wait
-    seconds: 10
-
   - name: Node-2 joins namespace
     type: join_namespace
     node: kick-readd-node-2

@@ -71,10 +71,6 @@ steps:
     outputs:
       namespace_invitation: invitation
 
-  - name: Wait for subgroup visibility + context-registered ops to gossip
-    type: wait
-    seconds: 10
-
   - name: Node 2 joins namespace
     type: join_namespace
     node: app-migration-userstore-2

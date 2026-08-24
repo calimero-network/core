@@ -151,10 +151,6 @@ steps:
     outputs:
       ns_invite: invitation
 
-  - name: Wait for governance to gossip
-    type: wait
-    seconds: 10
-
   - name: Node-2 joins namespace
     type: join_namespace
     node: af-no-spam-node-2

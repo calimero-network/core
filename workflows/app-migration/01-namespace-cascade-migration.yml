@@ -106,13 +106,6 @@ steps:
     outputs:
       namespace_invitation: invitation
 
-  - name: Wait for subgroup visibility + context-registered ops to gossip
-    # Same rationale as group-join-via-inheritance.yml - node 2 needs
-    # to see the Open-visibility row and the context-registered op
-    # before its inheritance materialisation can succeed.
-    type: wait
-    seconds: 10
-
   - name: Node 2 joins namespace
     type: join_namespace
     node: app-migration-cascade-2
