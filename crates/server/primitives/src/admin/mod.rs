@@ -1181,9 +1181,7 @@ impl Validate for CreateGroupApiRequest {
         let mut errors = Vec::new();
         if let Some(ref bytecode_id) = self.bytecode_id {
             if bytecode_id.is_empty() {
-                errors.push(ValidationError::EmptyField {
-                    field: "bytecodeId",
-                });
+                errors.push(ValidationError::EmptyField { field: "appKey" });
             }
         }
         errors
@@ -3073,6 +3071,26 @@ mod naming_back_compat_tests {
         let json = serde_json::to_string(&req).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
         assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    #[test]
+    fn create_namespace_request_serializes_the_legacy_wire_name() {
+        let req = CreateNamespaceApiRequest {
+            application_id: ApplicationId::from([0_u8; 32]),
+            name: None,
+            bytecode_id: Some("aabb".to_owned()),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        assert!(json.contains("\"appKey\""), "got: {json}");
+        assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    #[test]
+    fn create_namespace_request_accepts_the_new_field() {
+        let json = r#"{"bytecodeId":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let req: CreateNamespaceApiRequest =
+            serde_json::from_str(json).expect("bytecodeId must deserialize");
+        assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
     }
 
     #[test]

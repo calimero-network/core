@@ -30,7 +30,7 @@ pub async fn handler(
                 Err(()) => {
                     return ApiError {
                         status_code: StatusCode::BAD_REQUEST,
-                        message: "Invalid bytecodeId: expected hex-encoded 32 bytes".into(),
+                        message: "Invalid appKey: expected hex-encoded 32 bytes".into(),
                     }
                     .into_response();
                 }
