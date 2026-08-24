@@ -17,6 +17,7 @@ target/
 # agent scratch dirs — never committed
 .claude/
 .superpowers/
+docs/superpowers/
 
 # typescript
 *.map
