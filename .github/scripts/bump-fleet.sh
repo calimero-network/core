@@ -204,6 +204,96 @@ $stale"
 }
 
 # ---------------------------------------------------------------------------
+# tauri
+# ---------------------------------------------------------------------------
+#
+# The desktop app does not depend on the SDK as a library — it ships a merod
+# BINARY. merod-config.json names the version, apps/desktop/src-tauri/build.rs
+# embeds it as MEROD_CONFIG_VERSION at compile time, and the app downloads that
+# merod at runtime. So a core release means two things here: bundle the new
+# merod, and cut a new desktop version that ships it.
+#
+# The app version lives in two files and they have already drifted apart —
+# apps/desktop/package.json said 0.0.85 while src-tauri/tauri.conf.json, which
+# is what actually stamps the built bundle, still said 0.0.84. Rather than trust
+# either one, take the higher of the two and move both to it, which heals the
+# drift on the next release instead of widening it.
+
+# Highest of two dotted versions, compared numerically field by field. Not
+# `sort -V`: that is a GNU extension this has to run without on macOS.
+max_version() {
+  printf '%s\n%s\n' "$1" "$2" \
+    | awk -F. '{ printf "%010d%010d%010d %s\n", $1, $2, $3, $0 }' \
+    | sort | tail -1 | cut -d' ' -f2
+}
+
+read_json_version() {
+  perl -ne 'if (m{"version"\s*:\s*"([^"]*)"}) { print "$1\n"; exit }' "$1"
+}
+
+# Only the FIRST "version" key, which in all three of these files is the
+# document's own version. The guard has to be set by a successful substitution,
+# not by merely visiting a line — incrementing per line spends the flag on the
+# opening brace and then never rewrites anything.
+write_json_version() {
+  NEW="$2" perl -i -pe '
+    if (!$done && s{("version"\s*:\s*")[^"]*(")}{$1$ENV{NEW}$2}) { $done = 1 }
+  ' "$1"
+}
+
+bump_tauri() {
+  local cfg="$DIR/merod-config.json"
+
+  if [ ! -f "$cfg" ]; then
+    note "no merod-config.json — this repository bundles no merod"
+    exit 3
+  fi
+
+  local current
+  current=$(read_json_version "$cfg")
+  [ -n "$current" ] || die "merod-config.json carries no version field"
+
+  head_note "tauri: bundled merod $current -> $VERSION"
+
+  if [ "$current" = "$VERSION" ]; then
+    note "already bundling $VERSION"
+    exit 4
+  fi
+
+  write_json_version "$cfg" "$VERSION"
+  [ "$(read_json_version "$cfg")" = "$VERSION" ] || die "merod-config.json did not take the new version"
+  record_change "merod-config.json"
+  note "merod-config.json now bundles $VERSION"
+
+  local pkg="apps/desktop/package.json"
+  local conf="apps/desktop/src-tauri/tauri.conf.json"
+  local vp="" vc="" top next
+
+  [ -f "$DIR/$pkg" ]  && vp=$(read_json_version "$DIR/$pkg")
+  [ -f "$DIR/$conf" ] && vc=$(read_json_version "$DIR/$conf")
+
+  if [ -z "$vp" ] && [ -z "$vc" ]; then
+    note "WARNING: found no desktop app version to bump"
+    return 0
+  fi
+
+  top=$(max_version "${vp:-0.0.0}" "${vc:-0.0.0}")
+  next=$(printf '%s' "$top" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')
+
+  if [ -n "$vp" ] && [ -n "$vc" ] && [ "$vp" != "$vc" ]; then
+    note "NOTE: app version had drifted ($pkg $vp vs $conf $vc); taking $top and syncing both"
+  fi
+
+  if [ -n "$vp" ]; then
+    write_json_version "$DIR/$pkg" "$next"; record_change "$pkg"
+  fi
+  if [ -n "$vc" ]; then
+    write_json_version "$DIR/$conf" "$next"; record_change "$conf"
+  fi
+  note "desktop app $top -> $next"
+}
+
+# ---------------------------------------------------------------------------
 # npm
 # ---------------------------------------------------------------------------
 #
@@ -388,7 +478,11 @@ case "$SURFACE" in
   npm)
     bump_npm
     ;;
-  *) die "--surface must be cargo or npm (got '$SURFACE')" ;;
+  tauri)
+    [ -n "$VERSION" ] || die "--surface tauri needs --version"
+    bump_tauri
+    ;;
+  *) die "--surface must be cargo, npm or tauri (got '$SURFACE')" ;;
 esac
 
 # Hand the caller the exact set of paths to stage. Anything else the tooling
