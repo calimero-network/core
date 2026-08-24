@@ -1160,7 +1160,14 @@ impl Validate for TeeAttestRequest {
 pub struct CreateGroupApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "appKey")]
+    // `appKey` on the wire in BOTH directions: an old server knows only that
+    // name, and the alias keeps taking `bytecodeId` from clients that send it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "appKey",
+        alias = "bytecodeId"
+    )]
     pub bytecode_id: Option<String>,
     pub application_id: ApplicationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1204,7 +1211,14 @@ pub struct CreateNamespaceApiRequest {
     /// Hex-encoded 32-byte bytecode blob id to pin the namespace to a
     /// specific installed version. Default: the application row's blob
     /// (latest fetched).
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "appKey")]
+    // `appKey` on the wire in BOTH directions: an old server knows only that
+    // name, and the alias keeps taking `bytecodeId` from clients that send it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "appKey",
+        alias = "bytecodeId"
+    )]
     pub bytecode_id: Option<String>,
 }
 
@@ -3041,6 +3055,22 @@ mod naming_back_compat_tests {
             group_state_hash: String::new(),
         };
         let json = serde_json::to_string(&data).expect("serialize");
+        assert!(json.contains("\"appKey\""), "got: {json}");
+        assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    // The request half of the same contract: an old server only knows `appKey`,
+    // so a new client must still put that name on the wire.
+    #[test]
+    fn create_group_request_serializes_the_legacy_wire_name() {
+        let req = CreateGroupApiRequest {
+            group_id: None,
+            bytecode_id: Some("aabb".to_owned()),
+            application_id: ApplicationId::from([0_u8; 32]),
+            name: None,
+            parent_group_id: None,
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
         assert!(!json.contains("\"bytecodeId\""), "got: {json}");
     }
