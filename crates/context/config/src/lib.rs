@@ -114,6 +114,24 @@ impl MemberCapabilities {
     /// is deterministic among exactly the peers that apply it — no root-level
     /// restriction needed.
     pub const CAN_MANAGE_METADATA: Self = Self(1 << 8);
+    /// Permits this member to publish deltas attributed to ANOTHER member, under
+    /// a warrant that member signed. Held by attested relays executing on a
+    /// client's behalf.
+    ///
+    /// Deliberately not implied by admin, and deliberately NOT propagated by the
+    /// subgroup-admit cascade: availability cascades because a relay that
+    /// silently missed new subgroups would fail at the job it was admitted to do,
+    /// but authorship is the step from *reads what members read* to *decides the
+    /// content of their writes*. Every new context is therefore
+    /// authorship-closed until an admin says otherwise. If the cascade ever
+    /// carried this bit, least privilege would invert silently.
+    ///
+    /// Checked on the group that OWNS the target context, and that is
+    /// deterministic here unlike [`Self::CAN_CREATE_SUBGROUP`]: a peer applying a
+    /// delta for a context is by definition a member of the owning group and
+    /// holds its key, so it can read the capability row and every peer reaches
+    /// the same verdict.
+    pub const CAN_AUTHOR_ON_BEHALF: Self = Self(1 << 9);
 
     /// The union of every defined capability bit.
     pub const ALL: Self = Self(
@@ -125,7 +143,8 @@ impl MemberCapabilities {
             | Self::CAN_CREATE_SUBGROUP.bits()
             | Self::CAN_DELETE_SUBGROUP.bits()
             | Self::CAN_MANAGE_VISIBILITY.bits()
-            | Self::CAN_MANAGE_METADATA.bits(),
+            | Self::CAN_MANAGE_METADATA.bits()
+            | Self::CAN_AUTHOR_ON_BEHALF.bits(),
     );
 
     /// The empty capability set.
@@ -257,6 +276,7 @@ mod capability_tests {
             C::CAN_DELETE_SUBGROUP,
             C::CAN_MANAGE_VISIBILITY,
             C::CAN_MANAGE_METADATA,
+            C::CAN_AUTHOR_ON_BEHALF,
         ];
 
         let mut union = C::empty();
