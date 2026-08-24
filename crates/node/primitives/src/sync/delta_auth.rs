@@ -681,4 +681,109 @@ mod tests {
             "expected the delegation to be refused, got: {err}"
         );
     }
+
+    // ------------------------------------------------- recorded wire preimages
+    //
+    // Two byte-for-byte pins. They exist because merobox cannot reach this
+    // class of break at all: every node in an e2e run is the SAME build, so a
+    // change to a signed preimage stays invisible there — both sides compute
+    // the new bytes and agree — and only shows up between a new node and one
+    // that has not been restarted yet, as a signature that will not verify.
+    //
+    // What a recorded constant does and does not prove: it freezes the layout
+    // as of the commit that recorded it. It cannot tell you the layout is
+    // correct, only that it stopped being what it was. So when one of these
+    // fails, the question is never "what is the new hex" — it is whether every
+    // already-signed delta in the wild can still be verified by this code, and
+    // if not, the change needs a domain bump rather than a new constant.
+
+    /// The SELF-AUTHORED preimage, unchanged by the delegated path existing.
+    ///
+    /// This is the pin that matters most, and it is the one asserting a claim
+    /// rather than just a layout: [`DOMAIN_SEPARATOR_DELEGATED`]'s doc comment
+    /// argues that a second domain — rather than one more field on
+    /// [`DeltaSignaturePayload`] — is what keeps the self-authored bytes
+    /// identical, because borsh would have written an extra `Option` tag into
+    /// every one of them. These bytes are that argument, checked. If this test
+    /// fails, delegated authorship broke ordinary deltas signed by every node
+    /// running today.
+    #[test]
+    fn the_self_authored_preimage_is_byte_frozen() {
+        let (context_id, delta_id, _sk, author_id) = fixture();
+        let payload = delta_signature_payload(context_id, delta_id, author_id, None, hlc())
+            .expect("the payload must encode");
+
+        assert_eq!(hex::encode(&payload), "63616c696d65726f2f64656c74612f3207070707070707070707070707070707070707070707070707070707070707070909090909090909090909090909090909090909090909090909090909090909ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d100000000000000000001000000000000000000000000000000");
+
+        // Spelled out separately: the domain is the first 16 bytes, and it is
+        // the self-authored one. A pin on the whole string would still pass if
+        // the domain moved and something else moved to compensate.
+        assert_eq!(&payload[..16], DOMAIN_SEPARATOR.as_slice());
+    }
+
+    /// The DELEGATED preimage, frozen as of its introduction.
+    ///
+    /// Nothing has signed against these bytes in production yet, so today this
+    /// pin costs nothing to change. That is exactly why it is worth writing
+    /// now: the moment a release ships, the same edit stops being free, and a
+    /// constant that was already here makes the cost visible in the diff
+    /// instead of discovered in the field.
+    #[test]
+    fn the_delegated_preimage_is_byte_frozen() {
+        let context_id = ContextId::from([7u8; 32]);
+        let (_author, _executor, delegation) = bundle_for(context_id);
+        let author_id = delegation.warrant.author_device_key;
+
+        let payload = delegated_delta_signature_payload(
+            context_id,
+            [9u8; 32],
+            author_id,
+            &delegation,
+            None,
+            hlc(),
+        )
+        .expect("the payload must encode");
+
+        assert_eq!(hex::encode(&payload), "63616c696d65726f2f64656c65672f31070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a4abababababababababababababababababababababababababababababababab070000000000000070f6a868000000004ca33da48ad0fafff1071a4172d3f250bd885972b52335ea52f8572e7139855b8ff81110c6b4f6091de694e73e61497bf838ed477a1085486c4589aa7ce03d0300000000000000000001000000000000000000000000000000");
+
+        assert_eq!(&payload[..16], DOMAIN_SEPARATOR_DELEGATED.as_slice());
+
+        // The two domains differ, so neither preimage can ever be the other —
+        // which is what stops a self-authored signature verifying as delegated
+        // and losing the warrant in flight.
+        assert_ne!(DOMAIN_SEPARATOR, DOMAIN_SEPARATOR_DELEGATED);
+    }
+
+    /// The warrant is embedded whole, not by reference or by hash.
+    ///
+    /// A verifier reconstructs these bytes from what is on the wire, so if the
+    /// warrant were ever hashed into the preimage instead of written into it,
+    /// this length would drop by roughly the warrant's size and every peer
+    /// would still agree with itself. The check is on the containment, not the
+    /// number: the warrant's own signature must appear verbatim inside the
+    /// preimage.
+    #[test]
+    fn the_warrant_is_embedded_verbatim_in_the_preimage() {
+        let context_id = ContextId::from([7u8; 32]);
+        let (_author, _executor, delegation) = bundle_for(context_id);
+        let author_id = delegation.warrant.author_device_key;
+
+        let payload = delegated_delta_signature_payload(
+            context_id,
+            [9u8; 32],
+            author_id,
+            &delegation,
+            None,
+            hlc(),
+        )
+        .expect("the payload must encode");
+
+        let warrant_sig = delegation.warrant.signature;
+        assert!(
+            payload
+                .windows(warrant_sig.len())
+                .any(|w| w == warrant_sig.as_slice()),
+            "the warrant's signature must appear in the signed bytes verbatim"
+        );
+    }
 }
