@@ -45,7 +45,6 @@ steps:
     type: create_mesh
     context_node: new-calimero-node-1
     application_id: '{{app_id}}'
-    path: "./res/components_demo.wasm"
     nodes:
       - new-calimero-node-2
     outputs:
