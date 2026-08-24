@@ -504,6 +504,8 @@ async fn create_context(
             governance_position_blob: None,
             // Genesis has no author signature to record.
             delta_signature: None,
+            // `init` runs as the creator, never on anyone's behalf.
+            delegation: None,
         };
 
         debug!(

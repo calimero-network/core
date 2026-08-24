@@ -496,6 +496,15 @@ pub enum MessagePayload<'a> {
         /// to required once those rows have aged out of every peer's
         /// storage.
         delta_signature: Option<[u8; 64]>,
+        /// The author's consent, for a delta an executor produced on their
+        /// behalf. `None` for a self-authored delta.
+        ///
+        /// Served here and not only on the gossip envelope because the
+        /// delegated signature preimage embeds the warrant: an initiator that
+        /// received the delta by catchup could not otherwise reconstruct the
+        /// bytes the executor signed, and every delegated delta arriving this
+        /// way would fail verification while the same delta over gossip passed.
+        delegation: Option<calimero_account::Delegation>,
     },
 
     /// Delta not found response.

@@ -38,6 +38,7 @@ fn pending_input(id: [u8; 32]) -> BatchDeltaInput {
         author_id: Some(PublicKey::from([0xBB; 32])),
         governance_position_blob: None,
         delta_signature: None,
+        delegation: None,
     }
 }
 
@@ -93,6 +94,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
             .add_delta(
                 make_delta(*id, vec![MISSING_PARENT]),
                 Some(PublicKey::from([0xBB; 32])),
+                None,
                 None,
                 None,
             )

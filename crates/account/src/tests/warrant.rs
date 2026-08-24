@@ -89,9 +89,10 @@ fn fixture() -> (Party, Party, Warrant) {
 
 fn delegation(author: &Party, executor: &Party, warrant: Warrant) -> Delegation {
     Delegation {
-        warrant,
+        warrant: Box::new(warrant),
         author_proof: author.own_proof(),
         executor_proof: executor.own_proof(),
+        executor_key: executor.device_key(),
     }
 }
 
@@ -229,7 +230,7 @@ fn a_well_formed_delegation_verifies() {
     let bundle = delegation(&author, &executor, warrant);
 
     let verified = bundle
-        .verify(&executor.device_key())
+        .verify()
         .expect("a well-formed delegation must verify");
 
     assert_eq!(*verified.get(), warrant);
@@ -264,15 +265,13 @@ fn an_author_proof_for_a_different_device_of_the_same_account_is_refused() {
         .expect("precondition: the certificate must be genuinely root-signed");
 
     let bundle = Delegation {
-        warrant,
+        warrant: Box::new(warrant),
         author_proof: proof,
         executor_proof: executor.own_proof(),
+        executor_key: executor.device_key(),
     };
 
-    assert_eq!(
-        bundle.verify(&executor.device_key()),
-        Err(AccountError::WarrantProofKeyMismatch)
-    );
+    assert_eq!(bundle.verify(), Err(AccountError::WarrantProofKeyMismatch));
 }
 
 /// The same trap on the executor side: the bundle must not be able to present a
@@ -281,14 +280,13 @@ fn an_author_proof_for_a_different_device_of_the_same_account_is_refused() {
 #[test]
 fn an_executor_proof_for_a_different_key_than_signed_is_refused() {
     let (author, executor, warrant) = fixture();
-    let bundle = delegation(&author, &executor, warrant);
+    let mut bundle = delegation(&author, &executor, warrant);
 
-    let signed_by_something_else = key(12).public_key();
+    // Claim a key the executor's root never certified. The proof still verifies
+    // for the account, so only the key-equality check can refuse this.
+    bundle.executor_key = key(12).public_key();
 
-    assert_eq!(
-        bundle.verify(&signed_by_something_else),
-        Err(AccountError::WarrantProofKeyMismatch)
-    );
+    assert_eq!(bundle.verify(), Err(AccountError::WarrantProofKeyMismatch));
 }
 
 /// A proof whose genesis belongs to somebody else is caught by
@@ -299,14 +297,15 @@ fn an_author_proof_for_the_wrong_account_is_refused() {
     let stranger = party(9, 10, 0x09);
 
     let bundle = Delegation {
-        warrant,
+        warrant: Box::new(warrant),
         // A perfectly good proof — for the wrong account.
         author_proof: stranger.own_proof(),
         executor_proof: executor.own_proof(),
+        executor_key: executor.device_key(),
     };
 
     let err = bundle
-        .verify(&executor.device_key())
+        .verify()
         .expect_err("a proof anchored at another account must not vouch for this author");
     assert!(
         matches!(err, AccountError::GenesisMismatch { .. }),
@@ -326,7 +325,7 @@ fn a_delegation_round_trips_through_borsh_and_still_verifies() {
 
     assert_eq!(decoded, bundle);
     let verified = decoded
-        .verify(&executor.device_key())
+        .verify()
         .expect("a decoded delegation must still verify");
     assert_eq!(*verified.get(), warrant);
 }
@@ -340,10 +339,13 @@ fn boxing_the_proofs_is_invisible_on_the_wire() {
     let bundle = delegation(&author, &executor, warrant);
 
     let boxed = borsh::to_vec(&bundle).expect("borsh must encode");
+    // Field order, and it is load-bearing: this is the pin that catches a
+    // reorder as the wire break it is.
     let unboxed = borsh::to_vec(&(
-        bundle.warrant,
+        *bundle.warrant,
         &*bundle.author_proof,
         &*bundle.executor_proof,
+        bundle.executor_key,
     ))
     .expect("borsh must encode");
 

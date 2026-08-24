@@ -1426,6 +1426,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     // async closure; `Option<[u8;32]>` is
                                     // Copy so captured by value automatically.
                                     producing_app_key,
+                                    // Self-authored, matching the row
+                                    // persisted above. Both become `Some`
+                                    // together or a peer would verify one
+                                    // shape and store the other.
+                                    None,
                                 )
                                 .await?;
                         }
@@ -2428,6 +2433,11 @@ async fn internal_execute(
                     author_id: Some(executor),
                     governance_position_blob,
                     delta_signature,
+                    // Self-authored: this node signed as itself. It becomes
+                    // `Some` once execution runs under a warrant — the field is
+                    // plumbed end to end first so the wire, the row and both
+                    // catchup paths agree before anything produces one.
+                    delegation: None,
                 },
             )?;
 

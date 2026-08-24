@@ -89,6 +89,9 @@ pub struct BatchDeltaInput {
     pub author_id: Option<PublicKey>,
     pub governance_position_blob: Option<Vec<u8>>,
     pub delta_signature: Option<[u8; 64]>,
+    /// The author's consent for a delegated delta. Travels with
+    /// `delta_signature` because the delegated preimage embeds it.
+    pub delegation: Option<calimero_account::Delegation>,
 }
 
 /// Resolves a signing key to the account it speaks for, at one causal cut.
@@ -1595,6 +1598,7 @@ impl DeltaStore {
                     author_id: stored_delta.author_id,
                     governance_position_blob: stored_delta.governance_position_blob.clone(),
                     delta_signature: stored_delta.delta_signature,
+                    delegation: stored_delta.delegation.clone(),
                 });
             }
         }
@@ -1775,6 +1779,7 @@ impl DeltaStore {
                         input.author_id,
                         input.governance_position_blob,
                         input.delta_signature,
+                        input.delegation.clone(),
                     )
                     .await
                 {
@@ -1838,6 +1843,7 @@ impl DeltaStore {
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
+        delegation: Option<calimero_account::Delegation>,
     ) -> Result<AddDeltaResult> {
         self.add_delta_internal(
             delta,
@@ -1845,6 +1851,7 @@ impl DeltaStore {
             author_id,
             governance_position_blob,
             delta_signature,
+            delegation,
         )
         .await
     }
@@ -1858,6 +1865,7 @@ impl DeltaStore {
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
+        delegation: Option<calimero_account::Delegation>,
     ) -> Result<bool> {
         let result = self
             .add_delta_internal(
@@ -1866,6 +1874,7 @@ impl DeltaStore {
                 author_id,
                 governance_position_blob,
                 delta_signature,
+                delegation,
             )
             .await?;
         Ok(result.applied)
@@ -1929,6 +1938,7 @@ impl DeltaStore {
                             author_id: input.author_id,
                             governance_position_blob: input.governance_position_blob.clone(),
                             delta_signature: input.delta_signature,
+                            delegation: input.delegation.clone(),
                         },
                     )
                     .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -2082,6 +2092,7 @@ impl DeltaStore {
                     author_id: input.author_id,
                     governance_position_blob: input.governance_position_blob.clone(),
                     delta_signature: input.delta_signature,
+                    delegation: input.delegation.clone(),
                 },
             ));
         }
@@ -2309,6 +2320,7 @@ impl DeltaStore {
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
         delta_signature: Option<[u8; 64]>,
+        delegation: Option<calimero_account::Delegation>,
     ) -> Result<AddDeltaResult> {
         // Orphan-member buffering (liveness): if this delta writes a
         // `SharedMember` whose anchor hasn't synced, the member's writers can't
@@ -2319,7 +2331,7 @@ impl DeltaStore {
         // half-state. Best-effort: if it's already buffered or the buffer is
         // full, `buffer` hands ownership back and we fall through to the normal
         // (fail-closed + re-fetch) path, which still converges.
-        let (delta, events, author_id, governance_position_blob, delta_signature) =
+        let (delta, events, author_id, governance_position_blob, delta_signature, delegation) =
             match self.first_missing_anchor(&delta) {
                 Some(anchor) => {
                     let input = BatchDeltaInput {
@@ -2328,6 +2340,7 @@ impl DeltaStore {
                         author_id,
                         governance_position_blob,
                         delta_signature,
+                        delegation,
                     };
                     match self.anchor_pending.write().await.buffer(anchor, input) {
                         Ok(()) => {
@@ -2347,6 +2360,7 @@ impl DeltaStore {
                             returned.author_id,
                             returned.governance_position_blob,
                             returned.delta_signature,
+                            returned.delegation,
                         ),
                     }
                 }
@@ -2356,6 +2370,7 @@ impl DeltaStore {
                     author_id,
                     governance_position_blob,
                     delta_signature,
+                    delegation,
                 ),
             };
 
@@ -2400,6 +2415,7 @@ impl DeltaStore {
                         author_id,
                         governance_position_blob: governance_position_blob.clone(),
                         delta_signature,
+                        delegation: delegation.clone(),
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -2580,6 +2596,7 @@ impl DeltaStore {
                     author_id,
                     governance_position_blob,
                     delta_signature,
+                    delegation: delegation.clone(),
                 },
             ))
         } else {
@@ -2727,6 +2744,7 @@ impl DeltaStore {
                         input.author_id,
                         input.governance_position_blob,
                         input.delta_signature,
+                        input.delegation.clone(),
                     ))
                     .await
                     {
@@ -3225,6 +3243,7 @@ impl DeltaStore {
                     author_id: None,
                     governance_position_blob: None,
                     delta_signature: None,
+                    delegation: None,
                 };
                 records.push((db_key, record));
             }
@@ -3538,6 +3557,7 @@ impl DeltaStore {
                     author_id: None,
                     governance_position_blob: None,
                     delta_signature: None,
+                    delegation: None,
                 },
             ));
         }
@@ -3764,6 +3784,7 @@ mod anchor_pending_tests {
             author_id: None,
             governance_position_blob: None,
             delta_signature: None,
+            delegation: None,
         }
     }
 

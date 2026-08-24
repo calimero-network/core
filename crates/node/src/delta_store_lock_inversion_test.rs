@@ -183,7 +183,7 @@ async fn cascade_commit_does_not_hold_the_context_lock_across_a_dag_acquisition(
     // reaching the applier. A's apply will unblock it, and that cascade is the
     // precondition for the commit tail's `dag` read.
     let applied_b = delta_store
-        .add_delta(delta(DELTA_B, vec![DELTA_A]), None, None, None)
+        .add_delta(delta(DELTA_B, vec![DELTA_A]), None, None, None, None)
         .await
         .expect("adding an orphan delta succeeds");
     assert!(!applied_b, "B must be pending until A applies");
@@ -195,7 +195,7 @@ async fn cascade_commit_does_not_hold_the_context_lock_across_a_dag_acquisition(
         let delta_store = Arc::clone(&delta_store);
         async move {
             delta_store
-                .add_delta(delta(DELTA_A, vec![GENESIS]), None, None, None)
+                .add_delta(delta(DELTA_A, vec![GENESIS]), None, None, None, None)
                 .await
         }
     });
@@ -208,7 +208,7 @@ async fn cascade_commit_does_not_hold_the_context_lock_across_a_dag_acquisition(
         let delta_store = Arc::clone(&delta_store);
         async move {
             delta_store
-                .add_delta(delta(DELTA_C, vec![GENESIS]), None, None, None)
+                .add_delta(delta(DELTA_C, vec![GENESIS]), None, None, None, None)
                 .await
         }
     });

@@ -71,6 +71,7 @@ fn persist_row(
                 author_id: Some(PublicKey::from([0xBB; 32])),
                 governance_position_blob: None,
                 delta_signature: None,
+                delegation: None,
             },
         )
         .expect("persist ContextDagDelta row");

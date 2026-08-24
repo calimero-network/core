@@ -227,6 +227,17 @@ pub struct ContextDagDelta {
     /// path before applying. `None` for snapshot checkpoints / genesis
     /// rows that have no author signature to record.
     pub delta_signature: Option<[u8; 64]>,
+    /// The author's consent and the two certificates behind it, for a delta
+    /// produced by an executor on the author's behalf. `None` for a
+    /// self-authored delta, which is every delta today.
+    ///
+    /// Persisted rather than left on the gossip envelope for the reason
+    /// `producing_app_key` still cannot be bound into a signature: the
+    /// delegated preimage embeds the warrant, so a catchup or parent-fetch
+    /// responder that did not store it could not serve a delta any initiator
+    /// could verify. A field that is signed over has to survive every path the
+    /// delta can arrive by.
+    pub delegation: Option<calimero_account::Delegation>,
 }
 
 impl ContextDagDelta {

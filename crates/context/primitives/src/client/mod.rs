@@ -2340,6 +2340,7 @@ mod atomic_persist_tests {
             author_id: None,
             governance_position_blob: None,
             delta_signature: None,
+            delegation: None,
         };
         (key, record)
     }

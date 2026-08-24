@@ -20,12 +20,13 @@
 //! | `author_account` | account | membership, writer sets, the owner stamp |
 //! | `author_device_key` | key | this warrant's signature, and the replica slot |
 //! | `executor` | account | the authorship capability check |
+//! | `executor_key` | key | the envelope signature over the change itself |
 //!
 //! `executor` is an account rather than a key so that a relay re-keying does not
 //! void warrants already in flight — a device that re-keys keeps its replica slot
 //! by design, and a warrant sitting unspent on an offline client should survive
-//! the same rotation. Which *process* actually signed is recorded beside the
-//! change it produced, not here.
+//! the same rotation. Which *process* signed is [`Delegation::executor_key`],
+//! outside the warrant, so the author never has to know it.
 //!
 //! **The intent travels as a hash.** The envelope a delegated change rides in is
 //! plaintext to anything subscribed to the topic, members and non-members alike.
@@ -232,7 +233,14 @@ impl Warrant {
 #[derive(Clone, Debug, Eq, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct Delegation {
     /// The author's consent.
-    pub warrant: Warrant,
+    ///
+    /// Boxed, as the two proofs are and for the same reason: a warrant is ~264
+    /// bytes inline, and three of those in one enum variant put it far past
+    /// clippy's `large_enum_variant` threshold — which matters because this type
+    /// rides inside the gossip `BroadcastMessage` and the catchup
+    /// `MessagePayload`. Borsh encodes `Box<T>` exactly as `T`, so the boxing is
+    /// invisible on the wire and changes no schema version.
+    pub warrant: Box<Warrant>,
     /// Proves [`Warrant::author_device_key`] is a device of
     /// [`Warrant::author_account`].
     ///
@@ -241,25 +249,23 @@ pub struct Delegation {
     /// resolving it there would fail. The certificate answers from the account id
     /// alone instead.
     pub author_proof: Box<AccountProof<DeviceCert>>,
-    /// Proves the key that signed the change is a device of
-    /// [`Warrant::executor`].
+    /// Proves [`Self::executor_key`] is a device of [`Warrant::executor`].
     pub executor_proof: Box<AccountProof<DeviceCert>>,
+    /// The key that actually signed the change this bundle travelled with.
+    ///
+    /// Carried here rather than supplied by the caller, and it is safe despite
+    /// looking like a credential nominating its own verifier: the chain closes
+    /// it. The warrant names the executor ACCOUNT and is signed by the author,
+    /// and `executor_proof` must show this key is a device of that account. So
+    /// substituting a key means holding a root-signed certificate for it under
+    /// the operator the author actually authorized — which is that operator
+    /// acting, not an impersonation of it.
+    pub executor_key: PublicKey,
 }
-
-// Both proofs are boxed for the reason `JoinAccountCredential` is: a credential
-// is a few hundred bytes, and inlining two of them pushes any enclosing enum
-// variant well past clippy's `large_enum_variant` threshold. Borsh encodes
-// `Box<T>` exactly as `T`, so the boxing is invisible on the wire.
 
 impl Delegation {
     /// Check the bundle's authenticity: the warrant is signed by the device it
     /// names, and both named keys belong to the accounts the warrant names.
-    ///
-    /// `executor_key` is the key that actually signed the change this bundle
-    /// travelled with. It is a parameter rather than a field because the bundle
-    /// must not be able to nominate its own verifier — the caller passes the key
-    /// it verified the change under, and this confirms that key was entitled to
-    /// act for the operator the author authorized.
     ///
     /// **What it does not check** is listed in the module header, and the list is
     /// longer than this function: revocation, membership, capability, nonce reuse
@@ -271,7 +277,7 @@ impl Delegation {
     /// certificate is not genuinely root-signed for the account claimed; and
     /// [`AccountError::WarrantProofKeyMismatch`] if a certificate verifies but
     /// certifies a key other than the one it is supposed to vouch for.
-    pub fn verify(&self, executor_key: &PublicKey) -> Result<Verified<Warrant>, AccountError> {
+    pub fn verify(&self) -> Result<Verified<Warrant>, AccountError> {
         self.warrant.verify_signature()?;
 
         // Each proof gets two steps, and the second is the one that is easy to
@@ -286,11 +292,11 @@ impl Delegation {
         }
 
         let executor_cert = self.executor_proof.verify(self.warrant.executor)?;
-        if executor_cert.sign_pk != *executor_key {
+        if executor_cert.sign_pk != self.executor_key {
             return Err(AccountError::WarrantProofKeyMismatch);
         }
 
-        Ok(Verified::new(self.warrant))
+        Ok(Verified::new(*self.warrant))
     }
 }
 
