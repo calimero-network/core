@@ -321,12 +321,39 @@ bump_npm() {
     # --lockfile-only resolves and writes the lock without materialising
     # node_modules. --ignore-scripts because nothing here should run a
     # dependency's install hook on a release runner.
-    ( cd "$root" && pnpm install --lockfile-only --ignore-scripts >/dev/null )
+    #
+    # Captured rather than streamed, but replayed in full on failure. pnpm
+    # writes its diagnostics to stdout, so discarding it outright hides the
+    # single most likely failure in this script behind a bare non-zero exit —
+    # including the useful case where the requested version simply is not
+    # published yet, which reads as "the tooling is broken" if you cannot see
+    # ERR_PNPM_NO_MATCHING_VERSION.
+    if ! ( cd "$root" && pnpm install --lockfile-only --ignore-scripts ) \
+        > "$TMPDIR_RUN/pnpm.log" 2>&1; then
+      note "pnpm failed refreshing ${root#$DIR/}/pnpm-lock.yaml:"
+      sed 's/^/      /' "$TMPDIR_RUN/pnpm.log" >&2
+      die "lockfile refresh failed for ${root#$DIR/}"
+    fi
   done
 }
 
 TMPDIR_RUN=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_RUN"' EXIT
+
+# The --dry-run revert lives here rather than at the end of the happy path. A
+# dry run that dies partway — an unpublished version, a manifest this script
+# will not interpret — would otherwise leave the checkout modified, and the
+# clean-tree guard above then refuses to run again until someone tidies up by
+# hand. The guard proved the tree was clean before any edit, so reverting
+# everything tracked is safe on any exit path.
+cleanup() {
+  status=$?
+  rm -rf "$TMPDIR_RUN"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    ( cd "$DIR" && git checkout -- . ) >/dev/null 2>&1 || true
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 case "$SURFACE" in
   cargo)
@@ -341,9 +368,8 @@ esac
 
 if [ "$DRY_RUN" -eq 1 ]; then
   head_note ""
-  head_note "--dry-run: showing the diff and reverting it"
+  head_note "--dry-run: showing the diff, then reverting it"
   ( cd "$DIR" && git --no-pager diff --stat && echo && git --no-pager diff )
-  ( cd "$DIR" && git checkout -- . )
 fi
 
 exit 0
