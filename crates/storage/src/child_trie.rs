@@ -461,6 +461,12 @@ mod tests {
         ChildInfo::new(id, [hash_byte; 32], Metadata::default())
     }
 
+    /// Same as [`child`], but with an explicit `created_at`/`updated_at`.
+    fn child_created_at(seed: u8, hash_byte: u8, created_at: u64) -> ChildInfo {
+        let id = Id::new(Sha256::digest([seed]).into());
+        ChildInfo::new(id, [hash_byte; 32], Metadata::new(created_at, created_at))
+    }
+
     fn parent(n: u8) -> Id {
         Id::new(Sha256::digest([b'p', n]).into())
     }
@@ -497,6 +503,40 @@ mod tests {
             "same child set inserted in opposite orders must give the same root"
         );
         assert_ne!(forward.root(), EMPTY);
+    }
+
+    #[test]
+    fn the_root_does_not_depend_on_when_each_child_was_created() {
+        // Issue #2418. `created_at` is a LOCAL wall-clock observation: two peers
+        // that independently create the same entity — canonically the `Root<T>`
+        // opaque marker each one writes the first time an app touches its state
+        // — stamp different times for identical bytes. Any parent hash that
+        // admits `created_at` therefore diverges across peers holding the same
+        // data, and sync compares hashes.
+        //
+        // The old inline-list fold defended this by sorting children by id
+        // before hashing. The trie defends it twice over: buckets hold entries
+        // id-sorted, and the bucket fold covers only id + merkle_hash, so no
+        // part of `Metadata` reaches the root at all. This test is what makes
+        // that second property a decision rather than an accident — folding
+        // metadata into `TrieBucket::hash` would pass every other test here.
+        let peer1 = ChildTrie::<crate::store::MainStorage>::new(parent(20));
+        for (i, t) in [(1_u8, 100_u64), (2, 101), (3, 102)] {
+            let _root = peer1.insert(child_created_at(i, i, t));
+        }
+
+        let peer2 = ChildTrie::<crate::store::MainStorage>::new(parent(21));
+        for (i, t) in [(1_u8, 200_u64), (2, 201), (3, 202)] {
+            let _root = peer2.insert(child_created_at(i, i, t));
+        }
+
+        assert_eq!(
+            peer1.root(),
+            peer2.root(),
+            "same ids + same merkle hashes must give the same root however the \
+             peers' local creation times differ"
+        );
+        assert_ne!(peer1.root(), EMPTY);
     }
 
     #[test]

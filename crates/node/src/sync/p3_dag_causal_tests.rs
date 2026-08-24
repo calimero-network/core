@@ -63,7 +63,7 @@ fn hlc_at(step: u64) -> u64 {
 /// added/updated by `apply_action` without tripping `IndexNotFound`.
 ///
 /// Returns a `ChildInfo` whose `merkle_hash` matches what's actually
-/// stored after `add_root` (post-`calculate_full_hash_for_children`),
+/// stored after `add_root` (post-`full_hash_from_trie`),
 /// so callers can use the returned value as an ancestor without
 /// tripping the v2 `verify_ancestor_integrity` check.
 fn setup_root<S: StorageAdaptor>() -> ChildInfo {

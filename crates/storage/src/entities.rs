@@ -113,12 +113,14 @@ pub struct ChildInfo {
 // iteration. `id` is the tiebreaker for entries written at the same
 // HLC.
 //
-// The merkle full_hash computation in `Index::calculate_full_hash_for_children`
-// deliberately re-sorts by `id` alone before hashing, so the hash
-// content is independent of this ordering — peers that disagree on
+// The merkle full_hash does not use this order at all: a parent commits
+// to its children through its `ChildTrie`, whose buckets hold entries
+// id-sorted and fold only `id` + `merkle_hash`. No part of `Metadata`
+// — `created_at` included — reaches the root, so peers that disagree on
 // `created_at` (e.g. locally-created entities like `Root<T>`) still
 // compute the same parent hash. The two concerns (storage iteration
-// order vs hash content) are intentionally decoupled.
+// order vs hash content) are intentionally decoupled; see
+// `child_trie::tests::the_root_does_not_depend_on_when_each_child_was_created`.
 impl Ord for ChildInfo {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.created_at()
