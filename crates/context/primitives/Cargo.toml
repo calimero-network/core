@@ -35,4 +35,10 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
+camino.workspace = true
+ed25519-dalek.workspace = true
+flate2.workspace = true
+serde_json.workspace = true
+tar.workspace = true
 tempfile = "3.23"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
