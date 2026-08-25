@@ -861,13 +861,13 @@ impl<'a> NodeDeviceRepository<'a> {
             return Ok(true);
         }
         if bindings.is_device_linked(namespace, existing.device())? {
-            eyre::bail!(
-                "this node already holds device {} for account {} in {namespace:?}, and it \
-                 is linked — its replica state is held under that id. Moving a machine \
-                 between accounts means revoking the existing device first",
-                existing.device(),
-                existing.account,
-            );
+            // Typed so the admin API surfaces the pairing this refuses as a 403
+            // rather than a generic 500.
+            eyre::bail!(crate::errors::NodeDeviceError::LinkedToAnotherAccount {
+                device: existing.device().to_string(),
+                account: existing.account.to_string(),
+                namespace: format!("{namespace:?}"),
+            });
         }
         Ok(false)
     }
@@ -1807,9 +1807,21 @@ mod tests {
             .expect("store")
             .expect("the credential must be admissible");
 
-        assert!(repo
+        let refused = repo
             .ensure_enrolled_into(&[ns], AccountGenesis::new(root(2)))
-            .is_err());
+            .expect_err("a linked row for another account must not be replaced");
+        // Typed, not opaque: the admin API answers this pairing 403, and only the
+        // variant tells it apart from a node that is genuinely broken.
+        assert!(matches!(
+            refused.downcast_ref::<crate::errors::NodeDeviceError>(),
+            Some(crate::errors::NodeDeviceError::LinkedToAnotherAccount { .. })
+        ));
+        assert!(
+            refused
+                .to_string()
+                .contains("revoking the existing device first"),
+            "the refusal has to say what to do next; got: {refused}"
+        );
         let reloaded = repo.get().expect("read").expect("present");
         assert_eq!(reloaded.device(), mine.device());
         assert_eq!(reloaded.account, mine.account);

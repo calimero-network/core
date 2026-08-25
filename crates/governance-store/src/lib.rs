@@ -202,7 +202,7 @@ pub fn placeholder_admin_identity() -> AccountId {
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceCreatedRejection, NamespaceError,
+    NamespaceCreatedRejection, NamespaceError, NodeDeviceError,
 };
 
 // ---------------------------------------------------------------------------

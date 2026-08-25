@@ -393,6 +393,25 @@ pub enum MetaError {
     HasRegisteredContexts,
 }
 
+/// Errors raised by `NodeDeviceRepository` - this node's own single device slot.
+#[derive(Debug, Error)]
+pub enum NodeDeviceError {
+    /// The slot already holds a LINKED device for another account, whose replica
+    /// state is real. Moving a machine between accounts has to be an explicit
+    /// revoke-then-enroll rather than a silent overwrite, so this refuses rather
+    /// than stranding the counter slots and HLC lineage held under that id.
+    #[error(
+        "this node already holds device {device} for account {account} in {namespace}, and it \
+         is linked — its replica state is held under that id. Moving a machine \
+         between accounts means revoking the existing device first"
+    )]
+    LinkedToAnotherAccount {
+        device: String,
+        account: String,
+        namespace: String,
+    },
+}
+
 /// Errors raised by the context-to-group registration indirection.
 #[derive(Debug, Error)]
 pub enum ContextRegistrationError {
