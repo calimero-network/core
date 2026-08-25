@@ -97,6 +97,29 @@ fn namespaces_in_scope(
         .collect())
 }
 
+/// The namespaces the pairing is *gated on*, and the namespaces the link is
+/// *published into*.
+///
+/// The two differ only on the deprecated namespace-scoped route, which checks
+/// the one namespace it was handed and still fans out to every one. Left as it
+/// was: narrowing that fan-out would silently change what an existing caller
+/// gets, and the route is on its way out.
+fn resolve_scope(
+    store: &Store,
+    scope: &PairingScope,
+) -> EyreResult<(Vec<ContextGroupId>, Vec<ContextGroupId>)> {
+    Ok(match scope {
+        PairingScope::Namespace(namespace_id) => {
+            (vec![*namespace_id], namespaces_in_scope(store, &[])?)
+        }
+        // No namespace to name, so the resolved set answers for both.
+        PairingScope::Applications(applications) => {
+            let targets = namespaces_in_scope(store, applications)?;
+            (targets.clone(), targets)
+        }
+    })
+}
+
 impl Handler<PairDeviceCompleteRequest> for ContextManager {
     type Result = ActorResponse<Self, <PairDeviceCompleteRequest as Message>::Result>;
 
@@ -117,23 +140,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // Resolved before any check, because the scope is what the checks are
         // about: which namespaces have to hold an identity and a key for this
         // pairing to be able to do anything.
-        let resolved = (|| -> EyreResult<(Vec<ContextGroupId>, Vec<ContextGroupId>)> {
-            Ok(match &scope {
-                // The namespace-scoped route checks the namespace it was handed
-                // and still publishes into every one. Left as it was: narrowing
-                // its fan-out would silently change what an existing caller gets,
-                // and the route is on its way out.
-                PairingScope::Namespace(namespace_id) => {
-                    (vec![*namespace_id], namespaces_in_scope(&store, &[])?)
-                }
-                // No namespace to name, so the resolved set answers for both.
-                PairingScope::Applications(applications) => {
-                    let targets = namespaces_in_scope(&store, applications)?;
-                    (targets.clone(), targets)
-                }
-            })
-        })();
-        let (gated_on, targets) = match resolved {
+        let (gated_on, targets) = match resolve_scope(&store, &scope) {
             Ok(resolved) => resolved,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -472,5 +479,171 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_account::AccountGenesis;
+    use calimero_governance_store::MetaRepository;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupMetaValue;
+
+    use super::*;
+
+    const NS_A: [u8; 32] = [0xA1; 32];
+    const NS_B: [u8; 32] = [0xB2; 32];
+    const NS_C: [u8; 32] = [0xC3; 32];
+    /// Known to this node by its metadata row, but never joined.
+    const NS_STRANGER: [u8; 32] = [0xD4; 32];
+    /// Taken part in with no metadata row yet - what a freshly provisioned
+    /// namespace looks like before its governance state has synced.
+    const NS_UNSYNCED: [u8; 32] = [0xE5; 32];
+    const APP_ONE: [u8; 32] = [0x11; 32];
+    const APP_TWO: [u8; 32] = [0x22; 32];
+
+    fn app(id: [u8; 32]) -> ApplicationId {
+        ApplicationId::from(id)
+    }
+
+    /// `NS_A` and `NS_C` serve `APP_ONE`, `NS_B` serves `APP_TWO`, `NS_STRANGER`
+    /// serves `APP_ONE` but is not one this node takes part in, and `NS_UNSYNCED`
+    /// is taken part in but names no application yet.
+    fn namespaces_this_node_speaks_in() -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let meta = MetaRepository::new(&store);
+        let namespaces = NamespaceRepository::new(&store);
+        for (id, application) in [
+            (NS_A, Some(APP_ONE)),
+            (NS_B, Some(APP_TWO)),
+            (NS_C, Some(APP_ONE)),
+            (NS_STRANGER, Some(APP_ONE)),
+            (NS_UNSYNCED, None),
+        ] {
+            if let Some(application) = application {
+                meta.save(
+                    &id.into(),
+                    &GroupMetaValue {
+                        bytecode_id: [0xAA; 32],
+                        target_application_id: app(application),
+                        created_at: 1_700_000_000,
+                        admin_identity: calimero_account::AccountId::from([0x01; 32]),
+                        owner_identity: calimero_account::AccountId::from([0x01; 32]),
+                        migration: None,
+                        auto_join: true,
+                    },
+                )
+                .expect("save the namespace metadata");
+            }
+            if id != NS_STRANGER {
+                namespaces
+                    .note_participation(&id.into())
+                    .expect("take part in the namespace");
+            }
+        }
+        store
+    }
+
+    fn sorted(namespaces: Vec<ContextGroupId>) -> Vec<[u8; 32]> {
+        let mut ids: Vec<_> = namespaces.into_iter().map(|ns| ns.to_bytes()).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn an_application_scope_reaches_that_applications_namespaces_and_no_others() {
+        let store = namespaces_this_node_speaks_in();
+
+        let (gated_on, targets) =
+            resolve_scope(&store, &PairingScope::Applications(vec![app(APP_ONE)]))
+                .expect("resolve the scope");
+
+        assert_eq!(sorted(targets), vec![NS_A, NS_C]);
+        assert_eq!(
+            sorted(gated_on),
+            vec![NS_A, NS_C],
+            "an application scope names no namespace, so the resolved set is both \
+             what is checked and what is published into"
+        );
+    }
+
+    /// `NS_UNSYNCED` is the case that makes this more than a shortcut: it is
+    /// taken part in and names no application, so resolving an empty list through
+    /// the application filter would drop it and pair the device into fewer
+    /// namespaces than the unconditional fan-out reached.
+    #[test]
+    fn naming_no_application_reaches_every_participating_namespace() {
+        let store = namespaces_this_node_speaks_in();
+
+        let (_, targets) =
+            resolve_scope(&store, &PairingScope::Applications(vec![])).expect("resolve the scope");
+
+        assert_eq!(
+            sorted(targets),
+            vec![NS_A, NS_B, NS_C, NS_UNSYNCED],
+            "an empty application list is the unconditional fan-out this replaces"
+        );
+    }
+
+    /// Publishing needs this node's own identity and scope key, so a namespace it
+    /// merely holds the metadata of is one it cannot author in - however well the
+    /// application matches.
+    #[test]
+    fn a_namespace_this_node_only_knows_of_is_not_a_target() {
+        let store = namespaces_this_node_speaks_in();
+
+        for scope in [
+            PairingScope::Applications(vec![app(APP_ONE)]),
+            PairingScope::Applications(vec![]),
+            PairingScope::Namespace(NS_A.into()),
+        ] {
+            let (_, targets) = resolve_scope(&store, &scope).expect("resolve the scope");
+            assert!(!sorted(targets).contains(&NS_STRANGER));
+        }
+    }
+
+    #[test]
+    fn the_namespace_scoped_route_gates_on_one_and_still_fans_out_to_all() {
+        let store = namespaces_this_node_speaks_in();
+
+        let (gated_on, targets) = resolve_scope(&store, &PairingScope::Namespace(NS_B.into()))
+            .expect("resolve the scope");
+
+        assert_eq!(sorted(gated_on), vec![NS_B]);
+        assert_eq!(sorted(targets), vec![NS_A, NS_B, NS_C, NS_UNSYNCED]);
+    }
+
+    /// The device subscribes to what it was told at pair-init and the holder
+    /// publishes into what its own scope resolves to; nothing reconciles the two.
+    /// A binding published where the device is not listening still lands on that
+    /// namespace's DAG, and a subscription this never reaches costs it nothing -
+    /// so the mismatch is tolerated rather than refused.
+    #[test]
+    fn a_scope_disjoint_from_what_the_device_subscribed_to_is_not_an_error() {
+        let store = namespaces_this_node_speaks_in();
+        let subscribed = [ContextGroupId::from(NS_A), ContextGroupId::from(NS_B)];
+        let device = NodeDeviceRepository::new(&store)
+            .ensure_enrolled_into(
+                &subscribed,
+                AccountGenesis::new(PrivateKey::from([0x07; 32]).public_key()),
+            )
+            .expect("mint the device against the namespaces it was told about");
+
+        let (_, targets) = resolve_scope(&store, &PairingScope::Applications(vec![app(APP_TWO)]))
+            .expect("resolve a scope that does not cover NS_A");
+
+        assert_eq!(sorted(targets), vec![NS_B]);
+        assert_eq!(
+            NodeDeviceRepository::new(&store)
+                .get()
+                .expect("read")
+                .expect("present")
+                .device(),
+            device.device(),
+            "resolving a narrower scope consults no device row and re-mints nothing"
+        );
     }
 }
