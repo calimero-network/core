@@ -118,19 +118,139 @@ steps:
 
   # --- The delegated write ---
   #
-  # One script, because the author is a key rather than a node and no workflow
-  # step can hold one. It performs steps 1-4 of the description and fails the run
-  # on any of them: an accepted write before the grant, a refusal after it, or an
-  # accepted replay are each a security regression rather than a flaky step.
-  - name: A member with no node writes through the relay
-    type: script
-    script: scripts/delegated-intent.sh
-    target: local
+  # Steps, not a shell script. The script this replaces existed only because
+  # merobox had no way to hold a signing key or spend a warrant; `sign_warrant`
+  # and `perform_intent` (merobox #373) do both. The script also could not export
+  # custom `outputs:` — a `script` step only sets `script_output_local`, which the
+  # next one overwrites — so every value it minted for the next stage went through
+  # a temp file, and the assertions lived in shell rather than where a reader can
+  # see them.
+  #
+  # The author's key material is a FIXED test pair, from
+  # `merod account sign-cert --generate` against the well-known
+  # "legal winner thank year..." phrase. It owns nothing. The account is
+  # deterministic from the phrase, so it is the same account the script derived;
+  # what is frozen here is one of its devices, which is what removes the
+  # `docker exec` the script needed.
+
+  - name: The author's ACCOUNT becomes a member; its device joins nothing
+    type: add_group_members
+    node: delegated-node-1
+    group_id: '{{namespace_id}}'
+    members:
+      # By account, not by key. The author's device is in no group's binding rows
+      # and never will be, which is exactly the case a certificate covers — a
+      # key-based membership check would refuse every write below.
+      - identity: '0e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e30'
+        role: Member
+
+  - name: Read the relay's own account
+    type: node_identity
+    node: delegated-node-1
+    outputs:
+      relay_account: accountId
+
+  # Minted once and presented three times below: refused, accepted, refused. Same
+  # bytes each time, which is what makes the middle one evidence about the grant
+  # rather than about the warrant.
+  - name: The author mints one warrant
+    type: sign_warrant
+    context_id: '{{context_id}}'
+    executor: '{{relay_account}}'
+    method: set
     args:
-      - delegated-node-1
-      - '{{context_id}}'
-      - '{{namespace_id}}'
-      - '1'
+      key: delegated
+      value: from-a-member-with-no-node
+    device_secret: '4987ccd0fb7ef36bf7f61e8f99fd150d33e6adac47649f23bfd7109c2e36a3ba'
+    credential: '02b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb000000000e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e304d0774b93e8028899a745dbe03d7727fa31fc2f060945b5789cb36c23cba380366245580f7aa816a35d1ff324a714355995ef44a72bcd2341e21d9587d16efce973135e50bc7280f06bb32a53a566983cf0f0c8428be4b461df54264f07319540000000000000000e0c3743677508f5cfbe245f043f2d7bc3ba6c88c001464cae581e2e9ec8cb63780f1f5c2a393521a0038b357fffe63092403fa6e0e2ec12da5e96d50692d400f'
+    nonce: 1
+    outputs:
+      warrant: warrant
+      author_account: authorAccount
+
+  - name: The warrant speaks for the member that was added
+    type: assert
+    statements:
+      - "{{author_account}} == 0e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e30"
+
+  # DAR-11: refused at the API, never published as a delta peers would drop.
+  #
+  # `expected_error` is not decoration — without it a node that never started
+  # satisfies this assertion too. But it can only match what the client makes
+  # observable, and today that is the generic 403 text: `calimero-client`
+  # replaced every 403 body with a fixed token hint, so the endpoint's actual
+  # answer ("an admin must grant CAN_AUTHOR_ON_BEHALF to <account>") never
+  # reaches a caller. #3647 fixes that; it cannot be observed from here until it
+  # travels core → client-py → merobox → this pin.
+  #
+  # The cost of the weaker string is worth naming: both refusals below are 403s,
+  # so until #3647 lands this scenario cannot tell "no authorship grant" from
+  # "nonce already spent". It still distinguishes either from a 500, a connection
+  # error, or an acceptance — which is what the guard is mainly for. Tighten both
+  # to their specific reasons once the fix is in the pinned client.
+  - name: Refused before the relay is granted authorship
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    warrant: '{{warrant}}'
+    author_proof: '02b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb000000000e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e304d0774b93e8028899a745dbe03d7727fa31fc2f060945b5789cb36c23cba380366245580f7aa816a35d1ff324a714355995ef44a72bcd2341e21d9587d16efce973135e50bc7280f06bb32a53a566983cf0f0c8428be4b461df54264f07319540000000000000000e0c3743677508f5cfbe245f043f2d7bc3ba6c88c001464cae581e2e9ec8cb63780f1f5c2a393521a0038b357fffe63092403fa6e0e2ec12da5e96d50692d400f'
+    expected_failure: true
+    expected_error: Access denied
+
+  # Bit 9, so 512 on its own — authorship and nothing else, which is the posture
+  # the capability exists to make possible. Implied by neither membership nor
+  # admin, which the step above is what proves.
+  - name: Grant the relay CAN_AUTHOR_ON_BEHALF
+    type: set_member_capabilities
+    node: delegated-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{relay_account}}'
+    capabilities: 512
+
+  - name: The same warrant, now spendable
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    warrant: '{{warrant}}'
+    author_proof: '02b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb000000000e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e304d0774b93e8028899a745dbe03d7727fa31fc2f060945b5789cb36c23cba380366245580f7aa816a35d1ff324a714355995ef44a72bcd2341e21d9587d16efce973135e50bc7280f06bb32a53a566983cf0f0c8428be4b461df54264f07319540000000000000000e0c3743677508f5cfbe245f043f2d7bc3ba6c88c001464cae581e2e9ec8cb63780f1f5c2a393521a0038b357fffe63092403fa6e0e2ec12da5e96d50692d400f'
+    outputs:
+      intent_root: rootHash
+
+  # A 2xx is not enough. This assertion exists because that gap already hid a
+  # bug: the endpoint reported `deltaId: null` for an intent that had advanced no
+  # state, and the run sailed past it to fail four steps later on a value that was
+  # never written.
+  - name: The intent advanced state
+    type: assert
+    statements:
+      - "is_set({{intent_root}})"
+
+  # And it is single-use. The signature is still perfectly valid: replay is not
+  # forgery, which is why the nonce ledger has to exist and why the envelope check
+  # cannot be what stops it.
+  #
+  # Same generic 403 text as above, for the same reason — see #3647. What this
+  # still proves is that presenting a valid warrant twice does not write twice.
+  - name: The spent warrant is refused a second time
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    warrant: '{{warrant}}'
+    author_proof: '02b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb000000000e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e304d0774b93e8028899a745dbe03d7727fa31fc2f060945b5789cb36c23cba380366245580f7aa816a35d1ff324a714355995ef44a72bcd2341e21d9587d16efce973135e50bc7280f06bb32a53a566983cf0f0c8428be4b461df54264f07319540000000000000000e0c3743677508f5cfbe245f043f2d7bc3ba6c88c001464cae581e2e9ec8cb63780f1f5c2a393521a0038b357fffe63092403fa6e0e2ec12da5e96d50692d400f'
+    expected_failure: true
+    expected_error: Access denied
 
   # --- The half a relay cannot fake ---
   #
