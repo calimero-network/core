@@ -428,6 +428,10 @@ pub struct RequestBlob {
     pub context_id: ContextId,
     /// The peer to request the blob from.
     pub peer_id: PeerId,
+    /// The namespace whose application bundle is wanted, when the requester has
+    /// no context to name — a member that has joined the namespace but holds
+    /// none of its contexts.
+    pub namespace_id: Option<[u8; 32]>,
     /// Optional authentication data.
     pub auth: Option<BlobAuth>,
 }

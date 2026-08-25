@@ -252,24 +252,29 @@ async fn handle_blob_request_stream(
     outcome
 }
 
-/// Whether `blob_id` is the bytecode or compiled artifact of an application
-/// this node holds.
+/// Whether `blob_id` is the bytecode or compiled artifact of the application
+/// `namespace_id` runs.
 ///
-/// Scans installed applications rather than resolving through a context: one
-/// bundle backs every context of a group, and a requester may hold none of them.
-fn is_installed_application_blob(
+/// The namespace root carries `target_application_id` and its subgroups inherit
+/// it, so this is the authoritative question — the per-context copy is derived
+/// from it, and a requester may hold no context at all.
+fn is_namespace_application_blob(
     store: &calimero_store::Store,
+    namespace_id: &[u8; 32],
     blob_id: &calimero_primitives::blobs::BlobId,
 ) -> eyre::Result<bool> {
     let handle = store.handle();
-    let mut iter = handle.iter::<calimero_store::key::ApplicationMeta>()?;
-    for (_, app) in iter.entries() {
-        let app = app?;
-        if app.bytecode.blob_id() == *blob_id || app.compiled.blob_id() == *blob_id {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let Some(meta) = handle.get(&calimero_store::key::GroupMeta::new(*namespace_id))? else {
+        return Ok(false);
+    };
+    let meta: calimero_store::key::GroupMetaValue = meta;
+    let Some(app) = handle.get(&calimero_store::key::ApplicationMeta::new(
+        meta.target_application_id,
+    ))?
+    else {
+        return Ok(false);
+    };
+    Ok(app.bytecode.blob_id() == *blob_id || app.compiled.blob_id() == *blob_id)
 }
 
 /// Helper function to check if the blob access is authorized.
@@ -288,15 +293,24 @@ async fn is_blob_access_authorized(
     context_client: &ContextClient,
     request: &BlobRequest,
 ) -> eyre::Result<bool> {
-    // An application bundle is public because a node that has not joined
-    // anything yet cannot sign, and needs the bytecode before it can. That is a
-    // property of the blob, answered here rather than through the context gate
-    // below: resolving it via a context only works for a requester that already
-    // has one, and the member creating a namespace's FIRST context has none, so
-    // it could not obtain an application its own invitation named.
-    if is_installed_application_blob(context_client.datastore(), &request.blob_id)? {
-        debug!(blob_id=%request.blob_id, "Access granted: blob is a published application bundle");
-        return Ok(true);
+    // A namespace root owns the application and its subgroups inherit it, so the
+    // bundle belongs to the namespace, not to any one context under it. Asking
+    // through a context only works for a requester that already holds one; the
+    // member creating a namespace's FIRST context holds none and could not
+    // obtain the application its own invitation named. Answered before the
+    // context gate for that reason.
+    if let Some(namespace_id) = request.namespace_id {
+        if is_namespace_application_blob(
+            context_client.datastore(),
+            &namespace_id,
+            &request.blob_id,
+        )? {
+            debug!(
+                blob_id=%request.blob_id,
+                "Access granted: blob is the application bundle of the named namespace"
+            );
+            return Ok(true);
+        }
     }
 
     // Fetch Context Config
@@ -476,7 +490,7 @@ mod tests {
     use calimero_store::Store;
 
     use super::{
-        is_inherited_context_member, is_installed_application_blob, is_signed_context_member,
+        is_inherited_context_member, is_namespace_application_blob, is_signed_context_member,
     };
 
     const CONTEXT: [u8; 32] = [0xC0; 32];
@@ -551,6 +565,7 @@ mod tests {
         BlobRequest {
             blob_id: BlobId::from(BLOB),
             context_id: ContextId::from(CONTEXT),
+            namespace_id: None,
             auth: Some(BlobAuth {
                 public_key: claimed,
                 signature,
@@ -678,6 +693,7 @@ mod tests {
         let request = BlobRequest {
             blob_id: BlobId::from(BLOB),
             context_id: ContextId::from(CONTEXT),
+            namespace_id: None,
             auth: None,
         };
         assert!(
@@ -714,21 +730,43 @@ mod tests {
         );
     }
 
+    const NAMESPACE: [u8; 32] = [0x11; 32];
+    const OTHER_NS: [u8; 32] = [0x22; 32];
+    const APP: [u8; 32] = [0xA9; 32];
     const APP_BYTECODE: [u8; 32] = [0xB1; 32];
     const APP_COMPILED: [u8; 32] = [0xC1; 32];
-    const OTHER_BLOB: [u8; 32] = [0x0E; 32];
+    const UNRELATED_BLOB: [u8; 32] = [0x0E; 32];
 
-    fn store_with_application(store: &Store) {
+    /// A namespace whose group meta names `APP`, and `APP`'s row pointing at its
+    /// two blobs. This is the shape a node is in once it holds the application a
+    /// namespace runs.
+    fn namespace_running_the_app(store: &Store) {
         let mut handle = store.handle();
         handle
             .put(
+                &calimero_store::key::GroupMeta::new(NAMESPACE),
+                &calimero_store::key::GroupMetaValue {
+                    admin_identity: [0u8; 32].into(),
+                    owner_identity: [0u8; 32].into(),
+                    target_application_id: calimero_primitives::application::ApplicationId::from(
+                        APP,
+                    ),
+                    bytecode_id: APP_BYTECODE,
+                    migration: None,
+                    created_at: 0,
+                    auto_join: true,
+                },
+            )
+            .unwrap();
+        handle
+            .put(
                 &calimero_store::key::ApplicationMeta::new(
-                    calimero_primitives::application::ApplicationId::from([0xA9; 32]),
+                    calimero_primitives::application::ApplicationId::from(APP),
                 ),
                 &calimero_store::types::ApplicationMeta::new(
                     calimero_store::key::BlobMeta::new(BlobId::from(APP_BYTECODE)),
                     1,
-                    "memory".into(),
+                    "blob://test".into(),
                     Box::new([]),
                     calimero_store::key::BlobMeta::new(BlobId::from(APP_COMPILED)),
                     calimero_store::types::PackageInfo {
@@ -742,35 +780,73 @@ mod tests {
             .unwrap();
     }
 
-    /// The bundle is what a joiner needs before it can sign for anything, so it
-    /// is served on the blob's own identity rather than through a context the
-    /// requester may not have.
+    /// The namespace root owns the application, so a member that named the
+    /// namespace gets its bundle without holding any context under it.
     #[test]
-    fn an_installed_applications_bytecode_is_public() {
+    fn the_namespaces_own_bytecode_is_served() {
         let store = test_store();
-        store_with_application(&store);
-        assert!(is_installed_application_blob(&store, &BlobId::from(APP_BYTECODE)).unwrap());
+        namespace_running_the_app(&store);
+        assert!(
+            is_namespace_application_blob(&store, &NAMESPACE, &BlobId::from(APP_BYTECODE)).unwrap()
+        );
     }
 
     #[test]
-    fn the_compiled_artifact_is_public_too() {
+    fn the_compiled_artifact_is_served_too() {
         let store = test_store();
-        store_with_application(&store);
-        assert!(is_installed_application_blob(&store, &BlobId::from(APP_COMPILED)).unwrap());
+        namespace_running_the_app(&store);
+        assert!(
+            is_namespace_application_blob(&store, &NAMESPACE, &BlobId::from(APP_COMPILED)).unwrap()
+        );
     }
 
-    /// Only application blobs get this. Anything else still has to go through
-    /// the context config and the signed-member check.
+    /// Naming a namespace does not open everything: only the application that
+    /// namespace actually runs.
     #[test]
-    fn an_unrelated_blob_is_not_public() {
+    fn an_unrelated_blob_is_not_served_for_the_namespace() {
         let store = test_store();
-        store_with_application(&store);
-        assert!(!is_installed_application_blob(&store, &BlobId::from(OTHER_BLOB)).unwrap());
+        namespace_running_the_app(&store);
+        assert!(
+            !is_namespace_application_blob(&store, &NAMESPACE, &BlobId::from(UNRELATED_BLOB))
+                .unwrap()
+        );
+    }
+
+    /// The scope is checked, not just the blob: another namespace's request does
+    /// not inherit this one's application.
+    #[test]
+    fn a_namespace_we_do_not_know_is_refused() {
+        let store = test_store();
+        namespace_running_the_app(&store);
+        assert!(
+            !is_namespace_application_blob(&store, &OTHER_NS, &BlobId::from(APP_BYTECODE)).unwrap()
+        );
     }
 
     #[test]
-    fn a_node_holding_no_application_grants_nothing() {
+    fn a_namespace_whose_application_is_absent_is_refused() {
         let store = test_store();
-        assert!(!is_installed_application_blob(&store, &BlobId::from(APP_BYTECODE)).unwrap());
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::GroupMeta::new(NAMESPACE),
+                &calimero_store::key::GroupMetaValue {
+                    admin_identity: [0u8; 32].into(),
+                    owner_identity: [0u8; 32].into(),
+                    target_application_id: calimero_primitives::application::ApplicationId::from(
+                        APP,
+                    ),
+                    bytecode_id: APP_BYTECODE,
+                    migration: None,
+                    created_at: 0,
+                    auto_join: true,
+                },
+            )
+            .unwrap();
+        drop(handle);
+        assert!(
+            !is_namespace_application_blob(&store, &NAMESPACE, &BlobId::from(APP_BYTECODE))
+                .unwrap()
+        );
     }
 }

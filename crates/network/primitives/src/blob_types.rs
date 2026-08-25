@@ -9,6 +9,17 @@ pub struct BlobRequest {
     pub blob_id: BlobId,
     pub context_id: ContextId,
 
+    /// The namespace whose application bundle is being asked for.
+    ///
+    /// A namespace root owns the application and its subgroups inherit it, so a
+    /// bundle is a property of the namespace rather than of any one context
+    /// under it. A member who has joined a namespace but holds none of its
+    /// contexts — including the one about to create the first — can only name
+    /// this. Optional and defaulted so a request from a peer that predates it
+    /// still deserializes, and so an older peer ignores it as an unknown field.
+    #[serde(default)]
+    pub namespace_id: Option<[u8; 32]>,
+
     /// Optional authentication.
     /// If None, only public blobs (Application Bundles) can be accessed.
     pub auth: Option<BlobAuth>,

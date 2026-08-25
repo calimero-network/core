@@ -75,6 +75,7 @@ impl Handler<RequestBlob> for NetworkManager {
                 let blob_request = BlobRequest {
                     blob_id: request.blob_id,
                     context_id: request.context_id,
+                    namespace_id: request.namespace_id,
                     auth: request.auth,
                 };
 

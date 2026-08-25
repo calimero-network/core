@@ -308,6 +308,7 @@ impl NetworkClient {
         &self,
         blob_id: BlobId,
         context_id: ContextId,
+        namespace_id: Option<[u8; 32]>,
         peer_id: libp2p::PeerId,
         auth: Option<BlobAuth>,
     ) -> eyre::Result<Option<Vec<u8>>> {
@@ -319,6 +320,7 @@ impl NetworkClient {
                     blob_id,
                     context_id,
                     peer_id,
+                    namespace_id,
                     auth,
                 },
                 outcome: tx,

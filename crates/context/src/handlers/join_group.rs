@@ -285,6 +285,58 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     info!("received group key via direct join response");
                 }
 
+                // The namespace owns the application and its subgroups inherit
+                // it, so membership is when this node needs the bytecode — not
+                // the first context sync, which is what used to deliver it and
+                // has nothing to run for while the namespace holds no context.
+                // Without this the member who creates the namespace's FIRST
+                // context fails on "application not found" for an application
+                // its own invitation named.
+                //
+                // Read back from the group meta rather than threaded down: the
+                // seeding above persists both, and a join onto an already-known
+                // group skips that block entirely.
+                //
+                // Best-effort. A joiner that reaches no provider is no worse off
+                // than before, and the first context sync still delivers.
+                {
+                    let handle = datastore.handle();
+                    let meta: Option<calimero_store::key::GroupMetaValue> =
+                        handle.get(&calimero_store::key::GroupMeta::new(group_id.to_bytes()))?;
+                    if let Some(meta) = meta {
+                        if node_client.get_application(&meta.target_application_id)?.is_none() {
+                            let blob =
+                                calimero_primitives::blobs::BlobId::from(meta.bytecode_id);
+                            match node_client
+                                .fetch_namespace_application_blob(&blob, namespace_id)
+                                .await
+                            {
+                                Ok(true) => match format!("blob://{}", hex::encode(namespace_id))
+                                    .parse()
+                                {
+                                    Ok(source) => match node_client
+                                        .install_application_from_bundle_blob(&blob, &source)
+                                        .await
+                                    {
+                                        Ok(id) => {
+                                            info!(?id, "installed the namespace application on join")
+                                        }
+                                        Err(e) => {
+                                            warn!(?e, "namespace application bundle would not install")
+                                        }
+                                    },
+                                    Err(e) => warn!(?e, "could not build the bundle source url"),
+                                },
+                                Ok(false) => warn!(
+                                    "no peer served the namespace application bundle; \
+                                     it will arrive with the first context sync"
+                                ),
+                                Err(e) => warn!(?e, "namespace application fetch failed"),
+                            }
+                        }
+                    }
+                }
+
                 // Issue #2256 / PR #2368: write the namespace's
                 // `default_capabilities` from the join bundle BEFORE
                 // applying the catch-up governance ops below.

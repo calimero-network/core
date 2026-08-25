@@ -231,7 +231,7 @@ impl NodeClient {
 
                     match self
                         .network_client
-                        .request_blob(*blob_id, *context_id, *peer_id, auth)
+                        .request_blob(*blob_id, *context_id, None, *peer_id, auth)
                         .await
                     {
                         Ok(Some(data)) => {
@@ -392,6 +392,65 @@ impl NodeClient {
     }
 
     /// Query the network for peers that have a specific blob
+    /// Download an application bundle named by its namespace.
+    ///
+    /// The context-scoped path cannot serve this: a member who has joined a
+    /// namespace but holds none of its contexts — including the one about to
+    /// create the first — has no context to authorize through, while the
+    /// namespace root is exactly what owns the application. No auth is sent
+    /// because a bundle is public: a node that has not joined anything cannot
+    /// sign, which is why it needs the bytecode in the first place.
+    ///
+    /// `Ok(false)` when no provider had it; the caller decides whether that is
+    /// fatal.
+    pub async fn fetch_namespace_application_blob(
+        &self,
+        blob_id: &BlobId,
+        namespace_id: [u8; 32],
+    ) -> eyre::Result<bool> {
+        if self.has_blob(blob_id)? {
+            return Ok(true);
+        }
+        // DHT lookup with no context scope: the bundle is advertised by whoever
+        // holds it, and the requester has no context to narrow the query with.
+        let peers = self.network_client.query_blob(*blob_id, None).await?;
+        if peers.is_empty() {
+            tracing::info!(%blob_id, "No peers advertise the namespace application bundle");
+            return Ok(false);
+        }
+        for peer_id in peers {
+            match self
+                .network_client
+                .request_blob(
+                    *blob_id,
+                    ContextId::from([0u8; 32]),
+                    Some(namespace_id),
+                    peer_id,
+                    None,
+                )
+                .await
+            {
+                Ok(Some(data)) => {
+                    let (stored, _size) = self
+                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                        .await?;
+                    if stored != *blob_id {
+                        tracing::warn!(expected=%blob_id, actual=%stored, "Bundle blob id mismatch");
+                        continue;
+                    }
+                    tracing::info!(%blob_id, %peer_id, "Downloaded namespace application bundle");
+                    return Ok(true);
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(%blob_id, %peer_id, error=%e, "Bundle download attempt failed");
+                    continue;
+                }
+            }
+        }
+        Ok(false)
+    }
+
     pub async fn find_blob_providers(
         &self,
         blob_id: &BlobId,
