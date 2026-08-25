@@ -79,23 +79,26 @@ static ADMIN_BLOB_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/blobs/([^/]+)$").unwrap());
 
 static ALIAS_MUTATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/alias/(create|lookup|delete)/(context|application|identity)(?:/.*)?$")
-        .unwrap()
+    Regex::new(
+        r"^/admin-api/alias/(create|lookup|delete)/(context|application|identity|device)(?:/.*)?$",
+    )
+    .unwrap()
 });
 
 static ALIAS_LIST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/alias/list/(context|application|identity)(?:/.*)?$").unwrap()
+    Regex::new(r"^/admin-api/alias/list/(context|application|identity|device)(?:/.*)?$").unwrap()
 });
 
 static APPLICATION_VERSIONS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/applications/([^/]+)/versions$").unwrap());
 
 /// Map an alias path segment to its [`AliasType`]. The regexes only capture
-/// `context|application|identity`, so every capture maps.
+/// `context|application|identity|device`, so every capture maps.
 fn alias_type_from_segment(segment: &str) -> AliasType {
     match segment {
         "context" => AliasType::Context,
         "application" => AliasType::Application,
+        "device" => AliasType::Device,
         _ => AliasType::Identity,
     }
 }
@@ -808,6 +811,39 @@ mod tests {
     use super::super::types::*;
     use super::*;
 
+    // `alias_type_from_segment` falls back to `AliasType::Identity` for any
+    // segment the regex didn't already constrain, so a "device" arm that goes
+    // missing would silently be mistaken for an identity alias rather than
+    // failing to compile.
+    #[test]
+    fn alias_device_segment_maps_to_device_type_not_identity() {
+        let validator = PermissionValidator::new();
+
+        let create = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/alias/create/device")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            validator.determine_required_permissions(&create),
+            vec![Permission::Context(ContextPermission::Alias(
+                AliasPermission::Create(AliasType::Device, ResourceScope::Global)
+            ))]
+        );
+
+        let list = Request::builder()
+            .method(Method::GET)
+            .uri("/admin-api/alias/list/device")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            validator.determine_required_permissions(&list),
+            vec![Permission::Context(ContextPermission::Alias(
+                AliasPermission::List(AliasType::Device, ResourceScope::Global)
+            ))]
+        );
+    }
+
     #[test]
     fn test_enhanced_contexts_endpoint() {
         let validator = PermissionValidator::new();
@@ -1302,6 +1338,8 @@ mod tests {
             (Method::POST, "/admin-api/alias/lookup/context/foo"),
             (Method::POST, "/admin-api/alias/delete/identity/ctx-1/foo"),
             (Method::GET, "/admin-api/alias/list/application"),
+            (Method::POST, "/admin-api/alias/create/device"),
+            (Method::GET, "/admin-api/alias/list/device"),
             // Identity + RPC
             (Method::POST, "/admin-api/identity/context"),
             (Method::POST, "/jsonrpc"),
