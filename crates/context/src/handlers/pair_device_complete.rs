@@ -120,6 +120,24 @@ fn resolve_scope(
     })
 }
 
+/// Does this node hold a current scope key in any of `namespaces`?
+///
+/// One is enough. Pairing publishes an encrypted group op and delivers that same
+/// key, so it needs a key *somewhere* in the scope to do either; the namespaces
+/// past the first are the fan-out's business, and it skips the ones it cannot
+/// publish into.
+fn holds_a_scope_key(store: &Store, namespaces: &[ContextGroupId]) -> EyreResult<bool> {
+    for namespace_id in namespaces {
+        if GroupKeyring::new(store, *namespace_id)
+            .load_current_key()?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl Handler<PairDeviceCompleteRequest> for ContextManager {
     type Result = ActorResponse<Self, <PairDeviceCompleteRequest as Message>::Result>;
 
@@ -266,27 +284,20 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrapped for the new device. Checking it here, before anything is
         // signed, beats failing deep inside the publisher.
         //
-        // Only the namespaces this pairing is gated on are a precondition, and one
-        // of them holding a key is enough. The fan-out below reaches the others
-        // too, but a missing key there is a reason to skip that namespace rather
-        // than to refuse the pairing the caller asked for.
-        let mut holds_a_key = false;
-        for namespace_id in &gated_on {
-            match GroupKeyring::new(&store, *namespace_id).load_current_key() {
-                Ok(Some(_)) => {
-                    holds_a_key = true;
-                    break;
-                }
-                Ok(None) => {}
-                Err(err) => return ActorResponse::reply(Err(err)),
+        // Only the namespaces this pairing is gated on are a precondition. The
+        // fan-out below reaches the others too, but a missing key there is a
+        // reason to skip that namespace rather than to refuse the pairing the
+        // caller asked for.
+        match holds_a_scope_key(&store, &gated_on) {
+            Ok(true) => {}
+            Ok(false) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "this node holds no current scope key in any of {gated_on:?}; pairing \
+                     both publishes an encrypted group op and delivers that key, so neither \
+                     is possible yet"
+                )))
             }
-        }
-        if !holds_a_key {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "this node holds no current scope key in any of {gated_on:?}; pairing \
-                 both publishes an encrypted group op and delivers that key, so neither \
-                 is possible yet"
-            )));
+            Err(err) => return ActorResponse::reply(Err(err)),
         }
 
         // Epoch 0 on both counts: the account root has not rotated (rotation is
@@ -504,6 +515,8 @@ mod tests {
     const NS_UNSYNCED: [u8; 32] = [0xE5; 32];
     const APP_ONE: [u8; 32] = [0x11; 32];
     const APP_TWO: [u8; 32] = [0x22; 32];
+    /// Served by no namespace here - somebody else's application.
+    const APP_ELSEWHERE: [u8; 32] = [0x33; 32];
 
     fn app(id: [u8; 32]) -> ApplicationId {
         ApplicationId::from(id)
@@ -644,6 +657,45 @@ mod tests {
                 .device(),
             device.device(),
             "resolving a narrower scope consults no device row and re-mints nothing"
+        );
+    }
+
+    /// An application this node serves nowhere leaves the scope empty, which is
+    /// what the refusal in `handle` rests on: no namespace means no identity to
+    /// sign the endorsement with and no key to deliver, so the pairing would be
+    /// reported as done having reached nothing.
+    #[test]
+    fn an_application_this_node_serves_nowhere_resolves_to_no_namespace() {
+        let store = namespaces_this_node_speaks_in();
+
+        let (gated_on, targets) = resolve_scope(
+            &store,
+            &PairingScope::Applications(vec![app(APP_ELSEWHERE)]),
+        )
+        .expect("resolve the scope");
+
+        assert!(gated_on.is_empty());
+        assert!(targets.is_empty());
+    }
+
+    /// One key anywhere in the scope clears the precondition, and it has to be a
+    /// key in *this* scope: the fan-out skips namespaces it cannot publish into,
+    /// so a scope holding none would certify a device and deliver it nothing.
+    #[test]
+    fn one_scope_key_anywhere_in_the_set_clears_the_precondition() {
+        let store = namespaces_this_node_speaks_in();
+        let scope = [ContextGroupId::from(NS_A), ContextGroupId::from(NS_B)];
+
+        assert!(!holds_a_scope_key(&store, &scope).expect("scan"));
+
+        GroupKeyring::new(&store, NS_B.into())
+            .store_key(&[0x42; 32])
+            .expect("store a scope key in the second namespace only");
+
+        assert!(holds_a_scope_key(&store, &scope).expect("scan"));
+        assert!(
+            !holds_a_scope_key(&store, &[ContextGroupId::from(NS_A)]).expect("scan"),
+            "a key held somewhere else is not a key held in this scope"
         );
     }
 }
