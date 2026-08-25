@@ -3140,6 +3140,202 @@ mod tests {
             "odd-length hex nonce must be rejected, got {errors:?}"
         );
     }
+
+    fn pair_init_req(namespaces: Vec<String>) -> AccountPairInitApiRequest {
+        AccountPairInitApiRequest {
+            account_root_public_key: hex::encode([0x11; 32]),
+            namespaces,
+        }
+    }
+
+    fn pair_complete_req() -> AccountPairCompleteApiRequest {
+        AccountPairCompleteApiRequest {
+            device_id: hex::encode([0x44; 32]),
+            kem_public_key: hex::encode([0x55; 32]),
+            sign_public_key: hex::encode([0x66; 32]),
+            statement: hex::encode([0x77; 64]),
+            confirmation_code: "7BC0-DAAC-CCB4-84A4".to_owned(),
+            applications: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn account_pair_init_accepts_a_set_of_namespaces() {
+        let errors =
+            pair_init_req(vec![hex::encode([0x22; 32]), hex::encode([0x33; 32])]).validate();
+        assert!(
+            errors.is_empty(),
+            "a well-formed set must validate, got {errors:?}"
+        );
+    }
+
+    /// Naming none is the one case nothing downstream can recover from: the device
+    /// is certified and then listens on no topic at all.
+    #[test]
+    fn account_pair_init_refuses_an_empty_namespace_set() {
+        let errors = pair_init_req(Vec::new()).validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::EmptyField {
+                    field: "namespaces"
+                }
+            )),
+            "an empty namespace set must be refused, got {errors:?}"
+        );
+    }
+
+    /// Every entry is checked, not just the first. The handler decodes all of
+    /// them, so a set that validates on its head and fails on its tail would be
+    /// refused half way through minting.
+    #[test]
+    fn account_pair_init_checks_every_namespace_in_the_set() {
+        let errors = pair_init_req(vec![
+            hex::encode([0x22; 32]),
+            hex::encode([0x33; 16]),
+            "zz".repeat(32),
+        ])
+        .validate();
+
+        assert_eq!(
+            errors.len(),
+            2,
+            "both malformed entries must be reported, got {errors:?}"
+        );
+        assert!(errors.iter().all(|e| matches!(
+            e,
+            ValidationError::InvalidLength {
+                field: "namespaces[]",
+                ..
+            } | ValidationError::InvalidHexEncoding {
+                field: "namespaces[]",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn account_pair_init_refuses_a_root_key_of_the_wrong_width() {
+        let errors = AccountPairInitApiRequest {
+            account_root_public_key: hex::encode([0x11; 31]),
+            namespaces: vec![hex::encode([0x22; 32])],
+        }
+        .validate();
+
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidLength {
+                    field: "accountRootPublicKey",
+                    expected: 64,
+                    ..
+                }
+            )),
+            "a 31-byte root key must be refused, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn account_pair_complete_accepts_what_pair_init_returned() {
+        let errors = pair_complete_req().validate();
+        assert!(
+            errors.is_empty(),
+            "the minted payload must validate, got {errors:?}"
+        );
+    }
+
+    /// The statement is 64 bytes and the three keys 32, and the width is the only
+    /// thing that tells them apart - so a value put in the wrong field has to be
+    /// refused here rather than decoded into something the certificate names.
+    #[test]
+    fn account_pair_complete_pins_each_field_to_its_own_width() {
+        // Each field gets the other's width: a statement where a key belongs, and
+        // a key where the statement belongs.
+        let swaps: [(
+            &str,
+            usize,
+            usize,
+            fn(&mut AccountPairCompleteApiRequest, String),
+        ); 4] = [
+            ("deviceId", 64, 64, |req, value| req.device_id = value),
+            ("kemPublicKey", 64, 64, |req, value| {
+                req.kem_public_key = value
+            }),
+            ("signPublicKey", 64, 64, |req, value| {
+                req.sign_public_key = value
+            }),
+            ("statement", 128, 32, |req, value| req.statement = value),
+        ];
+
+        for (field, expected, wrong_bytes, set) in swaps {
+            let mut req = pair_complete_req();
+            set(&mut req, hex::encode(vec![0x88; wrong_bytes]));
+            let errors = req.validate();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    ValidationError::InvalidLength { field: f, expected: x, .. }
+                        if *f == field && *x == expected
+                )),
+                "{field} at the wrong width must be refused, got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_pair_complete_refuses_a_blank_confirmation_code() {
+        let mut req = pair_complete_req();
+        req.confirmation_code = "   ".to_owned();
+
+        let errors = req.validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::EmptyField {
+                    field: "confirmationCode"
+                }
+            )),
+            "a code of nothing but whitespace must be refused, got {errors:?}"
+        );
+    }
+
+    /// Absent means all, so the field has to decode to an empty list rather than
+    /// fail. The node reads that empty list as every namespace it takes part in -
+    /// see `resolve_scope` beside the pairing handler.
+    #[test]
+    fn account_pair_complete_omitting_applications_means_all_of_them() {
+        let json = serde_json::json!({
+            "deviceId": hex::encode([0x44; 32]),
+            "kemPublicKey": hex::encode([0x55; 32]),
+            "signPublicKey": hex::encode([0x66; 32]),
+            "statement": hex::encode([0x77; 64]),
+            "confirmationCode": "7BC0-DAAC-CCB4-84A4",
+        });
+
+        let req: AccountPairCompleteApiRequest =
+            serde_json::from_value(json).expect("a request naming no application must parse");
+
+        assert!(req.applications.is_empty());
+        assert!(req.validate().is_empty());
+    }
+
+    /// A named application narrows the fan-out, and its id is bs58 rather than
+    /// hex - so validation has to let it through for the handler's parse to be the
+    /// thing that judges it.
+    #[test]
+    fn account_pair_complete_carries_a_named_application_through_validation() {
+        let application = ApplicationId::from([0x99; 32]).to_string();
+        let mut req = pair_complete_req();
+        req.applications = vec![application.clone()];
+
+        let errors = req.validate();
+        assert!(
+            errors.is_empty(),
+            "a bs58 application id is not this layer's to judge, got {errors:?}"
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["applications"][0], application);
+    }
 }
 
 // ---------------------------------------------------------------------------
