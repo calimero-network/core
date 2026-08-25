@@ -63,25 +63,29 @@ done
 # real device id and real statement. That is the substitution the statement exists
 # to refuse, and refusing it is what stops the scope-key fan-out reaching a device
 # the account holder never saw.
+#
+# Asserted by status, not merely by failure: `400` is the payload being wrong,
+# and any other answer - a `200` that certified it, a `500` that reads as a
+# broken node - is the regression this guards.
 forged_kem="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-if forged=$(api_post "${holder}" "namespaces/${namespace}/account/pair-complete" \
-    "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${forged_kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${init_code}\"}" 2>/dev/null) \
-    && [ "$(echo "${forged}" | jq -r '.data.accountId // empty')" != "" ]; then
-    echo "pair-complete CERTIFIED substituted key material: ${forged}" >&2
+forged=$(api_post_status "${holder}" "namespaces/${namespace}/account/pair-complete" \
+    "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${forged_kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${init_code}\"}")
+if [ "${forged}" != "400" ]; then
+    echo "pair-complete answered ${forged} to substituted key material, expected 400" >&2
     exit 1
 fi
-echo "substituted KEM key refused, as it must be"
+echo "substituted KEM key refused with 400, as it must be"
 
 # The other gate, on the honest payload: a code that does not describe this key
 # material is refused. This is what stands between the account and a WHOLESALE
 # substitution — one that replaces both keys and re-signs, so the statement above
 # verifies cleanly and only the code disagrees.
-if wrong=$(api_post "${holder}" "namespaces/${namespace}/account/pair-complete" \
-    "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"DEAD-BEEF-DEAD-BEEF\"}" 2>/dev/null) \
-    && [ "$(echo "${wrong}" | jq -r '.data.accountId // empty')" != "" ]; then
-    echo "pair-complete CERTIFIED with a mismatched confirmation code: ${wrong}" >&2
+wrong=$(api_post_status "${holder}" "namespaces/${namespace}/account/pair-complete" \
+    "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"DEAD-BEEF-DEAD-BEEF\"}")
+if [ "${wrong}" != "400" ]; then
+    echo "pair-complete answered ${wrong} to a mismatched confirmation code, expected 400" >&2
     exit 1
 fi
-echo "mismatched confirmation code refused, as it must be"
+echo "mismatched confirmation code refused with 400, as it must be"
 
 echo "both substitutions refused; the real pairing is the account_pair step"

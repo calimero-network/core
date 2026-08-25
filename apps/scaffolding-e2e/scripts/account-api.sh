@@ -67,3 +67,22 @@ api_post() {
     echo "${_resp}"
 }
 
+
+# POST a JSON body and echo the HTTP status, discarding the response.
+#
+# `api_post` fails the call on any 4xx, which answers "was it refused" but not
+# "how" - and the difference between a 400 and a 500 is the difference between a
+# refusal a client can act on and a node that looks broken.
+api_post_status() {
+    _container="$1"
+    _path="$2"
+    _body="$3"
+
+    _url=$(node_url "${_container}") || return 1
+    _token=$(node_token "${_url}") || return 1
+
+    curl -sS -o /dev/null -w '%{http_code}' -X POST "${_url}/admin-api/${_path}" \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${_token}" \
+        -d "${_body}"
+}
