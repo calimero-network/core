@@ -509,6 +509,83 @@ mod tests {
         );
     }
 
+    /// Can an element id be used as a durable external address — a permalink?
+    ///
+    /// The question is not academic: an id-addressed link is only honest if the
+    /// id keeps naming the same entry for as long as links live. `push` returns
+    /// an `Id`, and `get_by_id` resolves it, so the API *looks* like it offers
+    /// that guarantee.
+    ///
+    /// It does not, and this test pins where it stops. Vector elements are
+    /// inserted with `Id::random()`, so a deterministic re-key — which every
+    /// node performs so independently-created collections converge — rewrites
+    /// element ids, *derived from append position*. After a re-key an element
+    /// id is a function of the index rather than an identity of its own, so it
+    /// cannot outlive the thing an index cannot outlive.
+    ///
+    /// If this ever starts failing because ids survive, an id-addressed
+    /// permalink becomes available and this comment is the reason to revisit.
+    #[test]
+    #[serial]
+    fn element_ids_do_not_survive_a_deterministic_rekey() {
+        env::reset_for_testing();
+
+        let mut v: AuthoredVector<u32> = AuthoredVector::new();
+        let mut minted = Vec::new();
+        for n in 0..4_u32 {
+            minted.push((v.push(n).expect("push"), n));
+        }
+
+        // Every id resolves to the value it was handed out for, before re-key.
+        for &(id, want) in &minted {
+            assert_eq!(v.get_by_id(id).expect("get"), Some(want));
+        }
+
+        v.reassign_deterministic_id("messages");
+
+        let survivors: Vec<u32> = minted
+            .iter()
+            .filter_map(|&(id, want)| v.get_by_id(id).expect("get").filter(|got| *got == want))
+            .collect();
+
+        assert!(
+            survivors.is_empty(),
+            "element ids survived a re-key ({survivors:?} still resolve) — an \
+             id-addressed permalink may now be viable; see this test's comment"
+        );
+
+        // The entries themselves are intact; only their addresses moved.
+        assert_eq!(v.len().expect("len"), 4);
+    }
+
+    /// Two nodes re-keying independently must agree on the element ids.
+    ///
+    /// This is what the re-key is FOR, and it is the reason element ids are
+    /// positional afterwards: a stable-but-random id per node would never
+    /// converge. Worth pinning alongside the test above, so the cost and the
+    /// benefit are recorded together.
+    #[test]
+    #[serial]
+    fn independent_rekeys_agree_on_element_ids() {
+        env::reset_for_testing();
+
+        let mut a: AuthoredVector<u32> = AuthoredVector::new();
+        let mut b: AuthoredVector<u32> = AuthoredVector::new();
+        for n in 0..4_u32 {
+            let _ = a.push(n).expect("push a");
+            let _ = b.push(n).expect("push b");
+        }
+
+        a.reassign_deterministic_id("messages");
+        b.reassign_deterministic_id("messages");
+
+        assert_eq!(
+            <AuthoredVector<u32> as crate::entities::Data>::id(&a),
+            <AuthoredVector<u32> as crate::entities::Data>::id(&b),
+            "two nodes must mint the same collection id",
+        );
+    }
+
     /// The tests name the OWNER, and an owner is an account.
     fn acct(bytes: [u8; 32]) -> AccountId {
         AccountId::from(bytes)
