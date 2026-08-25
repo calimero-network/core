@@ -1782,6 +1782,9 @@ impl Validate for RetryGroupUpgradeApiRequest {
 /// Nothing here is a credential. A genesis is public data, and naming somebody
 /// else's account gains a caller nothing: the device is inert until its
 /// certificate is signed by the account root, which only the holder has.
+///
+/// DEPRECATED with the namespace-scoped route that carries it, which takes its
+/// one namespace from the path. Use [`AccountPairInitApiRequest`].
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairDeviceInitApiRequest {
@@ -1875,6 +1878,9 @@ pub struct PairDeviceInitApiResponse {
 /// Every field is what that node's pair-init returned. None is a secret: the
 /// certificate this mints is what makes the device real, and only this side
 /// holds the account root that signs it.
+///
+/// DEPRECATED with the namespace-scoped route that carries it, whose namespace
+/// only ever decided where the checks ran. Use [`AccountPairCompleteApiRequest`].
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairDeviceCompleteApiRequest {
