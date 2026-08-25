@@ -108,7 +108,9 @@ mod tests {
     use calimero_store::key::GroupMetaValue;
     use calimero_store::Store;
 
-    use super::{collect_namespace_summaries, paginate_namespaces};
+    use super::{
+        collect_namespace_summaries, namespace_rows_for_applications, paginate_namespaces,
+    };
     use calimero_governance_store::{
         ApplyError, MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     };
@@ -139,19 +141,14 @@ mod tests {
     }
 
     #[test]
-    fn collect_namespace_summaries_applies_filter_and_skips_missing_identity() {
-        let app_a = ApplicationId::from([0x10; 32]);
-        let app_b = ApplicationId::from([0x20; 32]);
-
+    fn collect_namespace_summaries_skips_missing_identity() {
         let entries = vec![
-            ([0x01; 32], test_meta(*app_a)),
-            ([0x02; 32], test_meta(*app_b)),
-            ([0x03; 32], test_meta(*app_a)),
+            ([0x01; 32], test_meta([0x10; 32])),
+            ([0x03; 32], test_meta([0x10; 32])),
         ];
 
         let result = collect_namespace_summaries(
             entries,
-            Some(app_a),
             |group_id| {
                 if group_id.to_bytes() == [0x03; 32] {
                     None
@@ -167,13 +164,48 @@ mod tests {
         assert_eq!(result[0].namespace_id, [0x01; 32].into());
     }
 
+    /// The single application-to-namespace resolution, exercised on both of its
+    /// answers. Pairing's fan-out narrows through the same function, so a drift
+    /// between "which namespaces serve this app" here and there is impossible by
+    /// construction rather than by convention.
+    #[test]
+    fn namespace_rows_for_applications_filters_by_target_application() {
+        let app_a = ApplicationId::from([0x10; 32]);
+        let app_b = ApplicationId::from([0x20; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let meta = MetaRepository::new(&store);
+        for (id, app) in [
+            ([0x01; 32], app_a),
+            ([0x02; 32], app_b),
+            ([0x03; 32], app_a),
+        ] {
+            meta.save(&id.into(), &test_meta(*app))
+                .expect("save group meta");
+        }
+
+        let mut scoped: Vec<_> = namespace_rows_for_applications(&store, &[app_a])
+            .expect("resolve")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        scoped.sort_unstable();
+        assert_eq!(scoped, vec![[0x01; 32], [0x03; 32]]);
+
+        assert_eq!(
+            namespace_rows_for_applications(&store, &[])
+                .expect("resolve")
+                .len(),
+            3,
+            "no application named is every row, not none"
+        );
+    }
+
     #[test]
     fn collect_namespace_summaries_propagates_builder_errors() {
         let entries = vec![([0x01; 32], test_meta([0x10; 32]))];
 
         let err = collect_namespace_summaries(
             entries,
-            None,
             |_group_id| Some((PublicKey::from([0x05; 32]), [0u8; 32])),
             |_group_id, _meta, _node_identity| Err(ApplyError::UnsupportedOp.into()),
         )
@@ -253,12 +285,9 @@ mod tests {
             )
             .expect("add node identity to first namespace group");
 
-        let entries = MetaRepository::new(&store)
-            .enumerate_all(0, usize::MAX)
-            .expect("enumerate");
+        let entries = namespace_rows_for_applications(&store, &[]).expect("enumerate");
         let namespaces = collect_namespace_summaries(
             entries,
-            None,
             |group_id| {
                 NamespaceRepository::new(&store)
                     .resolve_identity(group_id)
