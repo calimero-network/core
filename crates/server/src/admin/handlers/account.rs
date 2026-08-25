@@ -1,3 +1,4 @@
+pub mod applications;
 pub mod devices;
 pub mod pair_complete;
 pub mod pair_init;

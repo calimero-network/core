@@ -4,6 +4,7 @@
   "DELETE /admin-api/contexts/:context_id",
   "DELETE /admin-api/groups/:group_id",
   "DELETE /admin-api/namespaces/:namespace_id",
+  "GET /admin-api/account/applications",
   "GET /admin-api/account/devices",
   "GET /admin-api/applications",
   "GET /admin-api/applications/:application_id",

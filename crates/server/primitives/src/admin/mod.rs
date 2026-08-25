@@ -2326,6 +2326,25 @@ pub struct AccountDevicesApiResponse {
     pub devices: Vec<AccountDeviceApiEntry>,
 }
 
+/// One application this account speaks in, derived from the namespaces this
+/// node takes part in that target it.
+///
+/// **Known limitation:** an application installed with no namespace yet is
+/// invisible here - it has no cross-device meaning until a namespace exists.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountApplicationApiEntry {
+    pub application_id: ApplicationId,
+    /// Hex-encoded ids of the namespaces targeting this application.
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountApplicationsApiResponse {
+    pub applications: Vec<AccountApplicationApiEntry>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {
