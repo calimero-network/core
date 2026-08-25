@@ -11,6 +11,19 @@
 //! two-way: the id is `H(account ‖ nonce)` so it needs the account, while the
 //! certificate over it needs the root key, which lives on the other device.
 //!
+//! **One device across every namespace named, not one per namespace.** The
+//! certificate covers the account rather than a scope, so minting per namespace
+//! would hand the holder several ids to certify and several codes to read aloud
+//! for one machine. The code falls out shared for the same reason: it is a hash
+//! over material that is now minted once.
+//!
+//! **The caller has to name the namespaces.** This node is a member of nothing
+//! and holds no scope key, so it can neither read the account's namespace set off
+//! a DAG nor derive it; the holder is the only party that knows it. Taking a set
+//! is what closes the asymmetry the fan-out left behind - the link is published
+//! into every namespace the account speaks in, and a device listening on one of
+//! them observes one of them.
+//!
 //! **This node is deliberately not a member here.** A paired device is one
 //! device of an account that belongs to somebody else; membership stays with
 //! the account, which is the whole point of separating the two ids. So this
@@ -40,21 +53,39 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
     fn handle(
         &mut self,
         PairDeviceInitRequest {
-            namespace_id,
+            namespaces,
             genesis,
         }: PairDeviceInitRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Provision this node's signing identity for the namespace. Not a
+        // Provision this node's signing identity for each namespace. Not a
         // membership claim and not gated on one — it is the key this node will
         // sign its own ops with once the account holder has linked it.
-        let (sign_pk, sign_sk) = match self.get_or_create_namespace_identity(&namespace_id) {
-            Ok((_, sign_pk, sign_sk)) => (sign_pk, PrivateKey::from(sign_sk)),
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to provision a namespace identity for {namespace_id:?}: {err}"
-                )))
+        //
+        // The key is node-level, so from the second namespace onward this only
+        // records participation. That marker is not cosmetic: the sync layer and
+        // the startup sweep walk it, so a namespace missing one is a namespace
+        // this node never syncs.
+        let mut identity = None;
+        for namespace_id in &namespaces {
+            match self.get_or_create_namespace_identity(namespace_id) {
+                Ok((_, sign_pk, sign_sk)) => identity = Some((sign_pk, PrivateKey::from(sign_sk))),
+                Err(err) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "failed to provision a namespace identity for {namespace_id:?}: {err}"
+                    )))
+                }
             }
+        }
+        // Nothing to enroll into, so nothing to subscribe to: the device would be
+        // certified and then listen on no topic at all. Refusing beats reporting
+        // a pairing that reaches nowhere.
+        let Some((sign_pk, sign_sk)) = identity else {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "pairing needs at least one namespace to enroll into, and only the \
+                 device that holds the account knows which ones it speaks in — so it \
+                 has to name them"
+            )));
         };
 
         let store = self.datastore.clone();
@@ -66,11 +97,11 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         // A stored row that names a *different* account is decided by the
         // repository, not here: an unlinked one is replaced (it holds no replica
         // state, and the row is minted before anyone certifies it, so refusing
-        // would let one mistyped nonce claim this namespace's only device slot
-        // for good), a linked one is refused. The join path reaches the same rule
+        // would let one mistyped nonce claim this node's only device slot for
+        // good), a linked one is refused. The join path reaches the same rule
         // through the same place, which is why it lives there.
         let enrolled =
-            match NodeDeviceRepository::new(&store).ensure_enrolled_into(&namespace_id, genesis) {
+            match NodeDeviceRepository::new(&store).ensure_enrolled_into(&namespaces, genesis) {
                 Ok(enrolled) => enrolled,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
@@ -119,12 +150,19 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 // authored by the *other* device, so this one has to already be
                 // listening to observe it — and to receive the key delivery that
                 // follows it.
-                node_client
-                    .subscribe_namespace(namespace_id.to_bytes())
-                    .await?;
+                //
+                // Subscribing to a namespace the holder's fan-out never reaches is
+                // harmless, so this set does not have to agree with that one: an
+                // extra topic delivers nothing, and a binding published somewhere
+                // this device has not subscribed to is picked up whenever it does.
+                for namespace_id in &namespaces {
+                    node_client
+                        .subscribe_namespace(namespace_id.to_bytes())
+                        .await?;
+                }
 
                 info!(
-                    namespace_id = ?namespace_id,
+                    namespaces = namespaces.len(),
                     account = %response.account,
                     device = %response.device,
                     "minted a device for an existing account; awaiting its certificate"

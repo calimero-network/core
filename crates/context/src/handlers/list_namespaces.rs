@@ -5,13 +5,34 @@ use calimero_governance_store::{MetaRepository, MetadataRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::Store;
 
 use crate::ContextManager;
 use calimero_governance_store;
 
+/// The namespace rows targeting one of `applications`, or every row when the list
+/// is empty.
+///
+/// The one place an application is resolved to namespaces. Both things that scope
+/// by application read `target_application_id` through here - the listing endpoint
+/// and pairing's fan-out - so neither can drift from the other's idea of what an
+/// application covers.
+pub(crate) fn namespace_rows_for_applications(
+    store: &Store,
+    applications: &[ApplicationId],
+) -> eyre::Result<Vec<([u8; 32], GroupMetaValue)>> {
+    let entries = MetaRepository::new(store).enumerate_all(0, usize::MAX)?;
+    if applications.is_empty() {
+        return Ok(entries);
+    }
+    Ok(entries
+        .into_iter()
+        .filter(|(_, meta)| applications.contains(&meta.target_application_id))
+        .collect())
+}
+
 pub(crate) fn collect_namespace_summaries(
     entries: Vec<([u8; 32], GroupMetaValue)>,
-    application_filter: Option<ApplicationId>,
     mut node_identity_for_group: impl FnMut(&ContextGroupId) -> Option<(PublicKey, [u8; 32])>,
     mut build_summary: impl FnMut(
         &ContextGroupId,
@@ -22,13 +43,6 @@ pub(crate) fn collect_namespace_summaries(
     let mut namespaces = Vec::new();
 
     for (group_id_bytes, meta) in entries {
-        if application_filter
-            .as_ref()
-            .is_some_and(|application_id| &meta.target_application_id != application_id)
-        {
-            continue;
-        }
-
         let group_id = ContextGroupId::from(group_id_bytes);
 
         let Some((node_identity, _)) = node_identity_for_group(&group_id) else {
@@ -63,10 +77,9 @@ impl Handler<ListNamespacesRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let entries = MetaRepository::new(&self.datastore).enumerate_all(0, usize::MAX)?;
+            let entries = namespace_rows_for_applications(&self.datastore, &[])?;
             let namespaces = collect_namespace_summaries(
                 entries,
-                None,
                 |group_id| self.node_signing_key(group_id),
                 |group_id, meta, node_identity| {
                     MetadataRepository::new(&self.datastore).build_namespace_summary(

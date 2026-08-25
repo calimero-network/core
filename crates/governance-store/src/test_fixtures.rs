@@ -523,7 +523,7 @@ pub(super) fn enrol_local_device(
     let root_sk = PrivateKey::from(*(*sign_pk));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let node = crate::NodeDeviceRepository::new(store)
-        .ensure_enrolled_into(namespace, genesis)
+        .ensure_enrolled_into(&[*namespace], genesis)
         .expect("mint this node's device");
     let cert = calimero_account::DeviceCert::sign(
         &root_sk,

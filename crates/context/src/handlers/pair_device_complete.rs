@@ -24,6 +24,14 @@
 //! converges on forward state and cannot decrypt ops sealed under retired
 //! epochs.
 //!
+//! **The scope is chosen by application, not by namespace.** A namespace is an
+//! implementation unit nobody outside this crate named, so asking a caller to
+//! pick one left the rest of the outcome undecided; an application list settles
+//! which namespaces receive the binding and which scope keys are delivered, and
+//! it is a question the person doing the pairing can actually answer. Naming no
+//! application means all of them, which is what the fan-out did unconditionally
+//! before.
+//!
 //! **Two checks before anything is signed.** The pairing device's statement
 //! proves the key material came from the device that minted it, and the
 //! confirmation code the caller must supply proves the account holder is
@@ -39,18 +47,55 @@
 //! them is silent — see the certificate invariant test beside
 //! `NodeDeviceRepository`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::{AccountMemberEndorsement, DeviceCert, PairingOffer};
-use calimero_context_client::group::{PairDeviceCompleteRequest, PairDeviceCompleteResponse};
+use calimero_context_client::group::{
+    PairDeviceCompleteRequest, PairDeviceCompleteResponse, PairingScope,
+};
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
+use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
 use calimero_governance_store::{GroupKeyring, NamespaceRepository, NodeDeviceRepository};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
+use calimero_store::Store;
+use eyre::Result as EyreResult;
 use tracing::{info, warn};
 
+use crate::handlers::list_namespaces::namespace_rows_for_applications;
 use crate::ContextManager;
+
+/// Where the link is published: everywhere this node takes part, narrowed to the
+/// namespaces targeting one of `applications`.
+///
+/// Participation is the base set rather than the application resolution, because
+/// publishing needs this node's identity and scope key — a namespace it merely
+/// knows the metadata of is one it cannot author in.
+///
+/// An empty list is every namespace, which is what a caller who names no
+/// application asks for and what the fan-out did unconditionally before.
+fn namespaces_in_scope(
+    store: &Store,
+    applications: &[ApplicationId],
+) -> EyreResult<Vec<ContextGroupId>> {
+    let participating = NamespaceRepository::new(store).participating_namespaces()?;
+    if applications.is_empty() {
+        return Ok(participating);
+    }
+
+    let scoped: BTreeSet<[u8; 32]> = namespace_rows_for_applications(store, applications)?
+        .into_iter()
+        .map(|(group_id, _meta)| group_id)
+        .collect();
+
+    Ok(participating
+        .into_iter()
+        .filter(|namespace| scoped.contains(&namespace.to_bytes()))
+        .collect())
+}
 
 impl Handler<PairDeviceCompleteRequest> for ContextManager {
     type Result = ActorResponse<Self, <PairDeviceCompleteRequest as Message>::Result>;
@@ -58,7 +103,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
     fn handle(
         &mut self,
         PairDeviceCompleteRequest {
-            namespace_id,
+            scope,
             device,
             kem_pk,
             sign_pk,
@@ -67,19 +112,53 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         }: PairDeviceCompleteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let store = self.datastore.clone();
+
+        // Resolved before any check, because the scope is what the checks are
+        // about: which namespaces have to hold an identity and a key for this
+        // pairing to be able to do anything.
+        let resolved = (|| -> EyreResult<(Vec<ContextGroupId>, Vec<ContextGroupId>)> {
+            Ok(match &scope {
+                // The namespace-scoped route checks the namespace it was handed
+                // and still publishes into every one. Left as it was: narrowing
+                // its fan-out would silently change what an existing caller gets,
+                // and the route is on its way out.
+                PairingScope::Namespace(namespace_id) => {
+                    (vec![*namespace_id], namespaces_in_scope(&store, &[])?)
+                }
+                // No namespace to name, so the resolved set answers for both.
+                PairingScope::Applications(applications) => {
+                    let targets = namespaces_in_scope(&store, applications)?;
+                    (targets.clone(), targets)
+                }
+            })
+        })();
+        let (gated_on, targets) = match resolved {
+            Ok(resolved) => resolved,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
         // The namespace identity signs the endorsement, both ops, and the key
         // wrap. It must be a granted member: the endorsement is what carries the
         // link past the apply gate, and an endorsement from a non-member is
         // refused.
-        let Some((self_pk, signer_sk_bytes)) = self.node_signing_key(&namespace_id) else {
+        //
+        // One key serves every namespace — it is node-level — so the first that
+        // resolves is the same key as any other. What the scan actually decides is
+        // whether this node takes part in the scope at all: an empty answer means
+        // either it is a stranger to the namespaces named, or the applications
+        // resolved to nothing here.
+        let Some((self_pk, signer_sk_bytes)) =
+            gated_on.iter().find_map(|ns| self.node_signing_key(ns))
+        else {
             return ActorResponse::reply(Err(eyre::eyre!(
-                "this node has no namespace identity for {namespace_id:?}; it cannot \
-                 certify a device there"
+                "this node takes part in none of the namespaces this pairing covers \
+                 ({gated_on:?}); it has no identity to sign with and cannot certify a \
+                 device there"
             )));
         };
         let signer_sk = PrivateKey::from(signer_sk_bytes);
 
-        let store = self.datastore.clone();
         let device_repo = NodeDeviceRepository::new(&store);
 
         // The account root is what certifies the device, and it is also what
@@ -114,7 +193,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             // the request — possibly the attacker rather than an operator reading
             // logs. Ids only; no key material.
             warn!(
-                namespace_id = ?namespace_id,
+                namespaces = gated_on.len(),
                 %account,
                 %device,
                 %err,
@@ -136,7 +215,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             // Deliberately does not echo the expected code: an attacker that can
             // drive this endpoint would otherwise learn the value it needs.
             warn!(
-                namespace_id = ?namespace_id,
+                namespaces = gated_on.len(),
                 %account,
                 %device,
                 "refusing to certify device: confirmation code does not match the \
@@ -160,16 +239,16 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             Ok(Some(enrolled)) if enrolled.account == account => {}
             Ok(Some(enrolled)) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node's device in {namespace_id:?} belongs to account {}, not to {account} \
-                     which its own root owns; a paired device cannot certify further devices — run \
+                    "this node's device belongs to account {}, not to {account} which its \
+                     own root owns; a paired device cannot certify further devices — run \
                      this on the node that holds the account",
                     enrolled.account,
                 )));
             }
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node has enrolled no device in {namespace_id:?}; joining a namespace \
-                     enrols one, and it has to happen before pairing a second"
+                    "this node has enrolled no device; joining a namespace enrols one, \
+                     and it has to happen before pairing a second"
                 )));
             }
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -180,20 +259,28 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrapped for the new device. Checking it here, before anything is
         // signed, beats failing deep inside the publisher.
         //
-        // Only the namespace the caller named is a precondition. The fan-out below
-        // reaches the others too, but a missing key there is a reason to skip that
-        // namespace rather than to refuse the pairing the caller asked for.
-        match GroupKeyring::new(&store, namespace_id).load_current_key() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node holds no current scope key for {namespace_id:?}; pairing both \
-                     publishes an encrypted group op and delivers that key, so neither is \
-                     possible yet"
-                )));
+        // Only the namespaces this pairing is gated on are a precondition, and one
+        // of them holding a key is enough. The fan-out below reaches the others
+        // too, but a missing key there is a reason to skip that namespace rather
+        // than to refuse the pairing the caller asked for.
+        let mut holds_a_key = false;
+        for namespace_id in &gated_on {
+            match GroupKeyring::new(&store, *namespace_id).load_current_key() {
+                Ok(Some(_)) => {
+                    holds_a_key = true;
+                    break;
+                }
+                Ok(None) => {}
+                Err(err) => return ActorResponse::reply(Err(err)),
             }
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+        }
+        if !holds_a_key {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "this node holds no current scope key in any of {gated_on:?}; pairing \
+                 both publishes an encrypted group op and delivers that key, so neither \
+                 is possible yet"
+            )));
+        }
 
         // Epoch 0 on both counts: the account root has not rotated (rotation is
         // not implemented yet), so there are no handoffs to carry and the
@@ -259,38 +346,30 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // A device belongs to an account, not to a scope, so the link goes
-                // everywhere the account already speaks — not only the namespace
-                // the pairing happened to run in. Both credentials it carries are
-                // account-scoped: the certificate is signed by the account root,
-                // and the endorsement by this node's signing key, which is
-                // node-level. Neither says anything about a namespace.
+                // A device belongs to an account, not to a scope, so both
+                // credentials the link carries are account-scoped: the certificate
+                // is signed by the account root, and the endorsement by this node's
+                // signing key, which is node-level. Neither says anything about a
+                // namespace.
                 //
                 // What does vary per namespace is the scope key, so each one gets
                 // its own delivery wrapped under the same device KEM key.
                 //
-                // KNOWN ASYMMETRY, not yet closed. This runs on the HOLDER and
-                // publishes into every namespace; the paired device subscribes in
-                // `pair_device_init`, which knows only the namespace the pairing
-                // named. So the device receives the key for that one and is not
-                // listening on the topics the rest travel on.
-                //
-                // Publishing to all of them is still right: the ops are on the
-                // namespace DAGs, so the device picks them up whenever it does
-                // subscribe, and the binding is what makes the later revocation
-                // reach everywhere. What it does not yet get is prompt delivery.
-                // Closing it needs the device to learn its account's namespace
-                // set — it cannot subscribe to a namespace it has not been told
-                // about, and at pair-init time it has been told about one.
-                let namespaces = NamespaceRepository::new(&store).participating_namespaces()?;
+                // The set is the caller's applications resolved, or every namespace
+                // this node takes part in when they named none. It does not have to
+                // agree with what the device subscribed to at pair-init: a binding
+                // published somewhere the device is not listening still lands on
+                // that namespace's DAG and is picked up whenever it does subscribe,
+                // and a subscription this never reaches costs the device nothing.
+                // Only prompt delivery depends on the two overlapping.
                 let mut linked_in = Vec::new();
                 let mut key_delivered_everywhere = true;
 
-                for ns in namespaces {
+                for ns in targets {
                     // No key here means this node cannot publish an encrypted group
                     // op for the namespace, let alone deliver one. Skip rather than
-                    // fail: the namespace the caller asked about is checked above,
-                    // and the others are a bonus this pairing is extending.
+                    // fail: the scope the caller asked about is checked above, and
+                    // the others are a bonus this pairing is extending.
                     let Ok(Some((_key_id, ns_key))) =
                         GroupKeyring::new(&store, ns).load_current_key()
                     else {

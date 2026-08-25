@@ -726,8 +726,17 @@ impl Message for AdmitTeeNodeRequest {
 /// and it publishes nothing here, so there is no encrypted op to gate on.
 #[derive(Debug)]
 pub struct PairDeviceInitRequest {
-    /// The namespace to enroll in.
-    pub namespace_id: ContextGroupId,
+    /// The namespaces to enroll in, provisioned and subscribed to in one pass.
+    ///
+    /// Named by the caller, and it has to be: this node is a member of nothing
+    /// and holds no scope key, so it can neither read the account's namespace set
+    /// off a DAG nor derive it. The holder is the only party that knows it, so it
+    /// tells the operator and the operator tells this side.
+    ///
+    /// The set decides what this device is *listening* on, which is why it exists.
+    /// One namespace left the device subscribed to one topic while the link fanned
+    /// out across all of them, so every other namespace stayed silent.
+    pub namespaces: Vec<ContextGroupId>,
     /// The genesis of the account being joined, carried from the device that
     /// already holds it. The nonce has to travel because the id is a hash over
     /// it, so it cannot be recovered from the account id alone.
@@ -794,6 +803,27 @@ impl Message for PairDeviceInitRequest {
     type Result = eyre::Result<PairDeviceInitResponse>;
 }
 
+/// Which namespaces a pairing covers.
+///
+/// A user can answer "which apps may this device use"; they cannot answer "which
+/// namespaces", because a namespace is an implementation unit they never named.
+/// So the caller picks applications and this side resolves them, rather than the
+/// other way round.
+#[derive(Debug)]
+pub enum PairingScope {
+    /// Every namespace this node takes part in, with the preconditions checked
+    /// against the one the caller named.
+    ///
+    /// Deprecated with the namespace-scoped route that produces it; the fan-out
+    /// never honoured the namespace anyway, so naming one only ever decided where
+    /// the checks ran. Use [`Self::Applications`].
+    Namespace(ContextGroupId),
+    /// The namespaces targeting these applications, or every namespace this node
+    /// takes part in when the list is empty - which is what a caller who names no
+    /// application is asking for.
+    Applications(Vec<ApplicationId>),
+}
+
 /// Certify a device another node minted, link it, and hand it the scope key —
 /// the second half of pairing, run on the device that already holds the account.
 ///
@@ -803,8 +833,8 @@ impl Message for PairDeviceInitRequest {
 /// this side holds.
 #[derive(Debug)]
 pub struct PairDeviceCompleteRequest {
-    /// The namespace the device is being paired into.
-    pub namespace_id: ContextGroupId,
+    /// Which namespaces the link is published into.
+    pub scope: PairingScope,
     /// The replica id the other node minted.
     pub device: DeviceId,
     /// The agreement key to wrap the scope key under.
