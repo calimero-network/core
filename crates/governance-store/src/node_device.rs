@@ -817,9 +817,9 @@ impl<'a> NodeDeviceRepository<'a> {
     /// May the row already stored for `namespace` be handed back to an enrolment
     /// into `account`?
     ///
-    /// A node holds at most one device per namespace, so this one row is the whole
-    /// slot. `Ok(true)` keeps it, `Ok(false)` releases it to be re-minted, and an
-    /// error refuses the enrolment outright.
+    /// A node holds one device, so this one row is the whole slot. `Ok(true)`
+    /// keeps it, `Ok(false)` releases it to be re-minted, and an error refuses
+    /// the enrolment outright.
     ///
     /// **The default is to keep it**, because the device id is already the replica
     /// id in this namespace's CRDT state: counter slots and an HLC lineage are
@@ -995,6 +995,8 @@ impl<'a> NodeDeviceRepository<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::test_fixtures::{test_group_id, test_store, test_store_without_account_root};
     use crate::AccountBindingRepository;
@@ -2377,6 +2379,92 @@ mod tests {
             .ensure_enrolled(&ns)
             .expect_err("a node with no root cannot certify its own device");
         assert!(err.to_string().contains("no account root"), "{err}");
+    /// One `pair-init` across several namespaces mints one device, not one per
+    /// namespace: the certificate that follows covers the account rather than a
+    /// scope, so a device per namespace would hand the holder several ids to
+    /// certify and several codes to read aloud for one machine.
+    #[test]
+    fn one_device_serves_every_namespace_a_pairing_named() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let namespaces = [
+            ContextGroupId::from([0xA1; 32]),
+            ContextGroupId::from([0xB2; 32]),
+            ContextGroupId::from([0xC3; 32]),
+        ];
+
+        let alice = AccountGenesis::new(root(1));
+        let paired = repo
+            .ensure_enrolled_into(&namespaces, alice)
+            .expect("adopt across the whole set");
+
+        for namespace in &namespaces {
+            let again = repo
+                .ensure_enrolled_into(std::slice::from_ref(namespace), alice)
+                .expect("the stored row still serves this namespace on its own");
+            assert_eq!(again.device(), paired.device());
+            assert_eq!(again.kem_public_key(), paired.kem_public_key());
+        }
+
+        // The confirmation code is a hash over the minted material, so one device
+        // and one KEM key is one code for the whole set - the operator reads a
+        // single value aloud however many namespaces the pairing covered.
+        let sign_pk = root(4);
+        let codes: BTreeSet<String> = namespaces
+            .iter()
+            .map(|_| {
+                calimero_account::PairingOffer::new(
+                    paired.account,
+                    paired.device(),
+                    paired.kem_public_key(),
+                    sign_pk,
+                )
+                .confirmation_code()
+            })
+            .collect();
+        assert_eq!(codes.len(), 1);
+    }
+
+    /// The refusal has to survive being asked alongside a namespace that would
+    /// have released the row. Stopping at the first `false` would delete a device
+    /// whose replica state is real in the namespace that refused - counter slots
+    /// and an HLC lineage stranded under an id nothing points at any more.
+    #[test]
+    fn a_namespace_that_refuses_outvotes_one_that_would_release() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let releases = ContextGroupId::from([0xA1; 32]);
+        let refuses = ContextGroupId::from([0xB2; 32]);
+
+        let alice_sk = PrivateKey::from([1u8; 32]);
+        let alice = AccountGenesis::new(alice_sk.public_key());
+        let paired = repo
+            .ensure_enrolled_into(&[releases, refuses], alice)
+            .expect("adopt");
+
+        // Linked in one namespace only, so the other still holds an unlinked row
+        // and would hand the slot over.
+        let cert = calimero_account::DeviceCert::sign(
+            &alice_sk,
+            paired.account,
+            paired.device(),
+            &root(9),
+            &paired.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&refuses, &paired.genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        assert!(repo
+            .ensure_enrolled_into(&[releases, refuses], AccountGenesis::new(root(2)))
+            .is_err());
+        let reloaded = repo.get().expect("read").expect("present");
+        assert_eq!(reloaded.device(), paired.device());
+        assert_eq!(reloaded.account, paired.account);
     }
 
     /// The agreement key a caller reads must be the one the certificate publishes.
