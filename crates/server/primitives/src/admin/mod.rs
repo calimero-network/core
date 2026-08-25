@@ -3249,28 +3249,23 @@ mod tests {
     /// refused here rather than decoded into something the certificate names.
     #[test]
     fn account_pair_complete_pins_each_field_to_its_own_width() {
-        // Each field gets the other's width: a statement where a key belongs, and
-        // a key where the statement belongs.
-        let swaps: [(
-            &str,
-            usize,
-            usize,
-            fn(&mut AccountPairCompleteApiRequest, String),
-        ); 4] = [
-            ("deviceId", 64, 64, |req, value| req.device_id = value),
-            ("kemPublicKey", 64, 64, |req, value| {
-                req.kem_public_key = value
-            }),
-            ("signPublicKey", 64, 64, |req, value| {
-                req.sign_public_key = value
-            }),
-            ("statement", 128, 32, |req, value| req.statement = value),
-        ];
+        // Every field gets the other's width at once, which also pins that the
+        // errors accumulate rather than stop at the first.
+        let key = hex::encode([0x88; 32]);
+        let statement = hex::encode([0x88; 64]);
+        let mut req = pair_complete_req();
+        req.device_id = statement.clone();
+        req.kem_public_key = statement.clone();
+        req.sign_public_key = statement;
+        req.statement = key;
 
-        for (field, expected, wrong_bytes, set) in swaps {
-            let mut req = pair_complete_req();
-            set(&mut req, hex::encode(vec![0x88; wrong_bytes]));
-            let errors = req.validate();
+        let errors = req.validate();
+        for (field, expected) in [
+            ("deviceId", 64),
+            ("kemPublicKey", 64),
+            ("signPublicKey", 64),
+            ("statement", 128),
+        ] {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
