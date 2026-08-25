@@ -260,6 +260,66 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         }
     }
 
+    /// Debug-only reconciliation of one node's `count` against the level below.
+    ///
+    /// `count` is maintained, not derived, and deliberately unhashed — so drift
+    /// forks nothing and raises nothing; `len()` just quietly lies. That matters
+    /// because a contract deriving an id from `len()` mints duplicate ids from a
+    /// count that reads low, with no mismatch anywhere to catch it.
+    ///
+    /// Reconciling against a full enumeration would be the direct check, but it
+    /// makes every write O(n) in debug builds — a landmine of its own on a path
+    /// whose entire purpose is to not be O(n). This checks the LOCAL invariant
+    /// instead: a node's count is the sum of what sits directly beneath it, at
+    /// most 16 rows. Every node holding it is equivalent to the global one, and
+    /// it catches drift at the level that introduced it rather than somewhere
+    /// far above.
+    ///
+    /// Only the `StorageAdaptor` path calls this. [`insert_with`](Self::insert_with)
+    /// cannot: it is a pure function of the rows it READS, and its callers
+    /// legitimately buffer the writes — the snapshot rebuild collects them and
+    /// merges once per child — so mid-walk the level below still holds its
+    /// pre-write state and every check would report drift that does not exist.
+    /// That path is covered instead by the oracle test asserting it writes
+    /// byte-identical rows to `insert`, which pins its counts by equivalence.
+    #[cfg(debug_assertions)]
+    fn debug_reconcile<R>(parent: Id, path: &[u8], node: &TrieNode, read: &R)
+    where
+        R: Fn(Key) -> Option<Vec<u8>>,
+    {
+        let below_is_bucket = path.len() + 1 == DEPTH;
+        let mut summed: u64 = 0;
+        for (nib, _) in &node.slots {
+            let mut child_path = path.to_vec();
+            child_path.push(*nib);
+            let key = Key::ChildTrie(addr(parent, &child_path));
+            let Some(bytes) = read(key) else {
+                // An absent row under an occupied slot is its own bug, but it is
+                // not this assertion's to diagnose: `read_node` already warns,
+                // and failing here would blame the count for someone else's
+                // problem.
+                return;
+            };
+            if below_is_bucket {
+                let Ok(bucket) = TrieBucket::try_from_slice(&bytes) else {
+                    return;
+                };
+                summed = summed.saturating_add(bucket.entries.len() as u64);
+            } else {
+                let Ok(child) = TrieNode::try_from_slice(&bytes) else {
+                    return;
+                };
+                summed = summed.saturating_add(child.count);
+            }
+        }
+        debug_assert_eq!(
+            node.count, summed,
+            "child-trie count drift at path {path:?}: node says {}, the level \
+             below holds {summed}",
+            node.count,
+        );
+    }
+
     /// Recompute the spine above `path_of_child` after its bucket changed.
     ///
     /// Walks from the bucket back to the root, so the cost is `DEPTH` rows
@@ -293,6 +353,8 @@ impl<S: StorageAdaptor> ChildTrie<S> {
                 node.next_order = node.next_order.max(min_next_order);
             }
             self.write_node(&path, &node);
+            #[cfg(debug_assertions)]
+            Self::debug_reconcile(self.parent, &path, &node, &|key| S::storage_read(key));
             below = node.hash();
         }
         below
