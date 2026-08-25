@@ -611,6 +611,23 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
+                // Every device this account already certified belongs here too.
+                // Pairing bound them wherever this node took part at the time, and
+                // this namespace was not one of them - so without this the paired
+                // device would silently never see it.
+                //
+                // Deliberately after the key wait: the binding is an encrypted
+                // group op and the delivery is that same key wrapped, so neither is
+                // possible without it. Nothing here can fail the join.
+                let _bound = calimero_governance_store::bind_known_devices(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &namespace_id.into(),
+                    &sk,
+                )
+                .await;
+
                 // -------------------------------------------------------
                 // Phase 3: Auto-join contexts from the response.
                 // -------------------------------------------------------
