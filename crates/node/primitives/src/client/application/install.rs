@@ -507,6 +507,50 @@ impl NodeClient {
             .await
     }
 
+    /// Install whatever a delivered blob holds: a bundle, or a bare wasm from a
+    /// dev install (only a `.mpk` extension routes an install through a bundle,
+    /// so the bytes on the wire are frequently not one).
+    ///
+    /// A bare wasm is written under `application_id` rather than re-derived:
+    /// `install_application` hashes source and metadata into a different id than
+    /// the originating node recorded.
+    pub async fn install_application_from_blob(
+        &self,
+        blob_id: &BlobId,
+        application_id: &ApplicationId,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let Some(blob_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            bail!("application blob not found");
+        };
+
+        let probe = Arc::clone(&blob_bytes);
+        if tokio::task::spawn_blocking(move || bundle::is_bundle_blob(&probe)).await? {
+            return self
+                .install_application_from_bundle_blob(blob_id, source)
+                .await;
+        }
+
+        let mut handle = self.datastore.handle();
+        handle.put(
+            &key::ApplicationMeta::new(*application_id),
+            &types::ApplicationMeta::new(
+                key::BlobMeta::new(*blob_id),
+                blob_bytes.len() as u64,
+                source.to_string().into_boxed_str(),
+                Box::default(),
+                key::BlobMeta::new(BlobId::from([0u8; 32])),
+                types::PackageInfo {
+                    package: "unknown".to_owned().into_boxed_str(),
+                    version: "0.0.0".to_owned().into_boxed_str(),
+                    signer_id: String::new().into_boxed_str(),
+                    state_version: 0,
+                },
+            ),
+        )?;
+        Ok(*application_id)
+    }
+
     pub fn uninstall_application(&self, application_id: &ApplicationId) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
         handle.delete(&key::ApplicationMeta::new(*application_id))?;

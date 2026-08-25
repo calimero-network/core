@@ -76,7 +76,7 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::RequestBlob { request, outcome } => {
-                self.forward_handler(ctx, request, outcome);
+                self.forward_handler(ctx, *request, outcome);
             }
         }
     }

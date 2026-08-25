@@ -315,14 +315,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     .parse()
                                 {
                                     Ok(source) => match node_client
-                                        .install_application_from_bundle_blob(&blob, &source)
+                                        .install_application_from_blob(
+                                            &blob,
+                                            &meta.target_application_id,
+                                            &source,
+                                        )
                                         .await
                                     {
                                         Ok(id) => {
                                             info!(?id, "installed the namespace application on join")
                                         }
                                         Err(e) => {
-                                            warn!(?e, "namespace application bundle would not install")
+                                            warn!(?e, "namespace application would not install")
                                         }
                                     },
                                     Err(e) => warn!(?e, "could not build the bundle source url"),

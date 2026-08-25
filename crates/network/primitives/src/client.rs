@@ -316,13 +316,13 @@ impl NetworkClient {
 
         self.network_manager
             .send(NetworkMessage::RequestBlob {
-                request: RequestBlob {
+                request: Box::new(RequestBlob {
                     blob_id,
                     context_id,
                     peer_id,
                     namespace_id,
                     auth,
-                },
+                }),
                 outcome: tx,
             })
             .await

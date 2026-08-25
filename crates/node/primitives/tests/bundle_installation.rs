@@ -2134,3 +2134,53 @@ async fn test_bundle_validation_valid_package_names() {
         );
     }
 }
+
+/// A dev install stores bare wasm (only a `.mpk` extension routes an install
+/// through a bundle), so the blob a joiner is served is frequently not one. It
+/// must still install, under the id the group meta already names.
+#[tokio::test]
+async fn test_install_application_from_blob_accepts_bare_wasm() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    let wasm_content: &[u8] = b"\0asm\x01\0\0\0 bare wasm, not an archive";
+    assert!(
+        !NodeClient::is_bundle_blob(wasm_content),
+        "fixture must not look like a bundle"
+    );
+
+    let cursor = Cursor::new(wasm_content);
+    let (blob_id, _size) = node_client
+        .add_blob(cursor, Some(wasm_content.len() as u64), None)
+        .await
+        .expect("Should add wasm blob");
+
+    let source = "blob://0011".parse().unwrap();
+
+    // The bundle-only installer is what the join path used to call; it cannot
+    // read this blob, which is why the app never landed on the joiner.
+    assert!(
+        node_client
+            .install_application_from_bundle_blob(&blob_id, &source)
+            .await
+            .is_err(),
+        "a bare wasm blob must not install as a bundle"
+    );
+
+    let expected = calimero_primitives::application::ApplicationId::from([7_u8; 32]);
+    let installed = node_client
+        .install_application_from_blob(&blob_id, &expected, &source)
+        .await
+        .expect("bare wasm should install");
+
+    assert_eq!(
+        installed, expected,
+        "must install under the id it was handed, not a re-derived one"
+    );
+
+    let bytes = node_client
+        .get_application_bytes(&expected, None)
+        .await
+        .expect("Should get application bytes")
+        .expect("Application bytes should exist");
+    assert_eq!(bytes.as_ref(), wasm_content);
+}

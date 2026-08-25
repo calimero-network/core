@@ -155,7 +155,8 @@ pub enum NetworkMessage {
     },
     /// Request a blob from a specific peer.
     RequestBlob {
-        request: RequestBlob,
+        // Boxed to keep the enum from being sized by its largest variant.
+        request: Box<RequestBlob>,
         outcome: oneshot::Sender<<RequestBlob as actix::Message>::Result>,
     },
     /// Set a peer's gossipsub application-specific score (membership bias).

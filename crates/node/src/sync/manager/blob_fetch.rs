@@ -3,7 +3,6 @@
 //! installing a bundle after blob sharing. Extracted from the manager
 //! god-file as an `impl SyncManager` fragment.
 
-use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{
@@ -73,11 +72,11 @@ impl SyncManager {
         }
     }
 
-    /// Install bundle application after blob sharing completes.
+    /// Install the application after blob sharing completes, whether the blob
+    /// holds a bundle or bare wasm.
     ///
-    /// Returns `Some(installed_application)` if a bundle was installed,
-    /// `None` otherwise. Updates `context.application_id` if the installed
-    /// ApplicationId differs from the context's ApplicationId.
+    /// Updates `context.application_id` if the installed ApplicationId differs
+    /// from the context's ApplicationId.
     pub(crate) async fn install_bundle_after_blob_sharing(
         &self,
         context_id: &ContextId,
@@ -91,60 +90,18 @@ impl SyncManager {
             return Ok(());
         }
 
-        // Check if blob is a bundle
-        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
-            return Ok(());
-        };
-
-        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let blob_bytes_clone = blob_bytes.clone();
-        let is_bundle =
-            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
-                .await?;
-
         // Get source from context config (use cached if available, otherwise fetch)
         let source = self
             .get_application_source(context_id, app_config_opt)
             .await?;
 
-        let installed_app_id = if is_bundle {
-            self.node_client
-                .install_application_from_bundle_blob(blob_id, &source)
-                .await
-                .map_err(|e| {
-                    eyre::eyre!(
-                        "Failed to install bundle application from blob {}: {}",
-                        blob_id,
-                        e
-                    )
-                })?
-        } else {
-            // For non-bundle apps, write ApplicationMeta directly under the
-            // known application_id rather than re-deriving it via
-            // install_application (which hashes source+metadata and would
-            // produce a different ID than the original installer used).
-            let size = blob_bytes.len() as u64;
-            let mut handle = self.context_client.datastore_handle();
-            handle.put(
-                &calimero_store::key::ApplicationMeta::new(context.application_id),
-                &calimero_store::types::ApplicationMeta::new(
-                    calimero_store::key::BlobMeta::new(*blob_id),
-                    size,
-                    source.to_string().into_boxed_str(),
-                    Box::default(),
-                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
-                        [0u8; 32],
-                    )),
-                    calimero_store::types::PackageInfo {
-                        package: "unknown".to_owned().into_boxed_str(),
-                        version: "0.0.0".to_owned().into_boxed_str(),
-                        signer_id: String::new().into_boxed_str(),
-                        state_version: 0,
-                    },
-                ),
-            )?;
-            context.application_id
-        };
+        let installed_app_id = self
+            .node_client
+            .install_application_from_blob(blob_id, &context.application_id, &source)
+            .await
+            .map_err(|e| {
+                eyre::eyre!("Failed to install application from blob {}: {}", blob_id, e)
+            })?;
 
         // Verify installation succeeded by fetching the installed application
         let installed_application = self
