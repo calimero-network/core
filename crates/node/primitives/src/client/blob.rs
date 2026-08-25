@@ -413,7 +413,16 @@ impl NodeClient {
         }
         // DHT lookup with no context scope: the bundle is advertised by whoever
         // holds it, and the requester has no context to narrow the query with.
-        let peers = self.network_client.query_blob(*blob_id, None).await?;
+        let mut peers = self.network_client.query_blob(*blob_id, None).await?;
+        if peers.is_empty() {
+            // Installing an application never announces its blob — only the
+            // upgrade, runtime and upload paths do — so a joiner asking before
+            // the namespace holds any context finds no DHT provider at all. The
+            // namespace mesh is exactly the set of nodes that can serve it.
+            let topic =
+                libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
+            peers = self.network_client.subscribed_peers(topic).await;
+        }
         if peers.is_empty() {
             tracing::info!(%blob_id, "No peers advertise the namespace application bundle");
             return Ok(false);
