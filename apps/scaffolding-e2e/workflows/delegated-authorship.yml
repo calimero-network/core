@@ -173,9 +173,21 @@ steps:
     statements:
       - "{{author_account}} == 0e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e30"
 
-  # DAR-11: refused at the API, never published as a delta peers would drop. The
-  # `expected_error` is not decoration — without it an unreachable node satisfies
-  # this same assertion, and the step would pass for the wrong reason.
+  # DAR-11: refused at the API, never published as a delta peers would drop.
+  #
+  # `expected_error` is not decoration — without it a node that never started
+  # satisfies this assertion too. But it can only match what the client makes
+  # observable, and today that is the generic 403 text: `calimero-client`
+  # replaced every 403 body with a fixed token hint, so the endpoint's actual
+  # answer ("an admin must grant CAN_AUTHOR_ON_BEHALF to <account>") never
+  # reaches a caller. #3647 fixes that; it cannot be observed from here until it
+  # travels core → client-py → merobox → this pin.
+  #
+  # The cost of the weaker string is worth naming: both refusals below are 403s,
+  # so until #3647 lands this scenario cannot tell "no authorship grant" from
+  # "nonce already spent". It still distinguishes either from a 500, a connection
+  # error, or an acceptance — which is what the guard is mainly for. Tighten both
+  # to their specific reasons once the fix is in the pinned client.
   - name: Refused before the relay is granted authorship
     type: perform_intent
     node: delegated-node-1
@@ -187,7 +199,7 @@ steps:
     warrant: '{{warrant}}'
     author_proof: '02b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb000000000e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e304d0774b93e8028899a745dbe03d7727fa31fc2f060945b5789cb36c23cba380366245580f7aa816a35d1ff324a714355995ef44a72bcd2341e21d9587d16efce973135e50bc7280f06bb32a53a566983cf0f0c8428be4b461df54264f07319540000000000000000e0c3743677508f5cfbe245f043f2d7bc3ba6c88c001464cae581e2e9ec8cb63780f1f5c2a393521a0038b357fffe63092403fa6e0e2ec12da5e96d50692d400f'
     expected_failure: true
-    expected_error: CAN_AUTHOR_ON_BEHALF
+    expected_error: Access denied
 
   # Bit 9, so 512 on its own — authorship and nothing else, which is the posture
   # the capability exists to make possible. Implied by neither membership nor
@@ -224,6 +236,9 @@ steps:
   # And it is single-use. The signature is still perfectly valid: replay is not
   # forgery, which is why the nonce ledger has to exist and why the envelope check
   # cannot be what stops it.
+  #
+  # Same generic 403 text as above, for the same reason — see #3647. What this
+  # still proves is that presenting a valid warrant twice does not write twice.
   - name: The spent warrant is refused a second time
     type: perform_intent
     node: delegated-node-1
@@ -235,7 +250,7 @@ steps:
     warrant: '{{warrant}}'
     author_proof: '02b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb000000000e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e304d0774b93e8028899a745dbe03d7727fa31fc2f060945b5789cb36c23cba380366245580f7aa816a35d1ff324a714355995ef44a72bcd2341e21d9587d16efce973135e50bc7280f06bb32a53a566983cf0f0c8428be4b461df54264f07319540000000000000000e0c3743677508f5cfbe245f043f2d7bc3ba6c88c001464cae581e2e9ec8cb63780f1f5c2a393521a0038b357fffe63092403fa6e0e2ec12da5e96d50692d400f'
     expected_failure: true
-    expected_error: nonce
+    expected_error: Access denied
 
   # --- The half a relay cannot fake ---
   #
