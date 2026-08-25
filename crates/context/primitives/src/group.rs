@@ -914,6 +914,124 @@ impl PairDeviceCompleteResponse {
     }
 }
 
+/// What binding one device into one namespace came to.
+///
+/// Produced by the one publish path that links a device - pairing's fan-out, the
+/// carry-over that runs when this node gains a namespace, and the relink that
+/// repairs drift - so all three report in the same terms.
+///
+/// Deliberately **not** `#[non_exhaustive]`: the admin API gives every variant a
+/// wire name, and a new one that silently fell into a catch-all would be reported
+/// as something it is not. Breaking that match is the point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindOutcome {
+    /// The link was published. `key_delivered` false means the link landed and
+    /// the scope-key delivery did not - the link is what confers authority, and
+    /// the device's own sync pull is the durable retry for the key.
+    Linked { key_delivered: bool },
+    /// The device's scope does not reach the application this namespace serves.
+    OutOfScope,
+    /// A tombstone here. Revocation is terminal, so the id can never be linked
+    /// again - in this account or any other.
+    Revoked,
+    /// A live binding already, so there is nothing to repair.
+    AlreadyBound,
+    /// This node holds no current scope key here, so it can neither publish an
+    /// encrypted group op nor deliver one.
+    NoScopeKey,
+    /// This node's own device, which ordinary enrolment already covers.
+    OwnDevice,
+    /// Nothing was published. The node's log names the cause; a namespace gain
+    /// must not fail because a device could not be extended into it.
+    Failed,
+}
+
+/// Repair or widen the reach of a device this account already certified.
+///
+/// Pairing bound the device wherever this node took part at the time. This
+/// re-runs that fan-out against the namespaces it takes part in **now**, which is
+/// what closes the drift a namespace created or joined afterwards leaves behind -
+/// with no ceremony, no confirmation code, and the device offline. The
+/// certificate is root-signed once and names no namespace, so a fresh endorsement
+/// and a key wrap are all that is missing.
+#[derive(Debug)]
+pub struct RelinkDeviceRequest {
+    /// The device to repair. It must be one this node holds a certificate for.
+    pub device: DeviceId,
+    /// Applications to add to the device's stored scope.
+    ///
+    /// **Empty changes nothing** and repairs against the scope already stored -
+    /// which is the request an operator makes to heal drift. Widening a narrow
+    /// scope to *every* application is not expressible here on purpose: the empty
+    /// list already means "no change", and overloading it to mean "everything"
+    /// would make the accidental request the widest one.
+    pub applications: Vec<ApplicationId>,
+}
+
+/// Where one namespace's relink landed.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct RelinkOutcome {
+    /// The namespace this is about.
+    pub namespace_id: ContextGroupId,
+    /// What happened there.
+    pub outcome: BindOutcome,
+}
+
+impl RelinkOutcome {
+    /// Build an outcome. Exists because the struct is `#[non_exhaustive]` and the
+    /// producer lives in another crate.
+    #[must_use]
+    pub const fn new(namespace_id: ContextGroupId, outcome: BindOutcome) -> Self {
+        Self {
+            namespace_id,
+            outcome,
+        }
+    }
+}
+
+/// What the relink repaired, and what it left alone.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RelinkDeviceResponse {
+    /// The account the device speaks for.
+    pub account: AccountId,
+    /// The device that was repaired.
+    pub device: DeviceId,
+    /// The device's scope after the request, which is what every later namespace
+    /// gain will be judged against.
+    pub applications: Vec<ApplicationId>,
+    /// Every namespace this node takes part in, and what the repair did there.
+    ///
+    /// Reported per namespace for the same reason a revocation is: publication is
+    /// per-DAG, so a namespace missing a binding is a state an operator has to be
+    /// able to see.
+    pub outcomes: Vec<RelinkOutcome>,
+}
+
+impl RelinkDeviceResponse {
+    /// Build a response. Exists because the struct is `#[non_exhaustive]` and the
+    /// producer lives in another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        applications: Vec<ApplicationId>,
+        outcomes: Vec<RelinkOutcome>,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            applications,
+            outcomes,
+        }
+    }
+}
+
+impl Message for RelinkDeviceRequest {
+    type Result = eyre::Result<RelinkDeviceResponse>;
+}
+
 /// Withdraw a device from an account, terminally.
 ///
 /// Three ways to be authorized, and the third is why `proof` exists:

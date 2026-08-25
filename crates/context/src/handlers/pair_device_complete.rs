@@ -139,7 +139,7 @@ fn stored_scope(scope: &PairingScope) -> Vec<ApplicationId> {
 /// whether this node takes part in the scope at all: an empty answer means
 /// either it is a stranger to the namespaces named, or the applications resolved
 /// to nothing here.
-fn signing_identity(store: &Store, gated_on: &[ContextGroupId]) -> EyreResult<[u8; 32]> {
+pub(crate) fn signing_identity(store: &Store, gated_on: &[ContextGroupId]) -> EyreResult<[u8; 32]> {
     let namespaces = NamespaceRepository::new(store);
     for group_id in gated_on {
         match namespaces.resolve_identity(group_id) {
@@ -187,7 +187,7 @@ fn check_confirmation_code(offer: &PairingOffer, supplied: &str) -> EyreResult<(
 /// its own root cannot name, so it has no standing to certify: it would mint a
 /// certificate for an account it does not hold and the link would be refused
 /// downstream.
-fn require_this_node_holds(store: &Store, account: AccountId) -> EyreResult<()> {
+pub(crate) fn require_this_node_holds(store: &Store, account: AccountId) -> EyreResult<()> {
     match NodeDeviceRepository::new(store).get()? {
         Some(enrolled) if enrolled.account == account => Ok(()),
         Some(enrolled) => Err(ContextError::PairingNotTheAccountHolder {

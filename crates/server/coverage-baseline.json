@@ -3,6 +3,7 @@
   "GET /admin-api/groups/:group_id/members/:account/metadata",
   "GET /admin-api/identity",
   "GET /admin-api/ready",
+  "POST /admin-api/account/devices/:device_id/relink",
   "POST /admin-api/account/pair-complete",
   "POST /admin-api/account/pair-init",
   "POST /admin-api/contexts/:context_id/intents",

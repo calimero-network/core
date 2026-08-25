@@ -321,6 +321,13 @@ pub(crate) fn setup(
             "/account/pair-complete",
             post(account::pair_complete::handler),
         )
+        // Pairing is a snapshot; this is how it is repeated. A namespace gained
+        // after a pairing binds its devices on its own, and this closes the drift
+        // left by every one gained before that landed.
+        .route(
+            "/account/devices/:device_id/relink",
+            post(account::relink::handler),
+        )
         // Deprecated, superseded by the two routes above. Kept until callers move.
         .route(
             "/namespaces/:namespace_id/account/pair-init",
@@ -640,9 +647,9 @@ impl IntoResponse for ApiError {
 /// The status a device-pairing refusal answers with, or `None` if `err` is not
 /// one.
 ///
-/// Grouped rather than one arm apiece because the three statuses are the whole
+/// Grouped rather than one arm apiece because the statuses are the whole
 /// distinction a client can act on: fix the payload, come back when this node is
-/// ready, or go to the node that holds the account.
+/// ready, go to the node that holds the account, or stop - this can never work.
 fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option<StatusCode> {
     use calimero_context::error::ContextError as Refusal;
 
@@ -653,7 +660,10 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
         Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
             StatusCode::CONFLICT
         }
-        Refusal::PairingNotTheAccountHolder { .. } => StatusCode::FORBIDDEN,
+        Refusal::PairingNotTheAccountHolder { .. } | Refusal::PairingDeviceRevoked { .. } => {
+            StatusCode::FORBIDDEN
+        }
+        Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
         _ => return None,
     })
 }
@@ -1217,6 +1227,40 @@ mod parse_api_error_tests {
             assert!(
                 api.message.contains("revoking the existing device first"),
                 "the refusal has to say what to do next; got: {}",
+                api.message
+            );
+        }
+
+        /// A relink names a device this node holds no certificate for. `404`,
+        /// because the thing being addressed does not exist here - not `403`,
+        /// which would say the caller is at the wrong machine.
+        #[test]
+        fn an_unknown_device_maps_to_404() {
+            let api = parse_api_error(
+                ContextError::PairingUnknownDevice {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// And a revoked one to `403`, permanently: re-enrolling the machine mints
+        /// a FRESH device id, so no sequence of calls makes this id work again -
+        /// which the message has to say rather than imply an un-revoke.
+        #[test]
+        fn a_revoked_device_maps_to_403_and_says_re_enrolling_mints_a_new_id() {
+            let api = parse_api_error(
+                ContextError::PairingDeviceRevoked {
+                    device: "d".to_owned(),
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("mints a new device id"),
+                "the caller must learn that the id is spent for good; got: {}",
                 api.message
             );
         }

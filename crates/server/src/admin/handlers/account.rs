@@ -1,5 +1,6 @@
 pub mod pair_complete;
 pub mod pair_init;
+pub mod relink;
 
 use reqwest::StatusCode;
 

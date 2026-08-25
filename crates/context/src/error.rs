@@ -166,4 +166,37 @@ pub enum ContextError {
         /// The account its own root owns, which the pairing would certify into.
         account: String,
     },
+
+    /// This node holds no certificate for the device a relink names.
+    ///
+    /// A `404`: the thing being addressed does not exist here. Only a device this
+    /// node paired, or learned of by folding another holder's link, can be
+    /// extended - the certificate is what a link carries, and it cannot be
+    /// rebuilt from folded state.
+    #[error(
+        "this node holds no certificate for device {device}, so it cannot extend it \
+         anywhere. Only a device of this account that was paired from here, or whose \
+         link this node has folded, can be relinked"
+    )]
+    PairingUnknownDevice {
+        /// The device the caller named (for the message only).
+        device: String,
+    },
+
+    /// The device a relink names has been revoked.
+    ///
+    /// A `403`, and permanently so: a revocation is terminal, and re-enrolling the
+    /// machine mints a FRESH device id - so there is no sequence of calls that
+    /// makes this id work again.
+    #[error(
+        "device {device} is revoked in {namespaces}; a revocation is terminal, so this \
+         id can never be linked again in any account. Enrol the machine afresh - that \
+         mints a new device id - and pair that"
+    )]
+    PairingDeviceRevoked {
+        /// The device the caller named (for the message only).
+        device: String,
+        /// Debug rendering of the namespaces holding a tombstone for it.
+        namespaces: String,
+    },
 }

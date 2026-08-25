@@ -2217,6 +2217,89 @@ pub struct RevokeDeviceApiResponse {
     pub data: RevokeDeviceApiResponseData,
 }
 
+/// Repair or widen the reach of a device this account already certified.
+///
+/// Pairing bound the device wherever this node took part at the time, so a
+/// namespace created or joined afterwards has no binding for it and the paired
+/// device silently never sees that namespace. This re-runs the fan-out against
+/// the namespaces this node takes part in now.
+///
+/// The device is named in the path. Nothing else is needed: the certificate is
+/// already held here, root-signed and naming no namespace, so a fresh endorsement
+/// and a key wrap are all a namespace gained later is missing. The device does not
+/// have to be online.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkDeviceApiRequest {
+    /// Applications to add to the device's stored scope, bs58-encoded.
+    ///
+    /// **Absent or empty changes nothing** and repairs against the scope already
+    /// stored, which is the request an operator makes to heal drift. Widening a
+    /// narrow scope to *every* application is deliberately not expressible: the
+    /// empty list already means "no change", and overloading it would make the
+    /// accidental request the widest one.
+    #[serde(default)]
+    pub applications: Vec<String>,
+}
+
+impl Validate for RelinkDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // `applications` gets no check here, exactly as on `pair-complete`: an
+        // application id is bs58, not hex, so the handler's parse is the only thing
+        // that can say whether one names an application at all.
+        Vec::new()
+    }
+}
+
+/// What the relink repaired, and what it left alone.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was repaired.
+    pub device_id: String,
+    /// The device's scope after the request, bs58-encoded. Empty means every
+    /// application, which is what a pairing that named none asked for.
+    pub applications: Vec<String>,
+    /// Namespaces the link was published into by this call.
+    ///
+    /// Reported per namespace for the same reason `revokedIn` is: publication is
+    /// per-DAG, so which namespaces a device actually reached is a state the
+    /// caller has to be able to see.
+    pub linked_in: Vec<RelinkOutcomeApiEntry>,
+    /// Namespaces nothing was published into, and why.
+    pub skipped: Vec<RelinkSkipApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkOutcomeApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// Whether the scope key was wrapped and published for the device here.
+    ///
+    /// `false` means the link landed and the delivery did not - the link is what
+    /// confers authority, and the device's own sync pull re-requests the key.
+    pub key_delivered: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkSkipApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// Why nothing was published there. One of `outOfScope`, `alreadyBound`,
+    /// `noScopeKey`, `revoked`, `ownDevice`, `failed`.
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkDeviceApiResponse {
+    pub data: RelinkDeviceApiResponseData,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {

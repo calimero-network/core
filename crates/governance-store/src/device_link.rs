@@ -16,6 +16,7 @@
 //! repairs drift.
 
 use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId};
+use calimero_context_client::group::BindOutcome;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
@@ -28,31 +29,6 @@ use tracing::{info, warn};
 use crate::{
     AccountBindingRepository, GroupKeyring, KnownDeviceCert, MetaRepository, NodeDeviceRepository,
 };
-
-/// What binding one device into one namespace came to.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum BindOutcome {
-    /// The link was published. `key_delivered` false means the link landed and
-    /// the scope-key delivery did not - the link is what confers authority, and
-    /// the device's own sync pull is the durable retry for the key.
-    Linked { key_delivered: bool },
-    /// The device's scope does not reach the application this namespace serves.
-    OutOfScope,
-    /// A tombstone here. Revocation is terminal, so the id can never be linked
-    /// again - in this account or any other.
-    Revoked,
-    /// A live binding already, so there is nothing to repair.
-    AlreadyBound,
-    /// This node holds no current scope key here, so it can neither publish an
-    /// encrypted group op nor deliver one.
-    NoScopeKey,
-    /// This node's own device, which ordinary enrolment already covers.
-    OwnDevice,
-    /// Nothing was published. The reason is logged where it is known; a namespace
-    /// gain must not fail because a device could not be extended into it.
-    Failed,
-}
 
 /// Publish, or the reason not to.
 enum BindPlan {
@@ -267,6 +243,29 @@ pub async fn bind_known_devices(
     }
     if !outcomes.is_empty() {
         info!(namespace_id = ?namespace, ?outcomes, "carried this account's devices into a namespace");
+    }
+    outcomes
+}
+
+/// Extend one device into every namespace it should reach.
+///
+/// The transpose of [`bind_known_devices`] and the repair half of the same
+/// mechanism: that one asks "which devices belong in this new namespace", this
+/// one asks "which namespaces is this device missing from". Best-effort on the
+/// same terms - an outcome per namespace, never a `Result`.
+pub async fn bind_device_everywhere(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespaces: &[ContextGroupId],
+    signer_sk: &PrivateKey,
+    cert: &KnownDeviceCert,
+) -> Vec<(ContextGroupId, BindOutcome)> {
+    let mut outcomes = Vec::with_capacity(namespaces.len());
+    for namespace in namespaces {
+        let outcome =
+            ensure_bound(store, node_client, ack_router, namespace, signer_sk, cert).await;
+        outcomes.push((*namespace, outcome));
     }
     outcomes
 }
@@ -572,6 +571,59 @@ mod tests {
             "the link has to have APPLIED, not merely been published"
         );
         assert!(!live.contains(&out_of_scope.statement.device));
+    }
+
+    /// The repair, from the other side: one device, every namespace this node
+    /// takes part in. The namespace it is missing from gets the link; the one this
+    /// node cannot publish into is reported rather than silently dropped, because
+    /// a partially reached device is a state an operator has to be able to see.
+    #[actix::test]
+    async fn repairing_one_device_reaches_the_namespaces_it_is_missing_from() {
+        let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let repaired = ContextGroupId::from(ns_id.to_bytes());
+        // A second namespace this node takes part in but holds no key for, which is
+        // the ordinary "not caught up yet" state rather than a fault.
+        let keyless = ContextGroupId::from([0xEE; 32]);
+        let root = account_root_of(&sk.public_key());
+        let cert = KnownDeviceCert {
+            proof: certify(&root, 0x77, [0x77; 32]),
+            applications: Vec::new(),
+        };
+        let _key_id = GroupKeyring::new(&store, repaired)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key where the repair can land");
+
+        let outcomes = bind_device_everywhere(
+            &store,
+            &node_client,
+            &ack_router,
+            &[repaired, keyless],
+            &sk,
+            &cert,
+        )
+        .await;
+
+        assert_eq!(
+            outcomes,
+            vec![
+                (
+                    repaired,
+                    BindOutcome::Linked {
+                        key_delivered: true
+                    }
+                ),
+                (keyless, BindOutcome::NoScopeKey),
+            ],
+        );
+        assert!(
+            AccountBindingRepository::new(&store)
+                .live_bindings(&repaired)
+                .expect("read the bindings")
+                .into_iter()
+                .any(|binding| binding.device == cert.device()),
+            "the missing binding has to have been repaired, not merely reported"
+        );
     }
 
     /// A device this node cannot address takes nothing down with it. The gain is
