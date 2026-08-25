@@ -86,3 +86,35 @@ api_post_status() {
         -H "Authorization: Bearer ${_token}" \
         -d "${_body}"
 }
+
+# GET an admin-api path on a node. Echoes the response body.
+api_get() {
+    _container="$1"
+    _path="$2"
+
+    _url=$(node_url "${_container}") || return 1
+    _token=$(node_token "${_url}") || return 1
+
+    _resp=$(curl -sS --fail-with-body -X GET "${_url}/admin-api/${_path}" \
+        -H "Authorization: Bearer ${_token}") || {
+        echo "GET ${_path} on ${_container} failed: ${_resp}" >&2
+        return 1
+    }
+    echo "${_resp}"
+}
+
+# GET an admin-api path and echo the HTTP status, discarding the response.
+#
+# The read counterpart of `api_post_status`, and it exists for the same reason:
+# the account-scoped reads answer `404` for a node with no account at all, which
+# is a different statement from a node that answers with one.
+api_get_status() {
+    _container="$1"
+    _path="$2"
+
+    _url=$(node_url "${_container}") || return 1
+    _token=$(node_token "${_url}") || return 1
+
+    curl -sS -o /dev/null -w '%{http_code}' -X GET "${_url}/admin-api/${_path}" \
+        -H "Authorization: Bearer ${_token}"
+}

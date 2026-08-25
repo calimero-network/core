@@ -1,0 +1,261 @@
+name: E2E Account - Every Pairing Refusal Answers Its Own Status
+description: >
+  The acceptance test for the typed refusals on the account-level pairing
+  routes. Every one of these used to be `500 {"error":"Internal server error"}`,
+  so a client could not tell a mistyped confirmation code from a node that had
+  not synced a scope key yet, and an operator reading a 500 had no reason to
+  suspect their own request.
+
+  The mapping is unit-tested in `parse_api_error`, one refusal per test. What
+  those cannot say is whether the refusals are REACHABLE - whether a real
+  request against real nodes lands on the arm the mapping names, or on a
+  different one, or on nothing at all because the check before it fires first.
+  Order is load-bearing here and invisible to a unit test: `pair-complete`
+  resolves the scope before it looks at the payload, so a request that is wrong
+  in two ways answers for the first.
+
+  Six refusals, three statuses, and the statuses are the whole distinction a
+  client can act on:
+
+    * `400` - your payload is wrong. Fix it and retry. A tampered statement and
+      a mismatched confirmation code, which are the two checks that stand
+      between an account and an attacker-supplied device.
+    * `409` - the request is fine and this node is not ready. The identical call
+      works once the node takes part in a namespace targeting that application.
+    * `403` - right request, wrong machine, or an id that is spent for good.
+      Neither a retry nor a sync changes either.
+    * `404` - the device does not exist here.
+
+  The cast:
+
+    * node-1 - Alice, the account holder, admin and creator of the namespace.
+      Every refusal that is about authority is asked of this node.
+    * node-2 - the device being paired, and afterwards the WRONG machine to ask
+      for a repair.
+    * node-3 - a plain member, so the namespace has a real peer subscribed to it
+      and the pairing's fan-out is not publishing into an empty topic.
+
+  Two applications, because the `409` needs one this node has installed and
+  given no namespace: that is what makes an application scope resolve to no
+  namespace at all, which is the state the refusal reports.
+
+  Two refusals this deliberately does not drive:
+
+    * `PairingNoScopeKey` (409). The two 409s cannot both be reached from one
+      node's state - this node holds a scope key in every namespace it takes
+      part in, and a namespace it does not take part in fails the identity check
+      first. Pinned by the unit test.
+    * `PairingNotTheAccountHolder` (403) on `pair-complete`. Reaching it there
+      needs a statement over the account this node's OWN root owns, and a node
+      stops publishing that root the moment it adopts another account - so no
+      caller can produce one. The same refusal is reachable on `relink`, which
+      needs no statement, and that is where it is driven below.
+
+  No `wait_for_sync` between the assertions, and that is not an omission. Every
+  refusal is a synchronous HTTP answer about the state of the node being asked,
+  and the one piece of state that has to have landed first - the revocation -
+  is written by node-1's own call before it answers. Barriering here would
+  assert nothing and hide that.
+
+  User-visible failure mode this guards against: "pairing failed with an
+  internal server error and I have no idea whether to retype the code, wait, or
+  go to the other machine."
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-refusal-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-refusal-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-refusal-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: account-refusal-node-3
+    username: dev
+    password: dev-password
+
+  # ── An application with a namespace, and one without ───────────────
+
+  - name: Install the served application on node-1
+    type: install_application
+    node: account-refusal-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_served: applicationId
+
+  - name: Install the served application on node-3
+    type: install_application
+    node: account-refusal-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  # Installed and never given a namespace, which is the whole of its job: an
+  # application scope naming it resolves to nothing here, and that is the state
+  # the `409` reports.
+  - name: Install an application node-1 will never give a namespace
+    type: install_application
+    node: account-refusal-node-1
+    path: dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk
+    dev: true
+    outputs:
+      app_unbound: applicationId
+
+  - name: The two applications are genuinely different
+    type: assert
+    statements:
+      - 'is_set({{app_served}})'
+      - 'is_set({{app_unbound}})'
+      - '{{app_served}} != {{app_unbound}}'
+
+  - name: Node-1 creates the one namespace, targeting the served application
+    type: create_namespace
+    node: account-refusal-node-1
+    application_id: '{{app_served}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Invite node-3 to the namespace
+    type: create_namespace_invitation
+    node: account-refusal-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-3 joins the namespace
+    type: join_namespace
+    node: account-refusal-node-3
+    namespace_id: '{{ns}}'
+    invitation: '{{invitation}}'
+
+  # The one barrier in the scenario, and it is a precondition rather than an
+  # assertion: the pairing below publishes an encrypted group op into this
+  # namespace, and its endorsement is resolved against the membership state the
+  # join established.
+  - name: Settle the join
+    type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-2 is outside this and every later barrier. It
+      is a member of nothing, and a namespace barrier reads a governance state
+      hash the node answers only for a member. Nothing below reads node-2's
+      converged state; the refusals it serves are about its own device row.
+    nodes:
+      - account-refusal-node-1
+      - account-refusal-node-3
+    group_id: '{{ns}}'
+    timeout: 120
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-refusal-node-1
+    outputs:
+      alice_account: accountId
+      alice_root: accountRootPublicKey
+
+  # ── The three refusals pair-complete owes ──────────────────────────
+
+  # Runs before the real pairing and never completes one. Its own `pair-init` is
+  # idempotent, so the pairing that follows mints the same device and reads out
+  # the same confirmation code.
+  - name: Pair-complete refuses a bad payload and an unreachable scope
+    type: script
+    script: scripts/account-pair-refusal-statuses.sh
+    target: local
+    args:
+      - account-refusal-node-1
+      - account-refusal-node-2
+      - '{{ns}}'
+      - '{{alice_root}}'
+      - '{{app_unbound}}'
+
+  # ── A real pairing, so there is something to refuse a repair for ───
+
+  # Scoped to every application, which is what naming none means and is all this
+  # node has anyway.
+  - name: Pair node-2 onto Alice's account
+    type: script
+    script: scripts/account-pair.sh
+    target: local
+    args:
+      - account-refusal-node-2
+      - account-refusal-node-1
+      - '{{ns}}'
+      - '{{alice_root}}'
+      - '-'
+
+  - name: What node-2 speaks as, now that it is paired
+    type: node_identity
+    node: account-refusal-node-2
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+
+  - name: The phone joined Alice's account
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+
+  # ── Spend the id, so the terminal refusal is reachable ─────────────
+
+  - name: The account holder revokes the paired device
+    type: account_revoke
+    node: account-refusal-node-1
+    namespace_id: '{{ns}}'
+    device_id: '{{paired_device}}'
+    outputs:
+      revoked_in: revokedIn
+
+  # Asserted as the precondition it is: the last refusal below reads the
+  # tombstone this call wrote, so a revocation that reached no namespace would
+  # make that refusal pass for the wrong reason.
+  - name: The revocation reached the namespace the device was bound in
+    type: assert
+    statements:
+      - 'contains({{revoked_in}}, {{ns}})'
+
+  # ── The three refusals relink owes ─────────────────────────────────
+
+  # All three in one step, because they need the same fixture and differ only in
+  # which node is asked and which device is named. Reads node-1's own store for
+  # two of them, which its own revocation wrote before it answered.
+  - name: Relink refuses the wrong device, the wrong machine and a spent id
+    type: script
+    script: scripts/account-relink-refusal-statuses.sh
+    target: local
+    args:
+      - account-refusal-node-1
+      - account-refusal-node-2
+      - '{{paired_device}}'
+
+stop_all_nodes: true
+
+# ── Wiring ─────────────────────────────────────────────────────────
+#
+# Registered in `.github/workflows/e2e-rust-apps.yml`, which is also where it
+# gets its first real run: nothing here has been executed against live nodes.
+#
+# Both scripts assert on STATUS rather than on failure, through
+# `account-api.sh`'s `api_post_status`. `api_post` fails the call on any 4xx,
+# which answers "was it refused" but not "how" - and how is the entire point of
+# this scenario. A `200` is a security regression and a `500` is the regression
+# the mapping exists to prevent, so both fail the run.
+#
+# The refusals live in scripts rather than in `expected_failure` steps because
+# merobox has no native step for either route, and because an `expected_failure`
+# would pass on a `500` - which is the exact answer these scenarios exist to
+# stop the routes giving.

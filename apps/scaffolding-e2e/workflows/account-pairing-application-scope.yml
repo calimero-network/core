@@ -1,0 +1,445 @@
+name: E2E Account - Pairing Is Scoped By Application, And Follows The Account
+description: >
+  The acceptance test for account-level pairing. Pairing used to take one
+  namespace from the URL and fan the link out to every namespace regardless, so
+  the caller named a unit they had never heard of and got an outcome it did not
+  decide. It now takes a SET of namespaces on the new device (what it listens
+  on) and a SET of applications on the holder (where the link is published), and
+  the two are independent.
+
+  This is the only place that can prove the pair end to end. Everything under it
+  is unit-tested - the scope resolution, the bind outcomes, the certificate
+  cache - but "the device ends up reaching app A's namespace and not app B's" is
+  a statement about three real nodes, a real fan-out, and a real key delivery.
+
+  The cast:
+
+    * node-1 - Alice. Admin and creator of every namespace here, and the holder
+      of the account. It does the certifying, the relinking and the revoking,
+      because all three are the account's authority rather than an admin's.
+    * node-2 - Alice's phone. A member of NOTHING, for the whole run. It never
+      joins a namespace, never joins a context, and never installs an
+      application. Everything it ends up able to do it can do because it is a
+      device of Alice's account, which is what makes it the right probe.
+    * node-3 - Bob. A plain member of both namespaces. He is what makes them
+      real: a second replica to converge against, and a second peer able to
+      serve the application bundle to a node that is a member of nothing.
+
+  Two applications, and they have to differ in kind as well as in id. App A is
+  the multi-service BUNDLE, because acquisition can only complete for a bundle -
+  a raw wasm's id is derived from the bytes, size, source and metadata it was
+  installed with, and the stub row a registration writes carries none of those
+  faithfully, so installing one would write a row under a different id. App B is
+  the raw wasm, and it is only ever a second application to be out of scope of.
+
+  What each step is load-bearing for:
+
+    1. `pair-init` on node-2 names BOTH namespaces; `pair-complete` on node-1
+       scopes to app A alone. The device therefore LISTENS on both and is BOUND
+       in one. That asymmetry is the whole design: a subscription the holder
+       never reaches costs nothing, and a binding published where the device is
+       not listening is picked up whenever it does subscribe.
+
+    2. `GET /admin-api/account/devices` on the holder must report the row as
+       scoped to exactly app A and bound in app A's namespace only. The absence
+       is the assertion that carries weight - a fan-out that ignored the scope
+       would satisfy every positive here and fail on that one.
+
+    3. `relink` with app B widens the STORED scope and publishes into app B's
+       namespace, and reports app A's namespace as `alreadyBound` rather than
+       re-endorsing a live binding. The widening being persisted is what makes
+       step 4 possible.
+
+    4. node-1 creates a THIRD namespace, targeting app A, and nothing re-pairs.
+       The device must be bound there anyway. This is the acceptance for
+       carrying known devices into a namespace as it is gained: before it, every
+       namespace created after a pairing was one the paired device silently
+       never saw.
+
+    5. node-1 registers a context, and node-2 must end up holding app A's
+       bytecode. It follows no context and is a member of nothing, so it never
+       reaches the context bootstrap that installs an application - the
+       acquisition drives that same chain off the row the registration wrote,
+       and the bundle blob reaches it because a context's own application bundle
+       is served to any requester.
+
+    6. One revocation, naming one namespace, must report all THREE. That list is
+       built by walking the namespaces this node takes part in and skipping any
+       holding no binding, so three entries is the pairing, the relink and the
+       auto-bind all having genuinely landed.
+
+    7. The revoked node must stop presenting the device and the account. A
+       revocation is terminal and one device row serves every namespace, so the
+       id is spent everywhere; a node that went on reporting it would be naming
+       a device no peer will admit and an account it no longer speaks for.
+
+  Deliberately not asserted here: the read/write lockout after revocation.
+  `account-device-revoke-lockout` pins that end to end already, and repeating it
+  would buy a slower scenario rather than a stronger claim. What is unique to
+  this one is which namespaces the pairing reaches and what the device can do
+  without being a member of any of them.
+
+  Also not asserted: that node-2's `bytecode_id` for the namespace matches the
+  members'. `GET /admin-api/namespaces` withholds a summary from a non-member by
+  design, and `GET /admin-api/account/applications` - the one namespace-shaped
+  read a paired device does get - reports no bytecode id. Asserting it needs the
+  admin API to expose one to a non-member, which is a change rather than a test.
+
+  User-visible failure mode this guards against: "I paired my phone for one app
+  and it turned up in every team I am in" - and its mirror, "I paired my phone
+  and the project I started afterwards was invisible to it."
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: account-scope-node
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: account-scope-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: account-scope-node-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: account-scope-node-3
+    username: dev
+    password: dev-password
+
+  # ── Two applications, on the two members only ──────────────────────
+  #
+  # node-2 installs NEITHER, and that is the point of step 5: it has to end up
+  # with app A without anyone putting it there.
+
+  - name: Install app A (the bundle) on node-1
+    type: install_application
+    node: account-scope-node-1
+    path: dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk
+    dev: true
+    outputs:
+      app_a: applicationId
+
+  - name: Install app A (the bundle) on node-3
+    type: install_application
+    node: account-scope-node-3
+    path: dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk
+    dev: true
+
+  - name: Install app B (the raw wasm) on node-1
+    type: install_application
+    node: account-scope-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_b: applicationId
+
+  - name: Install app B (the raw wasm) on node-3
+    type: install_application
+    node: account-scope-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Two applications, not one installed twice
+    type: assert
+    statements:
+      - 'is_set({{app_a}})'
+      - 'is_set({{app_b}})'
+      - '{{app_a}} != {{app_b}}'
+
+  # ── One namespace per application, both admined by node-1 ──────────
+
+  - name: Node-1 creates namespace A1, targeting app A
+    type: create_namespace
+    node: account-scope-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a1: namespaceId
+
+  - name: Node-1 creates namespace B1, targeting app B
+    type: create_namespace
+    node: account-scope-node-1
+    application_id: '{{app_b}}'
+    outputs:
+      ns_b1: namespaceId
+
+  - name: Invite node-3 to namespace A1
+    type: create_namespace_invitation
+    node: account-scope-node-1
+    namespace_id: '{{ns_a1}}'
+    outputs:
+      invite_a1: invitation
+
+  - name: Node-3 joins namespace A1
+    type: join_namespace
+    node: account-scope-node-3
+    namespace_id: '{{ns_a1}}'
+    invitation: '{{invite_a1}}'
+
+  - name: Invite node-3 to namespace B1
+    type: create_namespace_invitation
+    node: account-scope-node-1
+    namespace_id: '{{ns_b1}}'
+    outputs:
+      invite_b1: invitation
+
+  - name: Node-3 joins namespace B1
+    type: join_namespace
+    node: account-scope-node-3
+    namespace_id: '{{ns_b1}}'
+    invitation: '{{invite_b1}}'
+
+  # Two barriers, because a namespace is a DAG and `wait_for_sync` settles one.
+  # Load-bearing for the pairing below: the holder's fan-out publishes an
+  # encrypted group op into each namespace and needs both nodes agreeing on the
+  # membership state its endorsement is resolved against.
+  - name: Settle the join to namespace A1
+    type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-2 is deliberately outside every barrier in
+      this scenario, and stays outside for the whole run. `wait_for_sync` on a
+      namespace reads that namespace's governance state hash, which the node
+      answers only for a member - and node-2 is a member of nothing by
+      construction, which is the property the scenario exists to test. Every
+      read of node-2's state below is therefore polled inside a script instead,
+      against the device's own account-scoped routes.
+    nodes:
+      - account-scope-node-1
+      - account-scope-node-3
+    group_id: '{{ns_a1}}'
+    timeout: 120
+
+  - name: Settle the join to namespace B1
+    type: wait_for_sync
+    nodes:
+      - account-scope-node-1
+      - account-scope-node-3
+    group_id: '{{ns_b1}}'
+    timeout: 120
+
+  # ── Alice's account, which both namespaces already know ────────────
+
+  # An ensure, not a create: node-1 enrolled when it created the namespaces, so
+  # this reads back what is already there. The root key is what a second device
+  # needs in order to pair, and it is public by construction - it is hashed into
+  # the account id and travels in every genesis.
+  - name: What node-1 speaks as
+    type: node_identity
+    node: account-scope-node-1
+    outputs:
+      alice_account: accountId
+      alice_device: deviceId
+      alice_root: accountRootPublicKey
+
+  # ── Pair the phone: two namespaces to listen on, one app to speak for ──
+
+  # The namespace set and the application scope are chosen independently on
+  # purpose. node-2 subscribes to A1 and B1; node-1 certifies it for app A only.
+  - name: Pair node-2 onto Alice's account, scoped to app A
+    type: script
+    script: scripts/account-pair.sh
+    target: local
+    args:
+      - account-scope-node-2
+      - account-scope-node-1
+      - '{{ns_a1}},{{ns_b1}}'
+      - '{{alice_root}}'
+      - '{{app_a}}'
+
+  # Reads node-2's own device row, which `pair-init` wrote synchronously before
+  # the script returned - so there is nothing here to wait for.
+  - name: What node-2 speaks as, now that it is paired
+    type: node_identity
+    node: account-scope-node-2
+    outputs:
+      paired_account: accountId
+      paired_device: deviceId
+
+  # One account, two distinct replicas. Sharing a device id would have the two
+  # share counter slots and an HLC seed and silently lose each other's writes,
+  # so the inequality matters as much as the equality.
+  - name: The phone joined Alice's account, not one of its own
+    type: json_assert
+    statements:
+      - 'json_equal({{paired_account}}, {{alice_account}})'
+      - 'json_not_equal({{paired_device}}, {{alice_device}})'
+
+  # ── The scope landed where it was aimed, and nowhere else ──────────
+
+  # Reads node-1's own store, which its own `pair-complete` wrote before it
+  # answered, so no barrier stands between this and the pairing.
+  - name: The paired device reaches app A's namespace and not app B's
+    type: script
+    script: scripts/account-device-scope.sh
+    target: local
+    args:
+      - account-scope-node-1
+      - '{{paired_device}}'
+      - '{{app_a}}'
+      - '{{ns_a1}}'
+      - '{{ns_b1}}'
+
+  # ── Widen the scope without the device being present ───────────────
+
+  - name: Relink the paired device, widening its scope to app B
+    type: script
+    script: scripts/account-relink.sh
+    target: local
+    args:
+      - account-scope-node-1
+      - '{{paired_device}}'
+      - '{{app_b}}'
+      - '{{ns_b1}}'
+      - '{{ns_a1}}'
+      - '{{app_a}},{{app_b}}'
+
+  - name: Settle the relink's op in namespace B1
+    type: wait_for_sync
+    nodes:
+      - account-scope-node-1
+      - account-scope-node-3
+    group_id: '{{ns_b1}}'
+    timeout: 120
+
+  - name: The widened scope now reaches both namespaces
+    type: script
+    script: scripts/account-device-scope.sh
+    target: local
+    args:
+      - account-scope-node-1
+      - '{{paired_device}}'
+      - '{{app_a}},{{app_b}}'
+      - '{{ns_a1}},{{ns_b1}}'
+      - '-'
+
+  # ── A namespace gained afterwards binds the device on its own ──────
+
+  # Nothing re-pairs and nothing relinks between here and the assertion below.
+  # The certificate is root-signed and names no namespace, so a fresh
+  # endorsement and a key wrap are all this new namespace was missing, and the
+  # creation itself is what supplies them.
+  - name: Node-1 creates namespace A2, also targeting app A
+    type: create_namespace
+    node: account-scope-node-1
+    application_id: '{{app_a}}'
+    outputs:
+      ns_a2: namespaceId
+
+  # No barrier: this reads the binding rows node-1 wrote inside its own
+  # creation, before it answered. A2 has no second member to converge with yet.
+  - name: The paired device was carried into A2 with no re-pairing
+    type: script
+    script: scripts/account-device-scope.sh
+    target: local
+    args:
+      - account-scope-node-1
+      - '{{paired_device}}'
+      - '-'
+      - '{{ns_a1}},{{ns_b1}},{{ns_a2}}'
+      - '-'
+
+  # ── The device ends up able to RUN the application ─────────────────
+
+  - name: Node-1 registers a context in namespace A1
+    type: create_context
+    node: account-scope-node-1
+    application_id: '{{app_a}}'
+    group_id: '{{ns_a1}}'
+    service_name: store-a
+
+  # The registration is what first names the application and its blob on every
+  # replica that can decrypt it, node-2 included. Barriered between the members
+  # so a failure below is the acquisition rather than the op still in flight.
+  - name: Settle the context registration across namespace A1's members
+    type: wait_for_sync
+    nodes:
+      - account-scope-node-1
+      - account-scope-node-3
+    group_id: '{{ns_a1}}'
+    timeout: 120
+
+  - name: The paired device acquired app A without membership or a context
+    type: script
+    script: scripts/account-device-application.sh
+    target: local
+    args:
+      - account-scope-node-2
+      - '{{app_a}}'
+      - '{{ns_a1}}'
+
+  # ── Revoke, naming one namespace ───────────────────────────────────
+
+  # Revoked by node-1, the account holder. An admin governs who is a member, not
+  # which installations another person runs; an admin who wants somebody out
+  # removes their account, which is strictly stronger.
+  - name: The account holder revokes the phone, naming namespace A1
+    type: account_revoke
+    node: account-scope-node-1
+    namespace_id: '{{ns_a1}}'
+    device_id: '{{paired_device}}'
+    outputs:
+      revoked_in: revokedIn
+
+  # The payoff of everything above. Three entries from a call naming one, and
+  # each has a different reason for being there: A1 from the pairing, B1 from
+  # the relink, A2 from the auto-bind. Any of the three missing means that step
+  # never actually published a binding, however cleanly it reported.
+  - name: The revocation reached every namespace the device was bound in
+    type: assert
+    statements:
+      - 'contains({{revoked_in}}, {{ns_a1}})'
+      - 'contains({{revoked_in}}, {{ns_b1}})'
+      - 'contains({{revoked_in}}, {{ns_a2}})'
+
+  - name: Settle the revocation across namespace A1's members
+    type: wait_for_sync
+    nodes:
+      - account-scope-node-1
+      - account-scope-node-3
+    group_id: '{{ns_a1}}'
+    timeout: 120
+
+  # Polled rather than barriered, for the same reason as every other read of
+  # node-2: it is a member of nothing, so nothing can barrier on it. The
+  # tombstone reaches it by sync rather than by the call that made it.
+  - name: The revoked device stops presenting itself as Alice's
+    type: script
+    script: scripts/account-device-spent.sh
+    target: local
+    args:
+      - account-scope-node-2
+      - '{{paired_device}}'
+      - '{{alice_account}}'
+
+stop_all_nodes: true
+
+# ── Wiring ─────────────────────────────────────────────────────────
+#
+# Registered in `.github/workflows/e2e-rust-apps.yml`, which is also where it
+# gets its first real run: nothing here has been executed against live nodes.
+#
+# Every account-level route is driven by `target: local` scripts over raw curl,
+# because merobox has no native step for any of them. Its `account_pair` step
+# drives `namespaces/:id/account/pair-init` and `.../pair-complete` - one
+# namespace from the path, no application scope - which is exactly the shape
+# these routes replace, so it cannot express what is under test. `node_identity`
+# and `account_revoke` stay native, and are the only two values that have to
+# cross between steps: a `script` step cannot export custom `outputs:`, so
+# everything a later step needs is read back from an endpoint rather than
+# carried.
+#
+# node-2 appears in no `wait_for_sync`, in this scenario or any future one that
+# uses a paired device. A namespace barrier reads `groupStateHash`, which the
+# node answers only for a member; a paired device is a member of nothing by
+# construction. Reads of its state are polled inside the scripts instead, which
+# is why two of them carry an attempt budget rather than a barrier.

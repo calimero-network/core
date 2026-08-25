@@ -353,6 +353,21 @@ jobs:
           - workflow: account-facts-cross-namespace
             file: workflows/account-facts-cross-namespace.yml
             app: scaffolding-e2e
+          # The two account-LEVEL pairing scenarios. Pairing takes a namespace
+          # set on the new device and an application scope on the holder, and
+          # only real nodes can say whether the link lands where the scope aimed
+          # it, whether a namespace gained afterwards binds the device on its
+          # own, and whether a device that is a member of nothing ends up able
+          # to run the application.
+          - workflow: account-pairing-application-scope
+            file: workflows/account-pairing-application-scope.yml
+            app: scaffolding-e2e
+          # Its negative half. The refusal-to-status mapping is unit-tested one
+          # arm at a time; what needs real nodes is whether a real request lands
+          # on the arm the mapping names rather than on the check before it.
+          - workflow: account-pairing-refusal-statuses
+            file: workflows/account-pairing-refusal-statuses.yml
+            app: scaffolding-e2e
           - workflow: account-root-backup-restore
             file: workflows/account-root-backup-restore.yml
             app: scaffolding-e2e
