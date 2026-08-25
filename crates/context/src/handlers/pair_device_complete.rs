@@ -51,7 +51,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountMemberEndorsement, DeviceCert, PairingOffer};
+use calimero_account::{AccountId, AccountMemberEndorsement, DeviceCert, PairingOffer};
 use calimero_context_client::group::{
     PairDeviceCompleteRequest, PairDeviceCompleteResponse, PairingScope,
 };
@@ -60,11 +60,12 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
 use calimero_governance_store::{GroupKeyring, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use tracing::{info, warn};
 
+use crate::error::ContextError;
 use crate::handlers::list_namespaces::namespace_rows_for_applications;
 use crate::ContextManager;
 
@@ -120,22 +121,98 @@ fn resolve_scope(
     })
 }
 
+/// The key this node signs the endorsement, both ops and the key wrap with.
+///
+/// One key serves every namespace - it is node-level - so the first that
+/// resolves is the same key as any other. What the scan actually decides is
+/// whether this node takes part in the scope at all: an empty answer means
+/// either it is a stranger to the namespaces named, or the applications resolved
+/// to nothing here.
+fn signing_identity(
+    store: &Store,
+    gated_on: &[ContextGroupId],
+) -> EyreResult<(PublicKey, [u8; 32])> {
+    let namespaces = NamespaceRepository::new(store);
+    for group_id in gated_on {
+        match namespaces.resolve_identity(group_id) {
+            Ok(Some(identity)) => return Ok(identity),
+            Ok(None) => {}
+            Err(err) => warn!(?group_id, %err, "failed to resolve namespace identity"),
+        }
+    }
+    // Typed so the admin API surfaces this precondition as a 409, not a generic
+    // 500 (see `parse_api_error`).
+    Err(ContextError::PairingNoNamespaceIdentity {
+        namespaces: format!("{gated_on:?}"),
+    }
+    .into())
+}
+
+/// Is `statement` the offering device's own signature over exactly these keys?
+fn check_statement(offer: &PairingOffer, statement: &[u8; 64]) -> EyreResult<()> {
+    offer.verify_statement(statement).map_err(|err| {
+        ContextError::PairingStatementInvalid {
+            device: offer.device.to_string(),
+            cause: err.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Does the code the account holder was read describe the keys that arrived?
+///
+/// The refusal deliberately does not echo the expected code: an attacker that
+/// can drive this endpoint would otherwise learn the value it needs.
+fn check_confirmation_code(offer: &PairingOffer, supplied: &str) -> EyreResult<()> {
+    if offer.code_matches(supplied) {
+        return Ok(());
+    }
+    Err(ContextError::PairingCodeMismatch {
+        device: offer.device.to_string(),
+    }
+    .into())
+}
+
+/// Is this node itself a device of `account`, and so able to certify a second?
+///
+/// A node that paired INTO somebody else's account holds a device whose account
+/// its own root cannot name, so it has no standing to certify: it would mint a
+/// certificate for an account it does not hold and the link would be refused
+/// downstream.
+fn require_this_node_holds(store: &Store, account: AccountId) -> EyreResult<()> {
+    match NodeDeviceRepository::new(store).get()? {
+        Some(enrolled) if enrolled.account == account => Ok(()),
+        Some(enrolled) => Err(ContextError::PairingNotTheAccountHolder {
+            enrolled: enrolled.account.to_string(),
+            account: account.to_string(),
+        }
+        .into()),
+        None => eyre::bail!(
+            "this node has enrolled no device; joining a namespace enrols one, \
+             and it has to happen before pairing a second"
+        ),
+    }
+}
+
 /// Does this node hold a current scope key in any of `namespaces`?
 ///
 /// One is enough. Pairing publishes an encrypted group op and delivers that same
 /// key, so it needs a key *somewhere* in the scope to do either; the namespaces
 /// past the first are the fan-out's business, and it skips the ones it cannot
 /// publish into.
-fn holds_a_scope_key(store: &Store, namespaces: &[ContextGroupId]) -> EyreResult<bool> {
+fn require_a_scope_key(store: &Store, namespaces: &[ContextGroupId]) -> EyreResult<()> {
     for namespace_id in namespaces {
         if GroupKeyring::new(store, *namespace_id)
             .load_current_key()?
             .is_some()
         {
-            return Ok(true);
+            return Ok(());
         }
     }
-    Ok(false)
+    Err(ContextError::PairingNoScopeKey {
+        namespaces: format!("{namespaces:?}"),
+    }
+    .into())
 }
 
 impl Handler<PairDeviceCompleteRequest> for ContextManager {
@@ -167,20 +244,9 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrap. It must be a granted member: the endorsement is what carries the
         // link past the apply gate, and an endorsement from a non-member is
         // refused.
-        //
-        // One key serves every namespace — it is node-level — so the first that
-        // resolves is the same key as any other. What the scan actually decides is
-        // whether this node takes part in the scope at all: an empty answer means
-        // either it is a stranger to the namespaces named, or the applications
-        // resolved to nothing here.
-        let Some((self_pk, signer_sk_bytes)) =
-            gated_on.iter().find_map(|ns| self.node_signing_key(ns))
-        else {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "this node takes part in none of the namespaces this pairing covers \
-                 ({gated_on:?}); it has no identity to sign with and cannot certify a \
-                 device there"
-            )));
+        let (self_pk, signer_sk_bytes) = match signing_identity(&store, &gated_on) {
+            Ok(identity) => identity,
+            Err(err) => return ActorResponse::reply(Err(err)),
         };
         let signer_sk = PrivateKey::from(signer_sk_bytes);
 
@@ -212,7 +278,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // rotation. The confirmation code returned below is what closes that,
         // out of band and by a person.
         let offer = PairingOffer::new(account, device, kem_pk, sign_pk);
-        if let Err(err) = offer.verify_statement(&statement) {
+        if let Err(err) = check_statement(&offer, &statement) {
             // Logged, not just returned: this is the security-relevant event the
             // check exists for, and the error otherwise reaches only whoever made
             // the request — possibly the attacker rather than an operator reading
@@ -224,11 +290,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 %err,
                 "refusing to certify device: pairing statement invalid"
             );
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "refusing to certify device {device}: {err}. The key material does not \
-                 come with a valid signature from the device that minted it — re-run \
-                 `account pair-init` and carry its statement across unaltered"
-            )));
+            return ActorResponse::reply(Err(err));
         }
 
         // The statement proves the keys and the signature agree with each other,
@@ -236,9 +298,9 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // cannot produce: the account holder was read it from the pairing
         // device's own output, so it describes the keys that device minted, and
         // here it is checked against the keys that actually arrived.
-        if !offer.code_matches(&confirmation_code) {
-            // Deliberately does not echo the expected code: an attacker that can
-            // drive this endpoint would otherwise learn the value it needs.
+        if let Err(err) = check_confirmation_code(&offer, &confirmation_code) {
+            // The warn carries no `err`, for the same reason the refusal carries
+            // no expected code.
             warn!(
                 namespaces = gated_on.len(),
                 %account,
@@ -246,37 +308,11 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 "refusing to certify device: confirmation code does not match the \
                  key material offered"
             );
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "refusing to certify device {device}: the confirmation code does not \
-                 match the key material in this request. Either it was mistyped, or \
-                 the payload was altered between `account pair-init` and here — in \
-                 which case do not retry with the code this side computes, get it \
-                 from the pairing device again"
-            )));
+            return ActorResponse::reply(Err(err));
         }
 
-        // Refuse if this node is not itself a device of that account. A node
-        // that paired INTO somebody else's account holds a device whose account
-        // its own root cannot name, so it has no standing to certify a second
-        // one — it would mint a certificate for an account it does not hold and
-        // the link would be refused downstream.
-        match device_repo.get() {
-            Ok(Some(enrolled)) if enrolled.account == account => {}
-            Ok(Some(enrolled)) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node's device belongs to account {}, not to {account} which its \
-                     own root owns; a paired device cannot certify further devices — run \
-                     this on the node that holds the account",
-                    enrolled.account,
-                )));
-            }
-            Ok(None) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node has enrolled no device; joining a namespace enrols one, \
-                     and it has to happen before pairing a second"
-                )));
-            }
-            Err(err) => return ActorResponse::reply(Err(err)),
+        if let Err(err) = require_this_node_holds(&store, account) {
+            return ActorResponse::reply(Err(err));
         }
 
         // One precondition covers both ops: the link is an encrypted group op so
@@ -288,16 +324,8 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // fan-out below reaches the others too, but a missing key there is a
         // reason to skip that namespace rather than to refuse the pairing the
         // caller asked for.
-        match holds_a_scope_key(&store, &gated_on) {
-            Ok(true) => {}
-            Ok(false) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "this node holds no current scope key in any of {gated_on:?}; pairing \
-                     both publishes an encrypted group op and delivers that key, so neither \
-                     is possible yet"
-                )))
-            }
-            Err(err) => return ActorResponse::reply(Err(err)),
+        if let Err(err) = require_a_scope_key(&store, &gated_on) {
+            return ActorResponse::reply(Err(err));
         }
 
         // Epoch 0 on both counts: the account root has not rotated (rotation is
@@ -686,16 +714,136 @@ mod tests {
         let store = namespaces_this_node_speaks_in();
         let scope = [ContextGroupId::from(NS_A), ContextGroupId::from(NS_B)];
 
-        assert!(!holds_a_scope_key(&store, &scope).expect("scan"));
+        let refused = require_a_scope_key(&store, &scope).expect_err("no key anywhere yet");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::PairingNoScopeKey { .. })
+        ));
 
         GroupKeyring::new(&store, NS_B.into())
             .store_key(&[0x42; 32])
             .expect("store a scope key in the second namespace only");
 
-        assert!(holds_a_scope_key(&store, &scope).expect("scan"));
+        assert!(require_a_scope_key(&store, &scope).is_ok());
         assert!(
-            !holds_a_scope_key(&store, &[ContextGroupId::from(NS_A)]).expect("scan"),
+            require_a_scope_key(&store, &[ContextGroupId::from(NS_A)]).is_err(),
             "a key held somewhere else is not a key held in this scope"
         );
+    }
+
+    /// A namespace this node merely knows of has no identity to sign with, so a
+    /// scope that reaches only those is refused rather than certifying a device
+    /// no endorsement can carry.
+    #[test]
+    fn a_scope_this_node_signs_nowhere_in_is_refused() {
+        let store = namespaces_this_node_speaks_in();
+        let scope = [ContextGroupId::from(NS_A), ContextGroupId::from(NS_B)];
+
+        let refused = signing_identity(&store, &scope).expect_err("no key provisioned yet");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::PairingNoNamespaceIdentity { .. })
+        ));
+
+        let node = PrivateKey::from([0x21; 32]);
+        NamespaceRepository::new(&store)
+            .store_identity(&NS_B.into(), &node.public_key(), node.as_bytes())
+            .expect("provision this node's signing key");
+
+        assert_eq!(
+            signing_identity(&store, &scope)
+                .expect("one identity anywhere is enough")
+                .0,
+            node.public_key(),
+        );
+    }
+
+    /// The one thing an attacker holding both keys cannot arrange. It is checked
+    /// against the keys that ARRIVED, so a substituted payload fails it even
+    /// though its statement verifies.
+    #[test]
+    fn a_code_for_other_key_material_is_refused_without_echoing_the_expected_one() {
+        let device_sk = PrivateKey::from([0x31; 32]);
+        let account = AccountGenesis::new(PrivateKey::from([0x32; 32]).public_key()).account_id();
+        let device = calimero_account::DeviceId::from([0x33; 32]);
+        let kem_pk = calimero_account::KemPublicKey::from([0x34; 32]);
+        let (offer, _) =
+            PairingOffer::signed(&device_sk, account, device, kem_pk).expect("mint the offer");
+        let substituted = PairingOffer::new(
+            account,
+            device,
+            calimero_account::KemPublicKey::from([0xAA; 32]),
+            device_sk.public_key(),
+        );
+
+        assert!(check_confirmation_code(&offer, &offer.confirmation_code()).is_ok());
+
+        let refused = check_confirmation_code(&substituted, &offer.confirmation_code())
+            .expect_err("the code describes keys that did not arrive");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::PairingCodeMismatch { .. })
+        ));
+        assert!(
+            !refused
+                .to_string()
+                .contains(&substituted.confirmation_code()),
+            "echoing the expected code hands an attacker the one value it cannot compute"
+        );
+    }
+
+    /// Re-signing the substituted material is what the statement does NOT close;
+    /// altering it in transit is what it does.
+    #[test]
+    fn a_statement_over_other_key_material_is_refused() {
+        let device_sk = PrivateKey::from([0x41; 32]);
+        let account = AccountGenesis::new(PrivateKey::from([0x42; 32]).public_key()).account_id();
+        let device = calimero_account::DeviceId::from([0x43; 32]);
+        let (offer, statement) = PairingOffer::signed(
+            &device_sk,
+            account,
+            device,
+            calimero_account::KemPublicKey::from([0x44; 32]),
+        )
+        .expect("mint the offer");
+        let altered = PairingOffer::new(
+            account,
+            device,
+            calimero_account::KemPublicKey::from([0xBB; 32]),
+            device_sk.public_key(),
+        );
+
+        assert!(check_statement(&offer, &statement).is_ok());
+
+        let refused =
+            check_statement(&altered, &statement).expect_err("the keys were altered in transit");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::PairingStatementInvalid { .. })
+        ));
+    }
+
+    /// A node that paired INTO somebody else's account cannot certify a third
+    /// device: its root cannot name the account its own device row holds.
+    #[test]
+    fn a_paired_node_cannot_certify_for_the_account_its_own_root_owns() {
+        let store = namespaces_this_node_speaks_in();
+        let repo = NodeDeviceRepository::new(&store);
+        let adopted = repo
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS_A)],
+                AccountGenesis::new(PrivateKey::from([0x51; 32]).public_key()),
+            )
+            .expect("adopt somebody else's account");
+
+        assert!(require_this_node_holds(&store, adopted.account).is_ok());
+
+        let own = repo.ensure_account_root().expect("generate").account();
+        let refused = require_this_node_holds(&store, own)
+            .expect_err("the adopted row does not name this node's own account");
+        assert!(matches!(
+            refused.downcast_ref::<ContextError>(),
+            Some(ContextError::PairingNotTheAccountHolder { .. })
+        ));
     }
 }
