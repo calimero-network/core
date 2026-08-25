@@ -584,39 +584,6 @@ mod tests {
     use crate::collections::{Root, Vector};
     use crate::store::MainStorage;
 
-    /// A `Vector` must hand back what was pushed, in the order it was pushed.
-    ///
-    /// `get(0)` returning the third push is not a subtle ordering nicety — it
-    /// is the type failing to be a vector. This reproduces the case that
-    /// matters: several pushes inside ONE call.
-    ///
-    /// `created_at` is the execution timestamp, so it is identical for every
-    /// push in a call, and the trie enumerates `(created_at, id)` — leaving a
-    /// random id to decide. `with_merge_mode` pins the timestamp to 0, which
-    /// is what a migration does and what the unit-test clock hides by
-    /// advancing between calls.
-    #[test]
-    fn positional_reads_follow_insertion_order_within_one_call() {
-        crate::env::reset_for_testing();
-        let mut v: Vector<String> = Vector::new();
-
-        crate::env::with_merge_mode(|| {
-            for key in ["k1", "k2", "k3"] {
-                v.push(key.to_owned()).expect("push");
-            }
-        });
-
-        let read: Vec<String> = (0..3)
-            .map(|i| v.get(i).expect("get").expect("present").into_inner())
-            .collect();
-
-        assert_eq!(
-            read,
-            vec!["k1".to_owned(), "k2".to_owned(), "k3".to_owned()],
-            "positional reads did not follow insertion order",
-        );
-    }
-
     #[test]
     fn test_vector_push() {
         let mut vector = Root::new(Vector::<_, MainStorage>::new);

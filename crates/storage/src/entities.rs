@@ -195,53 +195,16 @@ pub struct Element {
     pub(crate) metadata: Metadata,
 }
 
-thread_local! {
-    /// How many elements this call has stamped, so each stamp is distinct.
-    ///
-    /// `ChildInfo` sorts by `(created_at, id)` and that order is load-bearing:
-    /// `Vector::get(i)` walks children in it, so a push must land after the
-    /// pushes before it. The doc on that `Ord` says `created_at` is "an HLC at
-    /// write time, roughly monotonic per writer" — but what is actually
-    /// stamped is the host's EXECUTION timestamp, which is identical for every
-    /// write in a call (and a flat 0 under merge mode, for determinism). Every
-    /// element created in one call therefore tied, and the random id decided
-    /// the order: pushing k1, k2, k3 read back as k1, k3, k2.
-    ///
-    /// A counter restores the intent the ordering was written for. It is
-    /// per-call, so two replicas replaying the same writes in the same order
-    /// derive the same stamps and converge — which is why it can be used under
-    /// merge mode, where the wall clock deliberately cannot.
-    static WRITE_SEQUENCE: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-}
-
-/// Forget the per-call write sequence. Test seam, and the reset a fresh
-/// execution gets for free by starting a new WASM instance.
-pub fn reset_write_sequence() {
-    WRITE_SEQUENCE.with(|seq| seq.set(0));
-}
-
 impl Element {
     /// Returns a timestamp for element creation/update.
-    ///
-    /// Strictly increasing within a call, so elements created together keep
-    /// the order they were created in — see `WRITE_SEQUENCE`. Outside merge
-    /// mode the sequence rides on the execution timestamp, whose resolution is
-    /// nanoseconds; a call would have to create billions of elements for the
-    /// offset to reach the next call's clock.
+    /// During merge mode, returns 0 to ensure deterministic hashes.
+    /// Outside merge mode, returns the current time.
     #[inline]
     fn timestamp_for_operation() -> u64 {
-        let nth = WRITE_SEQUENCE.with(|seq| {
-            let next = seq.get();
-            seq.set(next.saturating_add(1));
-            next
-        });
-
         if crate::env::in_merge_mode() {
-            // The wall clock is pinned to 0 here so hashes are deterministic;
-            // the sequence is deterministic too, so ordering survives.
-            nth
+            0
         } else {
-            time_now().saturating_add(nth)
+            time_now()
         }
     }
 
