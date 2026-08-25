@@ -430,7 +430,19 @@ bump_npm() {
   done
 
   for root in $roots; do
-    note "refreshing ${root#$DIR/}/pnpm-lock.yaml"
+    # $DIR is absolute, so a nested root strips to "app", "apps/desktop", and so
+    # on. A root that IS $DIR — the repository that keeps its lockfile at the top
+    # level — strips to itself, because there is no "$DIR/" prefix to remove. The
+    # recorded path then stayed absolute, and `git add --pathspec-from-file`,
+    # which reads paths as repository-relative, failed the whole bump with
+    #
+    #   fatal: pathspec 'home/runner/work/.../pnpm-lock.yaml' did not match any files
+    #
+    # tauri-app, app-registry and mero-issue-tracker are all shaped that way.
+    local rel="${root#$DIR}"; rel="${rel#/}"
+    local lock="${rel:+$rel/}pnpm-lock.yaml"
+
+    note "refreshing $lock"
     # --lockfile-only resolves and writes the lock without materialising
     # node_modules. --ignore-scripts because nothing here should run a
     # dependency's install hook on a release runner.
@@ -443,12 +455,11 @@ bump_npm() {
     # ERR_PNPM_NO_MATCHING_VERSION.
     if ! ( cd "$root" && pnpm install --lockfile-only --ignore-scripts ) \
         > "$TMPDIR_RUN/pnpm.log" 2>&1; then
-      note "pnpm failed refreshing ${root#$DIR/}/pnpm-lock.yaml:"
+      note "pnpm failed refreshing $lock:"
       sed 's/^/      /' "$TMPDIR_RUN/pnpm.log" >&2
-      die "lockfile refresh failed for ${root#$DIR/}"
+      die "lockfile refresh failed for $lock"
     fi
-    lock="${root#$DIR/}/pnpm-lock.yaml"
-    record_change "${lock#/}"
+    record_change "$lock"
   done
 }
 
