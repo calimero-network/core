@@ -179,6 +179,16 @@ steps:
   # node-2 is the subgroup's admin (it created it), so no extra
   # CAN_CREATE_CONTEXT grant is needed here.
 
+  # Explicit, because merobox no longer installs it during the join (merobox
+  # #369). Joining without the app is core's job — sync fetches the context's
+  # blob from a peer and installs it. CREATING a context is not: it names an
+  # application the node must already hold.
+  - name: Install the application on node-2, which is about to create a context
+    type: install_application
+    node: e2e-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
   - name: Node-2 creates a context in the subgroup
     type: create_context
     node: e2e-node-2
