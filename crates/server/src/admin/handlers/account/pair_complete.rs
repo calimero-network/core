@@ -1,40 +1,34 @@
 use std::sync::Arc;
 
-use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::{DeviceId, KemPublicKey};
 use calimero_context_client::group::{PairDeviceCompleteRequest, PairingScope};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceCompleteApiResponseData,
+    AccountPairCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceCompleteApiResponseData,
 };
+use reqwest::StatusCode;
 use tracing::info;
 
 use crate::admin::handlers::account::{decode32, decode64};
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
-/// Certify a device another node minted, link it, and deliver the scope key.
+/// Certify a device another node minted, link it, and deliver the scope keys.
 ///
 /// The second half of pairing. Run on the node that holds the account — it is
 /// the only one with the account root that can sign the certificate.
 ///
-/// DEPRECATED. The namespace named here only ever decided where the checks ran;
-/// the link fans out to every namespace regardless. Use
-/// `POST /admin-api/account/pair-complete`, which scopes the fan-out by
-/// application.
+/// `applications` decides which namespaces the link is published into; naming
+/// none means every namespace this node takes part in, which is what the fan-out
+/// did unconditionally before there was anything to narrow it with.
 pub async fn handler(
-    Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    ValidatedJson(req): ValidatedJson<PairDeviceCompleteApiRequest>,
+    ValidatedJson(req): ValidatedJson<AccountPairCompleteApiRequest>,
 ) -> impl IntoResponse {
-    let namespace_id = match super::super::groups::parse_group_id(&namespace_id_str) {
-        Ok(id) => id,
-        Err(err) => return err.into_response(),
-    };
-
     let device = match decode32(&req.device_id, "deviceId") {
         Ok(bytes) => DeviceId::from(bytes),
         Err(err) => return err.into_response(),
@@ -52,8 +46,22 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
+    let mut applications = Vec::with_capacity(req.applications.len());
+    for application_id in &req.applications {
+        match application_id.parse::<ApplicationId>() {
+            Ok(id) => applications.push(id),
+            Err(_) => {
+                return ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: format!("Invalid application id: {application_id}"),
+                }
+                .into_response()
+            }
+        }
+    }
+
     info!(
-        namespace_id = %namespace_id_str,
+        applications = applications.len(),
         %device,
         "certifying and linking a paired device"
     );
@@ -61,7 +69,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .pair_device_complete(PairDeviceCompleteRequest {
-            scope: PairingScope::Namespace(namespace_id),
+            scope: PairingScope::Applications(applications),
             device,
             kem_pk,
             sign_pk,
@@ -74,7 +82,6 @@ pub async fn handler(
     match result {
         Ok(resp) => {
             info!(
-                namespace_id = %namespace_id_str,
                 account = %resp.account,
                 device = %resp.device,
                 key_delivered = resp.key_delivered,

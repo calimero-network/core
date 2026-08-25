@@ -1969,6 +1969,134 @@ pub struct PairDeviceCompleteApiResponse {
     pub data: PairDeviceCompleteApiResponseData,
 }
 
+/// Adopt an existing account on this node and mint one device for it, across a
+/// set of namespaces.
+///
+/// The account-level replacement for [`PairDeviceInitApiRequest`], which took its
+/// one namespace from the path. Both halves of pairing were already account-wide
+/// in their credentials — the certificate is root-signed and the endorsement is
+/// node-level, so neither names a namespace — while the caller still had to name
+/// one, and the device ended up listening on that one topic while the holder's
+/// link fanned out across all of them.
+///
+/// The response is [`PairDeviceInitApiResponse`] unchanged: one device is minted
+/// for the whole set, so there is one id, one key pair and one code to read out
+/// however many namespaces it covers.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPairInitApiRequest {
+    /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
+    ///
+    /// Named for the half it carries, as on the namespace-scoped request: an
+    /// ed25519 private and public key are both 32 bytes and both hex, so nothing
+    /// but the name distinguishes them. The private root never crosses this
+    /// boundary.
+    pub account_root_public_key: String,
+    /// Hex-encoded ids of the namespaces to enroll into (32 bytes each).
+    ///
+    /// Named by the caller, and it has to be: this node is a member of nothing
+    /// and holds no scope key, so it can neither read the account's namespace set
+    /// off a DAG nor derive it. The device that already holds the account is the
+    /// only party that knows it.
+    ///
+    /// The set decides what this device *listens* on. It does not have to agree
+    /// with the applications the holder scopes `pair-complete` to: a binding
+    /// published where the device is not listening is picked up whenever it does
+    /// subscribe, and a subscription the holder never reaches costs nothing.
+    pub namespaces: Vec<String>,
+}
+
+impl Validate for AccountPairInitApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        if let Some(e) =
+            validate_hex_string(&self.account_root_public_key, "accountRootPublicKey", 32)
+        {
+            errors.push(e);
+        }
+        // Refused here rather than deeper, where "enroll into nothing" is a
+        // device that is certified and then listens on no topic at all.
+        if self.namespaces.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "namespaces",
+            });
+        }
+        errors.extend(
+            self.namespaces
+                .iter()
+                .filter_map(|id| validate_hex_string(id, "namespaces[]", 32)),
+        );
+
+        errors
+    }
+}
+
+/// Certify a device another node minted, link it, and deliver the scope keys —
+/// scoped by application rather than by namespace.
+///
+/// The account-level replacement for [`PairDeviceCompleteApiRequest`]. Every
+/// field but `applications` is what that node's `pair-init` returned, and the
+/// response is [`PairDeviceCompleteApiResponse`] unchanged.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPairCompleteApiRequest {
+    /// Hex-encoded `DeviceId` the other node minted (32 bytes).
+    pub device_id: String,
+    /// Hex-encoded X25519 agreement key to wrap the scope keys under (32 bytes).
+    pub kem_public_key: String,
+    /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
+    pub sign_public_key: String,
+    /// Hex-encoded Ed25519 signature (64 bytes) from that node's pair-init.
+    ///
+    /// Not optional: without it the three values above are only claims by the
+    /// sender, and certifying them would make attacker-supplied keys a trusted
+    /// device of this account.
+    pub statement: String,
+    /// The confirmation code the account holder was read from the pairing
+    /// device, e.g. `7BC0-DAAC-CCB4-84A4`. Grouping and case are ignored.
+    ///
+    /// One code covers the whole pairing, because one device was minted for it.
+    pub confirmation_code: String,
+    /// Which applications this device may speak for. Absent or empty means all.
+    ///
+    /// A person can answer "which apps may this device use"; they cannot answer
+    /// "which namespaces", because a namespace is an implementation unit they
+    /// never named. So the scope is chosen here and resolved to namespaces on the
+    /// node, through the same lookup `GET /namespaces/for-application/:id` reads.
+    #[serde(default)]
+    pub applications: Vec<String>,
+}
+
+impl Validate for AccountPairCompleteApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        // The confirmation code is free-form here (grouping and case are
+        // normalized at the point of comparison, which is the only place that can
+        // say whether it is *right*); an empty one is refused up front.
+        //
+        // `applications` gets no check: an application id is bs58, not hex, and
+        // the handler's parse is the only thing that can say whether one names an
+        // application at all. An empty list is the valid "all of them".
+        if self.confirmation_code.trim().is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "confirmationCode",
+            });
+        }
+        for (field, value, expected) in [
+            ("deviceId", &self.device_id, 32),
+            ("kemPublicKey", &self.kem_public_key, 32),
+            ("signPublicKey", &self.sign_public_key, 32),
+            ("statement", &self.statement, 64),
+        ] {
+            if let Some(e) = validate_hex_string(value, field, expected) {
+                errors.push(e);
+            }
+        }
+        errors
+    }
+}
+
 /// Withdraw a device from an account, terminally.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

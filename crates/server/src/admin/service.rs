@@ -17,7 +17,7 @@ use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::{alias, blob, groups, namespaces, tee};
+use super::handlers::{account, alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, get_application_abi, install_application, install_dev_application,
@@ -314,6 +314,14 @@ pub(crate) fn setup(
             post(groups::create_group_invitation::handler),
         )
         .route("/groups/join", post(groups::join_group::handler))
+        // Pairing is account-level: the certificate is root-signed and the
+        // endorsement node-level, so neither half ever named a namespace.
+        .route("/account/pair-init", post(account::pair_init::handler))
+        .route(
+            "/account/pair-complete",
+            post(account::pair_complete::handler),
+        )
+        // Deprecated, superseded by the two routes above. Kept until callers move.
         .route(
             "/namespaces/:namespace_id/account/pair-init",
             post(namespaces::pair_device_init::handler),

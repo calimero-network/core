@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::AccountGenesis;
 use calimero_context_client::group::PairDeviceInitRequest;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    PairDeviceInitApiRequest, PairDeviceInitApiResponse, PairDeviceInitApiResponseData,
+    AccountPairInitApiRequest, PairDeviceInitApiResponse, PairDeviceInitApiResponseData,
 };
 use tracing::info;
 
@@ -23,27 +22,30 @@ use crate::AdminState;
 /// `pair-complete` will certify, the device's signature over them, and the code
 /// to read out to the account holder.
 ///
-/// DEPRECATED. Naming one namespace leaves the device subscribed to one topic
-/// while the holder's link fans out across all of them. Use
-/// `POST /admin-api/account/pair-init`, which takes the set.
+/// One device covers every namespace named, so there is one of each to hand
+/// over however many the caller listed. The list is the caller's to supply: this
+/// node is a member of nothing and cannot discover which namespaces the account
+/// speaks in.
 pub async fn handler(
-    Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    ValidatedJson(req): ValidatedJson<PairDeviceInitApiRequest>,
+    ValidatedJson(req): ValidatedJson<AccountPairInitApiRequest>,
 ) -> impl IntoResponse {
-    let namespace_id = match super::super::groups::parse_group_id(&namespace_id_str) {
-        Ok(id) => id,
-        Err(err) => return err.into_response(),
-    };
-
     let root_key = match decode32(&req.account_root_public_key, "accountRootPublicKey") {
         Ok(bytes) => bytes,
         Err(err) => return err.into_response(),
     };
     let genesis = AccountGenesis::new(PublicKey::from(root_key));
 
+    let mut namespaces = Vec::with_capacity(req.namespaces.len());
+    for namespace_id in &req.namespaces {
+        match decode32(namespace_id, "namespaces[]") {
+            Ok(bytes) => namespaces.push(bytes.into()),
+            Err(err) => return err.into_response(),
+        }
+    }
+
     info!(
-        namespace_id = %namespace_id_str,
+        namespaces = namespaces.len(),
         account = %genesis.account_id(),
         "minting a device for an existing account"
     );
@@ -51,7 +53,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .pair_device_init(PairDeviceInitRequest {
-            namespaces: vec![namespace_id],
+            namespaces,
             genesis,
         })
         .await
@@ -60,7 +62,6 @@ pub async fn handler(
     match result {
         Ok(resp) => {
             info!(
-                namespace_id = %namespace_id_str,
                 account = %resp.account,
                 device = %resp.device,
                 "device minted; awaiting its certificate"
