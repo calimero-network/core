@@ -354,6 +354,14 @@ impl DeviceId {
     }
 }
 
+// Needed for `DeviceId` to be aliasable: the alias store layer copies the
+// value's bytes through this, same as `ContextId`/`ApplicationId` do.
+impl AsRef<[u8; 32]> for DeviceId {
+    fn as_ref(&self) -> &[u8; 32] {
+        self.as_bytes()
+    }
+}
+
 /// A member named either by the ACCOUNT it is, or by a KEY it signs with.
 ///
 /// The two cannot be confused: an account is 64 hex characters, and bs58 over
