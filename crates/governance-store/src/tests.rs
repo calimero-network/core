@@ -4,6 +4,7 @@ use super::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
@@ -290,11 +291,18 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             &permissions,
             &PublicKey::from([0x36; 32]),
             &context,
-            &app_id
+            &app_id,
+            &BlobId::from([0x37; 32]),
         )
         .is_err());
     service
-        .register(&permissions, &creator_pk, &context, &app_id)
+        .register(
+            &permissions,
+            &creator_pk,
+            &context,
+            &app_id,
+            &BlobId::from([0x37; 32]),
+        )
         .unwrap();
     assert_eq!(get_group_for_context(&store, &context).unwrap(), Some(gid));
     assert_eq!(
@@ -400,12 +408,90 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
     let service = ContextRegistrationService::new(&store, gid);
     let permissions = PermissionChecker::new(&store, gid);
     service
-        .register(&permissions, &creator_pk, &context, &incoming_app_id)
+        .register(
+            &permissions,
+            &creator_pk,
+            &context,
+            &incoming_app_id,
+            &BlobId::from([0x45; 32]),
+        )
         .unwrap();
 
     let handle = store.handle();
     let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
     assert_eq!(ctx_meta.application.application_id(), existing_app_id);
+}
+
+/// A group whose meta was seeded with zeros - every node that gained the
+/// namespace by key delivery rather than by invitation - with a member able to
+/// register a context in it.
+fn group_with_zeroed_meta(store: &Store, bytecode_id: [u8; 32]) -> (ContextGroupId, PublicKey) {
+    let gid = test_group_id();
+    let (creator_pk, creator) = enrolled(store, &gid, 0x51);
+
+    MembershipRepository::new(store)
+        .add_member(&gid, &creator, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            &gid,
+            &creator,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+        )
+        .unwrap();
+
+    let mut meta = test_meta();
+    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.bytecode_id = bytecode_id;
+    MetaRepository::new(store).save(&gid, &meta).unwrap();
+
+    (gid, creator_pk)
+}
+
+/// The op carries the creator's `app_meta.bytecode` blob - the same value an
+/// invitation carries as `bytecode_id` - so a node that never saw an invitation
+/// ends up with the group's target blob rather than a permanent zero.
+#[test]
+fn context_registered_heals_a_zeroed_bytecode_id() {
+    let store = test_store();
+    let (gid, creator_pk) = group_with_zeroed_meta(&store, [0u8; 32]);
+    let app_id = ApplicationId::from([0x52; 32]);
+    let blob_id = BlobId::from([0x53; 32]);
+
+    ContextRegistrationService::new(&store, gid)
+        .register(
+            &PermissionChecker::new(&store, gid),
+            &creator_pk,
+            &ContextId::from([0x54; 32]),
+            &app_id,
+            &blob_id,
+        )
+        .unwrap();
+
+    let healed = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    assert_eq!(healed.target_application_id, app_id);
+    assert_eq!(healed.bytecode_id, [0x53; 32]);
+}
+
+/// A group already pinned to a blob - by its own create, an invitation, or an
+/// upgrade - keeps it. The heal fills a hole; it never re-targets a group.
+#[test]
+fn context_registered_leaves_a_set_bytecode_id_alone() {
+    let store = test_store();
+    let (gid, creator_pk) = group_with_zeroed_meta(&store, [0xBB; 32]);
+
+    ContextRegistrationService::new(&store, gid)
+        .register(
+            &PermissionChecker::new(&store, gid),
+            &creator_pk,
+            &ContextId::from([0x54; 32]),
+            &ApplicationId::from([0x52; 32]),
+            &BlobId::from([0x53; 32]),
+        )
+        .unwrap();
+
+    let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    assert_eq!(meta.bytecode_id, [0xBB; 32]);
 }
 
 /// Re-applying the same op (e.g. a node's own published op coming back via

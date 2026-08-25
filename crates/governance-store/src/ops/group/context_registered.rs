@@ -4,6 +4,7 @@
 use super::super::super::set_context_service_name;
 use super::context::GroupApplyCtx;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use eyre::Result as EyreResult;
 
@@ -11,6 +12,7 @@ pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     context_id: &ContextId,
     application_id: &ApplicationId,
+    blob_id: &BlobId,
     service_name: &Option<String>,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
@@ -18,8 +20,13 @@ pub(crate) fn apply(
     let store = ctx.store();
 
     let permissions = ctx.permissions();
-    ctx.context_registration()
-        .register(permissions, signer, context_id, application_id)?;
+    ctx.context_registration().register(
+        permissions,
+        signer,
+        context_id,
+        application_id,
+        blob_id,
+    )?;
     if let Some(name) = service_name {
         set_context_service_name(store, context_id, name)?;
     }
