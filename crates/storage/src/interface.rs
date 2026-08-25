@@ -46,6 +46,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, trace, warn};
 
 use crate::address::Id;
+use crate::child_trie::ChildTrie;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
@@ -1232,6 +1233,34 @@ impl<S: StorageAdaptor> Interface<S> {
         if !child.element().is_dirty() {
             return Ok(false);
         }
+
+        // Position among the parent's children, assigned by the WRITER, here,
+        // where local writes flow through (`CollectionMut::insert` — every
+        // WASM-side push). Deliberately NOT in `Index::add_child_to`: the
+        // remote-apply paths call that with metadata off the wire, and
+        // recomputing there would replace the writer's position with the
+        // receiver's own child count. The two replicas would then order the
+        // same collection differently.
+        //
+        // Set before both uses below, so the position reaches local state (the
+        // `ChildInfo` written into the parent's trie) AND peers (`save_raw`
+        // emits an action carrying this metadata).
+        //
+        // Existing children keep the position they were given. Re-linking
+        // happens on every update, and taking a fresh position then would move
+        // an entity to the end of its own collection each time it was edited.
+        // `ChildTrie::get` is a keyed lookup, not a walk.
+        //
+        // Why a position is needed at all: `Vector::get(i)` iterates children in
+        // `ChildInfo` order, and `created_at` cannot separate writes made in one
+        // call — it is the execution timestamp, the same for all of them and
+        // pinned to 0 under merge mode. Without this they tie and the random id
+        // decides, so `get(0)` could return the third push.
+        let trie = <ChildTrie<S>>::new(parent_id);
+        child.element_mut().metadata.order = match trie.get(child.id()) {
+            Some(existing) => existing.metadata.order,
+            None => trie.len(),
+        };
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
 

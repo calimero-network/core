@@ -584,50 +584,18 @@ mod tests {
     use crate::collections::{Root, Vector};
     use crate::store::MainStorage;
 
-    /// `Vector::get(0)` can return the third push. **Known defect, not fixed.**
+    /// A `Vector` hands back what was pushed, in the order it was pushed.
     ///
-    /// Pushing k1, k2, k3 inside ONE call reads back as k1, k3, k2. `ChildInfo`
-    /// sorts by `(created_at, id)`; `created_at` is the host's execution
-    /// timestamp, identical for every write in a call (and a flat 0 under merge
-    /// mode), so every element ties and the random id decides.
+    /// This reproduces the case that broke: several pushes inside ONE call.
+    /// `ChildInfo` sorts by `(created_at, order, id)`, and `created_at` cannot
+    /// separate them — it is the host's execution timestamp, identical for
+    /// every write in a call and pinned to 0 under merge mode. Before `order`
+    /// existed they tied and the random id decided, so this failed about five
+    /// runs in six: pushing k1, k2, k3 read back as k1, k3, k2.
     ///
-    /// This branch is what exposed it. `Collection::insert` no longer
-    /// materialises the child cache to append the new id — an O(n) read the
-    /// child trie exists to remove — and its comment says leaving the cache
-    /// unpopulated is safe because "the trie is authoritative". True of
-    /// membership, not of ORDER: order was previously carried by the
-    /// insertion-ordered cache, and the trie cannot reconstruct what the sort
-    /// key does not distinguish. `master` passes this test for that reason.
-    ///
-    /// Two fixes were tried and are recorded here so they are not tried again:
-    ///
-    /// 1. **Make the write stamp strictly increasing.** Breaks a deliberate
-    ///    merge invariant — `an_entity_constructed_during_merge_loses_to_any_delete`
-    ///    requires merge-mode writes to stamp 0 so nothing can be older than
-    ///    them, while `interface.rs` and `merge.rs` read `created_at ==
-    ///    updated_at` as "never updated". Together those force ties in merge
-    ///    mode, so timestamps cannot carry order there.
-    ///
-    /// 2. **Order the ids** (a monotonic prefix). The trie buckets on the first
-    ///    4 nibbles of the id, so a monotonic prefix puts every entry of a
-    ///    collection in one bucket and turns the bounded lookup back into a
-    ///    scan — the cost this branch exists to remove.
-    ///
-    /// What remains is a per-child ordinal carried as the tiebreak,
-    /// `(created_at, ordinal, id)`. The ordinal cannot be recomputed by the
-    /// receiver — a node applying a synced `Add` would derive it from ITS child
-    /// count, which need not match the writer's — so it has to be assigned by
-    /// the writer and travel in the action payload. That makes it a sync
-    /// wire-format change, and it belongs to whoever owns the merge semantics
-    /// rather than to this branch.
-    ///
-    /// Failure is probabilistic: three random ids sort into insertion order
-    /// about one time in six, so this reproduces ~5 runs in 6 and CI scenario
-    /// `09-scenario-crdt-native` fails intermittently rather than always.
-    /// `master` passes it 10/10, which is what identifies the regression as
-    /// this branch's rather than pre-existing.
+    /// `with_merge_mode` pins the clock, which is what a migration does and
+    /// what the unit-test clock otherwise hides by advancing between calls.
     #[test]
-    #[ignore = "known: insertion order is lost for writes made in one call; see comment"]
     fn positional_reads_follow_insertion_order_within_one_call() {
         crate::env::reset_for_testing();
         let mut v: Vector<String> = Vector::new();
@@ -646,6 +614,37 @@ mod tests {
             read,
             vec!["k1".to_owned(), "k2".to_owned(), "k3".to_owned()],
             "positional reads did not follow insertion order",
+        );
+    }
+
+    /// Editing an entry must not move it.
+    ///
+    /// A position is taken once, when the child is first linked. Re-linking
+    /// happens on every update, so taking a fresh position there would send an
+    /// entry to the end of its own collection each time it was edited.
+    #[test]
+    fn updating_an_entry_leaves_it_where_it_was() {
+        crate::env::reset_for_testing();
+        let mut v: Vector<String> = Vector::new();
+
+        crate::env::with_merge_mode(|| {
+            for key in ["k1", "k2", "k3"] {
+                v.push(key.to_owned()).expect("push");
+            }
+        });
+
+        // Edited outside merge mode: that is an ordinary write, and merge mode
+        // is only used above to force the tie this test is about.
+        v.update(0, "k1-edited".to_owned()).expect("update");
+
+        let read: Vec<String> = (0..3)
+            .map(|i| v.get(i).expect("get").expect("present").into_inner())
+            .collect();
+
+        assert_eq!(
+            read,
+            vec!["k1-edited".to_owned(), "k2".to_owned(), "k3".to_owned()],
+            "an edited entry moved instead of staying put",
         );
     }
 

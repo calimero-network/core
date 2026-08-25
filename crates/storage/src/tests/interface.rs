@@ -894,6 +894,7 @@ mod user_storage_signature_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -1067,6 +1068,7 @@ mod user_storage_replay_protection {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         let mut action = Action::Add {
             id: page.id(),
@@ -1514,6 +1516,7 @@ mod shared_storage_rotation_authentication {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
         let payload = anonymous.payload_for_signing();
@@ -2280,6 +2283,7 @@ mod shared_storage_rotation_authentication {
                 crdt_type: Some(CrdtType::GCounter),
                 field_name: None,
                 schema_version: None,
+                order: 0,
             };
             let mut action = crate::action::Action::Add {
                 id: member,
@@ -2402,6 +2406,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2433,6 +2438,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2471,6 +2477,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -2493,6 +2500,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2531,6 +2539,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -2713,6 +2722,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2755,6 +2765,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2794,6 +2805,7 @@ mod timestamp_drift_protection {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2829,6 +2841,7 @@ mod timestamp_drift_protection {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2858,6 +2871,7 @@ mod timestamp_drift_protection {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2930,6 +2944,7 @@ mod storage_type_edge_cases {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
 
         let mut action = Action::DeleteRef {
@@ -3101,6 +3116,7 @@ mod storage_type_edge_cases {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -3190,6 +3206,7 @@ mod storage_type_edge_cases {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -3314,6 +3331,7 @@ mod storage_type_edge_cases {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         let mut delete_action = Action::DeleteRef {
             id: page.id(),
@@ -3478,6 +3496,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         env::with_account_id(*owner.as_bytes(), || {
             assert!(!env::in_merge_mode(), "convert must run on the normal path");
@@ -3529,6 +3548,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         // Executor is NOT the owner: the local-owner stamp branch must not fire,
         // so the entry is never converted (schema stays None, no owner signature).
@@ -3567,6 +3587,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         // Guard O4: even an owner-keyed write must NOT drive the convert when it
         // runs inside a merge scope. Merge mode bypasses the replay-nonce check
@@ -3633,6 +3654,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         let mut action = Action::Add {
             id,
@@ -3701,6 +3723,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: Some(1),
+            order: before.order,
         };
         let mut update = Action::Update {
             id,

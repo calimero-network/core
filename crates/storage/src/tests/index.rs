@@ -24,6 +24,7 @@ mod index__public_methods {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -40,6 +41,7 @@ mod index__public_methods {
                     crdt_type: None,
                     field_name: None,
                     schema_version: None,
+                    order: 0,
                 },
             )],
             metadata: Metadata {
@@ -49,6 +51,7 @@ mod index__public_methods {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -1435,6 +1438,7 @@ mod minimal_struct_layout_compat {
                 crdt_type,
                 field_name,
                 schema_version: None,
+                order: 0,
             },
             deleted_at: Some(9999),
             deleted_children: Vec::new(),
@@ -1542,6 +1546,7 @@ mod verify_ancestor_integrity_tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -1683,6 +1688,7 @@ mod verify_snapshot_entity_signature_tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -1697,6 +1703,7 @@ mod verify_snapshot_entity_signature_tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -1716,6 +1723,7 @@ mod verify_snapshot_entity_signature_tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -2060,6 +2068,109 @@ mod update_signature_in_place_tests {
         assert!(
             <Index<S>>::is_deleted(id).unwrap(),
             "entity stays tombstoned after the signature patch"
+        );
+    }
+}
+
+/// A linked child keeps the position it arrives with.
+///
+/// `Index::add_child_to` is the shared path: local writes reach it through
+/// `Interface::add_child_to`, which assigns the position, and remote applies
+/// reach it carrying the WRITER's position in the action's metadata. It must
+/// not compute one of its own — a receiver's child count need not match the
+/// writer's, and the two replicas would then order the same collection
+/// differently while both believing they had converged.
+///
+/// This is the guard on that boundary: moving the assignment down into
+/// `Index::add_child_to` "to keep it in one place" would break replication in a
+/// way no single-node test can see.
+mod child_order_is_the_writers {
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata};
+    use crate::index::Index;
+    use crate::store::MainStorage;
+
+    type TestIndex = Index<MainStorage>;
+
+    #[test]
+    fn add_child_to_preserves_the_position_it_is_given() {
+        crate::env::reset_for_testing();
+
+        let parent = Id::random();
+        TestIndex::add_root(ChildInfo::new(parent, [0; 32], Metadata::default())).expect("root");
+
+        // Arrives as if from a peer, out of order and with positions that do
+        // not match this node's child count (which starts at 0).
+        for (id_seed, order) in [(1_u8, 7_u64), (2, 3), (3, 5)] {
+            let metadata = Metadata {
+                order,
+                ..Metadata::default()
+            };
+            TestIndex::add_child_to(
+                parent,
+                ChildInfo::new(Id::new([id_seed; 32]), [id_seed; 32], metadata),
+            )
+            .expect("link");
+        }
+
+        let linked = TestIndex::get_children_of(parent).expect("children");
+        let orders: Vec<u64> = linked.iter().map(|c| c.metadata.order).collect();
+
+        assert_eq!(
+            orders,
+            vec![3, 5, 7],
+            "positions were recomputed locally instead of kept as sent",
+        );
+    }
+
+    /// Re-linking a child it already holds must not move it.
+    ///
+    /// The position is taken once, at first link. Any path that links an
+    /// existing child again — a resurrect, a re-save — would otherwise hand it
+    /// the current child count and send it to the end of its own collection.
+    #[test]
+    fn relinking_an_existing_child_keeps_its_position() {
+        use crate::entities::{Data, Element};
+        use crate::interface::Interface;
+        use crate::tests::common::Paragraph;
+
+        crate::env::reset_for_testing();
+        crate::tests::common::register_test_merge_functions();
+
+        let mut page = crate::tests::common::Page::new_from_element("Parent", Element::root());
+        assert!(Interface::<MainStorage>::save(&mut page).unwrap());
+
+        let first = Element::new(None);
+        let first_id = first.id();
+        let mut para1 = Paragraph::new_from_element("one", first);
+        let mut para2 = Paragraph::new_from_element("two", Element::new(None));
+
+        assert!(Interface::<MainStorage>::add_child_to(page.id(), &mut para1).unwrap());
+        assert!(Interface::<MainStorage>::add_child_to(page.id(), &mut para2).unwrap());
+
+        let before = TestIndex::get_children_of(page.id())
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id() == first_id)
+            .expect("linked")
+            .metadata
+            .order;
+
+        // Link the SAME id again, dirty, as a re-save would.
+        let mut again = Paragraph::new_from_element("one again", Element::new(Some(first_id)));
+        let _ignored = Interface::<MainStorage>::add_child_to(page.id(), &mut again).unwrap();
+
+        let after = TestIndex::get_children_of(page.id())
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id() == first_id)
+            .expect("still linked")
+            .metadata
+            .order;
+
+        assert_eq!(
+            after, before,
+            "re-linking moved the child from position {before} to {after}",
         );
     }
 }
