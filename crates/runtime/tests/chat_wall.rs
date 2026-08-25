@@ -238,7 +238,6 @@ fn how_many_messages_before_send_message_walls() {
                 "mentions_usernames": [],
                 "parent_message": null,
                 "timestamp": i as u64,
-                "sender_username": "alice",
                 "files": null,
                 "images": null,
             }),
