@@ -1259,7 +1259,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let trie = <ChildTrie<S>>::new(parent_id);
         child.element_mut().metadata.order = match trie.get(child.id()) {
             Some(existing) => existing.metadata.order,
-            None => trie.len(),
+            None => trie.next_order(),
         };
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;

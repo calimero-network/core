@@ -2123,6 +2123,114 @@ mod child_order_is_the_writers {
         );
     }
 
+    /// Two replicas that learn the same concurrent writes in OPPOSITE arrival
+    /// orders must read the collection back identically.
+    #[test]
+    fn two_writers_that_collide_still_converge() {
+        crate::env::reset_for_testing();
+
+        // Writer A and writer B each append two entries to a parent that had
+        // none, so both hand out positions 0 and 1. Same execution timestamp:
+        // one call each, and merge mode pins it to 0 anyway.
+        let a0 = (Id::new([0xA0; 32]), 0_u64);
+        let a1 = (Id::new([0xA1; 32]), 1_u64);
+        let b0 = (Id::new([0xB0; 32]), 0_u64);
+        let b1 = (Id::new([0xB1; 32]), 1_u64);
+
+        let read_back = |arrivals: [(Id, u64); 4]| {
+            crate::env::reset_for_testing();
+            let parent = Id::new([0xFF; 32]);
+            TestIndex::add_root(ChildInfo::new(parent, [0; 32], Metadata::default()))
+                .expect("root");
+            for (id, order) in arrivals {
+                let metadata = Metadata {
+                    order,
+                    ..Metadata::default()
+                };
+                TestIndex::add_child_to(parent, ChildInfo::new(id, [0; 32], metadata))
+                    .expect("link");
+            }
+            TestIndex::get_children_of(parent)
+                .expect("children")
+                .into_iter()
+                .map(|c| c.id())
+                .collect::<Vec<_>>()
+        };
+
+        let replica_1 = read_back([a0, a1, b0, b1]);
+        let replica_2 = read_back([b1, b0, a1, a0]);
+
+        assert_eq!(
+            replica_1, replica_2,
+            "replicas that learned the same writes in different arrival orders \
+             disagree on the collection's order",
+        );
+
+        // Interleaved, not grouped by writer: both writers handed out 0 and 1,
+        // so the two 0s sort together (by id) ahead of the two 1s. Each
+        // writer's OWN entries stay in the order it wrote them, which is the
+        // property `order` exists to hold; agreeing on how two independent runs
+        // interleave would need a sequence CRDT, not a per-parent counter.
+        assert_eq!(
+            replica_1,
+            vec![a0.0, b0.0, a1.0, b1.0],
+            "concurrent positions should tie-break by id within each position",
+        );
+    }
+
+    /// A position freed by a removal must not be handed to a later append.
+    ///
+    /// All three writes here share one `created_at` — the case `order` exists
+    /// to decide — so if the append reuses the removed child's position, the
+    /// tie falls to the random id and the new entry can land AHEAD of one
+    /// written before it.
+    #[test]
+    fn a_removed_position_is_not_reissued() {
+        use crate::child_trie::ChildTrie;
+        use crate::entities::{Data, Element};
+        use crate::interface::Interface;
+        use crate::tests::common::{Page, Paragraph};
+
+        crate::env::reset_for_testing();
+        crate::tests::common::register_test_merge_functions();
+
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(Interface::<MainStorage>::save(&mut page).unwrap());
+
+        let mut ids = Vec::new();
+        for name in ["a", "b", "c"] {
+            let mut para = Paragraph::new_from_element(name, Element::new(None));
+            assert!(Interface::<MainStorage>::add_child_to(page.id(), &mut para).unwrap());
+            ids.push(para.id());
+        }
+
+        let trie = <ChildTrie<MainStorage>>::new(page.id());
+        let _hash = trie.remove(ids[1]);
+        assert_eq!(trie.len(), 2, "the removal should drop the child count");
+
+        let mut fourth = Paragraph::new_from_element("d", Element::new(None));
+        assert!(Interface::<MainStorage>::add_child_to(page.id(), &mut fourth).unwrap());
+
+        let orders: Vec<u64> = TestIndex::get_children_of(page.id())
+            .unwrap()
+            .iter()
+            .map(|c| c.metadata.order)
+            .collect();
+
+        assert_eq!(
+            orders,
+            vec![0, 2, 3],
+            "the append reused the removed entry's position instead of taking a fresh one",
+        );
+
+        let last = TestIndex::get_children_of(page.id())
+            .unwrap()
+            .last()
+            .expect("children")
+            .id();
+        assert_eq!(last, fourth.id(), "the newest entry did not sort last");
+    }
+
     /// Re-linking a child it already holds must not move it.
     ///
     /// The position is taken once, at first link. Any path that links an

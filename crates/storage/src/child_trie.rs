@@ -90,6 +90,21 @@ pub struct TrieNode {
     /// current length, say) reintroduces exactly the cost this type removes,
     /// with the trie doing nothing wrong.
     pub count: u64,
+    /// One past the highest position ever handed out under this parent — a
+    /// high-water mark, meaningful only on the root node (path `[]`).
+    ///
+    /// `count` cannot serve as the next position, because it FALLS when a child
+    /// is removed and the next append then reuses a position that is still in
+    /// use. Ordering survives that only while `created_at` breaks the tie, and
+    /// `created_at` is identical for everything one call writes (0 under merge
+    /// mode) — exactly the case `order` exists to decide. So the mark only ever
+    /// rises, and a freed position is never handed out twice.
+    ///
+    /// Like `count`, it is deliberately kept out of `hash()`: it is
+    /// book-keeping, and folding it in would let a slip fork the root.
+    /// It resets when the parent's last child goes, since `write_node` drops a
+    /// slotless row — harmless, as there is then nothing left to collide with.
+    pub next_order: u64,
 }
 
 impl TrieNode {
@@ -250,7 +265,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Walks from the bucket back to the root, so the cost is `DEPTH` rows
     /// regardless of how many children the parent holds. This is the whole
     /// point of the structure.
-    fn refresh_spine(&self, child: Id, bucket_hash: [u8; 32], delta: i64) -> [u8; 32] {
+    fn refresh_spine(
+        &self,
+        child: Id,
+        bucket_hash: [u8; 32],
+        delta: i64,
+        min_next_order: u64,
+    ) -> [u8; 32] {
         let mut below = bucket_hash;
         for level in (0..DEPTH).rev() {
             let path: Vec<u8> = (0..level).map(|i| nibble(child, i)).collect();
@@ -268,6 +289,9 @@ impl<S: StorageAdaptor> ChildTrie<S> {
                 node.count
             );
             node.count = node.count.saturating_add_signed(delta);
+            if level == 0 {
+                node.next_order = node.next_order.max(min_next_order);
+            }
             self.write_node(&path, &node);
             below = node.hash();
         }
@@ -277,6 +301,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Insert or replace `child`. Returns the trie's new root hash.
     pub fn insert(&self, child: ChildInfo) -> [u8; 32] {
         let id = child.id();
+        let order = child.metadata.order;
         let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
         let mut bucket = self.read_bucket(&path);
 
@@ -291,7 +316,9 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             }
         };
         self.write_bucket(&path, &bucket);
-        self.refresh_spine(id, bucket.hash(), delta)
+        // A child linked from a peer carries the position its WRITER assigned,
+        // so the mark follows the highest seen, not this node's own count.
+        self.refresh_spine(id, bucket.hash(), delta, order.saturating_add(1))
     }
 
     /// Remove `child_id`. Returns the new root hash.
@@ -304,7 +331,8 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         {
             let _removed = bucket.entries.remove(i);
             self.write_bucket(&path, &bucket);
-            return self.refresh_spine(child_id, bucket.hash(), -1);
+            // 0: a removal never lowers the mark, which is the whole point.
+            return self.refresh_spine(child_id, bucket.hash(), -1, 0);
         }
         self.root()
     }
@@ -328,6 +356,15 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     #[must_use]
     pub fn len(&self) -> u64 {
         self.read_node(&[]).count
+    }
+
+    /// The next position to hand a newly linked child.
+    ///
+    /// A high-water mark rather than `len()`, so a position freed by a removal
+    /// is never reissued to a later append. See [`TrieNode::next_order`].
+    #[must_use]
+    pub fn next_order(&self) -> u64 {
+        self.read_node(&[]).next_order
     }
 
     /// Whether the parent has no children.
@@ -401,6 +438,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         W: FnMut(Key, &[u8]),
     {
         let id = child.id();
+        let order = child.metadata.order;
         let path: Vec<u8> = (0..DEPTH).map(|i| nibble(id, i)).collect();
 
         let mut bucket = read(Key::ChildTrie(addr(parent, &path)))
@@ -436,6 +474,9 @@ impl<S: StorageAdaptor> ChildTrie<S> {
                 node.count
             );
             node.count = node.count.saturating_add_signed(delta);
+            if level == 0 {
+                node.next_order = node.next_order.max(order.saturating_add(1));
+            }
             if let Ok(bytes) = to_vec(&node) {
                 write(key, &bytes);
             }
