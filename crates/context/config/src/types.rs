@@ -698,7 +698,14 @@ pub struct SignedGroupOpenInvitation {
     /// further cascade-gated semantics keyed on `bytecode_id` must keep this
     /// in mind — or move to always re-deriving locally and ignoring the
     /// wire value, which would close the forge vector entirely.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "app_key")]
+    // `rename` covers BOTH directions; an `alias` alone would have kept reading
+    // the old key while silently writing the new one, breaking every SDK client.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "app_key",
+        alias = "bytecode_id"
+    )]
     pub bytecode_id: Option<[u8; 32]>,
 }
 
@@ -806,15 +813,77 @@ mod tests {
             bytecode_id: Some([0x55; 32]),
         };
 
-        let mut value = serde_json::to_value(&signed).expect("serialize");
-        let object = value.as_object_mut().expect("a JSON object");
-        let bytecode_id = object.remove("bytecode_id").expect("field is present");
-        drop(object.insert("app_key".to_owned(), bytecode_id)); // pins alias = "app_key"
+        // Round-tripping unchanged JSON is what pins the wire name; swapping in
+        // `bytecode_id` pins the alias instead.
+        let value = serde_json::to_value(&signed).expect("serialize");
+        assert!(value.get(INVITATION_WIRE_KEY).is_some(), "wrong wire key");
 
         let decoded: SignedGroupOpenInvitation =
             serde_json::from_value(value).expect("the pre-rename key must still deserialize");
         assert_eq!(decoded.bytecode_id, Some([0x55; 32]));
         assert_eq!(decoded.application_id, Some([0x44; 32]));
+    }
+
+    // The pre-rename wire name these tests pin, named once so the naming gate
+    // needs one exemption rather than one per assertion. // wire-pin
+    const INVITATION_WIRE_KEY: &str = "app_key"; // wire-pin
+
+    // The half that had no test, and is how a breaking wire change reached CI:
+    // `alias` covers reads, `rename` covers writes.
+    #[test]
+    fn signed_group_open_invitation_serializes_the_pre_rename_wire_key() {
+        let signed = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: Some([0x55; 32]),
+        };
+
+        let json = serde_json::to_string(&signed).expect("serialize");
+        let quoted = format!("\"{INVITATION_WIRE_KEY}\"");
+        assert!(
+            json.contains(&quoted),
+            "must write the wire key, got: {json}"
+        );
+        assert!(
+            !json.contains("\"bytecode_id\""),
+            "must not write the Rust field name, got: {json}"
+        );
+    }
+
+    #[test]
+    fn signed_group_open_invitation_accepts_the_bytecode_id_alias() {
+        let signed = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: Some([0x66; 32]),
+        };
+
+        let mut value = serde_json::to_value(&signed).expect("serialize");
+        let object = value.as_object_mut().expect("a JSON object");
+        let wire = object
+            .remove(INVITATION_WIRE_KEY)
+            .expect("the wire key is present");
+        drop(object.insert("bytecode_id".to_owned(), wire));
+
+        let decoded: SignedGroupOpenInvitation =
+            serde_json::from_value(value).expect("the alias must deserialize");
+        assert_eq!(decoded.bytecode_id, Some([0x66; 32]));
     }
 
     #[test]
