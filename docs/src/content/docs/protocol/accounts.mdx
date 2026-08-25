@@ -329,6 +329,16 @@ Both ends still resolve through one rule — the node deciding what to put in a
 writer set and the peer resolving an incoming signature — because a disagreement
 means a node's own writes are refused everywhere else.
 
+**A revoked device is not a device here either.** The device row is read first,
+because for a paired node it is the only place the adopted account is written
+down - but one row serves every namespace while a tombstone is per namespace, so a
+device revoked anywhere is one whose id is spent: enrolling the machine again
+mints a fresh one, which is why the enrolment slot is already released on that
+basis. Once the tombstone lands, `GET /admin-api/identity` reports no device and
+falls back to this node's **own** account root. A paired node that held no root of
+its own has nothing left to report and answers `404` - which is the truth, rather
+than a locally derived id no row in any group is keyed by.
+
 Everything that names a person needs this first: granting a writer, revoking a
 device, or an app method that takes an `AccountId`. Naming them by signing key
 instead would look friendlier and be wrong — a grant to a key excludes that
