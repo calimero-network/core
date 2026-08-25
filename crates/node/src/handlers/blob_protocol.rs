@@ -252,6 +252,26 @@ async fn handle_blob_request_stream(
     outcome
 }
 
+/// Whether `blob_id` is the bytecode or compiled artifact of an application
+/// this node holds.
+///
+/// Scans installed applications rather than resolving through a context: one
+/// bundle backs every context of a group, and a requester may hold none of them.
+fn is_installed_application_blob(
+    store: &calimero_store::Store,
+    blob_id: &calimero_primitives::blobs::BlobId,
+) -> eyre::Result<bool> {
+    let handle = store.handle();
+    let mut iter = handle.iter::<calimero_store::key::ApplicationMeta>()?;
+    for (_, app) in iter.entries() {
+        let app = app?;
+        if app.bytecode.blob_id() == *blob_id || app.compiled.blob_id() == *blob_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Helper function to check if the blob access is authorized.
 ///
 ////// Helper function to authorize blob access.
@@ -268,6 +288,17 @@ async fn is_blob_access_authorized(
     context_client: &ContextClient,
     request: &BlobRequest,
 ) -> eyre::Result<bool> {
+    // An application bundle is public because a node that has not joined
+    // anything yet cannot sign, and needs the bytecode before it can. That is a
+    // property of the blob, answered here rather than through the context gate
+    // below: resolving it via a context only works for a requester that already
+    // has one, and the member creating a namespace's FIRST context has none, so
+    // it could not obtain an application its own invitation named.
+    if is_installed_application_blob(context_client.datastore(), &request.blob_id)? {
+        debug!(blob_id=%request.blob_id, "Access granted: blob is a published application bundle");
+        return Ok(true);
+    }
+
     // Fetch Context Config
     // If we don't have the context config, we can't verify anything. Deny access.
     match context_client.context_config(&request.context_id) {
@@ -444,7 +475,9 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::{is_inherited_context_member, is_signed_context_member};
+    use super::{
+        is_inherited_context_member, is_installed_application_blob, is_signed_context_member,
+    };
 
     const CONTEXT: [u8; 32] = [0xC0; 32];
     const BLOB: [u8; 32] = [0xD0; 32];
@@ -679,5 +712,65 @@ mod tests {
             "a direct context member with a valid signature must be authorized \
              without relying on the inheritance walk"
         );
+    }
+
+    const APP_BYTECODE: [u8; 32] = [0xB1; 32];
+    const APP_COMPILED: [u8; 32] = [0xC1; 32];
+    const OTHER_BLOB: [u8; 32] = [0x0E; 32];
+
+    fn store_with_application(store: &Store) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ApplicationMeta::new(
+                    calimero_primitives::application::ApplicationId::from([0xA9; 32]),
+                ),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(BlobId::from(APP_BYTECODE)),
+                    1,
+                    "memory".into(),
+                    Box::new([]),
+                    calimero_store::key::BlobMeta::new(BlobId::from(APP_COMPILED)),
+                    calimero_store::types::PackageInfo {
+                        package: "pkg".into(),
+                        version: "1.0.0".into(),
+                        signer_id: "signer".into(),
+                        state_version: 0,
+                    },
+                ),
+            )
+            .unwrap();
+    }
+
+    /// The bundle is what a joiner needs before it can sign for anything, so it
+    /// is served on the blob's own identity rather than through a context the
+    /// requester may not have.
+    #[test]
+    fn an_installed_applications_bytecode_is_public() {
+        let store = test_store();
+        store_with_application(&store);
+        assert!(is_installed_application_blob(&store, &BlobId::from(APP_BYTECODE)).unwrap());
+    }
+
+    #[test]
+    fn the_compiled_artifact_is_public_too() {
+        let store = test_store();
+        store_with_application(&store);
+        assert!(is_installed_application_blob(&store, &BlobId::from(APP_COMPILED)).unwrap());
+    }
+
+    /// Only application blobs get this. Anything else still has to go through
+    /// the context config and the signed-member check.
+    #[test]
+    fn an_unrelated_blob_is_not_public() {
+        let store = test_store();
+        store_with_application(&store);
+        assert!(!is_installed_application_blob(&store, &BlobId::from(OTHER_BLOB)).unwrap());
+    }
+
+    #[test]
+    fn a_node_holding_no_application_grants_nothing() {
+        let store = test_store();
+        assert!(!is_installed_application_blob(&store, &BlobId::from(APP_BYTECODE)).unwrap());
     }
 }
