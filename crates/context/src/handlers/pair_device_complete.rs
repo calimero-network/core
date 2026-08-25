@@ -44,26 +44,24 @@
 //!
 //! **Two keys, one use each.** The account root signs the certificate; the
 //! namespace identity signs the endorsement, the ops, and the key wrap. Crossing
-//! them is silent — see the certificate invariant test beside
-//! `NodeDeviceRepository`.
+//! them is silent, which is why the publisher takes ONE signing key and mints the
+//! endorsement itself - see `device_link::publish_link_and_key`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, AccountMemberEndorsement, DeviceCert, PairingOffer};
+use calimero_account::{AccountId, DeviceCert, PairingOffer};
 use calimero_context_client::group::{
     PairDeviceCompleteRequest, PairDeviceCompleteResponse, PairingScope,
 };
-use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_crypto::X25519PublicKey;
 use calimero_governance_store::{GroupKeyring, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::error::ContextError;
 use crate::handlers::list_namespaces::namespace_rows_for_applications;
@@ -121,6 +119,19 @@ fn resolve_scope(
     })
 }
 
+/// The application scope the certificate cache keeps for this pairing.
+///
+/// The deprecated namespace-scoped route names no application and fans out
+/// unconditionally, which is the same reach an empty list means - so it stores
+/// one rather than a narrower guess that would leave the device out of
+/// namespaces the pairing itself covered.
+fn stored_scope(scope: &PairingScope) -> Vec<ApplicationId> {
+    match scope {
+        PairingScope::Namespace(_) => Vec::new(),
+        PairingScope::Applications(applications) => applications.clone(),
+    }
+}
+
 /// The key this node signs the endorsement, both ops and the key wrap with.
 ///
 /// One key serves every namespace - it is node-level - so the first that
@@ -128,14 +139,11 @@ fn resolve_scope(
 /// whether this node takes part in the scope at all: an empty answer means
 /// either it is a stranger to the namespaces named, or the applications resolved
 /// to nothing here.
-fn signing_identity(
-    store: &Store,
-    gated_on: &[ContextGroupId],
-) -> EyreResult<(PublicKey, [u8; 32])> {
+fn signing_identity(store: &Store, gated_on: &[ContextGroupId]) -> EyreResult<[u8; 32]> {
     let namespaces = NamespaceRepository::new(store);
     for group_id in gated_on {
         match namespaces.resolve_identity(group_id) {
-            Ok(Some(identity)) => return Ok(identity),
+            Ok(Some((_public, secret))) => return Ok(secret),
             Ok(None) => {}
             Err(err) => warn!(?group_id, %err, "failed to resolve namespace identity"),
         }
@@ -232,6 +240,10 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
     ) -> Self::Result {
         let store = self.datastore.clone();
 
+        // The scope the cert store records, so a namespace gained later can be
+        // reached without re-pairing.
+        let applications = stored_scope(&scope);
+
         // Resolved before any check, because the scope is what the checks are
         // about: which namespaces have to hold an identity and a key for this
         // pairing to be able to do anything.
@@ -244,7 +256,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrap. It must be a granted member: the endorsement is what carries the
         // link past the apply gate, and an endorsement from a non-member is
         // refused.
-        let (self_pk, signer_sk_bytes) = match signing_identity(&store, &gated_on) {
+        let signer_sk_bytes = match signing_identity(&store, &gated_on) {
             Ok(identity) => identity,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -348,44 +360,16 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             }
         };
 
-        // Only a member can endorse and only the root can certify; the gate needs
-        // both. `self_pk` is the endorser and is inside the signed payload.
-        let endorsement = match AccountMemberEndorsement::sign(&signer_sk, account) {
-            Ok(endorsement) => endorsement,
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to sign the account endorsement: {err}"
-                )))
-            }
-        };
-        // A hard check, not a `debug_assert`. The endorsement is what makes this
-        // link self-service, and the two keys in play here (account root vs
-        // namespace identity) are trivially crossed — that mistake produces a link
-        // every peer refuses while looking perfectly healthy locally. Compiled out
-        // in release, this would publish the mismatch instead of refusing it.
-        if endorsement.member != self_pk {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "endorsement names {} but this node signs as {self_pk}; refusing to \
-                 publish a link no peer can admit",
-                endorsement.member,
-            )));
-        }
-
-        // Kept before the op takes ownership: the device this certifies needs the
-        // proof to present itself, and cannot read it off the DAG until it is a
-        // member somewhere — which for a thin client is never.
+        // The device this certifies needs the proof to present itself, and cannot
+        // read it off the DAG until it is a member somewhere - which for a thin
+        // client is never. The same proof is what the publisher below builds each
+        // link from, and what the cert store keeps, so a namespace this account
+        // gains later can bind the device without a second pairing ceremony.
         let credential = Box::new(calimero_account::AccountProof {
             genesis,
             chain: vec![],
             statement: cert,
         });
-
-        let link = GroupOp::AccountDeviceLinked {
-            genesis,
-            chain: vec![],
-            cert,
-            endorsement,
-        };
 
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
@@ -422,81 +406,27 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                         continue;
                     };
 
-                    let published = calimero_governance_store::sign_apply_and_publish(
+                    match calimero_governance_store::device_link::publish_link_and_key(
                         &store,
                         &node_client,
                         &ack_router,
                         &ns,
                         &signer_sk,
-                        link.clone(),
-                    )
-                    .await;
-
-                    match published {
-                        Ok(report) => info!(
-                            namespace_id = ?ns,
-                            %account,
-                            %device,
-                            published = report.is_some(),
-                            "linked a paired device"
-                        ),
-                        // One namespace failing must not withhold the device from
-                        // the rest. The caller sees which ones landed.
-                        Err(err) => {
-                            warn!(namespace_id = ?ns, %device, %err,
-                                  "pairing: publishing the link failed here; others continue");
-                            continue;
-                        }
-                    }
-
-                    // Wrap under the KEM key we were handed rather than re-reading
-                    // it from the folded binding, so the delivery does not depend
-                    // on this node having already folded the link it just
-                    // published.
-                    let envelope = GroupKeyring::wrap_for_device(
-                        &signer_sk,
-                        device,
-                        &X25519PublicKey::from(*kem_pk.as_bytes()),
-                        &ns.to_bytes(),
+                        &credential,
                         &ns_key,
-                    )?;
-
-                    // A cleartext root op, so the keyless recipient can actually
-                    // read it. `required_signers` is None because the paired device
-                    // is not a member and so is not among the acking set — its
-                    // receipt shows up as the device being able to read, not as an
-                    // ack.
-                    let delivery = NamespaceOp::Root(RootOp::KeyDelivery {
-                        group_id: ns.to_bytes().into(),
-                        envelope,
-                    });
-
-                    if let Err(err) = calimero_governance_store::sign_and_publish_namespace_op(
-                        &store,
-                        &node_client,
-                        &ack_router,
-                        ns.to_bytes().into(),
-                        &signer_sk,
-                        delivery,
-                        None,
                     )
                     .await
                     {
-                        // Not fatal: the link already conferred authority, and the
-                        // device's own sync pull re-requests the key it lacks. Say
-                        // so rather than reporting a flat success, because until
-                        // that pull lands the device cannot read there.
-                        warn!(
-                            ?err,
-                            namespace_id = ?ns,
-                            %device,
-                            "device linked but the scope-key delivery failed to publish; \
-                             the device's sync pull is the durable retry"
-                        );
-                        key_delivered_everywhere = false;
+                        Ok(key_delivered) => {
+                            key_delivered_everywhere &= key_delivered;
+                            linked_in.push(ns);
+                        }
+                        // One namespace failing must not withhold the device from
+                        // the rest. The caller sees which ones landed.
+                        Err(err) => warn!(namespace_id = ?ns, %device, %err,
+                                          "pairing: extending the device here failed; \
+                                           others continue"),
                     }
-
-                    linked_in.push(ns);
                 }
 
                 if linked_in.is_empty() {
@@ -504,6 +434,19 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                         "the link for {device} reached no namespace, so it is paired \
                          nowhere and holds no scope key"
                     );
+                }
+
+                // Kept only once the pairing reached somewhere, so a call that
+                // failed leaves nothing behind. From here on a namespace this
+                // account gains binds the device on its own, because the root
+                // signature - which the replicated binding row drops - is written
+                // down where it was made.
+                if let Err(err) = NodeDeviceRepository::new(&store)
+                    .remember_device_cert(&credential, &applications)
+                {
+                    warn!(%device, %err,
+                          "paired, but this node could not remember the certificate; \
+                           namespaces gained later will need an explicit relink");
                 }
 
                 let key_delivered = key_delivered_everywhere;
@@ -592,6 +535,19 @@ mod tests {
         let mut ids: Vec<_> = namespaces.into_iter().map(|ns| ns.to_bytes()).collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// What the certificate cache is handed, which decides every namespace this
+    /// device reaches from here on. The deprecated route fanned out to everything,
+    /// so storing anything narrower for it would shrink a pairing after the fact.
+    #[test]
+    fn the_stored_scope_is_what_the_pairing_actually_reached() {
+        assert!(stored_scope(&PairingScope::Namespace(NS_A.into())).is_empty());
+        assert!(stored_scope(&PairingScope::Applications(vec![])).is_empty());
+        assert_eq!(
+            stored_scope(&PairingScope::Applications(vec![app(APP_ONE)])),
+            vec![app(APP_ONE)],
+        );
     }
 
     #[test]
@@ -751,9 +707,10 @@ mod tests {
             .expect("provision this node's signing key");
 
         assert_eq!(
-            signing_identity(&store, &scope)
-                .expect("one identity anywhere is enough")
-                .0,
+            PrivateKey::from(
+                signing_identity(&store, &scope).expect("one identity anywhere is enough")
+            )
+            .public_key(),
             node.public_key(),
         );
     }

@@ -47,6 +47,7 @@ mod context_registration;
 mod context_tree;
 mod contexts;
 mod deny_list;
+pub mod device_link;
 mod errors;
 mod governance_signer;
 mod group_governance_publisher;
@@ -94,6 +95,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
+pub use self::device_link::{bind_known_devices, ensure_bound, BindOutcome};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -133,8 +135,8 @@ pub use self::namespace::{
     NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
-    account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot, NodeDevice,
-    NodeDeviceRepository, RevocationTarget,
+    account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
+    KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
@@ -214,7 +216,7 @@ pub use self::errors::{
 ///
 /// This helper eliminates the repeated seek-iterate-prefix-check boilerplate
 /// used throughout this module.
-fn collect_keys_with_prefix<K>(
+pub(crate) fn collect_keys_with_prefix<K>(
     store: &Store,
     start: K,
     prefix_byte: u8,

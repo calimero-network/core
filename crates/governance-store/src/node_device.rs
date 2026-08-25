@@ -18,13 +18,17 @@
 //! lineage — its counter slots and HLC seed — even though the machine and its
 //! keys were unchanged.
 
-use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
+use calimero_account::{
+    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountRoot, NodeAccountRootValue,
+    NodeDeviceIdentity, NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -33,7 +37,7 @@ use eyre::Result as EyreResult;
 use rand::Rng as _;
 use zeroize::Zeroizing;
 
-use crate::NamespaceRepository;
+use crate::{collect_keys_with_prefix, NamespaceRepository};
 
 /// Serializes the generate-once in [`NodeDeviceRepository::provision_account_root`],
 /// for the same reason as the device mint below: two callers could both observe an
@@ -341,6 +345,41 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
     // it still holds in the others. Minting belongs to the enrolment path, which
     // knows which namespace it is enrolling into; a resolver only reports.
     Ok(devices.require_account_root()?.account())
+}
+
+/// A device certificate this node's account has already authorized, kept so the
+/// binding can be re-published into namespaces the node gains later.
+///
+/// The certificate is root-signed once, at pairing, and says nothing about a
+/// namespace - so extending a device into a new one needs only this, a fresh
+/// endorsement, and a key wrap. Nothing about it expires, and the device need
+/// not be online.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct KnownDeviceCert {
+    /// The proof exactly as a link op carries it: genesis, handoff chain, cert.
+    pub proof: AccountProof<DeviceCert>,
+    /// Applications this device may speak for. **Empty means all of them.**
+    pub applications: Vec<ApplicationId>,
+}
+
+impl KnownDeviceCert {
+    /// The device this certificate names.
+    #[must_use]
+    pub const fn device(&self) -> DeviceId {
+        self.proof.statement.device
+    }
+
+    /// Does this device's scope reach a namespace serving `application`?
+    ///
+    /// `None` is a namespace whose metadata has not synced yet, so it names no
+    /// application - reachable only by an empty scope, which is the same answer
+    /// the pairing fan-out gives such a namespace.
+    #[must_use]
+    pub fn covers(&self, application: Option<ApplicationId>) -> bool {
+        self.applications.is_empty()
+            || application.is_some_and(|app| self.applications.contains(&app))
+    }
 }
 
 /// What a revocation of one device is about, resolved from the group's own
@@ -976,6 +1015,132 @@ impl<'a> NodeDeviceRepository<'a> {
             self_service,
         }))
     }
+    /// Remember a device certificate of this node's own account, and the scope
+    /// the pairing that minted it gave the device.
+    ///
+    /// Written where the certificate is signed, because that is the only moment
+    /// the root signature exists in full: the replicated binding row drops it, so
+    /// a link cannot be rebuilt from folded state without a DAG scan.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn remember_device_cert(
+        &self,
+        proof: &AccountProof<DeviceCert>,
+        applications: &[ApplicationId],
+    ) -> EyreResult<()> {
+        let key = NodeAccountDeviceCert::new(*proof.statement.device.as_bytes());
+        self.store.handle().put(
+            &key,
+            &NodeAccountDeviceCertValue {
+                proof: proof.clone(),
+                applications: applications.to_vec(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Remember a certificate that arrived on the wire, scoped to everything.
+    ///
+    /// The multi-holder case: another device of this same account certified a
+    /// third, and this node learns of it only by applying the link. Nothing on
+    /// the wire carries the pairing's application scope, so the widest scope is
+    /// the only honest guess - and it must not overwrite a narrower one this node
+    /// already knows, which is why an existing row wins.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn remember_device_cert_if_new(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
+        if self.device_cert(proof.statement.device)?.is_some() {
+            return Ok(());
+        }
+        self.remember_device_cert(proof, &[])
+    }
+
+    /// The certificate this node holds for `device`, if it has one.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_cert(&self, device: DeviceId) -> EyreResult<Option<KnownDeviceCert>> {
+        let key = NodeAccountDeviceCert::new(*device.as_bytes());
+        Ok(self
+            .store
+            .handle()
+            .get(&key)?
+            .map(|value: NodeAccountDeviceCertValue| KnownDeviceCert {
+                proof: value.proof,
+                applications: value.applications,
+            }))
+    }
+
+    /// Every device certificate of this node's own account.
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NodeAccountDeviceCert::new([0u8; 32]),
+            NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+            |_k| true,
+        )?;
+        let handle = self.store.handle();
+        let mut certs = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(value) = handle.get::<NodeAccountDeviceCert>(&key)? {
+                certs.push(KnownDeviceCert {
+                    proof: value.proof,
+                    applications: value.applications,
+                });
+            }
+        }
+        Ok(certs)
+    }
+
+    /// Forget the certificate held for `device`. Idempotent.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn forget_device_cert(&self, device: DeviceId) -> EyreResult<()> {
+        let key = NodeAccountDeviceCert::new(*device.as_bytes());
+        self.store.handle().delete(&key)?;
+        Ok(())
+    }
+
+    /// The namespaces, among those this node takes part in, where `device` is
+    /// tombstoned.
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn revoked_in(&self, device: DeviceId) -> EyreResult<Vec<ContextGroupId>> {
+        let bindings = crate::AccountBindingRepository::new(self.store);
+        let mut revoked = Vec::new();
+        for namespace in NamespaceRepository::new(self.store).participating_namespaces()? {
+            if bindings.is_revoked(&namespace, device)? {
+                revoked.push(namespace);
+            }
+        }
+        Ok(revoked)
+    }
+
+    /// This node's device, unless it has been revoked somewhere.
+    ///
+    /// One row serves every namespace while a tombstone is per-namespace, so a
+    /// device revoked anywhere is a device whose id is spent: re-enrolling mints a
+    /// fresh one rather than reusing it, and the enrolment slot is already
+    /// released on that basis. A reader that kept presenting the old id would name
+    /// a device no peer will admit and, for a PAIRED node, an adopted account it
+    /// no longer speaks for.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn unrevoked_device(&self) -> EyreResult<Option<NodeDevice>> {
+        let Some(held) = self.get()? else {
+            return Ok(None);
+        };
+        Ok(self.revoked_in(held.device())?.is_empty().then_some(held))
+    }
+
     /// Drop this node's device identity. Idempotent.
     ///
     /// Called by the namespace teardown for the same reason the group keyring is
@@ -1006,6 +1171,159 @@ mod tests {
 
     fn root(seed: u8) -> PublicKey {
         PrivateKey::from([seed; 32]).public_key()
+    }
+
+    /// The proof this mints is what a link op carries, so it is what the store
+    /// has to hand back byte for byte.
+    fn certified(
+        root_sk: &PrivateKey,
+        device: [u8; 32],
+        kem: [u8; 32],
+    ) -> AccountProof<DeviceCert> {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let cert = DeviceCert::sign(
+            root_sk,
+            account,
+            DeviceId::from(device),
+            &root(0x77),
+            &KemPublicKey::from(kem),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        }
+    }
+
+    /// The signature is the field that made this row necessary: the replicated
+    /// binding keeps the cert's payload and drops it, so a link cannot be rebuilt
+    /// from folded state. It has to survive the round trip, and so does the scope.
+    #[test]
+    fn the_cert_store_round_trips_the_signature_and_the_scope() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let proof = certified(&PrivateKey::from([0x31; 32]), [0x41; 32], [0x51; 32]);
+        let scope = vec![ApplicationId::from([0x61; 32])];
+
+        repo.remember_device_cert(&proof, &scope).expect("remember");
+
+        let held = repo
+            .device_cert(proof.statement.device)
+            .expect("read")
+            .expect("present");
+        assert_eq!(
+            held.proof, proof,
+            "every field, the root signature included"
+        );
+        assert_eq!(held.applications, scope);
+        assert_eq!(
+            held.proof.verify(proof.statement.account).map(|_| ()),
+            Ok(()),
+            "what comes back out must still verify as a credential"
+        );
+    }
+
+    /// The wire carries no application scope, so a cert learned by applying
+    /// somebody else's link is scoped to everything - and must not overwrite a
+    /// narrower scope this node set when it did the pairing itself.
+    #[test]
+    fn a_cert_learned_from_the_wire_does_not_widen_a_scope_already_known() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let narrow = certified(&PrivateKey::from([0x32; 32]), [0x42; 32], [0x52; 32]);
+        let scope = vec![ApplicationId::from([0x62; 32])];
+        repo.remember_device_cert(&narrow, &scope)
+            .expect("remember");
+
+        repo.remember_device_cert_if_new(&narrow).expect("re-learn");
+
+        assert_eq!(
+            repo.device_cert(narrow.statement.device)
+                .expect("read")
+                .expect("present")
+                .applications,
+            scope,
+        );
+
+        let fresh = certified(&PrivateKey::from([0x33; 32]), [0x43; 32], [0x53; 32]);
+        repo.remember_device_cert_if_new(&fresh).expect("learn");
+        assert!(
+            repo.device_cert(fresh.statement.device)
+                .expect("read")
+                .expect("present")
+                .applications
+                .is_empty(),
+            "a cert nothing else is known about reaches every namespace"
+        );
+        assert_eq!(repo.device_certs().expect("scan").len(), 2);
+    }
+
+    /// An empty scope is every application, and a named one is only its own -
+    /// including over a namespace whose metadata has not synced and so names none.
+    #[test]
+    fn an_empty_scope_covers_every_application_and_a_named_one_covers_its_own() {
+        let one = ApplicationId::from([0x71; 32]);
+        let two = ApplicationId::from([0x72; 32]);
+        let proof = certified(&PrivateKey::from([0x34; 32]), [0x44; 32], [0x54; 32]);
+
+        let everything = KnownDeviceCert {
+            proof: proof.clone(),
+            applications: Vec::new(),
+        };
+        assert!(everything.covers(Some(one)));
+        assert!(everything.covers(None));
+
+        let narrow = KnownDeviceCert {
+            proof,
+            applications: vec![one],
+        };
+        assert!(narrow.covers(Some(one)));
+        assert!(!narrow.covers(Some(two)));
+        assert!(
+            !narrow.covers(None),
+            "a namespace that names no application is reachable only by a scope that \
+             names none either"
+        );
+    }
+
+    /// A tombstone anywhere spends the id for good, so the read path must stop
+    /// presenting it - a paired node would otherwise go on naming an account it no
+    /// longer speaks for.
+    #[test]
+    fn a_revoked_device_is_no_longer_the_device_this_node_reports() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+        NamespaceRepository::new(&store)
+            .note_participation(&ns)
+            .expect("take part in the namespace");
+        let held = repo.ensure_enrolled(&ns).expect("mint");
+
+        assert_eq!(
+            repo.unrevoked_device()
+                .expect("read")
+                .expect("present")
+                .device(),
+            held.device(),
+        );
+
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, held.device())
+            .expect("tombstone the device");
+
+        assert!(
+            repo.unrevoked_device().expect("read").is_none(),
+            "a revoked device is spent; re-enrolling mints a fresh id"
+        );
+        assert!(
+            repo.get().expect("read").is_some(),
+            "and the row itself stays, because the KEM secret still opens keys \
+             already wrapped for it"
+        );
     }
 
     #[test]

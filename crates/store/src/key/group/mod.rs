@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{AccountId, DeviceId};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -1831,6 +1831,11 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
 
+/// Device certificates of this node's own account (see [`NodeAccountDeviceCert`]).
+/// Distinct from [`NODE_DEVICE_CERTIFICATE_PREFIX`], which holds the single
+/// certificate signed for THIS device elsewhere.
+pub const NODE_ACCOUNT_DEVICE_CERT_PREFIX: u8 = 0x4C;
+
 /// This node's signing identity (see [`NodeIdentity`]).
 pub const NODE_IDENTITY_PREFIX: u8 = 0x48;
 
@@ -2673,6 +2678,81 @@ impl Debug for NodeDeviceIdentityValue {
     }
 }
 
+/// A device certificate of this node's OWN account, kept so the node can
+/// re-publish the binding into namespaces it gains later (see
+/// [`NODE_ACCOUNT_DEVICE_CERT_PREFIX`]).
+///
+/// Key layout: `NODE_ACCOUNT_DEVICE_CERT_PREFIX (1 byte) + device_id (32)`.
+///
+/// NODE-LOCAL, never gossiped - it is a cache of what the account already
+/// authorized, not a claim about it. The replicated [`GroupDeviceBinding`] row
+/// cannot serve here because it drops the root signature, so a valid certificate
+/// cannot be reconstructed from it without a DAG scan.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountDeviceCert(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NodeAccountDeviceCert {
+    #[must_use]
+    pub fn new(device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_DEVICE_CERT_PREFIX])
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NodeAccountDeviceCert {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountDeviceCert {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeAccountDeviceCert {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeAccountDeviceCert")
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// The certificate and scope a [`NodeAccountDeviceCert`] row carries.
+///
+/// The whole proof rather than its fields: `genesis`, `chain` and `cert` are
+/// exactly what a link op puts on the wire, so storing the assembled
+/// [`AccountProof`] keeps the row and the op one shape. Nothing here is secret -
+/// a certificate is public data and proves nothing without the device key it
+/// names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountDeviceCertValue {
+    /// The root-signed certificate with the genesis and handoff chain that reach
+    /// the epoch which signed it.
+    pub proof: AccountProof<DeviceCert>,
+    /// Applications this device may speak for. **Empty means all of them**, which
+    /// is what a pairing that named no application asked for.
+    pub applications: Vec<ApplicationId>,
+}
+
 /// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).
 /// Presence marks `account`, keyed to the namespace root, as inherited-denied:
 /// the receive filter drops their deltas to any descendant subgroup they reached
@@ -3477,6 +3557,7 @@ mod tests {
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
             ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
+            ("NODE_ACCOUNT_DEVICE_CERT", NODE_ACCOUNT_DEVICE_CERT_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
             (

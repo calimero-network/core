@@ -60,6 +60,11 @@ impl PredefinedEntry for key::NodeDeviceCertificate {
     type DataType<'a> = key::NodeDeviceCertificateValue;
 }
 
+impl PredefinedEntry for key::NodeAccountDeviceCert {
+    type Codec = Borsh;
+    type DataType<'a> = key::NodeAccountDeviceCertValue;
+}
+
 impl PredefinedEntry for key::GroupReentryBlock {
     type Codec = Borsh;
     type DataType<'a> = key::GroupReentryBlockValue;

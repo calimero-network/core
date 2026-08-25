@@ -10205,6 +10205,114 @@ mod account_plane_apply {
             .collect()
     }
 
+    /// The second write point of the certificate cache, and the one that covers a
+    /// multi-holder account: another device of this same account certified a
+    /// third, and this node learns of it only by folding the link. The replicated
+    /// binding drops the root signature, so without this the device could never be
+    /// carried into a namespace gained later.
+    #[test]
+    fn a_link_this_accounts_own_root_signed_is_remembered_where_it_applies() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.ensure_account_root().unwrap();
+        let account = root.account();
+        let device = DeviceId::mint(account, [7u8; 16]);
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        // The account has to be a member before a device of it may link, and the
+        // endorser has to be one too - the admin is both here.
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: root.genesis(),
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        let held = devices
+            .device_cert(device)
+            .unwrap()
+            .expect("a device of this node's own account must be remembered");
+        assert_eq!(held.proof.statement, cert, "the root signature included");
+        assert!(
+            held.applications.is_empty(),
+            "the wire carries no scope, so the widest one is the only honest guess"
+        );
+    }
+
+    /// And only for this node's own account: a stranger's device is somebody
+    /// else's to extend, and this node holds no root that could certify it.
+    #[test]
+    fn a_link_for_another_account_is_not_remembered_here() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let _own = devices.ensure_account_root().unwrap();
+
+        let stranger_root = key(9);
+        let genesis = AccountGenesis::new(stranger_root.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [8u8; 16]);
+        let cert = DeviceCert::sign(
+            &stranger_root,
+            account,
+            device,
+            &key(6).public_key(),
+            &KemPublicKey::from([6u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            live_for(&store, &gid, account).len(),
+            1,
+            "the link itself must land - only the cache is scoped to our own account"
+        );
+        assert!(devices.device_cert(device).unwrap().is_none());
+    }
+
     #[test]
     fn linking_a_device_through_the_apply_path_records_a_binding() {
         let store = test_store();
