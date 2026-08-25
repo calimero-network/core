@@ -36,7 +36,7 @@ runs:
         #
         # Both are the deliberate bump the note above describes, and the PR
         # carrying it runs the full suite against the new version.
-        MEROBOX_VERSION="0.6.62"
+        MEROBOX_VERSION="0.6.64"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in
