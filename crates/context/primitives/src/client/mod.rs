@@ -166,6 +166,7 @@ mod borsh_layout {
         pub(super) crdt_type: Option<CrdtType>,
         pub(super) field_name: Option<String>,
         pub(super) schema_version: Option<u32>,
+        pub(super) order: u64,
     }
 
     #[derive(BorshDeserialize)]
