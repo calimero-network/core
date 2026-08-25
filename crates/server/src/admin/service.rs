@@ -321,6 +321,9 @@ pub(crate) fn setup(
             "/account/pair-complete",
             post(account::pair_complete::handler),
         )
+        // Read-only aggregation over the same account-level state: the settings
+        // UI's device list.
+        .route("/account/devices", get(account::devices::handler))
         // Pairing is a snapshot; this is how it is repeated. A namespace gained
         // after a pairing binds its devices on its own, and this closes the drift
         // left by every one gained before that landed.

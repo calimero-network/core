@@ -33,9 +33,10 @@ use crate::AdminState;
 /// name a device no peer will admit and - for a paired node - an adopted account
 /// it no longer speaks for. So this falls back to the node's own root, which is
 /// the only account it can still honestly claim.
-type NodeIdentityParts = (AccountId, PublicKey, Option<DeviceId>, Option<KemPublicKey>);
+pub(crate) type NodeIdentityParts =
+    (AccountId, PublicKey, Option<DeviceId>, Option<KemPublicKey>);
 
-fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityParts>> {
+pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityParts>> {
     let devices = NodeDeviceRepository::new(store);
     if let Some(held) = devices.unrevoked_device()? {
         // Through the crate's own accessor, not by reaching into the secret:
@@ -179,7 +180,7 @@ mod tests {
             .ensure_enrolled(&NS.into())
             .expect("mint this node's device");
 
-        let (account, root_pk, device) = node_identity(&store)
+        let (account, root_pk, device, _agreement) = node_identity(&store)
             .expect("read")
             .expect("an enrolled node has an identity");
 
@@ -220,7 +221,7 @@ mod tests {
             .apply_revocation(&NS.into(), adopted.device())
             .expect("tombstone this node's device");
 
-        let (account, _root_pk, device) = node_identity(&store)
+        let (account, _root_pk, device, _agreement) = node_identity(&store)
             .expect("read")
             .expect("the node still has its own root to fall back on");
         assert_eq!(account, own_root);

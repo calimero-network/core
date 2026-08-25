@@ -2300,6 +2300,32 @@ pub struct RelinkDeviceApiResponse {
     pub data: RelinkDeviceApiResponseData,
 }
 
+/// One device of this account, joined from the node-local certificate cache and
+/// the live bindings of every namespace this node takes part in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeviceApiEntry {
+    pub device_id: DeviceId,
+    pub signing_key: PublicKey,
+    /// Set only on the device this node itself presents.
+    pub is_self: bool,
+    pub revoked: bool,
+    /// Applications this device may speak for. **Empty means every
+    /// application** - the same convention `KnownDeviceCert` stores. Absent for
+    /// a device this node has no cached certificate for (bound before the cache
+    /// existed, or certified by another holder).
+    pub applications: Vec<ApplicationId>,
+    /// Hex-encoded ids of the namespaces currently holding a live binding for
+    /// this device. Empty for a certified device not yet bound anywhere.
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDevicesApiResponse {
+    pub devices: Vec<AccountDeviceApiEntry>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {
