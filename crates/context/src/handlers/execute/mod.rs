@@ -82,7 +82,7 @@ use governance_position::compute_governance_position_for_context;
 pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
-    maybe_lazy_upgrade, resolve_producing_app_key, should_block, upgrade_blocks_write,
+    maybe_lazy_upgrade, resolve_producing_bytecode_id, should_block, upgrade_blocks_write,
     upgrade_rejects_committed_write, LazyUpgradeAction,
 };
 
@@ -183,11 +183,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             // Blob-keyed lookup: the read-only sets are keyed by the executing
             // bytecode blob (per-context binding), with the cached row blob as
             // fallback. A miss defaults to the write lock (fail-safe).
-            let Some(blob) = self.executing_blob_for_context(&context_id).or_else(|| {
-                self.applications
-                    .get(&application_id)
-                    .map(|app| app.blob.bytecode)
-            }) else {
+            let Some(blob) = self
+                .executing_bytecode_for_context(&context_id)
+                .or_else(|| {
+                    self.applications
+                        .get(&application_id)
+                        .map(|app| app.blob.bytecode)
+                })
+            else {
                 break 'ro false;
             };
             let Some(set) = self.read_only_methods.get(&(blob, service_name)).cloned() else {
@@ -497,7 +500,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }
             };
 
-        // Resolve the producing-app-key for the broadcast envelope. Runs
+        // Resolve the producing `bytecode_id` for the broadcast envelope. Runs
         // synchronously here so the `Option<[u8;32]>` (Copy) can be
         // captured by value in the async external_task closure below.
         // `get_group_for_context` is called a second time internally;
@@ -510,14 +513,14 @@ impl Handler<ExecuteRequest> for ContextManager {
         // store fault — failing execute on a store hiccup would harm liveness
         // far more than the rare unfenceable delta — and surface it at `warn!`
         // so the gap is observable rather than silent.
-        let producing_app_key: Option<[u8; 32]> =
-            match resolve_producing_app_key(&self.datastore, &context_id) {
+        let producing_bytecode_id: Option<[u8; 32]> =
+            match resolve_producing_bytecode_id(&self.datastore, &context_id) {
                 Ok(v) => v,
                 Err(err) => {
                     warn!(
                         ?context_id,
                         %err,
-                        "resolve_producing_app_key failed, stamping None on broadcast"
+                        "resolve_producing_bytecode_id failed, stamping None on broadcast"
                     );
                     None
                 }
@@ -569,7 +572,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 // seed, a blocked hop would fall through to the group-target
                 // bytecode and run new code on un-migrated state.
                 LazyUpgradeAction::Replay { bound } => {
-                    if crate::activation::activated_blob(&act.datastore, &context_id).is_none() {
+                    if crate::activation::activated_bytecode(&act.datastore, &context_id).is_none() {
                         crate::activation::record_activation(&act.datastore, &context_id, bound);
                     }
                     act.replay_upgrade_ladder(
@@ -584,7 +587,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 LazyUpgradeAction::SingleJump {
                     target_application_id: target_app,
                     migrate_method: migrate,
-                    target_app_key,
+                    target_bytecode_id,
                 } => {
                     let datastore = act.datastore.clone();
                     let node_client = act.node_client.clone();
@@ -602,7 +605,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         // previous version.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_blob_local(&blob_node_client, &cid, target_app_key).await
+                            ensure_blob_local(&blob_node_client, &cid, target_bytecode_id).await
                         }
                         .into_actor(act)
                         .then(move |blob_local, act, _ctx| {
@@ -612,10 +615,10 @@ impl Handler<ExecuteRequest> for ContextManager {
                             // stale) bytecode, the activation marker must NOT be
                             // recorded below.
                             let module_fut = if blob_local {
-                                act.get_module_for_blob(target_app_key.into(), service_name)
+                                act.get_module_for_blob(target_bytecode_id.into(), service_name)
                                     .boxed_local()
                             } else {
-                                // Legacy groups (randomly-seeded app_key that
+                                // Legacy groups (randomly-seeded bytecode_id that
                                 // resolves to no blob) and failed fetches: the
                                 // row's bytecode is the only available truth.
                                 act.evict_application_caches(target_app);
@@ -658,7 +661,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                     crate::activation::record_activation(
                                                         &datastore,
                                                         &cid,
-                                                        target_app_key,
+                                                        target_bytecode_id,
                                                     );
                                                 }
                                                 Ok(_) => {
@@ -709,7 +712,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                         // runs the old build.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_blob_local(&blob_node_client, &cid, target_app_key).await
+                            ensure_blob_local(&blob_node_client, &cid, target_bytecode_id).await
                         }
                         .into_actor(act)
                         .then(move |blob_available, act, _ctx| {
@@ -742,7 +745,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                         crate::activation::record_activation(
                                             &marker_datastore,
                                             &cid,
-                                            target_app_key,
+                                            target_bytecode_id,
                                         );
                                     }
                                     Ok(_) => {}
@@ -779,10 +782,10 @@ impl Handler<ExecuteRequest> for ContextManager {
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
             // Per-context bytecode binding: a context executes the blob its
             // activation marker points at, else the blob its group's
-            // `app_key` points at, else the application row (non-group
+            // `bytecode_id` points at, else the application row (non-group
             // contexts, legacy groups). Cost: a couple of bloom-filtered
             // point-gets, noise next to the wasm call they precede.
-            let module_fut = match act.executing_blob_for_context(&context.id) {
+            let module_fut = match act.executing_bytecode_for_context(&context.id) {
                 Some(blob) => act
                     .get_module_for_blob(blob, context.service_name.clone())
                     .boxed_local(),
@@ -815,7 +818,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             // guest must not reach those via xcall (they are never
             // `#[app::xcall]`); the sync path itself carries no origin, so
             // legitimate state ops are unaffected.
-            let xcall_blob = act.executing_blob_for_context(&context.id).or_else(|| {
+            let xcall_blob = act.executing_bytecode_for_context(&context.id).or_else(|| {
                 act.applications
                     .get(&context.application_id)
                     .map(|app| app.blob.bytecode)
@@ -1451,7 +1454,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     // Resolved synchronously before this
                                     // async closure; `Option<[u8;32]>` is
                                     // Copy so captured by value automatically.
-                                    producing_app_key,
+                                    producing_bytecode_id,
                                     // Matches the row persisted above. Both are
                                     // `Some` together or a peer would verify one
                                     // shape and store the other.
@@ -1543,14 +1546,14 @@ impl ContextManager {
             .flatten()
             .and_then(|gid| {
                 let meta = MetaRepository::new(&datastore).load(&gid).ok().flatten()?;
-                let bound = crate::activation::activated_blob(&datastore, &context_id)?;
+                let bound = crate::activation::activated_bytecode(&datastore, &context_id)?;
                 let ladder = UpgradeLadderRepository::new(&datastore)
                     .load(&gid)
                     .unwrap_or_default();
                 crate::activation::next_rung(
                     &ladder,
                     bound,
-                    meta.app_key,
+                    meta.bytecode_id,
                     meta.target_application_id,
                 )
                 .map(|rung| (rung, bound))
@@ -1564,13 +1567,13 @@ impl ContextManager {
             return async move { Ok(guard) }.into_actor(self).boxed_local();
         }
 
-        let rung_app_key = rung.app_key;
+        let rung_bytecode_id = rung.bytecode_id;
         let rung_application_id = rung.application_id;
 
         info!(
             %context_id,
             from = %hex::encode(bound),
-            to = %hex::encode(rung_app_key),
+            to = %hex::encode(rung_bytecode_id),
             "replaying upgrade ladder hop"
         );
 
@@ -1579,7 +1582,7 @@ impl ContextManager {
             // Binding a marker to an absent blob would wedge the context, so
             // the blob must be local (fetched from peers if needed) before
             // anything else.
-            if !ensure_blob_local(&node_client, &context_id, rung_app_key).await {
+            if !ensure_blob_local(&node_client, &context_id, rung_bytecode_id).await {
                 eyre::bail!("rung bytecode blob not available locally or from peers");
             }
             // Replay actuates an already-committed, already-gated governance
@@ -1592,7 +1595,7 @@ impl ContextManager {
             let migration = crate::handlers::upgrade_group::resolve_upgrade_from_abis(
                 &node_client,
                 bound,
-                rung_app_key,
+                rung_bytecode_id,
                 true,
             )
             .await?;
@@ -1600,9 +1603,11 @@ impl ContextManager {
             // marker below: the upgrade record that carries `to_state_version`
             // never leaves the node that ran `upgrade_group`, so this is the
             // only version signal a member has for state it has migrated.
-            let state_version =
-                crate::handlers::upgrade_group::blob_max_state_version(&node_client, rung_app_key)
-                    .await;
+            let state_version = crate::handlers::upgrade_group::blob_max_state_version(
+                &node_client,
+                rung_bytecode_id,
+            )
+            .await;
             Ok::<_, eyre::Report>((migration, state_version))
         }
         .into_actor(self)
@@ -1633,7 +1638,7 @@ impl ContextManager {
             if let Some(params) = migration {
                 let service_name = context_meta.as_ref().and_then(|c| c.service_name.clone());
                 let migration_v2 = act.config.migration_v2;
-                act.get_module_for_blob(rung_app_key.into(), service_name)
+                act.get_module_for_blob(rung_bytecode_id.into(), service_name)
                     .then(move |module_result, act, _ctx| {
                         // Re-read cached values; they may have been refreshed
                         // during the module load.
@@ -1658,7 +1663,7 @@ impl ContextManager {
                             crate::activation::record_activation(
                                 &datastore,
                                 &context_id,
-                                rung_app_key,
+                                rung_bytecode_id,
                             );
                             if let Some(state_version) = activated_state_version {
                                 crate::activation::record_activated_state_version(
@@ -1711,7 +1716,7 @@ impl ContextManager {
                         executor,
                     )
                     .await?;
-                    crate::activation::record_activation(&datastore, &context_id, rung_app_key);
+                    crate::activation::record_activation(&datastore, &context_id, rung_bytecode_id);
                     if let Some(state_version) = activated_state_version {
                         crate::activation::record_activated_state_version(
                             &datastore,
@@ -1774,7 +1779,7 @@ impl ContextManager {
 
     /// Load (compile + cache) the module for a content-addressed bytecode
     /// blob — THE module-loading path: contexts execute the blob their
-    /// activation marker / group `app_key` points at, independent of what
+    /// activation marker / group `bytecode_id` points at, independent of what
     /// the shared application row currently holds. For bundle blobs,
     /// `service_name` selects the service wasm inside the bundle.
     ///
@@ -1898,46 +1903,46 @@ async fn ensure_blob_local(
 /// Store-level executing-blob resolution for a context: its activation
 /// marker (the blob it last activated), else its owning group's recorded
 /// target blob. The `bool` is `true` when the blob came from the group
-/// `app_key` (callers gate that branch on local blob presence — legacy
+/// `bytecode_id` (callers gate that branch on local blob presence — legacy
 /// groups carry randomly-seeded keys that resolve to nothing). `None` ⇒
 /// fall back to the application row.
 /// Where a context's bound bytecode blob was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundBlobSource {
+pub(crate) enum BoundBytecodeSource {
     /// The per-context activation marker — already executed locally.
     ActivationMarker,
     /// The group's recorded target blob — may not be fetched yet.
     GroupKey,
 }
 
-pub(crate) fn bound_blob_for_context(
+pub(crate) fn bound_bytecode_for_context(
     store: &Store,
     context_id: &ContextId,
-) -> Option<([u8; 32], BoundBlobSource)> {
-    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
-        return Some((blob, BoundBlobSource::ActivationMarker));
+) -> Option<([u8; 32], BoundBytecodeSource)> {
+    if let Some(blob) = crate::activation::activated_bytecode(store, context_id) {
+        return Some((blob, BoundBytecodeSource::ActivationMarker));
     }
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    (meta.app_key != [0u8; 32]).then_some((meta.app_key, BoundBlobSource::GroupKey))
+    (meta.bytecode_id != [0u8; 32]).then_some((meta.bytecode_id, BoundBytecodeSource::GroupKey))
 }
 
 impl ContextManager {
     /// The bytecode blob this context executes (per-context binding):
     /// activation marker → group target blob (when locally present) →
     /// `None` (callers fall back to the application row).
-    pub(crate) fn executing_blob_for_context(
+    pub(crate) fn executing_bytecode_for_context(
         &self,
         context_id: &ContextId,
     ) -> Option<calimero_primitives::blobs::BlobId> {
-        let (blob, source) = bound_blob_for_context(&self.datastore, context_id)?;
+        let (blob, source) = bound_bytecode_for_context(&self.datastore, context_id)?;
         let blob_id = calimero_primitives::blobs::BlobId::from(blob);
-        if source == BoundBlobSource::GroupKey
+        if source == BoundBytecodeSource::GroupKey
             && !self.node_client.has_blob(&blob_id).unwrap_or(false)
         {
-            // Legacy randomly-seeded app_key (or not-yet-fetched target):
+            // Legacy randomly-seeded bytecode_id (or not-yet-fetched target):
             // nothing to execute under that key — use the row.
             return None;
         }
@@ -2757,7 +2762,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        extract_xcall_policies, resolve_producing_app_key, should_block, upgrade_blocks_write,
+        extract_xcall_policies, resolve_producing_bytecode_id, should_block, upgrade_blocks_write,
         upgrade_rejects_committed_write, xcall_caller_denied, xcall_same_owning_group,
         XCallCallers,
     };
@@ -2767,11 +2772,11 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
-    /// Construct a minimal `GroupMetaValue` with the given `app_key`.
-    fn group_meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
+    /// Construct a minimal `GroupMetaValue` with the given `bytecode_id`.
+    fn group_meta_with_bytecode_id(bytecode_id: [u8; 32]) -> GroupMetaValue {
         let dummy_pk = PublicKey::from([0xAB; 32]);
         GroupMetaValue {
-            app_key,
+            bytecode_id,
             target_application_id: ApplicationId::from([0xCC; 32]),
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&dummy_pk),
@@ -2873,7 +2878,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_producing_app_key_returns_group_meta_app_key() {
+    fn resolve_producing_bytecode_id_returns_group_meta_bytecode_id() {
         let store = fresh_store();
         let context_id = ContextId::from([0xF1; 32]);
         let group_id = ContextGroupId::from([0xF2; 32]);
@@ -2881,32 +2886,32 @@ mod tests {
         register_context_in_group(&store, &group_id, &context_id)
             .expect("register_context_in_group");
         MetaRepository::new(&store)
-            .save(&group_id, &group_meta_with_app_key([0x22; 32]))
+            .save(&group_id, &group_meta_with_bytecode_id([0x22; 32]))
             .expect("save group meta");
 
         assert_eq!(
-            resolve_producing_app_key(&store, &context_id).unwrap(),
+            resolve_producing_bytecode_id(&store, &context_id).unwrap(),
             Some([0x22; 32])
         );
     }
 
     #[test]
-    fn resolve_producing_app_key_none_for_non_group_context() {
+    fn resolve_producing_bytecode_id_none_for_non_group_context() {
         let store = fresh_store();
         // context_id was never registered in any group
         let context_id = ContextId::from([0xF3; 32]);
 
         assert_eq!(
-            resolve_producing_app_key(&store, &context_id).unwrap(),
+            resolve_producing_bytecode_id(&store, &context_id).unwrap(),
             None
         );
     }
 
     #[test]
-    fn resolve_producing_app_key_none_when_meta_absent() {
+    fn resolve_producing_bytecode_id_none_when_meta_absent() {
         // Context is registered under a group, but no `GroupMetaValue` was
         // ever written for that group — the resolver must return `None`
-        // (no app_key to stamp) rather than erroring.
+        // (no bytecode_id to stamp) rather than erroring.
         let store = fresh_store();
         let context_id = ContextId::from([0xF4; 32]);
         let group_id = ContextGroupId::from([0xF5; 32]);
@@ -2915,7 +2920,7 @@ mod tests {
             .expect("register_context_in_group");
 
         assert_eq!(
-            resolve_producing_app_key(&store, &context_id).unwrap(),
+            resolve_producing_bytecode_id(&store, &context_id).unwrap(),
             None
         );
     }
@@ -3065,12 +3070,12 @@ mod tests {
     }
 
     // Per-context bytecode binding: the executing blob resolves marker →
-    // group app_key → None (row fallback). Two contexts sharing one
+    // group bytecode_id → None (row fallback). Two contexts sharing one
     // application id but holding different markers must resolve different
     // blobs — the coexistence invariant the module cache re-key enables.
 
     #[test]
-    fn bound_blob_two_contexts_different_markers_resolve_different_blobs() {
+    fn bound_bytecode_two_contexts_different_markers_resolve_different_blobs() {
         let store = fresh_store();
         let group_id = ContextGroupId::from([0xB0; 32]);
         let ctx_a = ContextId::from([0xB1; 32]);
@@ -3079,54 +3084,54 @@ mod tests {
         register_context_in_group(&store, &group_id, &ctx_a).expect("register a");
         register_context_in_group(&store, &group_id, &ctx_b).expect("register b");
         MetaRepository::new(&store)
-            .save(&group_id, &group_meta_with_app_key([0x33; 32]))
+            .save(&group_id, &group_meta_with_bytecode_id([0x33; 32]))
             .expect("save group meta");
 
         crate::activation::record_activation(&store, &ctx_a, [0x11; 32]);
         crate::activation::record_activation(&store, &ctx_b, [0x22; 32]);
 
         assert_eq!(
-            super::bound_blob_for_context(&store, &ctx_a),
-            Some(([0x11; 32], super::BoundBlobSource::ActivationMarker))
+            super::bound_bytecode_for_context(&store, &ctx_a),
+            Some(([0x11; 32], super::BoundBytecodeSource::ActivationMarker))
         );
         assert_eq!(
-            super::bound_blob_for_context(&store, &ctx_b),
-            Some(([0x22; 32], super::BoundBlobSource::ActivationMarker))
+            super::bound_bytecode_for_context(&store, &ctx_b),
+            Some(([0x22; 32], super::BoundBytecodeSource::ActivationMarker))
         );
     }
 
     #[test]
-    fn bound_blob_falls_back_to_group_app_key_without_marker() {
+    fn bound_bytecode_falls_back_to_group_bytecode_id_without_marker() {
         let store = fresh_store();
         let group_id = ContextGroupId::from([0xB3; 32]);
         let ctx = ContextId::from([0xB4; 32]);
 
         register_context_in_group(&store, &group_id, &ctx).expect("register");
         MetaRepository::new(&store)
-            .save(&group_id, &group_meta_with_app_key([0x44; 32]))
+            .save(&group_id, &group_meta_with_bytecode_id([0x44; 32]))
             .expect("save group meta");
 
         assert_eq!(
-            super::bound_blob_for_context(&store, &ctx),
-            Some(([0x44; 32], super::BoundBlobSource::GroupKey))
+            super::bound_bytecode_for_context(&store, &ctx),
+            Some(([0x44; 32], super::BoundBytecodeSource::GroupKey))
         );
     }
 
     #[test]
-    fn bound_blob_none_for_zero_app_key_or_non_group_context() {
+    fn bound_bytecode_none_for_zero_bytecode_id_or_non_group_context() {
         let store = fresh_store();
         let group_id = ContextGroupId::from([0xB5; 32]);
         let ctx = ContextId::from([0xB6; 32]);
 
         register_context_in_group(&store, &group_id, &ctx).expect("register");
         MetaRepository::new(&store)
-            .save(&group_id, &group_meta_with_app_key([0u8; 32]))
+            .save(&group_id, &group_meta_with_bytecode_id([0u8; 32]))
             .expect("save group meta");
 
-        // Zero app_key (legacy) carries no blob identity — row fallback.
-        assert_eq!(super::bound_blob_for_context(&store, &ctx), None);
+        // Zero bytecode_id (legacy) carries no blob identity — row fallback.
+        assert_eq!(super::bound_bytecode_for_context(&store, &ctx), None);
         // Non-group context — row fallback.
         let lone = ContextId::from([0xB7; 32]);
-        assert_eq!(super::bound_blob_for_context(&store, &lone), None);
+        assert_eq!(super::bound_bytecode_for_context(&store, &lone), None);
     }
 }

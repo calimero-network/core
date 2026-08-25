@@ -320,8 +320,8 @@ impl ContextClient {
             );
             let zero_app = ApplicationId::from([0u8; 32]);
             if application_id != zero_app {
-                let app_key = key::ApplicationMeta::new(application_id);
-                if !handle.has(&app_key)? {
+                let bytecode_id = key::ApplicationMeta::new(application_id);
+                if !handle.has(&bytecode_id)? {
                     let zero_blob =
                         key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
                     let stub_meta = types::ApplicationMeta::new(
@@ -337,7 +337,7 @@ impl ContextClient {
                             state_version: 0,
                         },
                     );
-                    handle.put(&app_key, &stub_meta)?;
+                    handle.put(&bytecode_id, &stub_meta)?;
                     debug!(
                         %context_id,
                         %application_id,

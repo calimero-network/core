@@ -410,6 +410,8 @@ impl BorshDeserialize for GovernanceParentEdge {
     }
 }
 
+/// The blob id of an application's bytecode: *which exact build* a group runs.
+/// Changes on every release, unlike `ApplicationId`, which is stable per package.
 #[derive(
     Eq,
     Ord,
@@ -424,15 +426,15 @@ impl BorshDeserialize for GovernanceParentEdge {
     Serialize,
     Hash,
 )]
-pub struct AppKey(Identity);
+pub struct BytecodeId(Identity);
 
-impl AppKey {
+impl BytecodeId {
     pub fn to_bytes(&self) -> [u8; 32] {
         self.0.to_bytes()
     }
 }
 
-impl ReprBytes for AppKey {
+impl ReprBytes for BytecodeId {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
@@ -450,7 +452,7 @@ impl ReprBytes for AppKey {
     }
 }
 
-impl From<[u8; 32]> for AppKey {
+impl From<[u8; 32]> for BytecodeId {
     fn from(value: [u8; 32]) -> Self {
         Self(Identity(value))
     }
@@ -667,14 +669,14 @@ pub struct SignedGroupOpenInvitation {
     /// this field was added; joiners fall back to zero when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub application_id: Option<[u8; 32]>,
-    /// `GroupMeta.app_key` for the group (unsigned bootstrap field).
+    /// `GroupMeta.bytecode_id` for the group (unsigned bootstrap field).
     ///
     /// The inviter has already derived its local
-    /// `app_key = blob_id(app_meta.bytecode)` at `create_group` time;
+    /// `bytecode_id = blob_id(app_meta.bytecode)` at `create_group` time;
     /// shipping that value lets the joiner pre-populate its local
     /// namespace-root meta with the same value the cascade predicate
-    /// (`from_app_key == descendant.app_key`) checks. Without this, the
-    /// joiner's pre-populated `app_key` is `[0u8; 32]` and any
+    /// (`from_bytecode_id == descendant.bytecode_id`) checks. Without this, the
+    /// joiner's pre-populated `bytecode_id` is `[0u8; 32]` and any
     /// `CascadeUpgrade` op the joiner applies locally
     /// silently skips the subtree — divergence between originator
     /// (cascade applied) and joiner (cascade no-op'd). Sibling of
@@ -690,14 +692,21 @@ pub struct SignedGroupOpenInvitation {
     /// without verification — the local-bytecode re-derivation in
     /// `join_group` only fires for the `None` case, not to override a
     /// present-but-wrong value. The blast radius is bounded: a wrong
-    /// `app_key` makes the `from_app_key` cascade predicate skip the
+    /// `bytecode_id` makes the `from_bytecode_id` cascade predicate skip the
     /// subtree for that one joiner's view (a cascade **DoS** for that
     /// peer), NOT state corruption or an auth bypass. Anyone adding
-    /// further cascade-gated semantics keyed on `app_key` must keep this
+    /// further cascade-gated semantics keyed on `bytecode_id` must keep this
     /// in mind — or move to always re-deriving locally and ignoring the
     /// wire value, which would close the forge vector entirely.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_key: Option<[u8; 32]>,
+    // `rename` covers BOTH directions; an `alias` alone would have kept reading
+    // the old key while silently writing the new one, breaking every SDK client.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "app_key",
+        alias = "bytecode_id"
+    )]
+    pub bytecode_id: Option<[u8; 32]>,
 }
 
 #[cfg(test)]
@@ -784,6 +793,97 @@ mod tests {
         assert_eq!(decoded.application_id, None);
         assert_eq!(decoded.blob_id, None);
         assert_eq!(decoded.source, None);
+    }
+
+    // This struct has no `rename_all`, so its pre-rename wire key was the bare
+    // snake_case field name, which pasted invitations still carry.
+    #[test]
+    fn signed_group_open_invitation_accepts_the_pre_rename_wire_key() {
+        let signed = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: Some([0x55; 32]),
+        };
+
+        // Round-tripping unchanged JSON is what pins the wire name; swapping in
+        // `bytecode_id` pins the alias instead.
+        let value = serde_json::to_value(&signed).expect("serialize");
+        assert!(value.get(INVITATION_WIRE_KEY).is_some(), "wrong wire key");
+
+        let decoded: SignedGroupOpenInvitation =
+            serde_json::from_value(value).expect("the pre-rename key must still deserialize");
+        assert_eq!(decoded.bytecode_id, Some([0x55; 32]));
+        assert_eq!(decoded.application_id, Some([0x44; 32]));
+    }
+
+    // The pre-rename wire name these tests pin, named once so the naming gate
+    // needs one exemption rather than one per assertion. // wire-pin
+    const INVITATION_WIRE_KEY: &str = "app_key"; // wire-pin
+
+    // The half that had no test, and is how a breaking wire change reached CI:
+    // `alias` covers reads, `rename` covers writes.
+    #[test]
+    fn signed_group_open_invitation_serializes_the_pre_rename_wire_key() {
+        let signed = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: Some([0x55; 32]),
+        };
+
+        let json = serde_json::to_string(&signed).expect("serialize");
+        let quoted = format!("\"{INVITATION_WIRE_KEY}\"");
+        assert!(
+            json.contains(&quoted),
+            "must write the wire key, got: {json}"
+        );
+        assert!(
+            !json.contains("\"bytecode_id\""),
+            "must not write the Rust field name, got: {json}"
+        );
+    }
+
+    #[test]
+    fn signed_group_open_invitation_accepts_the_bytecode_id_alias() {
+        let signed = SignedGroupOpenInvitation {
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: [0x11; 32].into(),
+                group_id: [0x22; 32].into(),
+                expiration_timestamp: 1_700_000_000,
+                invitation_nonce: [0x33; 32],
+                invited_role: 1,
+            },
+            inviter_signature: "deadbeef".to_owned(),
+            inviter_account: None,
+            application_id: Some([0x44; 32]),
+            bytecode_id: Some([0x66; 32]),
+        };
+
+        let mut value = serde_json::to_value(&signed).expect("serialize");
+        let object = value.as_object_mut().expect("a JSON object");
+        let wire = object
+            .remove(INVITATION_WIRE_KEY)
+            .expect("the wire key is present");
+        drop(object.insert("bytecode_id".to_owned(), wire));
+
+        let decoded: SignedGroupOpenInvitation =
+            serde_json::from_value(value).expect("the alias must deserialize");
+        assert_eq!(decoded.bytecode_id, Some([0x66; 32]));
     }
 
     #[test]

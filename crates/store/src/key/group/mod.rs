@@ -49,7 +49,7 @@ pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
 pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
 /// Per-group upgrade ladder: the ordered upgrade targets the group has moved
 /// through, captured as fold state when an upgrade op advances
-/// `GroupMeta.app_key`. A behind context replays these rungs in order, each
+/// `GroupMeta.bytecode_id`. A behind context replays these rungs in order, each
 /// in that release's own bytecode. (The context-resync marker lives in its own
 /// `Column::ContextResyncRequested`, not in this group-prefix space.)
 pub const GROUP_UPGRADE_LADDER_PREFIX: u8 = 0x3E;
@@ -1180,7 +1180,7 @@ pub struct GroupOpHeadValue {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMetaValue {
-    pub app_key: [u8; 32],
+    pub bytecode_id: [u8; 32],
     pub target_application_id: ApplicationId,
     pub created_at: u64,
     /// The founding admin, named by **account**. Both this and
@@ -1291,18 +1291,18 @@ pub struct GroupUpgradeValue {
     pub to_state_version: u32,
 }
 
-/// One rung of a group's upgrade ladder: the bytecode blob (`app_key`) and
+/// One rung of a group's upgrade ladder: the bytecode blob (`bytecode_id`) and
 /// application id an upgrade op targeted. Stored in causal-application order
 /// inside [`UpgradeLadderValue`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct LadderRung {
-    pub app_key: [u8; 32],
+    pub bytecode_id: [u8; 32],
     pub application_id: ApplicationId,
 }
 
 /// Stored against [`GroupUpgradeLadder`]. Append-only fold state: every op
-/// that advances `GroupMeta.app_key` appends its target here, so a context
+/// that advances `GroupMeta.bytecode_id` appends its target here, so a context
 /// behind the group can replay the exact sequence of upgrades — each rung in
 /// that release's own bytecode.
 #[derive(Clone, Debug, Default)]
@@ -3504,7 +3504,7 @@ mod tests {
         #[test]
         fn group_meta_value_roundtrip() {
             let value = GroupMetaValue {
-                app_key: [0xAA; 32],
+                bytecode_id: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
                 created_at: 1_700_000_000,
                 admin_identity: AccountId::from([0xCC; 32]),
@@ -3516,7 +3516,7 @@ mod tests {
             let bytes = to_vec(&value).expect("serialize");
             let decoded: GroupMetaValue = from_slice(&bytes).expect("deserialize");
 
-            assert_eq!(decoded.app_key, value.app_key);
+            assert_eq!(decoded.bytecode_id, value.bytecode_id);
             assert_eq!(decoded.target_application_id, value.target_application_id);
             assert_eq!(decoded.created_at, value.created_at);
             assert_eq!(decoded.admin_identity, value.admin_identity);
@@ -3527,7 +3527,7 @@ mod tests {
         // written before the removal must fail loudly, never shift into garbage.
         fn group_meta_value_with_legacy_policy_tag_is_rejected() {
             let value = GroupMetaValue {
-                app_key: [0x11; 32],
+                bytecode_id: [0x11; 32],
                 target_application_id: ApplicationId::from([0x22; 32]),
                 created_at: 1_700_000_000,
                 admin_identity: AccountId::from([0x33; 32]),
@@ -3539,7 +3539,7 @@ mod tests {
             // Re-create the old layout: the policy tag sat between
             // `target_application_id` and `created_at`.
             let mut bytes = to_vec(&value).expect("serialize");
-            let tag_offset = to_vec(&value.app_key).expect("serialize").len()
+            let tag_offset = to_vec(&value.bytecode_id).expect("serialize").len()
                 + to_vec(&value.target_application_id)
                     .expect("serialize")
                     .len();

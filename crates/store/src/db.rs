@@ -75,7 +75,7 @@ pub enum Column {
     /// the locally-loaded binary cannot yet read, so it is replayed verbatim
     /// once the binary advances rather than silently dropped. NOT synchronized
     /// across nodes. Auto-created from `Column::iter()` at `open_cf` (no DB
-    /// migration). Keys are `prefix(1) ‖ context(32) ‖ producing_app_key(32) ‖
+    /// migration). Keys are `prefix(1) ‖ context(32) ‖ producing_bytecode_id(32) ‖
     /// delta_id(32)`; values are borsh'd `AbsorbRecord`s.
     AbsorbBuffer,
     /// Node-local per-context marker that the last migration attempt did not
@@ -90,7 +90,11 @@ pub enum Column {
     /// the NEW bytecode, so the pin keeps reads on the old code until a
     /// migrate succeeds. Own column for the same collision reason as above.
     /// NOT synchronized; auto-created from `Column::iter()` (no DB migration).
+    /// Kept as `*Blob`, not `*Bytecode`: the variant name IS the on-disk column
+    /// family (`AsRefStr`), so renaming it orphans every existing row.
     ContextExecutingBlob,
+    /// Kept as `*Blob`, not `*Bytecode`: the variant name IS the on-disk column
+    /// family (`AsRefStr`), so renaming it orphans every existing row.
     ContextActivatedBlob,
     /// Node-local per-context record of the ABI state version the activated
     /// bytecode declares, resolved from its embedded schema when the context

@@ -39,7 +39,7 @@ pub async fn handler(
                 payload: SyncGroupApiResponse {
                     data: SyncGroupApiResponseData {
                         group_id: hex::encode(resp.group_id.to_bytes()),
-                        app_key: hex::encode(resp.app_key),
+                        bytecode_id: hex::encode(resp.bytecode_id),
                         target_application_id: resp.target_application_id,
                         member_count: resp.member_count,
                         context_count: resp.context_count,

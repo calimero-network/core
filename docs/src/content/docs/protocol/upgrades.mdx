@@ -28,11 +28,18 @@ application from a content-addressed blob. Two distinct version markers matter:
 | Marker | Where it lives | What it identifies |
 | --- | --- | --- |
 | **Application id** | the context's application binding | which application a context targets; for a bundle this id is **version-stable** across releases |
-| **`app_key`** | `GroupMeta.app_key` = `blob_id(bytecode)` | the exact bytecode/schema a node is executing; changes on every code release |
+| **`bytecode_id`** | `GroupMeta.bytecode_id` = `blob_id(bytecode)` | the exact bytecode/schema a node is executing; changes on every code release |
 | **`state_version`** | embedded ABI manifest (`AppState::SCHEMA_VERSION`, from `#[app::state(version = N)]`) | the schema generation the binary targets; default `1`, readers treat a missing value as `1` |
 
+`bytecode_id` is a `BytecodeId`, which names a bytecode blob. It is a distinct type
+from `ContentHash` — the sha256 digest of a file's raw bytes, computed on every blob
+write and externally supplied only as the expected-hash check input, e.g. a CLI
+flag — with no implicit conversion between them: assigning one to the other does not
+compile. Converting requires going through raw bytes explicitly, so a swap has to be
+written on purpose rather than happening by accident.
+
 Because a bundle keeps the **same application id** while its bytecode (and therefore
-its `app_key` and `state_version`) advances, the bytecode blob — not the application id
+its `bytecode_id` and `state_version`) advances, the bytecode blob — not the application id
 — is the real "which version" signal during an upgrade. The embedded ABI also declares
 each retained migration edge:
 
@@ -48,7 +55,7 @@ Retaining multiple edges lets a node that is several versions behind replay
 `v1→v2` then `v2→v3` rather than jumping the latest edge against older state.
 
 <Aside type="note" title="The `minRuntimeVersion` floor">
-Separate from the `state_version` / `app_key` schema surface above, a signed
+Separate from the `state_version` / `bytecode_id` schema surface above, a signed
 bundle manifest carries an optional **`minRuntimeVersion`** — a floor on the
 node runtime. It is enforced at install: if `min_runtime_version` exceeds the
 node's current runtime version the install **bails** (`"bundle requires runtime
@@ -176,7 +183,7 @@ up there: one needs data an older node wrote, the other needs a hand-built archi
 now mandatory on every path, and the check runs on read, not just at install, so a
 `.mpk` blob already persisted without a valid signature fails when it is next opened,
 with `"manifest is missing required 'signature' field"`. Two paths surface that as a
-hard error: creating a group against an explicit `app_key`, and resolving an upgrade's
+hard error: creating a group against an explicit `bytecode_id`, and resolving an upgrade's
 migration parameters from the target blob. Two others degrade quietly instead: the
 displayed app version (`blob_app_version`) goes empty, and the affected blob is
 skipped from `list_application_versions`. The fix in every case is to reinstall the
@@ -400,25 +407,25 @@ bytes and corrupts.
 
 Two coordinated fences enforce this:
 
-- **`producing_app_key` on the state delta.** Every `StateDelta` broadcast carries the
-  `GroupMeta.app_key` (= `blob_id(bytecode)`) the sender was executing under
+- **`producing_bytecode_id` on the state delta.** Every `StateDelta` broadcast carries the
+  `GroupMeta.bytecode_id` (= `blob_id(bytecode)`) the sender was executing under
   (`crates/node/primitives/src/sync/snapshot.rs`). A receiver compares it to its local
-  group meta: a delta whose `app_key` no longer matches was authored by a node still on
+  group meta: a delta whose `bytecode_id` no longer matches was authored by a node still on
   the old schema and is buffered / rejected rather than applied.
 
   ```rust
-  /// `GroupMeta.app_key` the sender was executing under when this
+  /// `GroupMeta.bytecode_id` the sender was executing under when this
   /// delta was produced. Receivers fence stale-schema deltas after a
-  /// cascade migration: a delta whose app_key no longer matches the
+  /// cascade migration: a delta whose bytecode_id no longer matches the
   /// local group meta was authored on the old schema.
-  producing_app_key: Option<[u8; 32]>,
+  producing_bytecode_id: Option<[u8; 32]>,
   ```
 
 - **The `cascade_hlc` HLC fence — absorb, don't drop.** A cascade upgrade stamps a single
   hybrid-logical-clock boundary (`cascade_hlc`) once, shared by every migrated descendant
   (see below). The fence decides each incoming context-state delta against three facts: the
-  boundary, the delta's HLC, and — crucially — the **loaded reader** app_key, the bytecode
-  blob the receiver actually executes right now, *not* the replicated `GroupMeta.app_key`
+  boundary, the delta's HLC, and — crucially — the **loaded reader** bytecode id, the bytecode
+  blob the receiver actually executes right now, *not* the replicated `GroupMeta.bytecode_id`
   migration target. The governance target advances for everyone at
   cascade-apply while each node's binary swaps lazily, so keying on the target would fence a
   node against a schema it can already read. The rule (`fence_decision`,
@@ -436,7 +443,7 @@ Two coordinated fences enforce this:
   emits `Drop`; that verdict is reserved for unrecoverable, non-absorbable cases. The loaded
   reader resolves in execution order — the per-context activation marker, then the installed
   application row's bytecode blob, then the group target as a last resort
-  (`loaded_reader_app_key`). The replicated target is threaded through only so the absorb
+  (`loaded_reader_bytecode_id`). The replicated target is threaded through only so the absorb
   drain can later tell when the binary has reached it.
 
 ## Group-wide cascade upgrade
@@ -448,17 +455,18 @@ drift is fenced. The operation is `GroupOp::CascadeUpgrade`
 
 ```rust
 CascadeUpgrade {
-    from_app_key: [u8; 32],            // the walk predicate: match descendants on this app_key
-    app_key: [u8; 32],                 // the new bytecode blob id
+    from_bytecode_id: BytecodeId,      // the walk predicate: match descendants on this bytecode_id
+    bytecode_id: BytecodeId,           // the new bytecode blob id
     target_application_id: ApplicationId,
+    to_state_version: u32,             // max ABI state version across the target's services
     migration: Option<Vec<u8>>,        // the migrate method name (bytes)
     cascade_hlc: HybridTimestamp,      // the fence boundary, stamped once by the initiator
 }
 ```
 
-It is **atomic**: `target_application_id`, `app_key`, and `migration` are all applied in
-a **single walk per matched descendant** (every descendant whose current `app_key`
-equals `from_app_key`), so a receiver cannot reproduce the old out-of-order apply bug
+It is **atomic**: `target_application_id`, `bytecode_id`, and `migration` are all applied in
+a **single walk per matched descendant** (every descendant whose current `bytecode_id`
+equals `from_bytecode_id`), so a receiver cannot reproduce the old out-of-order apply bug
 where target-set ran first and the migration silently matched nothing. The `cascade_hlc`
 is stamped **once** by the initiator so every node records an identical fence boundary.
 
@@ -472,13 +480,13 @@ is stamped **once** by the initiator so every node records an identical fence bo
   ]}
   steps={[
     { from: 0, to: 1, label: 'POST /groups/:id/upgrade { target_application_id, cascade }' },
-    { from: 1, to: 1, label: 'emit CascadeUpgrade { from_app_key, app_key, target, migration, cascade_hlc }' },
+    { from: 1, to: 1, label: 'emit CascadeUpgrade { from_bytecode_id, bytecode_id, target, migration, cascade_hlc }' },
     { from: 1, to: 2, label: 'op replicates to every member node' },
-    { from: 2, to: 2, label: 'apply: set target + app_key + migration atomically; record cascade_hlc fence' },
+    { from: 2, to: 2, label: 'apply: set target + bytecode_id + migration atomically; record cascade_hlc fence' },
     { type: 'divider', label: 'nothing migrates yet - state is reshaped on first access' },
     { from: 2, to: 2, label: 'first context access → run migrate (independently, deterministically)' },
     { from: 2, to: 2, label: 'migration_check passes → commit v2 root; emit AppVersionChanged' },
-    { from: 2, to: 1, label: 'fence: reject deltas with stale producing_app_key / pre-cascade_hlc' },
+    { from: 2, to: 1, label: 'fence: reject deltas with stale producing_bytecode_id / pre-cascade_hlc' },
     { from: 0, to: 1, label: 'GET /groups/:id/cascade-status → per-subgroup rollout rollup' },
   ]}
 />
@@ -585,9 +593,10 @@ Two facts decide what a stale context does (`maybe_lazy_upgrade`,
 `crates/context/src/handlers/execute/upgrade_gate.rs`):
 
 - The **activation marker** — `ContextActivatedBlob`, the bytecode blob this context last
-  *activated* (a migration commit, or a code-only swap). A context is up to date exactly when
-  its marker equals the group's `app_key` (`crates/context/src/activation.rs`).
-- The **ladder** — the recorded sequence of upgrade rungs (`app_key` paired with
+  *activated* (a migration commit, or a code-only swap), read via `activated_bytecode()`. A
+  context is up to date exactly when its marker equals the group's `bytecode_id`
+  (`crates/context/src/activation.rs`).
+- The **ladder** — the recorded sequence of upgrade rungs (`bytecode_id` paired with
   `application_id`) the group has climbed.
 
 | Context state | Action |

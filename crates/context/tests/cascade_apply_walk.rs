@@ -25,8 +25,8 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::rngs::OsRng;
 
-const APP_KEY_1: [u8; 32] = [0x11; 32];
-const APP_KEY_2: [u8; 32] = [0x22; 32];
+const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
+const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
 
 fn app_id_1() -> ApplicationId {
     ApplicationId::from([0xAA; 32])
@@ -41,11 +41,11 @@ fn empty_store() -> Store {
 
 fn meta(
     admin: calimero_account::AccountId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: target,
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -57,7 +57,7 @@ fn meta(
 
 /// Create a group at `gid` with `admin` as direct admin (so the
 /// cascade arm's per-descendant `MANAGE_APPLICATION` pre-scan passes
-/// on every node in the walk) on `app_key`+`target_application_id`.
+/// on every node in the walk) on `bytecode_id`+`target_application_id`.
 /// `admin` is a signing KEY; it is enrolled here so the account the governance
 /// rows name is the one that key resolves to. Deriving an account from the key
 /// instead would compile and key the rows to a principal nothing resolves to.
@@ -65,12 +65,12 @@ fn create_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> calimero_account::AccountId {
     let account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta(account, app_key, target))
+        .save(gid, &meta(account, bytecode_id, target))
         .unwrap();
     MembershipRepository::new(store)
         .add_member(gid, &account, GroupMemberRole::Admin)
@@ -86,16 +86,16 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
 
     let store = empty_store();
 
-    // Namespace R: root + R/A + R/B + R/B/B1, all on APP_KEY_1 / APP_ID_1.
+    // Namespace R: root + R/A + R/B + R/B/B1, all on BYTECODE_ID_1 / APP_ID_1.
     let r = ContextGroupId::from([0x70; 32]);
     let r_a = ContextGroupId::from([0xA1; 32]);
     let r_b = ContextGroupId::from([0xB1; 32]);
     let r_b_b1 = ContextGroupId::from([0xB2; 32]);
 
-    create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_a, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_b, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_b_b1, admin_pk, APP_KEY_1, app_id_1());
+    create_group(&store, &r, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_a, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_b, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_b_b1, admin_pk, BYTECODE_ID_1, app_id_1());
 
     NamespaceRepository::new(&store).nest(&r, &r_a).unwrap();
     NamespaceRepository::new(&store).nest(&r, &r_b).unwrap();
@@ -104,34 +104,34 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
         .unwrap();
 
     // Sibling namespace S: completely separate root with one child.
-    // Same APP_KEY_1 as R so we prove the cascade's tree-walk is what
-    // contains the blast radius (not a global app_key sweep).
+    // Same BYTECODE_ID_1 as R so we prove the cascade's tree-walk is what
+    // contains the blast radius (not a global bytecode_id sweep).
     let s = ContextGroupId::from([0x50; 32]);
     let s_x = ContextGroupId::from([0x51; 32]);
 
-    create_group(&store, &s, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &s_x, admin_pk, APP_KEY_1, app_id_1());
+    create_group(&store, &s, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &s_x, admin_pk, BYTECODE_ID_1, app_id_1());
     NamespaceRepository::new(&store).nest(&s, &s_x).unwrap();
 
-    // Sanity: every group starts on (APP_KEY_1, APP_ID_1).
+    // Sanity: every group starts on (BYTECODE_ID_1, APP_ID_1).
     for gid in [&r, &r_a, &r_b, &r_b_b1, &s, &s_x] {
         let m = MetaRepository::new(&store)
             .load(gid)
             .unwrap()
             .expect("meta");
-        assert_eq!(m.app_key, APP_KEY_1);
+        assert_eq!(m.bytecode_id, BYTECODE_ID_1);
         assert_eq!(m.target_application_id, app_id_1());
     }
 
-    // Cascade op signed on R, targeting from_app_key=K1, new app_key=K2 + new target=APP_ID_2.
+    // Cascade op signed on R, targeting from_bytecode_id=K1, new bytecode_id=K2 + new target=APP_ID_2.
     let cascade_op = SignedGroupOp::sign(
         &admin_sk,
         r.to_bytes().into(),
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1.into(),
-            app_key: APP_KEY_2.into(),
+            from_bytecode_id: BYTECODE_ID_1.into(),
+            bytecode_id: BYTECODE_ID_2.into(),
             target_application_id: app_id_2(),
             to_state_version: 0,
             migration: None,
@@ -146,15 +146,15 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
     // op variant for local apply" — failing this assertion.
     apply_local_signed_group_op(&store, &cascade_op).expect("cascade op applies cleanly");
 
-    // Every group under R must now be on (APP_KEY_2, APP_ID_2).
+    // Every group under R must now be on (BYTECODE_ID_2, APP_ID_2).
     for gid in [&r, &r_a, &r_b, &r_b_b1] {
         let m = MetaRepository::new(&store)
             .load(gid)
             .unwrap()
             .expect("meta after");
         assert_eq!(
-            m.app_key,
-            APP_KEY_2,
+            m.bytecode_id,
+            BYTECODE_ID_2,
             "group {} in cascaded subtree must be on K2",
             hex::encode(gid.to_bytes())
         );
@@ -167,15 +167,15 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
     }
 
     // Sibling namespace S must be untouched — the cascade walked
-    // descendants of R only, not "every group with app_key == K1".
+    // descendants of R only, not "every group with bytecode_id == K1".
     for gid in [&s, &s_x] {
         let m = MetaRepository::new(&store)
             .load(gid)
             .unwrap()
             .expect("sibling meta");
         assert_eq!(
-            m.app_key,
-            APP_KEY_1,
+            m.bytecode_id,
+            BYTECODE_ID_1,
             "sibling-namespace group {} must NOT be touched by R's cascade",
             hex::encode(gid.to_bytes())
         );

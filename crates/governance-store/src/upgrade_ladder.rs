@@ -5,7 +5,7 @@ use eyre::Result as EyreResult;
 
 /// Typed repository for the per-group upgrade ladder: the ordered upgrade
 /// targets the group has moved through, captured as fold state whenever an
-/// upgrade op advances `GroupMeta.app_key`. A context behind the group
+/// upgrade op advances `GroupMeta.bytecode_id`. A context behind the group
 /// replays these rungs in order, each in that release's own bytecode.
 pub struct UpgradeLadderRepository<'a> {
     store: &'a Store,
@@ -27,14 +27,14 @@ impl<'a> UpgradeLadderRepository<'a> {
             .unwrap_or_default())
     }
 
-    /// Append a rung. Skips when the last rung carries the same `app_key`,
+    /// Append a rung. Skips when the last rung carries the same `bytecode_id`,
     /// which makes re-application of the same op (governance replay) a no-op
     /// while still recording legitimate A→B→A sequences.
     pub fn append(&self, group_id: &ContextGroupId, rung: LadderRung) -> EyreResult<()> {
         let mut rungs = self.load(group_id)?;
         if rungs
             .last()
-            .is_some_and(|last| last.app_key == rung.app_key)
+            .is_some_and(|last| last.bytecode_id == rung.bytecode_id)
         {
             return Ok(());
         }
@@ -62,7 +62,7 @@ mod tests {
 
     fn rung(byte: u8) -> LadderRung {
         LadderRung {
-            app_key: [byte; 32],
+            bytecode_id: [byte; 32],
             application_id: ApplicationId::from([0xCC; 32]),
         }
     }

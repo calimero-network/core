@@ -263,7 +263,7 @@ mod tests {
 
     fn meta(admin: PublicKey) -> GroupMetaValue {
         GroupMetaValue {
-            app_key: [0x55; 32],
+            bytecode_id: [0x55; 32],
             target_application_id: ApplicationId::from([0x66; 32]),
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&admin),

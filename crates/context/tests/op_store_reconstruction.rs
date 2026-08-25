@@ -57,7 +57,7 @@ fn hlc(ns: u64) -> HybridTimestamp {
 
 fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        app_key: [0xBB; 32],
+        bytecode_id: [0xBB; 32],
         target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
         admin_identity: admin,

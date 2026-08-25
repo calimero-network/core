@@ -64,10 +64,10 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) delta_signature: Option<[u8; 64]>,
     /// The author's consent for a delegated delta.
     pub(crate) delegation: Option<calimero_account::Delegation>,
-    /// The `GroupMeta.app_key` the sender was executing under. `None` for
+    /// The `GroupMeta.bytecode_id` the sender was executing under. `None` for
     /// non-group contexts or when the sender could not resolve the meta row.
     /// Receivers use this to fence stale-schema deltas.
-    pub(crate) producing_app_key: Option<[u8; 32]>,
+    pub(crate) producing_bytecode_id: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -99,9 +99,9 @@ fn state_delta_message_from_buffered(
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
         delta_signature: buffered.delta_signature,
-        // Carry the stamped producing_app_key through so the HLC fence can still
+        // Carry the stamped producing_bytecode_id through so the HLC fence can still
         // act on a buffered stale-schema delta. `None` only for legacy deltas.
-        producing_app_key: buffered.producing_app_key,
+        producing_bytecode_id: buffered.producing_bytecode_id,
         delegation: buffered.delegation,
     }
 }
@@ -169,7 +169,7 @@ pub(crate) async fn apply_authorized_state_delta(
         key_id,
         delta_signature,
         delegation,
-        producing_app_key,
+        producing_bytecode_id,
     } = message;
 
     // Per-delta envelope signature verification. Closes the anti-
@@ -221,14 +221,14 @@ pub(crate) async fn apply_authorized_state_delta(
     // HLC fence: fences a delta produced under a schema the receiver's loaded
     // reader can't read AND newer than the cascade boundary. The common
     // chokepoint for direct delivery and the governance-pending drain re-apply.
-    // A `None` producing_app_key is unfenceable and falls through. The migration
+    // A `None` producing_bytecode_id is unfenceable and falls through. The migration
     // case (`Buffer`) absorbs the original bytes for later verbatim replay;
     // non-migration fences (`Drop`) drop.
-    if let Some(producing_app_key) = producing_app_key {
+    if let Some(producing_bytecode_id) = producing_bytecode_id {
         let outcome = fence_and_maybe_absorb(
             node_clients.context.datastore(),
             &context_id,
-            producing_app_key,
+            producing_bytecode_id,
             delta_id,
             author_id,
             hlc,
@@ -246,7 +246,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 delta_signature,
                 delegation: delegation.clone(),
                 governance_drain_attempts: 0,
-                producing_app_key: Some(producing_app_key),
+                producing_bytecode_id: Some(producing_bytecode_id),
             },
         )?;
         if matches!(outcome, FenceOutcome::Handled) {
@@ -308,7 +308,7 @@ pub(crate) async fn apply_authorized_state_delta(
             delta_signature,
             delegation: delegation.clone(),
             governance_drain_attempts: 0,
-            producing_app_key,
+            producing_bytecode_id,
         };
 
         if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -344,7 +344,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 delta_signature,
                 delegation: delegation.clone(),
                 governance_drain_attempts: 0,
-                producing_app_key,
+                producing_bytecode_id,
             };
 
             if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -407,14 +407,14 @@ pub(crate) async fn apply_authorized_state_delta(
                     delta_signature,
                     delegation: delegation.clone(),
                     governance_drain_attempts: 0,
-                    producing_app_key,
+                    producing_bytecode_id,
                 },
                 *application_id.as_ref(),
             );
-            // Keyed by the awaited application rather than by `producing_app_key`:
+            // Keyed by the awaited application rather than by `producing_bytecode_id`:
             // the application id resolves from local context metadata even when
             // nothing about the application has landed, and a delta may carry no
-            // `producing_app_key` at all. `delta_id` keeps the key unique, so a
+            // `producing_bytecode_id` at all. `delta_id` keeps the key unique, so a
             // re-delivery overwrites instead of duplicating.
             calimero_governance_store::AbsorbRepository::new(node_clients.context.datastore())
                 .save(&context_id, *application_id.as_ref(), &record)?;
@@ -1083,7 +1083,7 @@ pub async fn handle_state_delta(
         key_id,
         delta_signature,
         delegation,
-        producing_app_key,
+        producing_bytecode_id,
     } = message;
 
     let Some(context) = node_clients.context.get_context(&context_id)? else {
@@ -1300,7 +1300,7 @@ pub async fn handle_state_delta(
                 delta_signature,
                 delegation: delegation.clone(),
                 governance_drain_attempts: 0,
-                producing_app_key,
+                producing_bytecode_id,
             };
             node_state.buffer_governance_pending(context_id, buffered);
             return Ok(());
@@ -1332,9 +1332,9 @@ pub async fn handle_state_delta(
             key_id,
             delta_signature,
             delegation: delegation.clone(),
-            // Carry the stamped producing_app_key through to the apply path,
+            // Carry the stamped producing_bytecode_id through to the apply path,
             // where the fence reads it. Orthogonal to the cross-DAG check above.
-            producing_app_key,
+            producing_bytecode_id,
         },
         // Gossip-receive path: fence as normal — never bypass.
         false,
@@ -2099,7 +2099,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // HLC fence (PR-3), parallel to `apply_authorized_state_delta`. The
     // snapshot-sync replay path does NOT funnel through that chokepoint —
     // it carries its own duplicated verification chain — so the fence is
-    // applied here too. `BufferedDelta` carries the stamped `producing_app_key`
+    // applied here too. `BufferedDelta` carries the stamped `producing_bytecode_id`
     // through snapshot-sync buffering. `None` is unfenceable and falls through.
     //
     // Absorb-don't-drop: route through `delta_fence_decision` (not the boolean
@@ -2109,12 +2109,12 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // binary advances, exactly like the gossip/live-apply chokepoint
     // (`fence_and_maybe_absorb`). Collapsing it to a drop here permanently lost
     // a legitimate newer-schema straggler on the snapshot-sync replay path.
-    if let Some(producing_app_key) = buffered.producing_app_key {
+    if let Some(producing_bytecode_id) = buffered.producing_bytecode_id {
         use calimero_context::hlc_fence::FenceDecision;
         match calimero_context::hlc_fence::delta_fence_decision(
             context_client.datastore(),
             &context_id,
-            producing_app_key,
+            producing_bytecode_id,
             buffered.hlc,
         )? {
             FenceDecision::Apply => {}
@@ -2122,14 +2122,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 let record = calimero_governance_store::AbsorbRecord::from_buffered(&buffered);
                 calimero_governance_store::AbsorbRepository::new(context_client.datastore()).save(
                     &context_id,
-                    producing_app_key,
+                    producing_bytecode_id,
                     &record,
                 )?;
                 warn!(
                     %context_id,
                     author = %buffered.author_id,
                     delta_id = ?delta_id,
-                    producing_app_key = %hex::encode(producing_app_key),
+                    producing_bytecode_id = %hex::encode(producing_bytecode_id),
                     "Absorbing buffered state delta — loaded reader behind incoming schema; buffered for verbatim replay"
                 );
                 crate::node_metrics::record_delta_outcome("absorbed_for_migration");
@@ -2140,7 +2140,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     %context_id,
                     author = %buffered.author_id,
                     delta_id = ?delta_id,
-                    producing_app_key = %hex::encode(producing_app_key),
+                    producing_bytecode_id = %hex::encode(producing_bytecode_id),
                     "Dropping buffered state delta — HLC fence: stale schema after cascade migration"
                 );
                 crate::node_metrics::record_delta_outcome("fenced_stale_schema");
@@ -2462,9 +2462,9 @@ mod tests {
     //
     // Exercises `calimero_context::hlc_fence::delta_is_fenced` against a
     // store shaped exactly as the receive path sees it after a cascade
-    // migration (group meta `app_key` = current target + a completed
+    // migration (group meta `bytecode_id` = current target + a completed
     // upgrade row carrying `cascade_hlc`). Mirrors `group_id_check_tests`'
-    // store setup so a regression in the fence resolution (wrong app_key
+    // store setup so a regression in the fence resolution (wrong bytecode_id
     // source, missing cascade boundary read) is caught here rather than at
     // apply time.
     mod fence_drop_tests {
@@ -2512,7 +2512,7 @@ mod tests {
                 .save(
                     &group_id,
                     &GroupMetaValue {
-                        app_key: APP_V2,
+                        bytecode_id: APP_V2,
                         target_application_id: ApplicationId::from([0xCC; 32]),
                         created_at: 1_700_000_000,
                         admin_identity: dummy_pk,
@@ -2581,9 +2581,9 @@ mod tests {
         use super::super::{fence_and_maybe_absorb, FenceOutcome};
 
         /// A minimal `BufferedDelta` carrying the replay fields the absorb path
-        /// persists. `producing_app_key` is the schema discriminator the fence
+        /// persists. `producing_bytecode_id` is the schema discriminator the fence
         /// keys on.
-        fn sample_buffered(delta_id: [u8; 32], producing_app_key: [u8; 32]) -> BufferedDelta {
+        fn sample_buffered(delta_id: [u8; 32], producing_bytecode_id: [u8; 32]) -> BufferedDelta {
             BufferedDelta {
                 id: delta_id,
                 parents: vec![],
@@ -2596,7 +2596,7 @@ mod tests {
                 governance_position: None,
                 delta_signature: Some([7; 64]),
                 governance_drain_attempts: 0,
-                producing_app_key: Some(producing_app_key),
+                producing_bytecode_id: Some(producing_bytecode_id),
                 delegation: None,
             }
         }
@@ -2606,7 +2606,7 @@ mod tests {
         /// dropped — and the call reports `Handled` so the caller returns early.
         #[test]
         fn buffer_decision_persists_absorb_record_not_drop() {
-            // Loaded reader falls back to GroupMeta.app_key = APP_V2 here, so an
+            // Loaded reader falls back to GroupMeta.bytecode_id = APP_V2 here, so an
             // APP_V1 delta after the boundary is unreadable now ⇒ Buffer.
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let bd = sample_buffered([3; 32], APP_V1);
@@ -2652,7 +2652,7 @@ mod tests {
         /// proving the bypass, not a weakened fence, is what makes it apply.
         #[test]
         fn drain_replay_bypasses_fence_for_stale_straggler() {
-            // loaded reader falls back to GroupMeta.app_key = APP_V2; the stale
+            // loaded reader falls back to GroupMeta.bytecode_id = APP_V2; the stale
             // straggler was produced under APP_V1, after the cascade boundary.
             // This is precisely the record the drain selected for verbatim replay.
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
@@ -2746,20 +2746,20 @@ mod tests {
         use super::super::drain_absorbed_records;
 
         /// Build a durable `AbsorbRecord` mirroring a buffered straggler delta.
-        fn sample_record(delta_id: [u8; 32], producing_app_key: [u8; 32]) -> AbsorbRecord {
-            AbsorbRecord::from_buffered(&sample_buffered(delta_id, producing_app_key))
+        fn sample_record(delta_id: [u8; 32], producing_bytecode_id: [u8; 32]) -> AbsorbRecord {
+            AbsorbRecord::from_buffered(&sample_buffered(delta_id, producing_bytecode_id))
         }
 
         /// Install a loaded reader for `context_id` resolving to `blob`, so
-        /// [`loaded_reader_app_key`] returns `blob` (instead of falling back to
-        /// `GroupMeta.app_key`). Lets a test model `loaded != target`.
+        /// [`loaded_reader_bytecode_id`] returns `blob` (instead of falling back to
+        /// `GroupMeta.bytecode_id`). Lets a test model `loaded != target`.
         fn install_loaded_reader(store: &Store, context_id: &ContextId, blob: [u8; 32]) {
             use calimero_primitives::application::ApplicationId;
             use calimero_primitives::blobs::BlobId;
             use calimero_store::key;
             use calimero_store::types::{ApplicationMeta, ContextMeta};
 
-            let app_key = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
+            let bytecode_id = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
             let app_meta = ApplicationMeta::new(
                 key::BlobMeta::new(BlobId::from(blob)),
                 0,
@@ -2773,27 +2773,27 @@ mod tests {
                     state_version: 0,
                 },
             );
-            let ctx_meta = ContextMeta::new(app_key, [0; 32], vec![], None);
+            let ctx_meta = ContextMeta::new(bytecode_id, [0; 32], vec![], None);
 
             let mut handle = store.handle();
             handle
                 .put(&key::ContextMeta::new(*context_id), &ctx_meta)
                 .expect("put ContextMeta");
             handle
-                .put(&app_key, &app_meta)
+                .put(&bytecode_id, &app_meta)
                 .expect("put ApplicationMeta");
         }
 
         /// REGRESSION (the PR-6b drain bug): a STALE v1 straggler delta —
-        /// `producing_app_key == v1`, the node already advanced to
+        /// `producing_bytecode_id == v1`, the node already advanced to
         /// `loaded == target == v2` — must be REPLAYED (verbatim) and deleted,
         /// NOT skipped forever. The drain-ready signal is "the node reached the
         /// migration target", not "producing == loaded". This test FAILS against
-        /// the old `producing_app_key != Some(loaded)` skip (the stale record was
+        /// the old `producing_bytecode_id != Some(loaded)` skip (the stale record was
         /// dropped, losing the offline write).
         #[tokio::test]
         async fn drain_replays_stale_straggler_when_node_reached_target() {
-            // Loaded reader falls back to GroupMeta.app_key = APP_V2, and the
+            // Loaded reader falls back to GroupMeta.bytecode_id = APP_V2, and the
             // migration target is also APP_V2 ⇒ loaded == target.
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let repo = AbsorbRepository::new(&store);
@@ -2842,7 +2842,7 @@ mod tests {
         #[tokio::test]
         async fn drain_skips_future_delta_until_node_advances() {
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
-            // Node behind: loaded reader = v1, target (GroupMeta.app_key) = v2.
+            // Node behind: loaded reader = v1, target (GroupMeta.bytecode_id) = v2.
             install_loaded_reader(&store, &ctx, APP_V1);
             let repo = AbsorbRepository::new(&store);
 
@@ -3013,7 +3013,7 @@ mod tests {
         /// reached) is left behind; that path is exercised below.
         #[tokio::test]
         async fn startup_recovery_drains_records_once_target_reached() {
-            // The store's loaded reader falls back to GroupMeta.app_key = APP_V2,
+            // The store's loaded reader falls back to GroupMeta.bytecode_id = APP_V2,
             // and the target is APP_V2 ⇒ loaded == target.
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
             let repo = AbsorbRepository::new(&store);
@@ -3067,7 +3067,7 @@ mod tests {
         #[tokio::test]
         async fn startup_recovery_keeps_future_record_while_behind() {
             let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
-            // Node behind: loaded reader = v1, target (GroupMeta.app_key) = v2.
+            // Node behind: loaded reader = v1, target (GroupMeta.bytecode_id) = v2.
             install_loaded_reader(&store, &ctx, APP_V1);
             let repo = AbsorbRepository::new(&store);
 
@@ -3129,7 +3129,7 @@ mod tests {
         // unit-tested via a standalone recovery function any more. The entity
         // arm of `drain_absorbed_leaves` (the live startup hook runs it over
         // every context with a pending absorb) already drains both leaf- and
-        // entity-shaped records with the identical `schema_app_key == loaded`
+        // entity-shaped records with the identical `schema_bytecode_id == loaded`
         // gate and the same `persist_buffered_snapshot_entity` path; the entity
         // persist/redrive/pending logic is covered directly by
         // `sync::snapshot::tests::test_persist_buffered_snapshot_entity_*`, and

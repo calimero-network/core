@@ -1,6 +1,6 @@
 //! Apply-handler tests for the atomic `GroupOp::CascadeUpgrade` op.
 //!
-//! The op sets `target_application_id`, `app_key`, AND `migration` in a
+//! The op sets `target_application_id`, `bytecode_id`, AND `migration` in a
 //! SINGLE descendant walk per matched group, plus stamps a sticky
 //! `cascade_hlc` fence onto the per-group upgrade record, so no arrival
 //! order can split the cascade across two applies.
@@ -25,8 +25,8 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::rngs::OsRng;
 
-const APP_KEY_1: [u8; 32] = [0x11; 32];
-const APP_KEY_2: [u8; 32] = [0x22; 32];
+const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
+const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
 
 fn app_id_1() -> ApplicationId {
     ApplicationId::from([0xAA; 32])
@@ -41,11 +41,11 @@ fn empty_store() -> Store {
 
 fn meta(
     admin: calimero_account::AccountId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: target,
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -57,19 +57,19 @@ fn meta(
 
 /// Create a group at `gid` with `admin` as direct admin (so the
 /// cascade arm's per-descendant `MANAGE_APPLICATION` pre-scan passes
-/// on every node in the walk) on `app_key`+`target_application_id`.
+/// on every node in the walk) on `bytecode_id`+`target_application_id`.
 /// `admin` is a signing KEY; it is enrolled so the rows name the account that
 /// key resolves to, which is what every gate reading them will look up.
 fn create_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> calimero_account::AccountId {
     let account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta(account, app_key, target))
+        .save(gid, &meta(account, bytecode_id, target))
         .unwrap();
     MembershipRepository::new(store)
         .add_member(gid, &account, GroupMemberRole::Admin)
@@ -78,7 +78,7 @@ fn create_group(
 }
 
 #[test]
-fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_cascade_hlc() {
+fn cascade_upgrade_atomic_op_sets_target_bytecode_id_and_migration_and_records_cascade_hlc() {
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
@@ -87,9 +87,9 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
     let r = ContextGroupId::from([0x70; 32]);
     let r_b = ContextGroupId::from([0xB1; 32]);
     let r_b_b1 = ContextGroupId::from([0xB2; 32]);
-    create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_b, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_b_b1, admin_pk, APP_KEY_1, app_id_1());
+    create_group(&store, &r, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_b, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_b_b1, admin_pk, BYTECODE_ID_1, app_id_1());
     NamespaceRepository::new(&store).nest(&r, &r_b).unwrap();
     NamespaceRepository::new(&store)
         .nest(&r_b, &r_b_b1)
@@ -102,8 +102,8 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1.into(),
-            app_key: APP_KEY_2.into(),
+            from_bytecode_id: BYTECODE_ID_1.into(),
+            bytecode_id: BYTECODE_ID_2.into(),
             target_application_id: app_id_2(),
             to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
@@ -119,7 +119,7 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
             .load(gid)
             .unwrap()
             .expect("meta");
-        assert_eq!(m.app_key, APP_KEY_2);
+        assert_eq!(m.bytecode_id, BYTECODE_ID_2);
         assert_eq!(m.target_application_id, app_id_2());
         assert_eq!(m.migration, Some(b"migrate_v2".to_vec()));
         let up = UpgradesRepository::new(&store)
@@ -132,7 +132,7 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
         // — the sequence a behind context replays to catch up.
         let rungs = UpgradeLadderRepository::new(&store).load(gid).unwrap();
         assert_eq!(rungs.len(), 1);
-        assert_eq!(rungs[0].app_key, APP_KEY_2);
+        assert_eq!(rungs[0].bytecode_id, BYTECODE_ID_2);
         assert_eq!(rungs[0].application_id, app_id_2());
     }
 }
@@ -142,7 +142,7 @@ fn cascade_upgrade_atomic_op_sets_target_app_key_and_migration_and_records_casca
 /// Mirrors `cascade_concurrent_safety.rs`'s DagStore+applier harness, but
 /// proves the positive counterpart to the characterization below: because
 /// the cascade is a SINGLE `CascadeUpgrade` op, no physical arrival order
-/// of the surrounding governance ops can split target/app_key/migration
+/// of the surrounding governance ops can split target/bytecode_id/migration
 /// across two apply passes. A benign predecessor op (`GroupMetadataSet`,
 /// genesis-parented) and the `CascadeUpgrade` op (parented on it) are
 /// delivered to replica B in REVERSE order — the DAG queues the cascade
@@ -163,8 +163,8 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         let store = empty_store();
         let r = ContextGroupId::from([0x70; 32]);
         let r_a = ContextGroupId::from([0x71; 32]);
-        create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
-        create_group(&store, &r_a, admin_pk, APP_KEY_1, app_id_1());
+        create_group(&store, &r, admin_pk, BYTECODE_ID_1, app_id_1());
+        create_group(&store, &r_a, admin_pk, BYTECODE_ID_1, app_id_1());
         NamespaceRepository::new(&store).nest(&r, &r_a).unwrap();
         (store, r, r_a)
     };
@@ -197,8 +197,8 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         vec![op_p_hash],
         2,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1.into(),
-            app_key: APP_KEY_2.into(),
+            from_bytecode_id: BYTECODE_ID_1.into(),
+            bytecode_id: BYTECODE_ID_2.into(),
             target_application_id: app_id_2(),
             to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
@@ -239,7 +239,7 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
         // Still on K1 while op_c is pending.
         let pre = MetaRepository::new(&store_b).load(&root).unwrap().unwrap();
         assert_eq!(
-            pre.app_key, APP_KEY_1,
+            pre.bytecode_id, BYTECODE_ID_1,
             "replica B must still be on K1 while op_c is pending"
         );
         let p = dag
@@ -254,7 +254,10 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
     for (store, label) in [(&store_a, "A"), (&store_b, "B")] {
         for gid in [&root, &child] {
             let m = MetaRepository::new(store).load(gid).unwrap().expect("meta");
-            assert_eq!(m.app_key, APP_KEY_2, "replica {label}: app_key == K2");
+            assert_eq!(
+                m.bytecode_id, BYTECODE_ID_2,
+                "replica {label}: bytecode_id == K2"
+            );
             assert_eq!(
                 m.target_application_id,
                 app_id_2(),

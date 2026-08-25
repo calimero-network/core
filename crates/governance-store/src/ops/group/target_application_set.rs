@@ -9,7 +9,7 @@ use eyre::Result as EyreResult;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    app_key: &[u8; 32],
+    bytecode_id: &[u8; 32],
     target_application_id: &ApplicationId,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
@@ -27,7 +27,7 @@ pub(crate) fn apply(
         .map(|meta| meta.target_application_id);
 
     ctx.settings()
-        .set_target_application(signer, app_key, target_application_id)?;
+        .set_target_application(signer, bytecode_id, target_application_id)?;
 
     // A multi-hop upgrade emits one of these ops per ladder rung, all naming
     // the same target application. Announce on the rung that actually lands the
@@ -40,7 +40,7 @@ pub(crate) fn apply(
         .ok()
         .flatten()
         .map(|app| *app.bytecode.blob_id().as_ref());
-    if target_blob.is_some_and(|blob| blob != *app_key) {
+    if target_blob.is_some_and(|blob| blob != *bytecode_id) {
         return Ok(());
     }
     let local_contexts_total = MetadataRepository::new(store)

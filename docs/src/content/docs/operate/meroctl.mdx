@@ -77,7 +77,7 @@ just points the `default` alias at a chosen target.
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `get <APP_ID>`                     | Fetch application details.                        | `APP_ID`                                                      |
-| `install`                          | Install an application.                           | `--path`/`-p`, `--url`/`-u`, `--metadata`/`-m`, `--hash`, `--watch`/`-w`, `--package`, `--version` |
+| `install`                          | Install an application.                           | `--path`/`-p`, `--url`/`-u`, `--metadata`/`-m`, `--content-hash` (alias: `--hash`), `--watch`/`-w`, `--package`, `--version` |
 | `list` (`ls`)                      | List installed applications.                      | —                                                            |
 | `uninstall <APP_ID>`               | Uninstall an application.                         | `APP_ID`                                                      |
 | `versions <APP_ID>`                | List locally installed versions of an app.        | `APP_ID`                                                      |
@@ -182,7 +182,7 @@ Alias: `ns`. Namespaces are root groups (application instances).
 
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
-| `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--app-key`                    |
+| `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--bytecode-id` (alias: `--app-key`) |
 | `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
 | `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`                                |
 | `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive` |

@@ -35,8 +35,9 @@ src/
 ├── hash.rs          # Hash - the 32-byte digest every ID newtype wraps
 ├── identity.rs      # PrivateKey, PublicKey, AccountId, DeviceId
 ├── context.rs        # ContextId, Context, ContextConfigParams, GroupMemberRole
-├── application.rs    # ApplicationId, SignerId, AppKey, Application, ApplicationBlob, Version (semver), ApplicationSource
+├── application.rs    # ApplicationId, SignerId, Application, ApplicationBlob, Version (semver), ApplicationSource
 ├── blobs.rs           # BlobId, BlobInfo, BlobMetadata
+├── content_hash.rs     # ContentHash - digest of a file's bytes, distinct from BlobId
 ├── crdt.rs             # CrdtType - merge-semantics tag shared by storage + sync
 ├── alias.rs             # Alias<T> - fixed-size human-readable name, scoped by ScopedAlias
 ├── metadata.rs           # MetadataRecord + validate_metadata_payload (group/context/member metadata)
@@ -49,7 +50,7 @@ src/
 └── tests/                       # out-of-line #[path] test modules for hash/application/alias
 ```
 
-`lib.rs` is 14 lines of `pub mod` declarations and nothing else - no facade re-exports, no prelude module. Callers import from the specific module (`calimero_primitives::context::ContextId`, not a flattened root).
+`lib.rs` is 15 lines of `pub mod` declarations and nothing else - no facade re-exports, no prelude module. Callers import from the specific module (`calimero_primitives::context::ContextId`, not a flattened root).
 
 ## Type Inventory
 
@@ -59,10 +60,10 @@ src/
 | `ContextId` | `context` | Newtype over `Hash` identifying a context | 32 bytes, same encoding as `Hash` |
 | `ApplicationId` | `application` | Newtype over `Hash` identifying an application; `ZERO_APPLICATION_ID` sentinel | 32 bytes |
 | `BlobId` | `blobs` | Newtype over `Hash` identifying a stored blob | 32 bytes |
+| `ContentHash` | `content_hash` | `sha256(content)` over a file's raw bytes; no implicit conversion to/from `BlobId` | 32 bytes; `Copy`; hex text, raw bytes for `borsh` |
 | `PublicKey` | `identity` | Newtype over `Hash`; Ed25519 verifying key | 32 bytes |
 | `PrivateKey` | `identity` | Raw `[u8; 32]` Ed25519 signing key; `ZeroizeOnDrop`, no `Clone`/`Copy`/serde | 32 bytes, never serialized |
 | `SignerId` | `application` | Non-empty `did:key:...` string identifying MPK bundle signer | variable-length string; length-prefixed under borsh |
-| `AppKey` | `application` | `(app_id, signer_id)` pair; `Display`/`FromStr` as `"appId:signerId"` | text format; length-prefixed fields under borsh |
 | `Version` (application) | `application` | Validated `major.minor.patch[-pre][+build]` semver string | newtype `Box<str>`; no borsh impl |
 | `Version` (version) | `version` | Build/release metadata (version, build, commit, rustc) | serde/borsh; borsh decode caps each string at `MAX_VERSION_STRING_LEN` (256) |
 | `Alias<T>` | `alias` | Fixed-capacity human-readable name, phantom-scoped to a `ScopedAlias` type | fixed `[u8; 50]` buffer + `u8` len; text over serde, no borsh impl |

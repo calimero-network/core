@@ -49,7 +49,7 @@ pub struct AbsorbRecord {
     /// Governance-pending drain re-buffer counter.
     pub governance_drain_attempts: u8,
     /// App-schema key the sender stamped onto the state-delta wire.
-    pub producing_app_key: Option<[u8; 32]>,
+    pub producing_bytecode_id: Option<[u8; 32]>,
     /// The author's consent, for a delegated delta. Mirrored because this
     /// record is a LOSSLESS copy of the buffered delta: the delegated
     /// signature preimage embeds the warrant, so a record that dropped it
@@ -85,7 +85,7 @@ pub struct AbsorbRecord {
 /// A buffered sync-repair leaf.
 ///
 /// Holds the original `TreeLeafData` borsh bytes (re-applied verbatim once the
-/// reader advances — never translated) plus the `schema_app_key` it was
+/// reader advances — never translated) plus the `schema_bytecode_id` it was
 /// authored under, so the drain only re-applies it when the loaded reader has
 /// caught up to that schema. The `AbsorbBuffer` column is new, so no legacy
 /// records exist on disk; the field is kept trailing for forward hygiene.
@@ -94,7 +94,7 @@ pub struct AbsorbedLeaf {
     /// Borsh-serialized `TreeLeafData` — replayed verbatim on drain.
     pub leaf_bytes: Vec<u8>,
     /// App-schema (loaded-reader) key the leaf was authored under.
-    pub schema_app_key: [u8; 32],
+    pub schema_bytecode_id: [u8; 32],
 }
 
 /// A buffered future-schema snapshot entity.
@@ -102,7 +102,7 @@ pub struct AbsorbedLeaf {
 /// The snapshot wire ships an entity as its raw persisted blobs — the `entry`
 /// (data) and the borsh-encoded `EntityIndex` (metadata) — verified together
 /// and written via `handle.put`. When the receiver's loaded reader can't read
-/// the sender's `schema_app_key`, those blobs are held here verbatim and
+/// the sender's `schema_bytecode_id`, those blobs are held here verbatim and
 /// re-verified + persisted on drain once the reader advances.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct AbsorbedEntity {
@@ -113,7 +113,7 @@ pub struct AbsorbedEntity {
     /// Raw `Key::Index(id)` blob — the borsh-encoded `EntityIndex` metadata.
     pub index: Vec<u8>,
     /// App-schema (loaded-reader) key the entity was authored under.
-    pub schema_app_key: [u8; 32],
+    pub schema_bytecode_id: [u8; 32],
 }
 
 impl AbsorbRecord {
@@ -132,7 +132,7 @@ impl AbsorbRecord {
             governance_position: bd.governance_position.clone(),
             delta_signature: bd.delta_signature,
             governance_drain_attempts: bd.governance_drain_attempts,
-            producing_app_key: bd.producing_app_key,
+            producing_bytecode_id: bd.producing_bytecode_id,
             delegation: bd.delegation.clone(),
             leaf: None,
             entity: None,
@@ -142,12 +142,16 @@ impl AbsorbRecord {
 
     /// Build a leaf-shaped absorb record. The buffered leaf is re-applied
     /// verbatim through `apply_leaf_with_crdt_merge` once the loaded reader
-    /// advances to `schema_app_key`; it is NOT a replayable delta, so the
+    /// advances to `schema_bytecode_id`; it is NOT a replayable delta, so the
     /// delta-only fields are defaulted and the drain branches on
     /// `self.leaf.is_some()`. `id` is the leaf's entity key (the buffer key's
     /// `delta_id`), giving idempotent overwrite on re-delivery.
     #[must_use]
-    pub fn from_leaf(leaf_key: [u8; 32], leaf_bytes: Vec<u8>, schema_app_key: [u8; 32]) -> Self {
+    pub fn from_leaf(
+        leaf_key: [u8; 32],
+        leaf_bytes: Vec<u8>,
+        schema_bytecode_id: [u8; 32],
+    ) -> Self {
         Self {
             id: leaf_key,
             parents: Vec::new(),
@@ -160,12 +164,12 @@ impl AbsorbRecord {
             governance_position: None,
             delta_signature: None,
             governance_drain_attempts: 0,
-            producing_app_key: Some(schema_app_key),
+            producing_bytecode_id: Some(schema_bytecode_id),
             // Leaf-shaped: there is no delta, so no authorship to mirror.
             delegation: None,
             leaf: Some(AbsorbedLeaf {
                 leaf_bytes,
-                schema_app_key,
+                schema_bytecode_id,
             }),
             entity: None,
             pending_application: None,
@@ -174,7 +178,7 @@ impl AbsorbRecord {
 
     /// Build a snapshot-entity-shaped absorb record. The buffered entity is
     /// re-verified + persisted via `handle.put` once the loaded reader advances
-    /// to `schema_app_key`; it is neither a delta nor a `TreeLeafData`, so those
+    /// to `schema_bytecode_id`; it is neither a delta nor a `TreeLeafData`, so those
     /// fields are defaulted and the drain branches on `self.entity.is_some()`.
     /// `id` is the entity's key (the buffer key's `delta_id`), giving idempotent
     /// overwrite on re-delivery.
@@ -183,7 +187,7 @@ impl AbsorbRecord {
         id: [u8; 32],
         entry: Vec<u8>,
         index: Vec<u8>,
-        schema_app_key: [u8; 32],
+        schema_bytecode_id: [u8; 32],
     ) -> Self {
         Self {
             id,
@@ -197,7 +201,7 @@ impl AbsorbRecord {
             governance_position: None,
             delta_signature: None,
             governance_drain_attempts: 0,
-            producing_app_key: Some(schema_app_key),
+            producing_bytecode_id: Some(schema_bytecode_id),
             // Entity-shaped: as above, nothing to mirror.
             delegation: None,
             leaf: None,
@@ -205,7 +209,7 @@ impl AbsorbRecord {
                 id,
                 entry,
                 index,
-                schema_app_key,
+                schema_bytecode_id,
             }),
             pending_application: None,
         }
@@ -255,7 +259,7 @@ impl AbsorbRecord {
             governance_position: self.governance_position,
             delta_signature: self.delta_signature,
             governance_drain_attempts: self.governance_drain_attempts,
-            producing_app_key: self.producing_app_key,
+            producing_bytecode_id: self.producing_bytecode_id,
             delegation: self.delegation,
         })
     }
@@ -285,7 +289,7 @@ mod tests {
             ),
             delta_signature: Some([9; 64]),
             governance_drain_attempts: 0,
-            producing_app_key: Some([2; 32]),
+            producing_bytecode_id: Some([2; 32]),
             delegation: None,
         }
     }
@@ -340,7 +344,7 @@ mod tests {
         assert_eq!(back.governance_position, bd.governance_position);
         assert_eq!(back.delta_signature, bd.delta_signature);
         assert_eq!(back.governance_drain_attempts, bd.governance_drain_attempts);
-        assert_eq!(back.producing_app_key, bd.producing_app_key);
+        assert_eq!(back.producing_bytecode_id, bd.producing_bytecode_id);
     }
 
     /// An application-parked record carries the awaited application and is still
@@ -363,7 +367,7 @@ mod tests {
         assert_eq!(back.id, bd.id);
         assert_eq!(back.payload, bd.payload, "replay needs the original bytes");
         assert_eq!(back.delta_signature, bd.delta_signature);
-        assert_eq!(back.producing_app_key, bd.producing_app_key);
+        assert_eq!(back.producing_bytecode_id, bd.producing_bytecode_id);
     }
 
     /// The untagged constructor must leave the tag clear, or every straggler

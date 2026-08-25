@@ -1,4 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::content_hash::ContentHash;
 
 use crate::entry::Borsh;
 use crate::key;
@@ -8,7 +9,7 @@ use crate::types::PredefinedEntry;
 #[non_exhaustive]
 pub struct BlobMeta {
     pub size: u64,
-    pub hash: [u8; 32],
+    pub content_hash: ContentHash,
     pub links: Box<[key::BlobMeta]>,
     /// Number of live references to this content-addressed blob.
     ///
@@ -23,10 +24,15 @@ pub struct BlobMeta {
 
 impl BlobMeta {
     #[must_use]
-    pub const fn new(size: u64, hash: [u8; 32], links: Box<[key::BlobMeta]>, refs: u32) -> Self {
+    pub const fn new(
+        size: u64,
+        content_hash: ContentHash,
+        links: Box<[key::BlobMeta]>,
+        refs: u32,
+    ) -> Self {
         Self {
             size,
-            hash,
+            content_hash,
             links,
             refs,
         }

@@ -47,23 +47,23 @@ pub async fn handler(
     match result {
         Ok(entries) => {
             let mut data = Vec::with_capacity(entries.len());
-            // Namespaces routinely share an app_key; resolve each blob's
+            // Namespaces routinely share an bytecode_id; resolve each blob's
             // manifest version once per request instead of once per row.
             let mut version_memo: std::collections::HashMap<[u8; 32], Option<String>> =
                 std::collections::HashMap::new();
             for ns in entries {
-                let app_key = ns.app_key.to_bytes();
-                let app_version = match version_memo.get(&app_key) {
+                let bytecode_id = ns.bytecode_id.to_bytes();
+                let app_version = match version_memo.get(&bytecode_id) {
                     Some(v) => v.clone(),
                     None => {
-                        let v = super::namespace_app_version(&state.node_client, app_key).await;
-                        let _ = version_memo.insert(app_key, v.clone());
+                        let v = super::namespace_app_version(&state.node_client, bytecode_id).await;
+                        let _ = version_memo.insert(bytecode_id, v.clone());
                         v
                     }
                 };
                 data.push(NamespaceApiResponse {
                     namespace_id: hex::encode(ns.namespace_id.to_bytes()),
-                    app_key: hex::encode(ns.app_key.to_bytes()),
+                    bytecode_id: hex::encode(ns.bytecode_id.to_bytes()),
                     target_application_id: ns.target_application_id.to_string(),
                     created_at: ns.created_at,
                     name: ns.name,

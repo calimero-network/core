@@ -170,7 +170,7 @@ impl NodeClient {
 
     /// Every locally-retained bytecode version of `application_id`'s package:
     /// the application row's blob (latest fetched) plus every blob referenced
-    /// by a group's `app_key` or a context's activation marker whose bundle
+    /// by a group's `bytecode_id` or a context's activation marker whose bundle
     /// manifest parses to the same package. Deduped by blob; blobs absent
     /// from the blobstore (or foreign packages) are skipped.
     pub async fn list_application_versions(
@@ -182,7 +182,7 @@ impl NodeClient {
         };
         let row_blob = app.blob.bytecode;
 
-        // Candidate blob set: the row + group app_keys + activation markers.
+        // Candidate blob set: the row + group bytecode_ids + activation markers.
         let mut candidates = std::collections::BTreeSet::new();
         let _ = candidates.insert(*row_blob.as_ref());
         {
@@ -204,14 +204,14 @@ impl NodeClient {
             for group_key in group_keys {
                 if let Some(meta) = handle.get(&group_key)? {
                     // Only this application's groups: a foreign group's
-                    // app_key would otherwise be fetched + manifest-parsed
+                    // bytecode_id would otherwise be fetched + manifest-parsed
                     // just to be discarded by the package filter below.
                     if meta.target_application_id == *application_id {
-                        let _ = candidates.insert(meta.app_key);
+                        let _ = candidates.insert(meta.bytecode_id);
                     }
                 }
             }
-            let mut iter = handle.iter::<key::ContextActivatedBlob>()?;
+            let mut iter = handle.iter::<key::ContextActivatedBytecode>()?;
             let mut marker_rows = Vec::new();
             for (k, v) in iter.entries() {
                 let (k, marker) = (k?, v?);

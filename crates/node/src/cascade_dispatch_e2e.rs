@@ -54,8 +54,9 @@ use tokio::time::sleep;
 use crate::migration_status::{build_signed_heartbeat, MigrationFacts};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
-/// The app-keys the fixture runs on. Blob ids are content hashes, so the
-/// fixture seeds REAL blob bytes (a minimal wasm module with an embedded
+/// The bytecode ids the fixture runs on. A blob id is derived from the bytes it
+/// stores rather than chosen, so the fixture seeds REAL blob bytes (a minimal wasm
+/// module with an embedded
 /// `calimero_abi_v1` section) and uses the returned ids — the cascade
 /// dispatch resolves the migration decision from these very blobs.
 pub(crate) struct AppBlobs {
@@ -124,17 +125,17 @@ fn app_id_other() -> ApplicationId {
     ApplicationId::from([0xCC; 32])
 }
 
-/// Build a `GroupMetaValue` with the requested `app_key` / target app
+/// Build a `GroupMetaValue` with the requested `bytecode_id` / target app
 /// and `admin` as both owner and admin identity (so cascade's
 /// per-descendant `can_manage_application` pre-scan passes for every
 /// matched group).
 fn meta_for(
     admin: calimero_account::AccountId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: target,
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -152,14 +153,14 @@ pub(crate) fn provision_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) {
     // Enrolled so the rows name the account this key resolves to; the cascade's
     // per-descendant admin pre-scan resolves the signer the same way.
     let admin_account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta_for(admin_account, app_key, target))
+        .save(gid, &meta_for(admin_account, bytecode_id, target))
         .expect("save_group_meta");
     MembershipRepository::new(store)
         .add_member(gid, &admin_account, GroupMemberRole::Admin)
@@ -167,18 +168,18 @@ pub(crate) fn provision_group(
 }
 
 /// Install an `ApplicationMeta` keyed by `app_id` whose `bytecode`
-/// blob-id is `app_key`. The cascade engine derives
-/// `new_app_key = app_meta.bytecode.blob_id()` for the target — so
-/// driving the test's target app_key through this field is what makes
-/// the apply arm rewrite descendants to `APP_KEY_V2`.
+/// blob-id is `bytecode_id`. The cascade engine derives
+/// `new_bytecode_id = app_meta.bytecode.blob_id()` for the target — so
+/// driving the test's target bytecode_id through this field is what makes
+/// the apply arm rewrite descendants to `BYTECODE_ID_V2`.
 pub(crate) fn install_application(
     store: &Store,
     app_id: ApplicationId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     version: &str,
     state_version: u32,
 ) {
-    let bytecode_blob = key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(app_key));
+    let bytecode_blob = key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(bytecode_id));
     // `compiled` is unused on the cascade path (cascade-time blob
     // announce only references `bytecode`), so reusing `bytecode_blob`
     // here keeps the fixture minimal.
@@ -241,10 +242,10 @@ struct CascadeFixture {
 }
 
 /// Build the canonical fixture used by Tests 1 + 2:
-/// - Namespace `NS` with subgroups `G1` + `G2`, all on `APP_KEY_V1`.
+/// - Namespace `NS` with subgroups `G1` + `G2`, all on `BYTECODE_ID_V1`.
 /// - One registered context per group (NS, G1, G2).
-/// - ApplicationMeta records for `app_v1` (current, `APP_KEY_V1`) and
-///   `app_v2` (target, `APP_KEY_V2`).
+/// - ApplicationMeta records for `app_v1` (current, `BYTECODE_ID_V1`) and
+///   `app_v2` (target, `BYTECODE_ID_V2`).
 /// - `admin` is direct admin on every group and holds a stored signing
 ///   key on NS (cascade dispatch's lightweight validation requires
 ///   `require_group_signing_key` to resolve when the caller doesn't
@@ -263,13 +264,13 @@ fn provision_namespace(
 
     provision_group(store, &ns, admin_pk, blobs.v1, app_id_v1());
     provision_group(store, &g1, admin_pk, blobs.v1, app_id_v1());
-    // G2 may be on a different app_key for the heterogeneous test.
-    let (g2_app_key, g2_target) = if g2_on_other {
+    // G2 may be on a different bytecode_id for the heterogeneous test.
+    let (g2_bytecode_id, g2_target) = if g2_on_other {
         (blobs.other, app_id_other())
     } else {
         (blobs.v1, app_id_v1())
     };
-    provision_group(store, &g2, admin_pk, g2_app_key, g2_target);
+    provision_group(store, &g2, admin_pk, g2_bytecode_id, g2_target);
 
     NamespaceRepository::new(store)
         .nest(&ns, &g1)
@@ -396,8 +397,8 @@ const NO_SECOND_EVENT_WINDOW: Duration = Duration::from_millis(750);
 /// from the seeded blobs' embedded ABIs — code-only here). After the
 /// RPC resolves:
 ///
-///   * `GroupMeta.app_key` for NS, G1, G2 has flipped from
-///     `APP_KEY_V1` to `APP_KEY_V2` (target's `bytecode.blob_id()`).
+///   * `GroupMeta.bytecode_id` for NS, G1, G2 has flipped from
+///     `BYTECODE_ID_V1` to `BYTECODE_ID_V2` (target's `bytecode.blob_id()`).
 ///   * `GroupMeta.target_application_id` is `app_v2`.
 ///   * A per-descendant `GroupUpgradeValue { status: InProgress }`
 ///     row exists for NS, G1, G2 with `total = context_count(group)`.
@@ -431,7 +432,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     assert_eq!(response.group_id, fx.ns, "response must echo signed group");
 
     // Apply-arm side effect: every matched descendant flipped to
-    // (APP_KEY_V2, app_id_v2). The cleartext publish path inside
+    // (BYTECODE_ID_V2, app_id_v2). The cleartext publish path inside
     // `dispatch_cascade` calls `sign_apply_local_group_op_borsh`,
     // which runs the `CascadeUpgrade` apply arm before
     // the publish gate.
@@ -441,9 +442,9 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
-            meta.app_key,
+            meta.bytecode_id,
             blobs.v2,
-            "group {} must have rotated app_key",
+            "group {} must have rotated bytecode_id",
             hex::encode(gid.to_bytes())
         );
         assert_eq!(
@@ -601,8 +602,8 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: blobs.v1.into(),
-            app_key: blobs.v2_migrating.into(),
+            from_bytecode_id: blobs.v1.into(),
+            bytecode_id: blobs.v2_migrating.into(),
             target_application_id: app_id_v2(),
             to_state_version: 2,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
@@ -671,14 +672,14 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
 
     let mut events = pin!(node.node_client.receive_events());
 
-    let rung = |nonce: u64, app_key: [u8; 32]| {
+    let rung = |nonce: u64, bytecode_id: [u8; 32]| {
         SignedGroupOp::sign(
             &peer_sk,
             fx.g1.to_bytes().into(),
             vec![],
             nonce,
             GroupOp::TargetApplicationSet {
-                app_key: app_key.into(),
+                bytecode_id: bytecode_id.into(),
                 target_application_id: app_id_v2(),
             },
         )
@@ -914,8 +915,8 @@ async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
 /// Test 3 — predicate-skip on a heterogeneous descendant.
 ///
 /// Same shape as Test 1 but `G2` is preconfigured on the heterogeneous
-/// `other` app key (and `app_id_other`). The cascade's apply arm walks
-/// descendants of NS and skips any whose current `app_key != from_app_key`:
+/// `other` bytecode id (and `app_id_other`). The cascade's apply arm walks
+/// descendants of NS and skips any whose current `bytecode_id != from_bytecode_id`:
 ///
 ///   * NS and G1 (both on the v1 key) flip to the v2 key.
 ///   * G2 (on the `other` key) is left untouched.
@@ -948,7 +949,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
-            meta.app_key,
+            meta.bytecode_id,
             blobs.v2,
             "{} must migrate",
             hex::encode(gid.to_bytes())
@@ -956,14 +957,14 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
         assert_eq!(meta.target_application_id, app_id_v2());
     }
 
-    // G2 untouched: predicate skip on heterogeneous app_key.
+    // G2 untouched: predicate skip on heterogeneous bytecode_id.
     let meta_g2 = MetaRepository::new(&node.store)
         .load(&fx.g2)
         .expect("load_group_meta g2")
         .expect("g2 meta exists");
     assert_eq!(
-        meta_g2.app_key, blobs.other,
-        "G2 must NOT be touched — predicate skip on heterogeneous app_key"
+        meta_g2.bytecode_id, blobs.other,
+        "G2 must NOT be touched — predicate skip on heterogeneous bytecode_id"
     );
     assert_eq!(meta_g2.target_application_id, app_id_other());
 
@@ -1185,7 +1186,10 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .load(&gid)
         .expect("load meta")
         .expect("meta exists");
-    assert_eq!(meta.app_key, blobs.v3, "group must land on the target blob");
+    assert_eq!(
+        meta.bytecode_id, blobs.v3,
+        "group must land on the target blob"
+    );
     assert_eq!(
         meta.migration,
         Some(b"migrate_v2_to_v3".to_vec()),
@@ -1196,7 +1200,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .load(&gid)
         .expect("load ladder");
     assert_eq!(
-        rungs.iter().map(|r| r.app_key).collect::<Vec<_>>(),
+        rungs.iter().map(|r| r.bytecode_id).collect::<Vec<_>>(),
         vec![blobs.v2, blobs.v3],
         "ladder must record the intermediate then the target, in order"
     );
@@ -1249,7 +1253,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
         .expect("load meta")
         .expect("meta exists");
     assert_eq!(
-        meta.app_key, blobs.v1,
+        meta.bytecode_id, blobs.v1,
         "rejected upgrade must not move the group"
     );
     assert!(
@@ -1394,7 +1398,7 @@ async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
 
     // Mid-window: `TargetApplicationSet` already applied, so the group's meta
-    // names the new application AND its app_key advanced - but the context is
+    // names the new application AND its bytecode_id advanced - but the context is
     // still on v1 and the record was never overwritten.
     provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
@@ -1645,9 +1649,9 @@ async fn fleet_completion_stamps_the_record_once() {
     // version, so this node's own self-report is `migrated` and only the peer's
     // heartbeat is outstanding.
     let ns = ContextGroupId::from([0x71; 32]);
-    let app_key = [0xB2; 32];
-    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
-    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    let bytecode_id = [0xB2; 32];
+    provision_group(&node.store, &ns, admin_pk, bytecode_id, app_id_v2());
+    install_application(&node.store, app_id_v2(), bytecode_id, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xC7; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
@@ -1835,9 +1839,9 @@ async fn an_in_progress_record_defers_the_completion_edge_rather_than_spending_i
     let peer_sk = PrivateKey::random(&mut rng);
 
     let ns = ContextGroupId::from([0x7B; 32]);
-    let app_key = [0xB9; 32];
-    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
-    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    let bytecode_id = [0xB9; 32];
+    provision_group(&node.store, &ns, admin_pk, bytecode_id, app_id_v2());
+    install_application(&node.store, app_id_v2(), bytecode_id, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xCF; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
@@ -2053,9 +2057,9 @@ async fn a_record_a_shipped_binary_wrote_still_drives_the_fleet_latch() {
     let peer_sk = PrivateKey::random(&mut rng);
 
     let ns = ContextGroupId::from([0x79; 32]);
-    let app_key = [0xB7; 32];
-    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
-    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    let bytecode_id = [0xB7; 32];
+    provision_group(&node.store, &ns, admin_pk, bytecode_id, app_id_v2());
+    install_application(&node.store, app_id_v2(), bytecode_id, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xCD; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
@@ -2200,9 +2204,9 @@ async fn first_rollup_after_boot_backfills_the_stamp_without_announcing() {
     let peer_sk = PrivateKey::random(&mut rng);
 
     let ns = ContextGroupId::from([0x75; 32]);
-    let app_key = [0xB5; 32];
-    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v2());
-    install_application(&node.store, app_id_v2(), app_key, "0.2.0", 2);
+    let bytecode_id = [0xB5; 32];
+    provision_group(&node.store, &ns, admin_pk, bytecode_id, app_id_v2());
+    install_application(&node.store, app_id_v2(), bytecode_id, "0.2.0", 2);
     register_context_for(&node.store, &ns, ContextId::from([0xCB; 32]), app_id_v2());
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
@@ -2315,14 +2319,14 @@ async fn stale_root_record_does_not_announce_a_newer_migration() {
     // this node's self-report is `migrated` against the subtree target.
     let ns = ContextGroupId::from([0x72; 32]);
     let subgroup = ContextGroupId::from([0x73; 32]);
-    let app_key = [0xB3; 32];
+    let bytecode_id = [0xB3; 32];
     let app_v3 = ApplicationId::from([0xDD; 32]);
-    provision_group(&node.store, &ns, admin_pk, app_key, app_v3);
-    provision_group(&node.store, &subgroup, admin_pk, app_key, app_v3);
+    provision_group(&node.store, &ns, admin_pk, bytecode_id, app_v3);
+    provision_group(&node.store, &subgroup, admin_pk, bytecode_id, app_v3);
     NamespaceRepository::new(&node.store)
         .nest(&ns, &subgroup)
         .expect("nest subgroup");
-    install_application(&node.store, app_v3, app_key, "0.3.0", 3);
+    install_application(&node.store, app_v3, bytecode_id, "0.3.0", 3);
     register_context_for(&node.store, &ns, ContextId::from([0xC9; 32]), app_v3);
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes())
@@ -2445,9 +2449,9 @@ async fn never_migrated_namespace_announces_nothing() {
     let peer_sk = PrivateKey::random(&mut rng);
 
     let ns = ContextGroupId::from([0x74; 32]);
-    let app_key = [0xB4; 32];
-    provision_group(&node.store, &ns, admin_pk, app_key, app_id_v1());
-    install_application(&node.store, app_id_v1(), app_key, "0.1.0", 1);
+    let bytecode_id = [0xB4; 32];
+    provision_group(&node.store, &ns, admin_pk, bytecode_id, app_id_v1());
+    install_application(&node.store, app_id_v1(), bytecode_id, "0.1.0", 1);
     register_context_for(&node.store, &ns, ContextId::from([0xCA; 32]), app_id_v1());
     NamespaceRepository::new(&node.store)
         .store_identity(&ns, &admin_pk, admin_sk.as_bytes())

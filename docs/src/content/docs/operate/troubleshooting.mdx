@@ -160,7 +160,7 @@ When a node running an **older binary** receives a delta, leaf, or snapshot
 entity encoded under a **newer schema version** it cannot decode, it does not
 drop the data and does not store unreadable bytes. Instead it buffers the raw
 record **verbatim into the absorb buffer** (a dedicated datastore column), keyed
-by context, producing app key, and delta id (so a re-delivery overwrites rather
+by context, producing `bytecode_id`, and delta id (so a re-delivery overwrites rather
 than duplicates).
 
 Confirm it from metrics:
@@ -196,7 +196,7 @@ node-local
 record what happened: `ContextMigrationFailed` categorises the failure
 (`check_aborted`, `apply_failed`, or `no_migration_path`), `ContextExecutingBlob`
 pins reads to the pre-upgrade bytecode, and `ContextActivatedBlob` lags the
-group's current app key until the context catches up.
+group's current `bytecode_id` until the context catches up.
 
 **Fix.** Confirm the failure from the rollup, then follow the
 [recover a stuck upgrade runbook](/operate/runbooks/#recover-a-stuck-upgrade) —

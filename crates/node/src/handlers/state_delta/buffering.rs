@@ -442,7 +442,7 @@ async fn drain_pending_application(input: &StateDeltaContext, context_id: &Conte
 /// path uses); the record is deleted only on success (idempotent on the key).
 async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId) -> Result<()> {
     use borsh::BorshDeserialize;
-    use calimero_context::hlc_fence::loaded_reader_app_key;
+    use calimero_context::hlc_fence::loaded_reader_bytecode_id;
     use calimero_governance_store::AbsorbRepository;
     use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
     use calimero_node_primitives::sync::TreeLeafData;
@@ -451,7 +451,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     // The schema this node can read right now. `None` ⇒ can't tell readability;
     // leave every leaf record pending.
-    let Some(loaded) = loaded_reader_app_key(store, context_id)? else {
+    let Some(loaded) = loaded_reader_bytecode_id(store, context_id)? else {
         return Ok(());
     };
 
@@ -471,12 +471,12 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     let runtime_env = create_runtime_env(store, *context_id, identity, account);
 
     let mut drained = 0usize;
-    for ((producing_app_key, delta_id), record) in pending {
+    for ((producing_bytecode_id, delta_id), record) in pending {
         // Snapshot-entity-shaped records: re-verify + persist the raw `entry` +
         // `index` blobs via `handle.put` (the snapshot apply path deliberately
         // bypasses CRDT merge), once the loaded reader matches the schema.
         if let Some(entity_absorb) = record.entity {
-            if entity_absorb.schema_app_key != loaded {
+            if entity_absorb.schema_bytecode_id != loaded {
                 continue;
             }
             let mut handle = input.node_clients.context.datastore_handle();
@@ -488,14 +488,14 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
                 &entity_absorb.index,
             ) {
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => {
-                    repo.delete(context_id, producing_app_key, delta_id)?;
+                    repo.delete(context_id, producing_bytecode_id, delta_id)?;
                     drained += 1;
                 }
                 // SharedMember is re-applied via the snapshot pass-2 re-drive.
                 // Delete the orphaned buffer record so it stops blocking the
                 // drain early-exit and wasting a runtime env per apply.
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::RedrivenElsewhere) => {
-                    repo.delete(context_id, producing_app_key, delta_id)?;
+                    repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 }
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Pending) => {
                     /* left pending — verify/parse failed */
@@ -514,7 +514,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
             continue; // delta record — handled by `drain_absorbed_records`.
         };
         // Only re-apply once the loaded reader matches the leaf's schema.
-        if leaf_absorb.schema_app_key != loaded {
+        if leaf_absorb.schema_bytecode_id != loaded {
             continue;
         }
 
@@ -537,7 +537,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
         });
         match apply {
             Ok(()) => {
-                repo.delete(context_id, producing_app_key, delta_id)?;
+                repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 drained += 1;
             }
             Err(err) => warn!(
@@ -566,7 +566,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 ///
 /// For each pending [`AbsorbRecord`] in `context_id`'s absorb buffer:
 /// - skip it while the node has not reached the migration target AND the
-///   record's `producing_app_key` differs from the loaded reader (binary hasn't
+///   record's `producing_bytecode_id` differs from the loaded reader (binary hasn't
 ///   caught up — leave it for a later pass);
 /// - otherwise reconstruct the verbatim [`BufferedDelta`], hand it to `replay`,
 ///   and — only on `Ok(true)` — `delete` the record.
@@ -583,27 +583,27 @@ where
     F: Fn(calimero_node_primitives::delta_buffer::BufferedDelta) -> Fut,
     Fut: std::future::Future<Output = Result<bool>>,
 {
-    use calimero_context::hlc_fence::{loaded_reader_app_key, target_reader_app_key};
+    use calimero_context::hlc_fence::{loaded_reader_bytecode_id, target_reader_bytecode_id};
     use calimero_governance_store::AbsorbRepository;
 
     // The schema this node can read *right now*. `None` (non-group context /
     // unresolvable meta) means we cannot tell whether any record is readable,
     // so we drain nothing and leave everything pending.
-    let Some(loaded) = loaded_reader_app_key(store, context_id)? else {
+    let Some(loaded) = loaded_reader_bytecode_id(store, context_id)? else {
         return Ok(0);
     };
-    // The migration target (replicated `GroupMeta.app_key`). When the loaded
+    // The migration target (replicated `GroupMeta.bytecode_id`). When the loaded
     // reader has caught up to the target, every record buffered for this
     // migration is verbatim-replayable, including a stale straggler whose schema
     // is behind the loaded reader. Falls back to `loaded` when no group meta is
     // resolvable (then `loaded == target`).
-    let target = target_reader_app_key(store, context_id)?.unwrap_or(loaded);
+    let target = target_reader_bytecode_id(store, context_id)?.unwrap_or(loaded);
 
     let repo = AbsorbRepository::new(store);
     let pending = repo.enumerate_pending(context_id)?;
 
     let mut drained = 0usize;
-    for ((producing_app_key, delta_id), record) in pending {
+    for ((producing_bytecode_id, delta_id), record) in pending {
         // Leaf- and snapshot-entity-shaped records have no
         // `__calimero_sync_next` payload — they are not replayable deltas.
         // Skip them; `drain_absorbed_leaves` handles them.
@@ -624,7 +624,7 @@ where
         // <= target, so `loaded == target` means the current wasm can replay
         // all of them, including a stale straggler whose schema is behind the
         // loaded reader. Skip only when not at target AND schema != loaded.
-        if loaded != target && Some(loaded) != record.producing_app_key {
+        if loaded != target && Some(loaded) != record.producing_bytecode_id {
             continue;
         }
 
@@ -646,7 +646,7 @@ where
                 // Delete only after a successful verbatim replay. Idempotent:
                 // the `delta_id` is part of the key, so a crash before this
                 // delete just re-replays the survivor (replay is convergent).
-                repo.delete(context_id, producing_app_key, delta_id)?;
+                repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 drained += 1;
             }
             Ok(false) => {
@@ -821,7 +821,7 @@ pub(super) enum FenceOutcome {
     Handled,
 }
 
-/// Resolve the store-aware [`FenceDecision`] for `producing_app_key` and act on
+/// Resolve the store-aware [`FenceDecision`] for `producing_bytecode_id` and act on
 /// it:
 ///
 /// - [`FenceDecision::Apply`] → [`FenceOutcome::Fall`] (caller applies normally).
@@ -842,7 +842,7 @@ pub(super) enum FenceOutcome {
 pub(super) fn fence_and_maybe_absorb(
     store: &calimero_store::Store,
     context_id: &ContextId,
-    producing_app_key: [u8; 32],
+    producing_bytecode_id: [u8; 32],
     delta_id: [u8; 32],
     author_id: PublicKey,
     delta_hlc: calimero_storage::logical_clock::HybridTimestamp,
@@ -862,7 +862,7 @@ pub(super) fn fence_and_maybe_absorb(
         return Ok(FenceOutcome::Fall);
     }
 
-    match delta_fence_decision(store, context_id, producing_app_key, delta_hlc)? {
+    match delta_fence_decision(store, context_id, producing_bytecode_id, delta_hlc)? {
         FenceDecision::Apply => Ok(FenceOutcome::Fall),
         FenceDecision::Buffer => {
             // Migration case: the receiver's loaded binary can't read this
@@ -870,12 +870,12 @@ pub(super) fn fence_and_maybe_absorb(
             // replay once the binary advances — never drop, never translate.
             let buffered = build_buffered();
             let record = AbsorbRecord::from_buffered(&buffered);
-            AbsorbRepository::new(store).save(context_id, producing_app_key, &record)?;
+            AbsorbRepository::new(store).save(context_id, producing_bytecode_id, &record)?;
             info!(
                 %context_id,
                 %author_id,
                 delta_id = ?delta_id,
-                producing_app_key = %hex::encode(producing_app_key),
+                producing_bytecode_id = %hex::encode(producing_bytecode_id),
                 "Absorbing state delta — loaded reader behind incoming schema; buffered for verbatim replay"
             );
             crate::node_metrics::record_delta_outcome("absorbed_for_migration");
@@ -886,7 +886,7 @@ pub(super) fn fence_and_maybe_absorb(
                 %context_id,
                 %author_id,
                 delta_id = ?delta_id,
-                producing_app_key = %hex::encode(producing_app_key),
+                producing_bytecode_id = %hex::encode(producing_bytecode_id),
                 "Dropping state delta — HLC fence: stale schema after cascade migration"
             );
             crate::node_metrics::record_delta_outcome("fenced_stale_schema");

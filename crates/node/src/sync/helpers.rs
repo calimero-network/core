@@ -415,7 +415,7 @@ pub enum LeafOutcome {
     /// gating context).
     Applied,
     /// The leaf was declined and buffered into the absorb buffer — its
-    /// `schema_app_key` is newer than the receiver's loaded reader. It will be
+    /// `schema_bytecode_id` is newer than the receiver's loaded reader. It will be
     /// re-applied verbatim once the reader advances.
     Buffered,
 }
@@ -427,15 +427,15 @@ pub enum LeafOutcome {
 /// state-delta fence entirely, so without this a receiver still on an older
 /// reader would LWW-store unreadable future-schema bytes (the
 /// "v1-binary-fed-v2-bytes" corruption hazard). This gate keys on the
-/// receiver's **loaded** reader (`loaded_app_key`, i.e. `loaded_reader_app_key`)
-/// rather than the replicated `GroupMeta.app_key` (the O3 correction):
+/// receiver's **loaded** reader (`loaded_bytecode_id`, i.e. `loaded_reader_bytecode_id`)
+/// rather than the replicated `GroupMeta.bytecode_id` (the O3 correction):
 ///
-/// * `leaf.metadata.schema_app_key == Some(k)` with `k != loaded_app_key` —
+/// * `leaf.metadata.schema_bytecode_id == Some(k)` with `k != loaded_bytecode_id` —
 ///   the receiver lacks a reader for the incoming schema. **Decline + buffer**
 ///   the leaf verbatim into the absorb buffer (a leaf-shaped [`AbsorbRecord`])
 ///   and return [`LeafOutcome::Buffered`]. The bytes are NEVER stored; the
 ///   drain re-applies them once the reader advances.
-/// * `schema_app_key == None` (legacy peer) or `== Some(loaded_app_key)` —
+/// * `schema_bytecode_id == None` (legacy peer) or `== Some(loaded_bytecode_id)` —
 ///   apply as today and return [`LeafOutcome::Applied`].
 ///
 /// Must be called inside a `with_runtime_env(...)` scope (it delegates to
@@ -488,10 +488,10 @@ pub fn apply_leaf_with_crdt_merge_gated(
     store: &Store,
     context_id: ContextId,
     leaf: &TreeLeafData,
-    loaded_app_key: [u8; 32],
+    loaded_bytecode_id: [u8; 32],
 ) -> Result<LeafOutcome> {
-    if let Some(schema) = leaf.metadata.schema_app_key {
-        if schema != loaded_app_key {
+    if let Some(schema) = leaf.metadata.schema_bytecode_id {
+        if schema != loaded_bytecode_id {
             // The receiver's loaded reader can't read this leaf — buffer it
             // verbatim instead of storing unreadable bytes. Keyed by the leaf
             // key (idempotent overwrite on re-delivery), under the *sender's*
@@ -509,7 +509,7 @@ pub fn apply_leaf_with_crdt_merge_gated(
                 %context_id,
                 key = %hex::encode(leaf.key),
                 ?schema,
-                ?loaded_app_key,
+                ?loaded_bytecode_id,
                 "sync-repair leaf authored under a newer schema than the loaded \
                  reader — buffered into the absorb buffer instead of storing \
                  unreadable bytes (will replay once the reader advances)"
@@ -878,20 +878,21 @@ pub fn handle_entity_push(
     // v1-binary-fed-v2-bytes corruption this gate prevents). These pushed
     // leaves are non-destructive sync-repair leaves that get re-pushed on the
     // next sync cycle, so skipping the batch here is safe.
-    let loaded_app_key = calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id);
+    let loaded_bytecode_id =
+        calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id);
     apply_entity_push_batch(
         store,
         runtime_env,
         context_id,
         entities,
-        loaded_app_key,
+        loaded_bytecode_id,
         session_peer,
     )
 }
 
 /// Apply (or buffer) a pre-truncated, pre-resolved `EntityPush` batch.
 ///
-/// `loaded_app_key` is the resolution of the receiver's loaded reader schema:
+/// `loaded_bytecode_id` is the resolution of the receiver's loaded reader schema:
 /// * `Ok(Some(k))` — gate active; future-schema leaves are buffered.
 /// * `Ok(None)` — legitimately no group / unresolvable meta ⇒ no gate, apply
 ///   as today.
@@ -903,10 +904,10 @@ fn apply_entity_push_batch(
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     entities: &[TreeLeafData],
-    loaded_app_key: Result<Option<[u8; 32]>>,
+    loaded_bytecode_id: Result<Option<[u8; 32]>>,
     session_peer: Option<PublicKey>,
 ) -> EntityPushOutcome {
-    let loaded_app_key = match loaded_app_key {
+    let loaded_bytecode_id = match loaded_bytecode_id {
         Ok(key) => key,
         Err(e) => {
             tracing::warn!(
@@ -976,7 +977,7 @@ fn apply_entity_push_batch(
                 ));
                 continue;
             }
-            let apply_result = match loaded_app_key {
+            let apply_result = match loaded_bytecode_id {
                 Some(loaded) => apply_leaf_with_crdt_merge_gated(store, context_id, leaf, loaded)
                     .map(|outcome| match outcome {
                         LeafOutcome::Applied => true,
@@ -1378,7 +1379,7 @@ mod tests {
         // stores directly without WASM dispatch.
         let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
         if let Some(k) = schema {
-            md = md.with_schema_app_key(k);
+            md = md.with_schema_bytecode_id(k);
         }
         TreeLeafData::new(key, b"v2-bytes".to_vec(), md)
     }
@@ -1453,7 +1454,7 @@ mod tests {
 
     #[test]
     fn legacy_leaf_without_schema_marker_applies() {
-        // Back-compat: an older peer's leaf carries `schema_app_key = None`.
+        // Back-compat: an older peer's leaf carries `schema_bytecode_id = None`.
         // Treat as "no newer schema" → Apply (never buffer).
         let context_id = ContextId::from([0xCC; 32]);
         let identity = PublicKey::from([0u8; 32]);

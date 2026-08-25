@@ -53,9 +53,9 @@ metadata in the `Blobs` column and the raw chunk files on disk.
 ```rust
 // crates/store/src/types/blobs.rs — value stored in the `Blobs` column
 pub struct BlobMeta {
-    pub size: u64,            // total size in bytes
-    pub hash: [u8; 32],       // SHA-256 over the whole file content
-    pub links: Box<[key::BlobMeta]>,  // chunk blobs, in order (empty for a leaf chunk)
+    pub size: u64,                     // total size in bytes
+    pub content_hash: ContentHash,     // SHA-256 over the whole file content
+    pub links: Box<[key::BlobMeta]>,   // chunk blobs, in order (empty for a leaf chunk)
 }
 ```
 
@@ -65,20 +65,23 @@ On write, the blob store reads the input stream in fixed `CHUNK_SIZE = 1 MiB`
 pieces. Each chunk is persisted as its own blob whose `BlobId` is the hash of
 that chunk's bytes. The **root** blob is then the ordered list of those chunk
 ids: its `BlobId` is the hash of the concatenated chunk ids, and its `BlobMeta`
-carries the total `size`, the whole-content `hash`, and the `links` to the
+carries the total `size`, the whole-content `content_hash`, and the `links` to the
 chunk blobs. A blob that fits in a single chunk still gets a root whose id is
 derived from its one chunk id.
 
 ```text
 root BlobId  = hash( chunk_id[0] ‖ chunk_id[1] ‖ … )   // BlobMeta.links
 chunk BlobId = hash( chunk_bytes )                       // 1 MiB each, last may be short
-BlobMeta.hash = hash( whole file content )               // distinct from BlobId
+BlobMeta.content_hash = hash( whole file content )      // distinct from BlobId
 ```
 
 :::caution
-`BlobId` and `BlobMeta.hash` are different values. `BlobId` addresses the blob
-through its chunk-id list; `BlobMeta.hash` is the digest of the raw content.
-Code that wants "the hash of the bytes" must read `hash`, not reuse the id.
+`BlobId` and `BlobMeta.content_hash` are different values. `BlobId` addresses the
+blob through its chunk-id list; `content_hash` is the digest of the raw content.
+They are distinct types (`BlobId`, `ContentHash`) with no implicit conversion
+between them: assigning one to the other does not compile. Converting requires
+going through raw bytes explicitly, so a swap has to be written on purpose
+rather than happening by accident.
 :::
 
 Because a chunk's id is the hash of its bytes, two blobs that share identical

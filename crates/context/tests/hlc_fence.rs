@@ -4,13 +4,13 @@
 //! is populated with a group, a context registered to that group, a
 //! `GroupMetaValue` pinning the group's current app schema, and a
 //! `GroupUpgradeValue` that may (or may not) carry a `cascade_hlc` boundary.
-//! Then `delta_is_fenced` is called with various (producing_app_key, delta_hlc)
+//! Then `delta_is_fenced` is called with various (producing_bytecode_id, delta_hlc)
 //! combinations and the result is asserted.
 
 use std::sync::Arc;
 
 use calimero_context::hlc_fence::{
-    delta_fence_decision, delta_is_fenced, loaded_reader_app_key, FenceDecision,
+    delta_fence_decision, delta_is_fenced, loaded_reader_bytecode_id, FenceDecision,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{register_context_in_group, MetaRepository, UpgradesRepository};
@@ -32,9 +32,9 @@ use core::num::NonZeroU128;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// The two app keys used across all tests.
-const APP_KEY_1: [u8; 32] = [0x11; 32]; // "old" schema — delta was produced under this
-const APP_KEY_2: [u8; 32] = [0x22; 32]; // "new" schema — context currently targets this
+/// The two bytecode ids used across all tests.
+const BYTECODE_ID_1: [u8; 32] = [0x11; 32]; // "old" schema — delta was produced under this
+const BYTECODE_ID_2: [u8; 32] = [0x22; 32]; // "new" schema — context currently targets this
 
 fn empty_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -48,14 +48,14 @@ fn hlc_after_zero() -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(NTP64(1), id))
 }
 
-/// Build a minimal `GroupMetaValue` targeting `app_key`.
-fn meta_for(app_key: [u8; 32]) -> GroupMetaValue {
+/// Build a minimal `GroupMetaValue` targeting `bytecode_id`.
+fn meta_for(bytecode_id: [u8; 32]) -> GroupMetaValue {
     // An ACCOUNT, which is what the meta names. Nothing in this suite resolves
     // it — the fence decision reads schema versions, not principals — so a bare
     // id is honest here where a key would only look like one.
     let admin = calimero_account::AccountId::from([0x01; 32]);
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: ApplicationId::from([0xAA; 32]),
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -81,13 +81,13 @@ fn upgrade_with_hlc(cascade_hlc: Option<HybridTimestamp>) -> GroupUpgradeValue {
 }
 
 /// Set up a store with:
-/// - a group `gid` whose meta targets `app_key`
+/// - a group `gid` whose meta targets `bytecode_id`
 /// - optionally a `GroupUpgradeValue` with `cascade_hlc`
 /// - a context `ctx_id` registered to `gid`
 ///
 /// Returns the store ready for `delta_is_fenced` calls.
 fn setup(
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     cascade_hlc: Option<HybridTimestamp>,
     with_upgrade_record: bool,
 ) -> (Store, ContextGroupId, ContextId) {
@@ -96,7 +96,7 @@ fn setup(
     let ctx_id = ContextId::from([0x20; 32]);
 
     MetaRepository::new(&store)
-        .save(&gid, &meta_for(app_key))
+        .save(&gid, &meta_for(bytecode_id))
         .unwrap();
 
     if with_upgrade_record {
@@ -115,13 +115,13 @@ fn setup(
 const LOADED_APP_ID: [u8; 32] = [0xAB; 32];
 
 /// Install an `ApplicationMeta` value keyed by `app_id` whose `bytecode`
-/// blob-id is `app_key`. `loaded_reader_app_key` resolves
+/// blob-id is `bytecode_id`. `loaded_reader_bytecode_id` resolves
 /// `ApplicationMeta(application).bytecode.blob_id()`, so driving the test's
 /// loaded reader key through this field is what exercises the resolver's
 /// primary (store-level) branch — mirrors
 /// `crates/node/src/cascade_dispatch_e2e.rs::install_application`.
-fn install_application(store: &Store, app_id: ApplicationId, app_key: [u8; 32]) {
-    let bytecode_blob = BlobMeta::new(BlobId::from(app_key));
+fn install_application(store: &Store, app_id: ApplicationId, bytecode_id: [u8; 32]) {
+    let bytecode_blob = BlobMeta::new(BlobId::from(bytecode_id));
     // `compiled` is unused by the fence resolver; reuse `bytecode_blob` to
     // keep the fixture minimal.
     let meta = ApplicationMeta::new(
@@ -163,30 +163,30 @@ fn install_context_meta(store: &Store, ctx_id: ContextId, app_id: ApplicationId)
 // Tests
 // ---------------------------------------------------------------------------
 
-/// A delta produced under the OLD schema (APP_KEY_1) while the context now
-/// targets APP_KEY_2, with an HLC strictly after the cascade boundary, MUST
+/// A delta produced under the OLD schema (BYTECODE_ID_1) while the context now
+/// targets BYTECODE_ID_2, with an HLC strictly after the cascade boundary, MUST
 /// be fenced.
 #[test]
 fn fences_stale_schema_delta_after_boundary() {
     let boundary = HybridTimestamp::zero();
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(boundary), true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(boundary), true);
 
-    // producing_app_key = APP_KEY_1 (old), delta_hlc > boundary
-    let result = delta_is_fenced(&store, &ctx_id, APP_KEY_1, hlc_after_zero())
+    // producing_bytecode_id = BYTECODE_ID_1 (old), delta_hlc > boundary
+    let result = delta_is_fenced(&store, &ctx_id, BYTECODE_ID_1, hlc_after_zero())
         .expect("delta_is_fenced must not error");
     assert!(result, "old-schema delta after boundary must be fenced");
 }
 
-/// A delta produced under the CURRENT schema (APP_KEY_2), even when after the
+/// A delta produced under the CURRENT schema (BYTECODE_ID_2), even when after the
 /// boundary, must NOT be fenced — it was produced under the same schema the
 /// context now targets.
 #[test]
-fn does_not_fence_matching_app_key() {
+fn does_not_fence_matching_bytecode_id() {
     let boundary = HybridTimestamp::zero();
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(boundary), true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(boundary), true);
 
-    // producing_app_key == ctx_app_key => no fence
-    let result = delta_is_fenced(&store, &ctx_id, APP_KEY_2, hlc_after_zero())
+    // producing_bytecode_id == ctx_bytecode_id => no fence
+    let result = delta_is_fenced(&store, &ctx_id, BYTECODE_ID_2, hlc_after_zero())
         .expect("delta_is_fenced must not error");
     assert!(!result, "current-schema delta must never be fenced");
 }
@@ -197,10 +197,10 @@ fn does_not_fence_matching_app_key() {
 #[test]
 fn does_not_fence_at_or_before_boundary() {
     let boundary = HybridTimestamp::zero();
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(boundary), true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(boundary), true);
 
     // delta_hlc == boundary (zero == zero) => not fenced (strict >)
-    let result = delta_is_fenced(&store, &ctx_id, APP_KEY_1, HybridTimestamp::zero())
+    let result = delta_is_fenced(&store, &ctx_id, BYTECODE_ID_1, HybridTimestamp::zero())
         .expect("delta_is_fenced must not error");
     assert!(
         !result,
@@ -214,9 +214,9 @@ fn does_not_fence_at_or_before_boundary() {
 #[test]
 fn does_not_fence_without_upgrade_record() {
     // with_upgrade_record = false => no GroupUpgradeValue in store
-    let (store, _, ctx_id) = setup(APP_KEY_2, None, false);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, None, false);
 
-    let result = delta_is_fenced(&store, &ctx_id, APP_KEY_1, hlc_after_zero())
+    let result = delta_is_fenced(&store, &ctx_id, BYTECODE_ID_1, hlc_after_zero())
         .expect("delta_is_fenced must not error");
     assert!(
         !result,
@@ -229,9 +229,9 @@ fn does_not_fence_without_upgrade_record() {
 #[test]
 fn does_not_fence_when_cascade_hlc_is_none_in_upgrade_record() {
     // with_upgrade_record = true, cascade_hlc = None
-    let (store, _, ctx_id) = setup(APP_KEY_2, None, true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, None, true);
 
-    let result = delta_is_fenced(&store, &ctx_id, APP_KEY_1, hlc_after_zero())
+    let result = delta_is_fenced(&store, &ctx_id, BYTECODE_ID_1, hlc_after_zero())
         .expect("delta_is_fenced must not error");
     assert!(
         !result,
@@ -247,7 +247,7 @@ fn does_not_fence_for_ungrouped_context() {
     // This context_id is never registered to any group.
     let ctx_id = ContextId::from([0xFF; 32]);
 
-    let result = delta_is_fenced(&store, &ctx_id, APP_KEY_1, hlc_after_zero())
+    let result = delta_is_fenced(&store, &ctx_id, BYTECODE_ID_1, hlc_after_zero())
         .expect("delta_is_fenced must not error");
     assert!(!result, "ungrouped context must never be fenced");
 }
@@ -255,10 +255,10 @@ fn does_not_fence_for_ungrouped_context() {
 // ---------------------------------------------------------------------------
 // O3 loaded-reader divergence — the PRIMARY resolver branch.
 //
-// The tests above never write a `ContextMeta` row, so `loaded_reader_app_key`
-// always lands on the `unwrap_or(meta.app_key)` fallback — i.e. loaded == target.
+// The tests above never write a `ContextMeta` row, so `loaded_reader_bytecode_id`
+// always lands on the `unwrap_or(meta.bytecode_id)` fallback — i.e. loaded == target.
 // The fence the O3 fix exists for only bites when the locally-loaded reader is
-// BEHIND the replicated `GroupMeta.app_key`: a node still on the v1 binary while
+// BEHIND the replicated `GroupMeta.bytecode_id`: a node still on the v1 binary while
 // the governance target has advanced to v2. These tests install a `ContextMeta`
 // → `ApplicationMeta` (v1 bytecode blob) divergence against a v2 `GroupMeta`,
 // exercising the resolver's primary store-level branch directly.
@@ -271,24 +271,24 @@ fn does_not_fence_for_ungrouped_context() {
 /// absorb buffer forever ("reader" never advances) and state sync wedges.
 #[test]
 fn loaded_reader_prefers_activation_marker_over_stale_row() {
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(HybridTimestamp::zero()), true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
     let app_id = ApplicationId::from(LOADED_APP_ID);
     // The row still holds v1 bytecode (receiver never installed v2)...
-    install_application(&store, app_id, APP_KEY_1);
+    install_application(&store, app_id, BYTECODE_ID_1);
     install_context_meta(&store, ctx_id, app_id);
     // ...but the context has ACTIVATED v2 (lazy migration committed).
-    calimero_context::activation::record_activation(&store, &ctx_id, APP_KEY_2);
+    calimero_context::activation::record_activation(&store, &ctx_id, BYTECODE_ID_2);
 
-    let loaded =
-        loaded_reader_app_key(&store, &ctx_id).expect("loaded_reader_app_key must not error");
+    let loaded = loaded_reader_bytecode_id(&store, &ctx_id)
+        .expect("loaded_reader_bytecode_id must not error");
     assert_eq!(
         loaded,
-        Some(APP_KEY_2),
+        Some(BYTECODE_ID_2),
         "an activated context reads at its marker's blob, not the stale row"
     );
 
     // A v2 delta must now Apply — buffering it would wedge post-migration sync.
-    let apply = delta_fence_decision(&store, &ctx_id, APP_KEY_2, hlc_after_zero())
+    let apply = delta_fence_decision(&store, &ctx_id, BYTECODE_ID_2, hlc_after_zero())
         .expect("delta_fence_decision must not error");
     assert_eq!(
         apply,
@@ -298,38 +298,38 @@ fn loaded_reader_prefers_activation_marker_over_stale_row() {
 }
 
 /// The resolver must return the LOADED application's bytecode blob_id
-/// (APP_KEY_1), NOT the replicated `GroupMeta.app_key` (APP_KEY_2). This is the
+/// (BYTECODE_ID_1), NOT the replicated `GroupMeta.bytecode_id` (BYTECODE_ID_2). This is the
 /// core of O3: the governance target can advance ahead of the locally-loaded binary.
 #[test]
 fn loaded_reader_resolves_loaded_application_not_group_target() {
-    // GroupMeta.app_key = v2 (target advanced), loaded application = v1.
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(HybridTimestamp::zero()), true);
+    // GroupMeta.bytecode_id = v2 (target advanced), loaded application = v1.
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
     let app_id = ApplicationId::from(LOADED_APP_ID);
-    install_application(&store, app_id, APP_KEY_1);
+    install_application(&store, app_id, BYTECODE_ID_1);
     install_context_meta(&store, ctx_id, app_id);
 
-    let loaded =
-        loaded_reader_app_key(&store, &ctx_id).expect("loaded_reader_app_key must not error");
+    let loaded = loaded_reader_bytecode_id(&store, &ctx_id)
+        .expect("loaded_reader_bytecode_id must not error");
     assert_eq!(
         loaded,
-        Some(APP_KEY_1),
-        "must resolve the loaded application's bytecode blob_id (v1), not GroupMeta.app_key (v2)"
+        Some(BYTECODE_ID_1),
+        "must resolve the loaded application's bytecode blob_id (v1), not GroupMeta.bytecode_id (v2)"
     );
 }
 
 /// With the loaded reader on v1 and the target advanced to v2, an after-boundary
 /// delta produced under v2 cannot be read yet → `Buffer` (absorb, never drop),
 /// while a v1 delta is readable now → `Apply`. This is the divergence the fence
-/// exists for, and it is invisible to the `unwrap_or(meta.app_key)` fallback.
+/// exists for, and it is invisible to the `unwrap_or(meta.bytecode_id)` fallback.
 #[test]
 fn fence_decision_buffers_v2_delta_for_v1_loaded_reader() {
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(HybridTimestamp::zero()), true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
     let app_id = ApplicationId::from(LOADED_APP_ID);
-    install_application(&store, app_id, APP_KEY_1);
+    install_application(&store, app_id, BYTECODE_ID_1);
     install_context_meta(&store, ctx_id, app_id);
 
     // v2 delta after the boundary: the v1 reader cannot read it → Buffer.
-    let buffer = delta_fence_decision(&store, &ctx_id, APP_KEY_2, hlc_after_zero())
+    let buffer = delta_fence_decision(&store, &ctx_id, BYTECODE_ID_2, hlc_after_zero())
         .expect("delta_fence_decision must not error");
     assert_eq!(
         buffer,
@@ -338,7 +338,7 @@ fn fence_decision_buffers_v2_delta_for_v1_loaded_reader() {
     );
 
     // v1 delta after the boundary: matches the loaded reader → Apply.
-    let apply = delta_fence_decision(&store, &ctx_id, APP_KEY_1, hlc_after_zero())
+    let apply = delta_fence_decision(&store, &ctx_id, BYTECODE_ID_1, hlc_after_zero())
         .expect("delta_fence_decision must not error");
     assert_eq!(
         apply,
@@ -349,11 +349,11 @@ fn fence_decision_buffers_v2_delta_for_v1_loaded_reader() {
 
 /// Fallthrough: a `ContextMeta` row exists but its `ApplicationMeta` value is
 /// missing (no `install_application`). The resolver must fall back to
-/// `GroupMeta.app_key` (the v2 target), proving the fallback branch is reached
+/// `GroupMeta.bytecode_id` (the v2 target), proving the fallback branch is reached
 /// only when the loaded application row genuinely cannot be loaded.
 #[test]
 fn loaded_reader_falls_back_to_group_target_when_application_meta_missing() {
-    let (store, _, ctx_id) = setup(APP_KEY_2, Some(HybridTimestamp::zero()), true);
+    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
     let app_id = ApplicationId::from(LOADED_APP_ID);
     // ContextMeta written, but the ApplicationMeta value is intentionally absent.
     install_context_meta(&store, ctx_id, app_id);
@@ -366,20 +366,20 @@ fn loaded_reader_falls_back_to_group_target_when_application_meta_missing() {
         "fixture precondition: ApplicationMeta value must be missing",
     );
 
-    let loaded =
-        loaded_reader_app_key(&store, &ctx_id).expect("loaded_reader_app_key must not error");
+    let loaded = loaded_reader_bytecode_id(&store, &ctx_id)
+        .expect("loaded_reader_bytecode_id must not error");
     assert_eq!(
         loaded,
-        Some(APP_KEY_2),
-        "missing ApplicationMeta value must fall back to GroupMeta.app_key (v2)"
+        Some(BYTECODE_ID_2),
+        "missing ApplicationMeta value must fall back to GroupMeta.bytecode_id (v2)"
     );
 
     // And the decision degrades to the PR-3 semantics keyed on the target: a v1
     // delta after the boundary fences (Buffer), a v2 delta applies.
-    let buffer = delta_fence_decision(&store, &ctx_id, APP_KEY_1, hlc_after_zero())
+    let buffer = delta_fence_decision(&store, &ctx_id, BYTECODE_ID_1, hlc_after_zero())
         .expect("delta_fence_decision must not error");
     assert_eq!(buffer, FenceDecision::Buffer);
-    let apply = delta_fence_decision(&store, &ctx_id, APP_KEY_2, hlc_after_zero())
+    let apply = delta_fence_decision(&store, &ctx_id, BYTECODE_ID_2, hlc_after_zero())
         .expect("delta_fence_decision must not error");
     assert_eq!(apply, FenceDecision::Apply);
 }

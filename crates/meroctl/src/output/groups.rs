@@ -40,7 +40,7 @@ impl Report for GroupInfoApiResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Group ID", &d.group_id]);
-        let _ = table.add_row(vec!["App Key", &d.app_key]);
+        let _ = table.add_row(vec!["Bytecode ID", &d.bytecode_id]);
         let _ = table.add_row(vec!["Application ID", &d.target_application_id.to_string()]);
         let _ = table.add_row(vec!["Members", &d.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &d.context_count.to_string()]);
@@ -200,7 +200,7 @@ impl Report for NamespaceApiResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Namespace ID", &self.namespace_id]);
-        let _ = table.add_row(vec!["App Key", &self.app_key]);
+        let _ = table.add_row(vec!["Bytecode ID", &self.bytecode_id]);
         let _ = table.add_row(vec!["Application ID", &self.target_application_id]);
         let _ = table.add_row(vec!["Created At", &self.created_at.to_string()]);
         let _ = table.add_row(vec!["Members", &self.member_count.to_string()]);
@@ -565,7 +565,7 @@ impl Report for SyncGroupApiResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Group ID", &d.group_id]);
-        let _ = table.add_row(vec!["App Key", &d.app_key]);
+        let _ = table.add_row(vec!["Bytecode ID", &d.bytecode_id]);
         let _ = table.add_row(vec!["Application ID", &d.target_application_id.to_string()]);
         let _ = table.add_row(vec!["Members", &d.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &d.context_count.to_string()]);

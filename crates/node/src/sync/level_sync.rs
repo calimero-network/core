@@ -491,13 +491,13 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // PR-6b Task 6b.7: gate on the loaded reader so a
                     // future-schema leaf is declined+buffered rather than
                     // LWW-stored as unreadable bytes (sync-repair coverage).
-                    let loaded_app_key =
-                        calimero_context::hlc_fence::loaded_reader_app_key(store, &context_id)
+                    let loaded_bytecode_id =
+                        calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id)
                             .ok()
                             .flatten();
                     let outcome =
                         apply_under_context_lock(context_client, context_id, &runtime_env, || {
-                            match loaded_app_key {
+                            match loaded_bytecode_id {
                                 Some(loaded) => apply_leaf_with_crdt_merge_gated(
                                     store, context_id, leaf_data, loaded,
                                 ),

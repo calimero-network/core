@@ -893,7 +893,7 @@ mod tests {
 
         fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
             GroupMetaValue {
-                app_key: [0xAA; 32],
+                bytecode_id: [0xAA; 32],
                 target_application_id: ApplicationId::from([0xBB; 32]),
                 created_at: 1_700_000_000,
                 admin_identity: admin,

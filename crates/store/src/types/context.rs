@@ -232,7 +232,7 @@ pub struct ContextDagDelta {
     /// self-authored delta, which is every delta today.
     ///
     /// Persisted rather than left on the gossip envelope for the reason
-    /// `producing_app_key` still cannot be bound into a signature: the
+    /// `producing_bytecode_id` still cannot be bound into a signature: the
     /// delegated preimage embeds the warrant, so a catchup or parent-fetch
     /// responder that did not store it could not serve a delta any initiator
     /// could verify. A field that is signed over has to survive every path the
@@ -468,7 +468,7 @@ mod context_local_key_isolation_tests {
     }
 }
 
-/// Value for [`key::ContextExecutingBlob`]: the bytecode blob this context's
+/// Value for [`key::ContextExecutingBytecode`]: the bytecode blob this context's
 /// committed state executes under, when it differs from the application
 /// row's (version-stable bundle id, row already overwritten in place by a
 /// newer version). Written on logical migration abort; deleted when a
@@ -479,19 +479,19 @@ mod context_local_key_isolation_tests {
     clippy::exhaustive_structs,
     reason = "single pin value; additions would need a migration"
 )]
-pub struct ContextExecutingBlob {
+pub struct ContextExecutingBytecode {
     pub blob: [u8; 32],
 }
 
-impl PredefinedEntry for key::ContextExecutingBlob {
+impl PredefinedEntry for key::ContextExecutingBytecode {
     type Codec = Borsh;
-    type DataType<'a> = ContextExecutingBlob;
+    type DataType<'a> = ContextExecutingBytecode;
 }
 
-/// Value for [`key::ContextActivatedBlob`]: the bytecode blob this context
+/// Value for [`key::ContextActivatedBytecode`]: the bytecode blob this context
 /// last ACTIVATED — set when a migration commits or a code-only swap is
 /// applied, moved forward only. The single up-to-date check everywhere is
-/// `marker == group.app_key`; it replaces the legacy method-name and
+/// `marker == group.bytecode_id`; it replaces the legacy method-name and
 /// `blob:`-string markers (which are folded forward on first read).
 /// Node-local; a missing row means "never activated by v2 machinery".
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
@@ -499,13 +499,13 @@ impl PredefinedEntry for key::ContextExecutingBlob {
     clippy::exhaustive_structs,
     reason = "single marker value; additions would need a migration"
 )]
-pub struct ContextActivatedBlob {
+pub struct ContextActivatedBytecode {
     pub blob: [u8; 32],
 }
 
-impl PredefinedEntry for key::ContextActivatedBlob {
+impl PredefinedEntry for key::ContextActivatedBytecode {
     type Codec = Borsh;
-    type DataType<'a> = ContextActivatedBlob;
+    type DataType<'a> = ContextActivatedBytecode;
 }
 
 /// Value for [`key::ContextActivatedStateVersion`]: the ABI state version the

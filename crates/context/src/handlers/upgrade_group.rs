@@ -42,7 +42,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 
         // Cascade path: emit `GroupOp::CascadeUpgrade` and dispatch one
         // `propagate_upgrade` per descendant subgroup whose current
-        // `app_key` matches the signed group's current `app_key`.
+        // `bytecode_id` matches the signed group's current `bytecode_id`.
         //
         // It bypasses the single-group `validate_upgrade` preamble because the
         // signed group on a cascade is often a namespace root with no contexts
@@ -70,7 +70,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             from_version,
             to_version,
             current_application_id,
-            current_app_key,
+            current_bytecode_id,
         } = preamble;
 
         let now = SystemTime::now()
@@ -141,7 +141,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     plan_emit_ladder(
                         &node_client,
                         &target_application_id,
-                        current_app_key,
+                        current_bytecode_id,
                         target_blob,
                         target_size,
                         force_code_only,
@@ -160,12 +160,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 {
                     let mut prev_schema = resolve_pre_upgrade_schema(
                         &node_client,
-                        current_app_key,
+                        current_bytecode_id,
                         &current_application_id,
                     )
                     .await;
                     for rung in &rungs {
-                        let next_schema = resolve_blob_schema(&node_client, rung.app_key).await;
+                        let next_schema = resolve_blob_schema(&node_client, rung.bytecode_id).await;
                         if rung.migration.is_some() {
                             verify_no_identity_downgrade(&prev_schema, &next_schema)?;
                         }
@@ -191,7 +191,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             &group_id,
                             &sk,
                             GroupOp::TargetApplicationSet {
-                                app_key: rung.app_key.into(),
+                                bytecode_id: rung.bytecode_id.into(),
                                 target_application_id,
                             },
                         )
@@ -257,7 +257,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 // so peer nodes can discover and fetch intermediates while
                 // replaying the ladder.
                 for rung in &rungs {
-                    let blob_id = calimero_primitives::blobs::BlobId::from(rung.app_key);
+                    let blob_id = calimero_primitives::blobs::BlobId::from(rung.bytecode_id);
                     for context_id in &contexts {
                         if let Err(err) = node_client
                             .announce_blob_to_network(&blob_id, context_id, rung.size)
@@ -354,24 +354,24 @@ fn verify_no_identity_downgrade(old: &EmbeddedSchema, new: &EmbeddedSchema) -> e
 /// "From" side of the L1 gate. An in-place (same-id) bundle install leaves
 /// the application row already on the NEW wasm — comparing row-to-row would
 /// diff a manifest against itself and wave a downgrade through. The group's
-/// `app_key` is the bytecode the group actually runs before this upgrade
+/// `bytecode_id` is the bytecode the group actually runs before this upgrade
 /// (stamped by the previous upgrade / group creation), so read the "from"
 /// ABI from that blob; fall back to the row when the blob is unreadable
-/// (legacy randomly-seeded app_key → fail-open, same as before).
+/// (legacy randomly-seeded bytecode_id → fail-open, same as before).
 async fn resolve_pre_upgrade_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
-    current_app_key: [u8; 32],
+    current_bytecode_id: [u8; 32],
     current_application_id: &ApplicationId,
 ) -> EmbeddedSchema {
-    if current_app_key != [0u8; 32] {
-        let blob = calimero_primitives::blobs::BlobId::from(current_app_key);
+    if current_bytecode_id != [0u8; 32] {
+        let blob = calimero_primitives::blobs::BlobId::from(current_bytecode_id);
         match node_client.application_bytes_from_blob(&blob, None).await {
             Ok(Some(bytes)) => return read_embedded_state_schema_versioned(&bytes),
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(
                     %current_application_id, error = %err,
-                    "L1 gate: failed to read current app_key bytecode; falling back to the row"
+                    "L1 gate: failed to read bytecode for current bytecode_id; falling back to the row"
                 );
             }
         }
@@ -392,7 +392,7 @@ async fn resolve_pre_upgrade_schema(
 /// unreadable.
 /// One emission step of a (possibly multi-hop) lazy group upgrade.
 struct EmitRung {
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     size: u64,
     migration: Option<MigrationParams>,
 }
@@ -467,22 +467,26 @@ async fn resolve_blob_schema(
 async fn plan_emit_ladder(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
-    current_app_key: [u8; 32],
+    current_bytecode_id: [u8; 32],
     target_blob: [u8; 32],
     target_size: u64,
     force_code_only: bool,
 ) -> eyre::Result<(Vec<EmitRung>, u32)> {
-    let from_sv = blob_max_state_version(node_client, current_app_key).await;
+    let from_sv = blob_max_state_version(node_client, current_bytecode_id).await;
     let to_sv = blob_max_state_version(node_client, target_blob).await;
     let target_state_version = recorded_state_version(to_sv, target_blob);
     let multi_hop = matches!((from_sv, to_sv), (Some(f), Some(t)) if t > f + 1);
     if !multi_hop {
-        let migration =
-            resolve_upgrade_from_abis(node_client, current_app_key, target_blob, force_code_only)
-                .await?;
+        let migration = resolve_upgrade_from_abis(
+            node_client,
+            current_bytecode_id,
+            target_blob,
+            force_code_only,
+        )
+        .await?;
         return Ok((
             vec![EmitRung {
-                app_key: target_blob,
+                bytecode_id: target_blob,
                 size: target_size,
                 migration,
             }],
@@ -497,14 +501,14 @@ async fn plan_emit_ladder(
     let mut candidates = Vec::new();
     for info in &inventory {
         let blob = *info.blob_id.as_ref();
-        if blob == target_blob || blob == current_app_key {
+        if blob == target_blob || blob == current_bytecode_id {
             continue;
         }
         if let Some(sv) = blob_max_state_version(node_client, blob).await {
             candidates.push(ChainCandidate {
                 state_version: sv,
                 version: info.version.clone(),
-                app_key: blob,
+                bytecode_id: blob,
                 size: info.size,
             });
         }
@@ -512,11 +516,11 @@ async fn plan_emit_ladder(
     let intermediates = select_intermediate_rungs(from_sv, to_sv, &candidates)?;
 
     let mut rungs = Vec::new();
-    let mut prev = current_app_key;
+    let mut prev = current_bytecode_id;
     for (blob, size) in intermediates {
         let migration = resolve_upgrade_from_abis(node_client, prev, blob, force_code_only).await?;
         rungs.push(EmitRung {
-            app_key: blob,
+            bytecode_id: blob,
             size,
             migration,
         });
@@ -525,7 +529,7 @@ async fn plan_emit_ladder(
     let migration =
         resolve_upgrade_from_abis(node_client, prev, target_blob, force_code_only).await?;
     rungs.push(EmitRung {
-        app_key: target_blob,
+        bytecode_id: target_blob,
         size: target_size,
         migration,
     });
@@ -540,7 +544,7 @@ pub(crate) struct ChainCandidate {
     /// Manifest semver — the tie-break when two installed releases declare
     /// the same state version (highest wins).
     pub version: String,
-    pub app_key: [u8; 32],
+    pub bytecode_id: [u8; 32],
     pub size: u64,
 }
 
@@ -587,7 +591,7 @@ pub(crate) fn select_intermediate_rungs(
                 to_sv - from_sv,
             );
         };
-        rungs.push((cand.app_key, cand.size));
+        rungs.push((cand.bytecode_id, cand.size));
     }
     Ok(rungs)
 }
@@ -687,7 +691,7 @@ fn decide_service_upgrade(
 
 pub(crate) async fn resolve_upgrade_from_abis(
     node_client: &calimero_node_primitives::client::NodeClient,
-    current_app_key: [u8; 32],
+    current_bytecode_id: [u8; 32],
     target_blob: [u8; 32],
     force_code_only: bool,
 ) -> eyre::Result<Option<MigrationParams>> {
@@ -700,7 +704,8 @@ pub(crate) async fn resolve_upgrade_from_abis(
         .await?
         .ok_or_else(|| eyre::eyre!("target bytecode blob not available locally"))?;
 
-    let current_blob_id = (current_app_key != [0u8; 32]).then(|| BlobId::from(current_app_key));
+    let current_blob_id =
+        (current_bytecode_id != [0u8; 32]).then(|| BlobId::from(current_bytecode_id));
 
     // Service inventory of the CURRENT bundle, fetched once: a service present
     // in the target but absent here is genuinely NEW (no old data → code-only
@@ -739,7 +744,7 @@ pub(crate) async fn resolve_upgrade_from_abis(
         // dangerous ones:
         //  * service absent from the old bundle → genuinely NEW service, no
         //    old data to migrate → code-only for it;
-        //  * old blob missing locally / no embedded ABI / unseeded app_key →
+        //  * old blob missing locally / no embedded ABI / unseeded bytecode_id →
         //    the from-version is UNKNOWABLE. Only safe when the target
         //    declares no migration at all; otherwise reject.
         // A service the old bundle never had cannot need a data migration.
@@ -794,7 +799,7 @@ pub(crate) async fn resolve_upgrade_from_abis(
                     target_abi.clone()
                 }
             },
-            // Group with no blob-derived app_key recorded: the from-version
+            // Group with no blob-derived bytecode_id recorded: the from-version
             // is unknowable — same rule as above.
             None => {
                 if target_abi.as_ref().is_some_and(target_declares_migration) {
@@ -866,11 +871,11 @@ struct UpgradePreamble {
     /// The group's CURRENT target application id (before this upgrade), used by
     /// the L1 identity-downgrade gate as the "old" schema source.
     current_application_id: ApplicationId,
-    /// The group's CURRENT blob-derived app key (the bytecode the group runs
+    /// The group's CURRENT blob-derived bytecode id (the bytecode the group runs
     /// before this upgrade). For same-id (bundle) upgrades the application
     /// row may already hold the NEW wasm, so the gate must read the "from"
     /// ABI from this blob rather than the row.
-    current_app_key: [u8; 32],
+    current_bytecode_id: [u8; 32],
 }
 
 fn validate_upgrade(
@@ -898,7 +903,7 @@ fn validate_upgrade(
     // 5. Target must differ from current. Same id no longer implies no-op:
     //    bundle ids are version-stable (hash(package, signer)), so a new
     //    version moves only the bytecode blob — compare the group's recorded
-    //    app_key against the target row's blob before rejecting. The row read
+    //    bytecode_id against the target row's blob before rejecting. The row read
     //    races a concurrent in-place install (installs bypass this actor);
     //    the worst case either way is a rejected retry or a no-op upgrade op,
     //    never state corruption, so the window is accepted.
@@ -907,7 +912,7 @@ fn validate_upgrade(
             .handle()
             .get(&key::ApplicationMeta::new(*target_application_id))?
             .map(|app| *app.bytecode.blob_id().as_ref());
-        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.app_key);
+        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.bytecode_id);
         if bytecode_unchanged {
             bail!("group is already targeting this application");
         }
@@ -938,7 +943,7 @@ fn validate_upgrade(
         from_version,
         to_version,
         current_application_id: meta.target_application_id,
-        current_app_key: meta.app_key,
+        current_bytecode_id: meta.bytecode_id,
     })
 }
 
@@ -950,15 +955,15 @@ const RETRY_BASE_DELAY_SECS: u64 = 5;
 
 /// The blob a context actually executes: its activation marker, else the
 /// bytecode of the application row it is registered under. Deliberately not
-/// `hlc_fence::loaded_reader_app_key`, whose last resort is `GroupMeta.app_key`:
+/// `hlc_fence::loaded_reader_bytecode_id`, whose last resort is `GroupMeta.bytecode_id`:
 /// mid-upgrade that IS the target, so an unresolvable context would read as
 /// already-on-target and be skipped while `propagate_upgrade` (which skips on
 /// application id, not blob) swaps it anyway.
-fn executing_blob(
+fn executing_bytecode(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
 ) -> eyre::Result<[u8; 32]> {
-    if let Some(blob) = crate::activation::activated_blob(datastore, context_id) {
+    if let Some(blob) = crate::activation::activated_bytecode(datastore, context_id) {
         return Ok(blob);
     }
     let handle = datastore.handle();
@@ -1000,7 +1005,7 @@ pub(crate) async fn resolve_resumed_migration(
     for context_id in
         calimero_governance_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?
     {
-        let current = executing_blob(datastore, &context_id)?;
+        let current = executing_bytecode(datastore, &context_id)?;
         if current == target_blob {
             continue;
         }
@@ -1293,8 +1298,8 @@ pub(crate) fn update_upgrade_status(
 ///
 /// Emits a single [`GroupOp::CascadeUpgrade`] signed by the signer,
 /// then spawns one [`propagate_upgrade`] per descendant subgroup whose
-/// current `app_key` matches the signed group's current `app_key`.
-/// The atomic op carries `target_application_id`, `app_key`, `migration`,
+/// current `bytecode_id` matches the signed group's current `bytecode_id`.
+/// The atomic op carries `target_application_id`, `bytecode_id`, `migration`,
 /// and `cascade_hlc` in one unit, eliminating the out-of-order apply bug
 /// of the legacy two-op path.
 ///
@@ -1305,8 +1310,8 @@ pub(crate) fn update_upgrade_status(
 ///
 /// The walk used to enumerate matched descendants runs BEFORE the
 /// cascade op is published locally — by the time the apply arm runs,
-/// matched descendants' `GroupMeta.app_key` has been rewritten to the
-/// new `app_key`, so a post-publish walk against the old predicate
+/// matched descendants' `GroupMeta.bytecode_id` has been rewritten to the
+/// new `bytecode_id`, so a post-publish walk against the old predicate
 /// would find zero matches. Capturing the descendant list synchronously
 /// before publish is the simplest mechanism that respects the apply
 /// arm's own mutation.
@@ -1369,14 +1374,14 @@ fn dispatch_cascade(
                 Err(err) => return ActorResponse::reply(Err(err.into())),
             }
         };
-        if target_blob.is_none_or(|blob| blob == meta.app_key) {
+        if target_blob.is_none_or(|blob| blob == meta.bytecode_id) {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "group is already targeting this application and no migration was requested"
             )));
         }
     }
 
-    // Resolve target application meta (for the new app_key + blob announce).
+    // Resolve target application meta (for the new bytecode_id + blob announce).
     let app_meta = {
         let handle = actor.datastore.handle();
         let key = key::ApplicationMeta::new(target_application_id);
@@ -1388,11 +1393,11 @@ fn dispatch_cascade(
             Err(err) => return ActorResponse::reply(Err(err.into())),
         }
     };
-    let new_app_key = *app_meta.bytecode.blob_id().as_ref();
+    let new_bytecode_id = *app_meta.bytecode.blob_id().as_ref();
     let target_blob_info = (app_meta.bytecode.blob_id(), app_meta.size);
     let to_version: String = String::from(app_meta.version.clone());
 
-    let from_app_key = meta.app_key;
+    let from_bytecode_id = meta.bytecode_id;
     let from_version = {
         let handle = actor.datastore.handle();
         handle
@@ -1406,12 +1411,12 @@ fn dispatch_cascade(
 
     // --- Capture matched descendants BEFORE emitting the cascade op ---
     // After `sign_apply_and_publish` runs, the apply arm rewrites
-    // `GroupMeta.app_key` on matched descendants to `new_app_key`, so a
-    // post-publish walk against `from_app_key` would find zero matches.
+    // `GroupMeta.bytecode_id` on matched descendants to `new_bytecode_id`, so a
+    // post-publish walk against `from_bytecode_id` would find zero matches.
     let matched_descendants = match calimero_governance_store::cascade::walk_for_predicate(
         &actor.datastore,
         group_id,
-        from_app_key,
+        from_bytecode_id,
     ) {
         Ok(entries) => entries
             .into_iter()
@@ -1423,7 +1428,7 @@ fn dispatch_cascade(
 
     if matched_descendants.is_empty() {
         return ActorResponse::reply(Err(eyre::eyre!(
-            "cascade walk matched no descendants (signed group's app_key may have \
+            "cascade walk matched no descendants (signed group's bytecode_id may have \
              already been migrated by a concurrent cascade)"
         )));
     }
@@ -1468,10 +1473,10 @@ fn dispatch_cascade(
 
     // The signed group's CURRENT target application id (before this cascade) is
     // the "old" schema source for the L1 identity-downgrade gate. The cascade
-    // op rewrites every matched descendant from `from_app_key` to the new app,
+    // op rewrites every matched descendant from `from_bytecode_id` to the new app,
     // so a single gate check on the signed group's app pair covers the family.
     let current_application_id = meta.target_application_id;
-    let current_app_key_for_gate = meta.app_key;
+    let current_bytecode_id_for_gate = meta.bytecode_id;
 
     // Stamp the cascade_hlc ONCE at the initiator so every receiver
     // applies the same fence boundary (Task 3 apply handler stores this
@@ -1482,16 +1487,16 @@ fn dispatch_cascade(
         // Resolve the migration from the bundle's embedded ABIs (all services).
         let migration = resolve_upgrade_from_abis(
             &node_client_for_publish,
-            from_app_key,
-            new_app_key,
+            from_bytecode_id,
+            new_bytecode_id,
             force_code_only,
         )
         .await?;
         // Every matched descendant lands on the same target blob, so one
         // resolution covers the whole cascade.
         let target_state_version = recorded_state_version(
-            blob_max_state_version(&node_client_for_publish, new_app_key).await,
-            new_app_key,
+            blob_max_state_version(&node_client_for_publish, new_bytecode_id).await,
+            new_bytecode_id,
         );
         let migration_bytes_for_publish = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
         let has_migration = migration.is_some();
@@ -1501,7 +1506,7 @@ fn dispatch_cascade(
         if has_migration {
             let old = resolve_pre_upgrade_schema(
                 &node_client_for_publish,
-                current_app_key_for_gate,
+                current_bytecode_id_for_gate,
                 &current_application_id,
             )
             .await;
@@ -1519,8 +1524,8 @@ fn dispatch_cascade(
             &group_id,
             &sk,
             GroupOp::CascadeUpgrade {
-                from_app_key: from_app_key.into(),
-                app_key: new_app_key.into(),
+                from_bytecode_id: from_bytecode_id.into(),
+                bytecode_id: new_bytecode_id.into(),
                 target_application_id,
                 to_state_version: target_state_version,
                 migration: migration_bytes_for_publish.clone(),
@@ -1647,7 +1652,7 @@ fn dispatch_cascade(
 
         // Initial status snapshot for the signed group itself (which is
         // also in `matched_descendants` since the walk always includes
-        // the root and it always matches `from_app_key`). The
+        // the root and it always matches `from_bytecode_id`). The
         // per-descendant propagators write their own statuses; we
         // surface the signed group's initial status here for the RPC
         // response.
@@ -1815,7 +1820,7 @@ mod tests {
         ChainCandidate {
             state_version: sv,
             version: ver.to_owned(),
-            app_key: [byte; 32],
+            bytecode_id: [byte; 32],
             size: u64::from(byte),
         }
     }
@@ -1889,7 +1894,7 @@ mod tests {
             .save(
                 &group_id,
                 &GroupMetaValue {
-                    app_key: [0x11; 32],
+                    bytecode_id: [0x11; 32],
                     target_application_id: current_app,
                     created_at: 1_700_000_000,
                     admin_identity: crate::test_support::account_for(&signer),
