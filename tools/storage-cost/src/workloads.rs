@@ -176,7 +176,11 @@ fn build_vector(n: usize) -> Root<Vector<String, MainStorage>> {
 pub fn all() -> Vec<Workload> {
     use CostShape::{ConstantPerCall, FlatPerEntry, KnownLinearInN};
 
-    const REGISTRY: [(&str, CostShape, u32, fn(usize)); 6] = [
+    /// A registry row: name, shape, tolerance, body. Sized-independent, so
+    /// `all()` crosses it with [`SIZES`].
+    type Entry = (&'static str, CostShape, u32, fn(usize));
+
+    const REGISTRY: [Entry; 6] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
