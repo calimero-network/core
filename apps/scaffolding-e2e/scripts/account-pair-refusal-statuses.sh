@@ -8,8 +8,11 @@
 #       target: local
 #       args: [ <holder>, <new-node>, <namespace-id>, <root-key>, <unbound-application> ]
 #
-# `<unbound-application>` must be an application this holder has installed and
-# given no namespace, which is what makes the scope resolve to nothing here.
+# `<unbound-application>` must be an application the holder serves in no
+# namespace YET, which is what makes the scope resolve to nothing here. An
+# application whose namespace comes later does exactly as well as one that never
+# gets one, so a scenario can spend its second application on this and then go
+# on to use it.
 #
 # Asserted by STATUS, not by failure. Three of these used to be one `500` apiece,
 # which told a client nothing it could act on: retrying a mistyped confirmation
@@ -19,8 +22,8 @@
 # run.
 #
 # Runs BEFORE the real pairing. It performs its own `pair-init` - idempotent, so
-# the pairing that follows mints the same device and reads out the same code -
-# and never completes one.
+# the pairing that follows mints the same device and reads out the same code,
+# even when it names more namespaces than this one did - and never completes one.
 #
 # Two refusals this cannot drive, deliberately:
 #   * `PairingNoScopeKey` (409). This node holds a scope key in every namespace it

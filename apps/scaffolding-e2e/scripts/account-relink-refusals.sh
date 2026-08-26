@@ -2,18 +2,20 @@
 #
 # What `POST /admin-api/account/devices/:device_id/relink` refuses.
 #
-#     - name: Relink refuses the wrong device, the wrong machine and a spent id
+#     - name: Relink refuses the wrong device and the wrong machine
 #       type: script
-#       script: scripts/account-relink-refusal-statuses.sh
+#       script: scripts/account-relink-refusals.sh
 #       target: local
 #       args: [ <holder>, <paired-node>, <paired-device-id> ]
 #
-# Run AFTER the device has been revoked, because that is the only ordering in
-# which all three are reachable at once - and the first two are unaffected by the
-# revocation, so nothing is weakened by asking for them here.
+# Run while the pairing STANDS. The wrong-machine refusal is only reachable
+# there: a revoked device re-enrols under its own account root - the sync
+# key-recovery path releases a tombstoned row - so a paired node asked for a
+# repair after its revocation is a node holding its own account, and it answers
+# `404` for a device it never certified rather than `403` for the machine.
 #
-# The three are the whole distinction a caller can act on: the device does not
-# exist here, you are at the wrong machine, and this id is spent for good.
+# The spent id is the third refusal and needs the opposite state, so it lives in
+# `account-relink-refusal-revoked.sh`.
 
 set -eu
 
@@ -56,10 +58,4 @@ expect_status 404 "${holder}" "${UNKNOWN_DEVICE}" "a device this node holds no c
 # device cannot repair further devices, and no retry here changes that.
 expect_status 403 "${pairednode}" "${paired_device}" "a repair run on a paired device rather than the holder"
 
-# `403` and permanently so. The tombstone is per namespace but the id is spent
-# everywhere, so a repair that quietly worked around a revocation would be
-# repairing the wrong thing: enrolling the machine afresh mints a NEW device id,
-# and that is the only way back.
-expect_status 403 "${holder}" "${paired_device}" "a relink of a revoked device"
-
-echo "all three relink refusals answered their own status"
+echo "both refusals a live pairing can raise answered their own status"
