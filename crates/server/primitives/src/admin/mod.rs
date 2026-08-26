@@ -1773,58 +1773,6 @@ impl Validate for RetryGroupUpgradeApiRequest {
     }
 }
 
-/// Adopt an existing account on this node and mint a device for it.
-///
-/// Carries a caller-supplied value, because the account being joined is not
-/// this node's to derive: the root key comes from the device that already
-/// holds it.
-///
-/// Nothing here is a credential. A genesis is public data, and naming somebody
-/// else's account gains a caller nothing: the device is inert until its
-/// certificate is signed by the account root, which only the holder has.
-///
-/// DEPRECATED with the namespace-scoped route that carries it, which takes its
-/// one namespace from the path. Use [`AccountPairInitApiRequest`].
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairDeviceInitApiRequest {
-    /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
-    ///
-    /// The whole genesis, now that it is `{version, root_sign_pk}` — so this is
-    /// the only thing that has to travel between the two devices.
-    ///
-    /// Named for the half it carries. An ed25519 private and public key are both
-    /// 32 bytes and both hex, so neither the type nor the length distinguishes
-    /// them; the old name (`accountRootKey`) left the reader nothing to go on
-    /// about a field where confusing the two would be catastrophic. The private
-    /// root never crosses this boundary at all — it leaves the node only via
-    /// `merod account export`, as a mnemonic, and the holder signs the paired
-    /// device's certificate locally.
-    #[serde(alias = "accountRootKey")]
-    pub account_root_public_key: String,
-}
-
-impl Validate for PairDeviceInitApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if self.account_root_public_key.len() != 64 {
-            errors.push(ValidationError::InvalidLength {
-                field: "accountRootPublicKey",
-                expected: 64,
-                actual: self.account_root_public_key.len(),
-            });
-        } else if hex::decode(&self.account_root_public_key).is_err() {
-            errors.push(ValidationError::InvalidHexEncoding {
-                field: "accountRootPublicKey",
-                reason: "not valid hex".to_owned(),
-            });
-        }
-
-        errors
-    }
-}
-
 /// What the pairing device minted, for the account holder to certify.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1873,74 +1821,6 @@ pub struct PairDeviceInitApiResponse {
     pub data: PairDeviceInitApiResponseData,
 }
 
-/// Certify a device another node minted, link it, and deliver the scope key.
-///
-/// Every field is what that node's pair-init returned. None is a secret: the
-/// certificate this mints is what makes the device real, and only this side
-/// holds the account root that signs it.
-///
-/// DEPRECATED with the namespace-scoped route that carries it, whose namespace
-/// only ever decided where the checks ran. Use [`AccountPairCompleteApiRequest`].
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairDeviceCompleteApiRequest {
-    /// Hex-encoded `DeviceId` the other node minted (32 bytes).
-    pub device_id: String,
-    /// Hex-encoded X25519 agreement key to wrap the scope key under (32 bytes).
-    pub kem_public_key: String,
-    /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
-    pub sign_public_key: String,
-    /// Hex-encoded Ed25519 signature (64 bytes) from that node's pair-init.
-    ///
-    /// Not optional: without it the three values above are only claims by the
-    /// sender, and certifying them would make attacker-supplied keys a trusted
-    /// device of this account.
-    pub statement: String,
-    /// The confirmation code the account holder was read from the pairing
-    /// device, e.g. `7BC0-DAAC-CCB4-84A4`. Grouping and case are ignored.
-    ///
-    /// Required so the comparison cannot be skipped: this side derives the code
-    /// for the key material that actually arrived and refuses a mismatch. Its
-    /// value depends on the code reaching the operator independently of the
-    /// payload — carried beside the keys, it proves nothing.
-    pub confirmation_code: String,
-}
-
-impl Validate for PairDeviceCompleteApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        // 64 hex chars for each 32-byte key, 128 for the 64-byte signature.
-        // The confirmation code is free-form here (grouping and case are
-        // normalized at the point of comparison, which is the only place that
-        // can say whether it is *right*); an empty one is refused up front.
-        if self.confirmation_code.trim().is_empty() {
-            errors.push(ValidationError::EmptyField {
-                field: "confirmationCode",
-            });
-        }
-        for (field, value, expected) in [
-            ("deviceId", &self.device_id, 64),
-            ("kemPublicKey", &self.kem_public_key, 64),
-            ("signPublicKey", &self.sign_public_key, 64),
-            ("statement", &self.statement, 128),
-        ] {
-            if value.len() != expected {
-                errors.push(ValidationError::InvalidLength {
-                    field,
-                    expected,
-                    actual: value.len(),
-                });
-            } else if hex::decode(value).is_err() {
-                errors.push(ValidationError::InvalidHexEncoding {
-                    field,
-                    reason: "not valid hex".to_owned(),
-                });
-            }
-        }
-        errors
-    }
-}
-
 /// What pairing established.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1978,8 +1858,7 @@ pub struct PairDeviceCompleteApiResponse {
 /// Adopt an existing account on this node and mint one device for it, across a
 /// set of namespaces.
 ///
-/// The account-level replacement for [`PairDeviceInitApiRequest`], which took its
-/// one namespace from the path. Both halves of pairing were already account-wide
+/// Both halves of pairing were already account-wide
 /// in their credentials — the certificate is root-signed and the endorsement is
 /// node-level, so neither names a namespace — while the caller still had to name
 /// one, and the device ended up listening on that one topic while the holder's
@@ -1993,10 +1872,10 @@ pub struct PairDeviceCompleteApiResponse {
 pub struct AccountPairInitApiRequest {
     /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
     ///
-    /// Named for the half it carries, as on the namespace-scoped request: an
-    /// ed25519 private and public key are both 32 bytes and both hex, so nothing
-    /// but the name distinguishes them. The private root never crosses this
-    /// boundary.
+    /// Named for the half it carries: an ed25519 private and public key are both
+    /// 32 bytes and both hex, so nothing but the name distinguishes them. The
+    /// private root never crosses this boundary - it leaves the node only via
+    /// `merod account export`, as a mnemonic.
     pub account_root_public_key: String,
     /// Hex-encoded ids of the namespaces to enroll into (32 bytes each).
     ///
@@ -2041,9 +1920,8 @@ impl Validate for AccountPairInitApiRequest {
 /// Certify a device another node minted, link it, and deliver the scope keys —
 /// scoped by application rather than by namespace.
 ///
-/// The account-level replacement for [`PairDeviceCompleteApiRequest`]. Every
-/// field but `applications` is what that node's `pair-init` returned, and the
-/// response is [`PairDeviceCompleteApiResponse`] unchanged.
+/// Every field but `applications` is what that node's `pair-init` returned, and
+/// the response is [`PairDeviceCompleteApiResponse`] unchanged.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountPairCompleteApiRequest {

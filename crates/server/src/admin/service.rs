@@ -335,15 +335,6 @@ pub(crate) fn setup(
             "/account/devices/:device_id/relink",
             post(account::relink::handler),
         )
-        // Deprecated, superseded by the two routes above. Kept until callers move.
-        .route(
-            "/namespaces/:namespace_id/account/pair-init",
-            post(namespaces::pair_device_init::handler),
-        )
-        .route(
-            "/namespaces/:namespace_id/account/pair-complete",
-            post(namespaces::pair_device_complete::handler),
-        )
         .route(
             "/namespaces/:namespace_id/account/revoke",
             post(namespaces::revoke_device::handler),

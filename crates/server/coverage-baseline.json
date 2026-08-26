@@ -11,8 +11,6 @@
   "POST /admin-api/contexts/:context_id/intents",
   "POST /admin-api/groups/:group_id/members",
   "POST /admin-api/groups/:group_id/members/remove",
-  "POST /admin-api/namespaces/:namespace_id/account/pair-complete",
-  "POST /admin-api/namespaces/:namespace_id/account/pair-init",
   "POST /admin-api/namespaces/:namespace_id/account/revoke",
   "PUT /admin-api/groups/:group_id/members/:account/auto-follow",
   "PUT /admin-api/groups/:group_id/members/:account/capabilities",

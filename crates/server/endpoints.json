@@ -79,8 +79,6 @@
   "POST /admin-api/install-application",
   "POST /admin-api/install-dev-application",
   "POST /admin-api/namespaces",
-  "POST /admin-api/namespaces/:namespace_id/account/pair-complete",
-  "POST /admin-api/namespaces/:namespace_id/account/pair-init",
   "POST /admin-api/namespaces/:namespace_id/account/revoke",
   "POST /admin-api/namespaces/:namespace_id/groups",
   "POST /admin-api/namespaces/:namespace_id/invite",
