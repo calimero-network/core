@@ -164,6 +164,12 @@ jobs:
           NODE_BASE_URL: "http://localhost:${{ env.SERVER_PORT }}"
           # The e2e coverage recorder writes the endpoints it hit here.
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
+          # The delegated-authorship suite mints a warrant with the merod built
+          # above. It has to be real: this SDK cannot sign one (that would need
+          # ed25519 and a borsh encoding kept byte-identical with the node's), and
+          # a fabricated warrant would register the route as covered while being
+          # refused every time. Without this the suite skips rather than fails.
+          MEROD_BINARY: "${{ github.workspace }}/target/debug/merod"
           # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level
           # env (dev / dev-password) so the suite logs in with the exact
           # credentials the "Bootstrap root key" step provisioned. Do not
