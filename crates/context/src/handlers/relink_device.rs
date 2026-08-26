@@ -71,11 +71,11 @@ fn resolve_target(
     }
 
     if !applications.is_empty() {
-        let added: Vec<_> = applications
-            .into_iter()
-            .filter(|application| !cached.applications.contains(application))
-            .collect();
-        cached.applications.extend(added);
+        for application in applications {
+            if !cached.applications.contains(&application) {
+                cached.applications.push(application);
+            }
+        }
         devices.remember_device_cert(&cached.proof, &cached.applications)?;
     }
 
