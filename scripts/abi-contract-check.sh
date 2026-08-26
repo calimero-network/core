@@ -74,11 +74,14 @@ if [ -n "${ABI_CONTRACT_APPS:-}" ]; then
     # Caller supplied package names directly (space-separated).
     read -ra PKGS <<<"$ABI_CONTRACT_APPS"
 else
+    # Scope to the APPS=( ... ) array - the BUNDLE_ONLY array below it lists
+    # apps with no build of their own, which `cargo mero build` can't handle.
     # `while read` (not mapfile) for bash 3.2 portability (macOS default shell).
     while IFS= read -r dir; do
         APP_DIRS+=("$dir")
     done < <(
-        grep -oE 'apps/[^" ]*/Cargo\.toml' scripts/build-all-apps.sh \
+        sed -n '/^APPS=(/,/^)/p' scripts/build-all-apps.sh \
+            | grep -oE 'apps/[^" ]*/Cargo\.toml' \
             | sed 's#/Cargo\.toml##' | sort -u
     )
 fi

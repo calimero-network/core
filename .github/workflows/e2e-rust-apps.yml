@@ -14,6 +14,7 @@ on:
     paths:
       - "crates/**"
       - "apps/scaffolding-e2e/**"
+      - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
@@ -38,6 +39,7 @@ on:
     paths:
       - "crates/**"
       - "apps/scaffolding-e2e/**"
+      - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
@@ -194,8 +196,13 @@ jobs:
       - name: Build scaffolding-e2e app
         run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
-      - name: Build scaffolding-e2e multi-service bundle
+      - name: Build scaffolding-e2e bundle
         run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
+
+      # apps/scaffolding-e2e-multi declares services backed by scaffolding-e2e's
+      # wasm and builds none of its own, so it only needs a bundle step.
+      - name: Build scaffolding-e2e-multi bundle
+        run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
 
       - name: Build xcall-example app
         run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
