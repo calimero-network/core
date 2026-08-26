@@ -3,6 +3,7 @@ use calimero_config::{
     NodeMode, ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
+use calimero_governance_store::NodeDeviceRepository;
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -533,9 +534,36 @@ impl InitCommand {
         // `config` is fully consumed below; `datastore_path` is cloned so the
         // store's owned copy is independent.
         let datastore_path = path.join(&config.datastore.path);
-        drop(Store::open::<RocksDB>(&StoreConfig::new(
-            datastore_path.clone(),
-        ))?);
+        let store = Store::open::<RocksDB>(&StoreConfig::new(datastore_path.clone()))?;
+
+        // Provision the account root HERE, explicitly, rather than leaving it to
+        // whichever code path happens to need one first.
+        //
+        // It is created lazily today by `ensure_account_root`, and four production
+        // call sites can reach it — including `account_for_group`, which is a
+        // resolver. So a read can bring an identity into being as a side effect,
+        // and the moment a node's account exists depends on which request arrived
+        // first. Nothing is wrong with the key that results; what is wrong is that
+        // there is no point in a node's life you can name as the one where it got
+        // an account.
+        //
+        // Naming that point is a prerequisite rather than tidiness. A node meant to
+        // hold NO root — root in cold storage, this device enabled by an imported
+        // certificate (#3430) — cannot exist while any read will mint one. Those
+        // call sites can only start refusing once there is somewhere else the root
+        // legitimately comes from, and this is that somewhere.
+        //
+        // Behaviour is unchanged for every existing deployment: the same key would
+        // have been minted on first use, so this only moves *when*. The lazy path
+        // stays for now and simply finds the root already present.
+        let account_root = NodeDeviceRepository::new(&store)
+            .ensure_account_root()
+            .wrap_err("could not provision this node's account root")?;
+        info!(
+            account = %account_root.account(),
+            "Provisioned the node's account root",
+        );
+        drop(store);
 
         // RocksDB creates these files under the process umask, but they live
         // inside the now-0700 node home, so they were never reachable by other
@@ -555,6 +583,49 @@ mod tests {
     use clap::Parser;
 
     use super::InitCommand;
+
+    /// `init` must leave the node holding an account root.
+    ///
+    /// The point is not that a root exists — one would have appeared on first use
+    /// anyway, since `ensure_account_root` mints lazily from four call sites. The
+    /// point is that it exists *now*, before anything has been served, so there is
+    /// a namable moment when this node got an account.
+    ///
+    /// That is what a root-free node needs in order to be possible at all: those
+    /// lazy call sites can only start refusing once the root legitimately comes
+    /// from somewhere else, and this is that somewhere (#3430).
+    #[tokio::test]
+    async fn init_provisions_an_account_root() {
+        use calimero_governance_store::NodeDeviceRepository;
+        use calimero_store::config::StoreConfig;
+        use calimero_store::Store;
+        use calimero_store_rocksdb::RocksDB;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let home = camino::Utf8PathBuf::from_path_buf(home.path().to_path_buf())
+            .expect("utf8 tempdir path");
+        let root_args = crate::cli::RootArgs {
+            home: home.clone(),
+            node_name: camino::Utf8PathBuf::from("provisioned"),
+        };
+
+        let init =
+            InitCommand::try_parse_from(["merod", "--server-port", "8428", "--swarm-port", "8528"])
+                .expect("parse init");
+        init.run(root_args).await.expect("init");
+
+        let store =
+            Store::open::<RocksDB>(&StoreConfig::new(home.join("provisioned").join("data")))
+                .expect("open the store init created");
+
+        let root = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read the root");
+        assert!(
+            root.is_some(),
+            "init must leave an account root behind, so nothing later has to mint one",
+        );
+    }
 
     // mDNS is opt-in: a fresh `merod init` must not write a config that
     // announces the node on the local network. `--mdns` is the way in, and the
