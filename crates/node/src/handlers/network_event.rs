@@ -69,7 +69,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         governance_position,
                         key_id,
                         delta_signature,
-                        producing_app_key,
+                        producing_bytecode_id,
                         delegation,
                     } => {
                         info!(
@@ -103,10 +103,10 @@ impl Handler<NetworkEvent> for NodeManager {
                                 governance_position,
                                 key_id,
                                 delta_signature,
-                                // Carry the sender-stamped producing_app_key
+                                // Carry the sender-stamped producing_bytecode_id
                                 // through so the fence check (Tasks 8/9) can
                                 // read it inside the apply path.
-                                producing_app_key,
+                                producing_bytecode_id,
                                 // The author's consent, carried into the apply
                                 // path so the envelope check can take the
                                 // delegated branch. Dropping it here would make

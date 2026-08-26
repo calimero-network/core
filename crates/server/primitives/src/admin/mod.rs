@@ -1160,8 +1160,15 @@ impl Validate for TeeAttestRequest {
 pub struct CreateGroupApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_key: Option<String>,
+    // `appKey` on the wire in BOTH directions: an old server knows only that
+    // name, and the alias keeps taking `bytecodeId` from clients that send it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "appKey",
+        alias = "bytecodeId"
+    )]
+    pub bytecode_id: Option<String>,
     pub application_id: ApplicationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -1172,9 +1179,9 @@ pub struct CreateGroupApiRequest {
 impl Validate for CreateGroupApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        if let Some(ref app_key) = self.app_key {
-            if app_key.is_empty() {
-                errors.push(ValidationError::EmptyField { field: "app_key" });
+        if let Some(ref bytecode_id) = self.bytecode_id {
+            if bytecode_id.is_empty() {
+                errors.push(ValidationError::EmptyField { field: "appKey" });
             }
         }
         errors
@@ -1202,8 +1209,15 @@ pub struct CreateNamespaceApiRequest {
     /// Hex-encoded 32-byte bytecode blob id to pin the namespace to a
     /// specific installed version. Default: the application row's blob
     /// (latest fetched).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_key: Option<String>,
+    // `appKey` on the wire in BOTH directions: an old server knows only that
+    // name, and the alias keeps taking `bytecodeId` from clients that send it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "appKey",
+        alias = "bytecodeId"
+    )]
+    pub bytecode_id: Option<String>,
 }
 
 impl Validate for CreateNamespaceApiRequest {
@@ -1278,7 +1292,9 @@ pub struct GroupInfoApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GroupInfoApiResponseData {
     pub group_id: String,
-    pub app_key: String,
+    // `appKey` on the wire: the rename is internal, the JSON is a client contract.
+    #[serde(rename = "appKey")]
+    pub bytecode_id: String,
     pub target_application_id: ApplicationId,
     pub member_count: u64,
     pub context_count: u64,
@@ -1524,7 +1540,7 @@ pub struct ListGroupContextsQuery {
 pub struct UpgradeGroupApiRequest {
     pub target_application_id: ApplicationId,
     /// When `true`, emit one atomic `GroupOp::CascadeUpgrade` fanning out to
-    /// every descendant subgroup whose `app_key` matches the signed group's;
+    /// every descendant subgroup whose `bytecode_id` matches the signed group's;
     /// when `false` (default), stay on the single-group path.
     #[serde(default)]
     pub cascade: bool,
@@ -2304,7 +2320,9 @@ pub struct SyncGroupApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SyncGroupApiResponseData {
     pub group_id: String,
-    pub app_key: String,
+    // `appKey` on the wire: the rename is internal, the JSON is a client contract.
+    #[serde(rename = "appKey")]
+    pub bytecode_id: String,
     pub target_application_id: ApplicationId,
     pub member_count: u64,
     pub context_count: u64,
@@ -3004,7 +3022,9 @@ mod tests {
 #[serde(rename_all = "camelCase")]
 pub struct NamespaceApiResponse {
     pub namespace_id: String,
-    pub app_key: String,
+    // `appKey` on the wire: the rename is internal, the JSON is a client contract.
+    #[serde(rename = "appKey")]
+    pub bytecode_id: String,
     pub target_application_id: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3012,7 +3032,7 @@ pub struct NamespaceApiResponse {
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,
-    /// Bundle-manifest version of this namespace's `app_key` blob — the
+    /// Bundle-manifest version of this namespace's `bytecode_id` blob — the
     /// per-namespace truth (the shared application row only says "latest
     /// fetched"). `None` when unresolvable (raw-wasm app, legacy key,
     /// blob not retained locally).
@@ -3081,4 +3101,94 @@ pub struct ListNamespacesQuery {
 pub struct ListNamespacesForApplicationQuery {
     pub offset: Option<usize>,
     pub limit: Option<usize>,
+}
+
+#[cfg(test)]
+mod naming_back_compat_tests {
+    use super::{
+        ApplicationId, CreateGroupApiRequest, CreateNamespaceApiRequest, GroupInfoApiResponseData,
+    };
+
+    // A client on the old field name must keep working. The alias is the
+    // contract; without it every existing caller breaks on a pure rename.
+    #[test]
+    fn create_group_request_still_accepts_the_legacy_camel_case_alias() {
+        let json = r#"{"appKey":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let req: CreateGroupApiRequest =
+            serde_json::from_str(json).expect("legacy appKey must still deserialize");
+        assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
+
+    #[test]
+    fn create_group_request_accepts_the_new_field() {
+        let json = r#"{"bytecodeId":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let req: CreateGroupApiRequest =
+            serde_json::from_str(json).expect("bytecodeId must deserialize");
+        assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
+
+    // Responses keep the OLD wire name: the rename is internal, and every
+    // deployed client reads `appKey`. Requests take either name via the alias.
+    #[test]
+    fn group_info_response_keeps_the_legacy_wire_name() {
+        let data = GroupInfoApiResponseData {
+            group_id: "g".to_owned(),
+            bytecode_id: "b".to_owned(),
+            target_application_id: ApplicationId::from([0_u8; 32]),
+            member_count: 0,
+            context_count: 0,
+            active_upgrade: None,
+            default_capabilities: 0,
+            subgroup_visibility: String::new(),
+            metadata: None,
+            group_state_hash: String::new(),
+        };
+        let json = serde_json::to_string(&data).expect("serialize");
+        assert!(json.contains("\"appKey\""), "got: {json}");
+        assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    // The request half of the same contract: an old server only knows `appKey`,
+    // so a new client must still put that name on the wire.
+    #[test]
+    fn create_group_request_serializes_the_legacy_wire_name() {
+        let req = CreateGroupApiRequest {
+            group_id: None,
+            bytecode_id: Some("aabb".to_owned()),
+            application_id: ApplicationId::from([0_u8; 32]),
+            name: None,
+            parent_group_id: None,
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        assert!(json.contains("\"appKey\""), "got: {json}");
+        assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    #[test]
+    fn create_namespace_request_serializes_the_legacy_wire_name() {
+        let req = CreateNamespaceApiRequest {
+            application_id: ApplicationId::from([0_u8; 32]),
+            name: None,
+            bytecode_id: Some("aabb".to_owned()),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        assert!(json.contains("\"appKey\""), "got: {json}");
+        assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    #[test]
+    fn create_namespace_request_accepts_the_new_field() {
+        let json = r#"{"bytecodeId":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let req: CreateNamespaceApiRequest =
+            serde_json::from_str(json).expect("bytecodeId must deserialize");
+        assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
+
+    #[test]
+    fn create_namespace_request_still_accepts_the_legacy_camel_case_alias() {
+        let json = r#"{"appKey":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let req: CreateNamespaceApiRequest =
+            serde_json::from_str(json).expect("legacy appKey must still deserialize");
+        assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
 }

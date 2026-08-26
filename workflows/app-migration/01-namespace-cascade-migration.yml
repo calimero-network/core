@@ -10,12 +10,12 @@ description: >
     - the descendant context's state migrates (v1 fields preserved,
       v2-only field readable)
 
-  Regression guard for the full app_key fix triangle in this PR:
+  Regression guard for the full bytecode_id fix triangle in this PR:
     - `create_group::handle` (originator-side derivation)
     - `group_created::apply` (remote-peer parent inheritance)
     - `create_group_invitation` + `join_group` (invitation-side
       bootstrap of joiner's local meta - without this, node 2's
-      local subgroup app_key would seed to [0u8; 32] and the
+      local subgroup bytecode_id would seed to [0u8; 32] and the
       cascade predicate would silently skip the subtree on node 2,
       diverging from node 1)
 
@@ -95,8 +95,8 @@ steps:
   # Phase 3: Invite node 2 to the namespace, then have it materialise
   # the inherited Open-subgroup + context. The namespace-invitation
   # path issues a SignedGroupOpenInvitation containing the namespace
-  # root's application_id AND app_key (added in this PR). Without the
-  # app_key field, node 2 would seed its local namespace-root meta
+  # root's application_id AND bytecode_id (added in this PR). Without the
+  # bytecode_id field, node 2 would seed its local namespace-root meta
   # with [0u8; 32] and the cascade predicate would silently skip the
   # subtree on node 2.
   - name: Create namespace invitation for node 2
@@ -270,7 +270,7 @@ steps:
   #      locally on node 1.
   #   2. Lazy on-access (every receiver): a receiver applies the gossiped
   #      `CascadeUpgrade` op to flip its local `GroupMeta`
-  #      (target_application_id + app_key → v2), then SELF-migrates on its
+  #      (target_application_id + bytecode_id → v2), then SELF-migrates on its
   #      next context access. The migrated state is NOT gossiped - a
   #      migration is a full root replacement, not a CRDT-mergeable delta
   #      (`clear_pending_delta`), so each receiver must re-run the migrate
@@ -292,7 +292,7 @@ steps:
   # Per-node assertions (rather than a single aggregated check) catch
   # the asymmetric regression where node 1 applies but node 2 silently
   # drops the op - that case would still satisfy any aggregated
-  # threshold but is exactly the bug this PR's `app_key` fix triangle
+  # threshold but is exactly the bug this PR's `bytecode_id` fix triangle
   # prevents.
   - name: Assert cascade apply log on node 1 (emitter)
     type: assert_log_present

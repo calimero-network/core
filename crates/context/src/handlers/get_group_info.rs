@@ -106,7 +106,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
 
             Ok(GroupInfoResponse {
                 group_id,
-                app_key: meta.app_key.into(),
+                bytecode_id: meta.bytecode_id.into(),
                 target_application_id: meta.target_application_id,
                 member_count,
                 context_count,

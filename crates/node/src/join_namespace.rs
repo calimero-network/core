@@ -223,7 +223,7 @@ pub async fn join_namespace(
             admin_identity: seeded_admin,
             owner_identity: seeded_admin,
             target_application_id: ApplicationId::from([0u8; 32]),
-            app_key: [0u8; 32],
+            bytecode_id: [0u8; 32],
             migration: None,
             created_at: 0,
             auto_join: true,

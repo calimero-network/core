@@ -28,9 +28,9 @@ pub use blobs::BlobMeta;
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{
-    ContextActivatedBlob, ContextActivatedStateVersion, ContextAuthoredRemaining, ContextConfig,
-    ContextDagDelta, ContextExecutingBlob, ContextIdentity, ContextLeftMarker, ContextMeta,
-    ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
+    ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
+    ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
+    ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextResyncRequested, ContextState,
     ContextWarrantNonce, ScopeUnifiedOp,
 };
 pub use generic::{Generic, FRAGMENT_SIZE, SCOPE_SIZE};

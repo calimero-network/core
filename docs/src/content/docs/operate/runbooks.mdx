@@ -113,7 +113,7 @@ reach them the same way you reach the rest of the admin API for your auth setup.
 
    Under the hood, a context that aborted its migrate is pinned to its
    pre-upgrade code by `ContextExecutingBlob`, while `ContextActivatedBlob` lags
-   the group's current app key — that gap *is* the "running old code" symptom.
+   the group's current `bytecode_id` — that gap *is* the "running old code" symptom.
    See [the marker reference](/protocol/storage/#node-local-migration--recovery-markers)
    for what each column means.
 
@@ -145,7 +145,7 @@ reach them the same way you reach the rest of the admin API for your auth setup.
 
 4. **Verify the markers clear.** Re-run the migration-status rollup. As the
    snapshot lands, `ContextResyncRequested` is cleared on completion,
-   `ContextActivatedBlob` advances to the group's current app key (so the context
+   `ContextActivatedBlob` advances to the group's current `bytecode_id` (so the context
    now runs the new code), and the `ContextMigrationFailed` marker self-clears —
    the member should move out of `failed` toward `migrated`:
 

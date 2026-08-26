@@ -157,7 +157,7 @@ StateDelta {
   nonce: Nonce, events: Option<bytes>, // events also encrypted
   governance_position: Option<GovernanceParentEdge>, // the authorization cut
   key_id: [u8;32], // = SHA-256(scope_key)
-  delta_signature: Option<[u8;64]>, producing_app_key: Option<[u8;32]>,
+  delta_signature: Option<[u8;64]>, producing_bytecode_id: Option<[u8;32]>,
 }
 ```
 

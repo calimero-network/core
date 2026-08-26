@@ -7,6 +7,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
+use calimero_primitives::content_hash::ContentHash;
+use calimero_primitives::hash::Hash;
 use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -76,6 +78,13 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
     StreamReader::new(byte_stream).compat()
 }
 
+// Clients send `?hash=` base58, like every other `Hash` on the wire; only the
+// digest bytes carry over into the `ContentHash` that `add_blob` compares against.
+fn parse_expected_content_hash(hash_str: &str) -> Option<ContentHash> {
+    let hash: Hash = hash_str.parse().ok()?;
+    Some(ContentHash::from(*hash.as_bytes()))
+}
+
 /// Upload a blob via raw binary data (streaming version)
 ///
 /// This endpoint accepts raw binary data in the request body and streams it
@@ -91,9 +100,9 @@ pub async fn upload_handler(
     body: Body,
 ) -> impl IntoResponse {
     let expected_hash = if let Some(hash_str) = query.hash {
-        match hash_str.parse() {
-            Ok(hash) => Some(hash),
-            Err(_) => {
+        match parse_expected_content_hash(&hash_str) {
+            Some(hash) => Some(hash),
+            None => {
                 return ApiError {
                     status_code: StatusCode::BAD_REQUEST,
                     message: "The provided hash is not a valid format".to_owned(),
@@ -474,5 +483,25 @@ pub async fn info_handler(
         }
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod parse_expected_content_hash_tests {
+    use super::*;
+
+    // `?hash=` must stay base58 - the same wire format `Hash` uses
+    // everywhere else - since out-of-repo clients already send it that way.
+    #[test]
+    fn base58_is_accepted_hex_is_rejected() {
+        let bytes = [0xAB_u8; 32];
+        let base58 = Hash::from(bytes).to_base58();
+        let hex = ContentHash::from(bytes).to_string();
+
+        assert_eq!(
+            parse_expected_content_hash(&base58),
+            Some(ContentHash::from(bytes))
+        );
+        assert_eq!(parse_expected_content_hash(&hex), None);
     }
 }

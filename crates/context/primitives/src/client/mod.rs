@@ -1452,7 +1452,7 @@ impl ContextClient {
         let marker = {
             let handle = self.registry.datastore.handle();
             let marker = handle
-                .get(&key::ContextActivatedBlob::new(*context_id))
+                .get(&key::ContextActivatedBytecode::new(*context_id))
                 .ok()
                 .flatten()?
                 .blob;
@@ -2737,7 +2737,7 @@ mod get_context_version_tests {
     fn get_context_carries_application_version() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let app_id = ApplicationId::from([0xAA; 32]);
-        let app_key = key::ApplicationMeta::new(app_id);
+        let bytecode_id = key::ApplicationMeta::new(app_id);
 
         let app_meta = types::ApplicationMeta::new(
             key::BlobMeta::new([1u8; 32].into()),
@@ -2753,10 +2753,10 @@ mod get_context_version_tests {
             },
         );
         let cid = ContextId::from([0x07; 32]);
-        let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
+        let ctx_meta = types::ContextMeta::new(bytecode_id, [0u8; 32], vec![], None);
         {
             let mut handle = store.handle();
-            handle.put(&app_key, &app_meta).expect("seed app meta");
+            handle.put(&bytecode_id, &app_meta).expect("seed app meta");
             handle
                 .put(&key::ContextMeta::new(cid), &ctx_meta)
                 .expect("seed ctx meta");
@@ -2774,9 +2774,9 @@ mod get_context_version_tests {
     #[test]
     fn get_context_without_app_meta_has_no_version() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let app_key = key::ApplicationMeta::new(ApplicationId::from([0xBB; 32]));
+        let bytecode_id = key::ApplicationMeta::new(ApplicationId::from([0xBB; 32]));
         let cid = ContextId::from([0x08; 32]);
-        let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
+        let ctx_meta = types::ContextMeta::new(bytecode_id, [0u8; 32], vec![], None);
         {
             let mut handle = store.handle();
             handle
@@ -2797,10 +2797,10 @@ mod get_context_version_tests {
     #[test]
     fn get_context_carries_group_metadata_name() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
-        let app_key = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
+        let bytecode_id = key::ApplicationMeta::new(ApplicationId::from([0xCC; 32]));
         let cid = ContextId::from([0x09; 32]);
         let gid = [0x42u8; 32];
-        let ctx_meta = types::ContextMeta::new(app_key, [0u8; 32], vec![], None);
+        let ctx_meta = types::ContextMeta::new(bytecode_id, [0u8; 32], vec![], None);
         {
             let mut handle = store.handle();
             handle
@@ -2836,7 +2836,7 @@ mod get_context_version_tests {
             handle
                 .put(
                     &key::ContextMeta::new(bare),
-                    &types::ContextMeta::new(app_key, [0u8; 32], vec![], None),
+                    &types::ContextMeta::new(bytecode_id, [0u8; 32], vec![], None),
                 )
                 .expect("seed bare ctx meta");
         }

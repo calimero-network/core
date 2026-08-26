@@ -101,9 +101,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             default_capabilities_set::apply(ctx, &capabilities.bits())?
         }
         GroupOp::TargetApplicationSet {
-            app_key,
+            bytecode_id,
             target_application_id,
-        } => target_application_set::apply(ctx, &app_key.to_bytes(), target_application_id)?,
+        } => target_application_set::apply(ctx, &bytecode_id.to_bytes(), target_application_id)?,
         GroupOp::ContextRegistered {
             context_id,
             application_id,
@@ -166,16 +166,16 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         }
         GroupOp::TransferOwnership { new_owner } => transfer_ownership::apply(ctx, new_owner)?,
         GroupOp::CascadeUpgrade {
-            from_app_key,
-            app_key,
+            from_bytecode_id,
+            bytecode_id,
             target_application_id,
             to_state_version,
             migration,
             cascade_hlc,
         } => cascade_upgrade::apply(
             ctx,
-            &from_app_key.to_bytes(),
-            &app_key.to_bytes(),
+            &from_bytecode_id.to_bytes(),
+            &bytecode_id.to_bytes(),
             target_application_id,
             *to_state_version,
             migration,

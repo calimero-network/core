@@ -1,7 +1,7 @@
 //! Cascade-engine helpers used by the `CascadeUpgrade` apply path.
 //!
 //! The cascade engine fans one signed group op out to every descendant
-//! subgroup whose current `app_key` matches the op's `from_app_key`
+//! subgroup whose current `bytecode_id` matches the op's `from_bytecode_id`
 //! predicate. The fan-out + predicate evaluation is a pure read of the
 //! current group tree and meta state; the apply handler (in
 //! `crates/context/src/group_store/mod.rs`) calls into [`walk_for_predicate`]

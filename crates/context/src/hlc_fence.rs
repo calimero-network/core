@@ -2,8 +2,8 @@
 //! different app schema than the receiver can currently read.
 //!
 //! Two invariants:
-//! 1. Fence on the LOADED reader version, not `GroupMeta.app_key`. The
-//!    governance `GroupMeta.app_key` advances for all members at cascade-apply,
+//! 1. Fence on the LOADED reader version, not `GroupMeta.bytecode_id`. The
+//!    governance `GroupMeta.bytecode_id` advances for all members at cascade-apply,
 //!    but each node's wasm binary swaps lazily. The decision must key on the
 //!    schema the receiver can actually read right now — its loaded
 //!    `ApplicationMeta` bytecode blob_id — not the migration target.
@@ -43,19 +43,19 @@ pub enum FenceDecision {
 ///   - the delta is at-or-before the boundary (`delta_hlc <= boundary`) — it is
 ///     pre-cascade legitimate history, OR
 ///   - the delta's schema matches the receiver's loaded reader
-///     (`incoming_app_key == loaded_app_key`).
+///     (`incoming_bytecode_id == loaded_bytecode_id`).
 /// - [`FenceDecision::Buffer`] when the delta is *after* the boundary AND its
 ///   schema differs from the loaded reader — the receiver cannot read it yet,
 ///   so it is absorbed for later verbatim replay (never dropped).
 ///
-/// `target_app_key` (the replicated `GroupMeta.app_key`) describes the migration
+/// `target_bytecode_id` (the replicated `GroupMeta.bytecode_id`) describes the migration
 /// target only; it is NOT used to gate readability. It is threaded here so the
 /// drain can later tell when the binary has caught up to the target.
 #[must_use]
 pub fn fence_decision(
-    incoming_app_key: [u8; 32],
-    loaded_app_key: [u8; 32],
-    _target_app_key: [u8; 32],
+    incoming_bytecode_id: [u8; 32],
+    loaded_bytecode_id: [u8; 32],
+    _target_bytecode_id: [u8; 32],
     delta_hlc: HybridTimestamp,
     cascade_hlc: Option<HybridTimestamp>,
 ) -> FenceDecision {
@@ -69,7 +69,7 @@ pub fn fence_decision(
         return FenceDecision::Apply;
     }
 
-    if incoming_app_key == loaded_app_key {
+    if incoming_bytecode_id == loaded_bytecode_id {
         // The receiver's loaded binary can read this schema now.
         return FenceDecision::Apply;
     }
@@ -80,20 +80,20 @@ pub fn fence_decision(
 }
 
 /// Boolean wrapper for callers / tests that only need "is this delta fenced
-/// (not applied)?" with `loaded == target == ctx_app_key`. Delegates to
+/// (not applied)?" with `loaded == target == ctx_bytecode_id`. Delegates to
 /// [`fence_decision`]; returns `true` iff the delta is `Buffer` or `Drop`.
 #[must_use]
 pub fn should_fence(
-    delta_app_key: [u8; 32],
-    ctx_app_key: [u8; 32],
+    delta_bytecode_id: [u8; 32],
+    ctx_bytecode_id: [u8; 32],
     delta_hlc: HybridTimestamp,
     cascade_hlc: Option<HybridTimestamp>,
 ) -> bool {
     !matches!(
         fence_decision(
-            delta_app_key,
-            ctx_app_key,
-            ctx_app_key,
+            delta_bytecode_id,
+            ctx_bytecode_id,
+            ctx_bytecode_id,
             delta_hlc,
             cascade_hlc,
         ),
@@ -101,25 +101,25 @@ pub fn should_fence(
     )
 }
 
-/// Resolve the **loaded reader** app_key for a context: the bytecode blob the
+/// Resolve the **loaded reader** bytecode_id for a context: the bytecode blob the
 /// context actually executes right now — distinct from the replicated
-/// `GroupMeta.app_key` (the migration target), which can advance ahead of the
+/// `GroupMeta.bytecode_id` (the migration target), which can advance ahead of the
 /// local activation.
 ///
 /// Resolution mirrors execution's per-context binding: the activation marker
 /// (set when a migration commits or a code-only swap activates) → the
 /// application row's `bytecode.blob_id()` (a context that never activated an
 /// upgrade executes its installed row; on receivers the row is only a
-/// download cache and may lag the marker) → `GroupMeta.app_key`.
+/// download cache and may lag the marker) → `GroupMeta.bytecode_id`.
 ///
 /// Returns `None` for non-group contexts (no owning group) and when no source
 /// can supply a key. Store errors are propagated as `Err`.
-pub fn loaded_reader_app_key(
+pub fn loaded_reader_bytecode_id(
     store: &Store,
     context_id: &ContextId,
 ) -> eyre::Result<Option<[u8; 32]>> {
     // Primary: the per-context activation marker — what this context executes.
-    if let Some(blob) = crate::activation::activated_blob(store, context_id) {
+    if let Some(blob) = crate::activation::activated_bytecode(store, context_id) {
         return Ok(Some(blob));
     }
 
@@ -136,22 +136,22 @@ pub fn loaded_reader_app_key(
     };
     Ok(MetaRepository::new(store)
         .load(&gid)?
-        .map(|meta| meta.app_key))
+        .map(|meta| meta.bytecode_id))
 }
 
-/// Resolve the **migration target** app_key for a context: the replicated
-/// `GroupMeta.app_key` the owning group is migrating toward.
+/// Resolve the **migration target** bytecode_id for a context: the replicated
+/// `GroupMeta.bytecode_id` the owning group is migrating toward.
 ///
 /// This is the schema the node will be able to read *once its binary advances*
 /// — the discriminator the absorb drain uses to decide when the binary has
 /// caught up to the target (so a buffered straggler delta can be verbatim-
-/// replayed). It is distinct from [`loaded_reader_app_key`] (what the node can
+/// replayed). It is distinct from [`loaded_reader_bytecode_id`] (what the node can
 /// read *right now*) — the governance target can advance ahead of the
 /// locally-loaded binary.
 ///
 /// Returns `None` for non-group contexts (no owning group) and when the group
 /// meta row is missing. Store errors are propagated as `Err`.
-pub fn target_reader_app_key(
+pub fn target_reader_bytecode_id(
     store: &Store,
     context_id: &ContextId,
 ) -> eyre::Result<Option<[u8; 32]>> {
@@ -160,17 +160,17 @@ pub fn target_reader_app_key(
     };
     Ok(MetaRepository::new(store)
         .load(&gid)?
-        .map(|meta| meta.app_key))
+        .map(|meta| meta.bytecode_id))
 }
 
 /// Store-aware decision: resolves the receiver's loaded reader key + the
-/// migration target (`GroupMeta.app_key`) + the cascade boundary, then applies
+/// migration target (`GroupMeta.bytecode_id`) + the cascade boundary, then applies
 /// [`fence_decision`]. Non-group contexts / missing meta ⇒ `Apply`. Keys the
 /// readability check on the loaded reader, not the replicated target.
 pub fn delta_fence_decision(
     store: &Store,
     context_id: &ContextId,
-    producing_app_key: [u8; 32],
+    producing_bytecode_id: [u8; 32],
     delta_hlc: HybridTimestamp,
 ) -> eyre::Result<FenceDecision> {
     let Some(gid) = get_group_for_context(store, context_id)? else {
@@ -185,12 +185,13 @@ pub fn delta_fence_decision(
 
     // Loaded reader = schema this node can read now; fall back to the target
     // when the loaded application can't be resolved (parity with PR-3).
-    let loaded_app_key = loaded_reader_app_key(store, context_id)?.unwrap_or(meta.app_key);
+    let loaded_bytecode_id =
+        loaded_reader_bytecode_id(store, context_id)?.unwrap_or(meta.bytecode_id);
 
     Ok(fence_decision(
-        producing_app_key,
-        loaded_app_key,
-        meta.app_key,
+        producing_bytecode_id,
+        loaded_bytecode_id,
+        meta.bytecode_id,
         delta_hlc,
         cascade_hlc,
     ))
@@ -203,11 +204,11 @@ pub fn delta_fence_decision(
 pub fn delta_is_fenced(
     store: &Store,
     context_id: &ContextId,
-    producing_app_key: [u8; 32],
+    producing_bytecode_id: [u8; 32],
     delta_hlc: HybridTimestamp,
 ) -> eyre::Result<bool> {
     Ok(!matches!(
-        delta_fence_decision(store, context_id, producing_app_key, delta_hlc)?,
+        delta_fence_decision(store, context_id, producing_bytecode_id, delta_hlc)?,
         FenceDecision::Apply
     ))
 }
@@ -313,7 +314,7 @@ mod tests {
 
     /// Same schema as the context → MUST NOT be fenced regardless of HLC.
     #[test]
-    fn does_not_fence_matching_app_key() {
+    fn does_not_fence_matching_bytecode_id() {
         assert!(!should_fence(
             [2; 32],
             [2; 32],

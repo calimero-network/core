@@ -461,9 +461,17 @@ where
                 continue;
             }
 
-            if response.status() == 403 {
-                bail!("Access denied — your token may not have sufficient permissions.");
-            }
+            // 403 deliberately falls through to the generic handler below.
+            //
+            // It used to short-circuit here with a fixed "your token may not
+            // have sufficient permissions", which discarded the server's own
+            // message. That is wrong whenever a 403 is a business rule rather
+            // than an auth problem, and several now are: the delegated-intent
+            // endpoint answers "an admin must grant CAN_AUTHOR_ON_BEHALF to
+            // <account>" with a 403, and every caller — meroctl, client-py,
+            // merobox — was told to go and check its token instead. The hint is
+            // still appended below when the body carries no detail of its own,
+            // which is the only case it was ever right about.
 
             if !response.status().is_success() {
                 let status = response.status();
@@ -481,9 +489,17 @@ where
                 // variant rather than parsing the message string. The rendered
                 // message is still status-prefixed via `extract_error_message`,
                 // so the `Display` output stays "HTTP {code}[: detail]".
+                let mut message = extract_error_message(&body, status);
+                // A bare 403 with nothing to say is the one case the old fixed
+                // string suited, so keep it there and only there.
+                if status == 403 && message == format!("HTTP {}", status.as_u16()) {
+                    message.push_str(
+                        " — access denied; your token may not have sufficient permissions",
+                    );
+                }
                 return Err(ClientError::Http {
                     status: status.as_u16(),
-                    message: extract_error_message(&body, status),
+                    message,
                 }
                 .into());
             }
@@ -770,6 +786,33 @@ fn extract_error_message(body: &str, status: reqwest::StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 403 that carries a reason must keep it.
+    ///
+    /// The delegated-intent endpoint answers "an admin must grant
+    /// CAN_AUTHOR_ON_BEHALF to <account>" with a 403, serialized as
+    /// `{"error": "..."}`. That is the whole value of having typed the refusal,
+    /// and a client that replaced it with a fixed hint about tokens sent every
+    /// caller — meroctl, client-py, merobox — to check the wrong thing.
+    #[test]
+    fn a_403_keeps_the_servers_own_message() {
+        let body = r#"{"error":"this node holds no authorship grant on the group owning this context, so it cannot act for a member here — an admin must grant CAN_AUTHOR_ON_BEHALF to abc"}"#;
+        let message = extract_error_message(body, reqwest::StatusCode::FORBIDDEN);
+
+        assert!(message.contains("CAN_AUTHOR_ON_BEHALF"), "{message}");
+        assert!(message.starts_with("HTTP 403"), "{message}");
+    }
+
+    /// A 403 with nothing to say keeps the token hint, which is the only case
+    /// the old fixed string was ever right about.
+    #[test]
+    fn a_bare_403_says_only_what_it_knows() {
+        let message = extract_error_message("", reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(message, "HTTP 403");
+        // The hint is appended by the caller, not here, so that a 403 which DOES
+        // carry a reason never has this tacked onto it.
+        assert!(!message.contains("token"), "{message}");
+    }
 
     #[test]
     fn resolve_path_builds_normal_path() {

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use actix::Message;
 use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey, SignedDeviceRevocation};
-use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
+use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -38,7 +38,7 @@ pub struct GroupUpgradeInfo {
 #[derive(Debug)]
 pub struct CreateGroupRequest {
     pub group_id: Option<ContextGroupId>,
-    pub app_key: Option<AppKey>,
+    pub bytecode_id: Option<BytecodeId>,
     pub application_id: ApplicationId,
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
@@ -126,7 +126,7 @@ impl Message for GetGroupInfoRequest {
 #[derive(Clone, Debug)]
 pub struct GroupInfoResponse {
     pub group_id: ContextGroupId,
-    pub app_key: AppKey,
+    pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
     pub member_count: u64,
     pub context_count: u64,
@@ -210,7 +210,7 @@ pub struct UpgradeGroupRequest {
     pub group_id: ContextGroupId,
     pub target_application_id: ApplicationId,
     /// When `true`, emit one atomic [`GroupOp::CascadeUpgrade`] fanning out
-    /// to every descendant subgroup whose `app_key` matches the signed
+    /// to every descendant subgroup whose `bytecode_id` matches the signed
     /// group's; when `false` (default), stay on the single-group path.
     pub cascade: bool,
     /// When `true`, a target build with no embedded ABI proceeds code-only
@@ -317,7 +317,7 @@ impl Message for ListAllGroupsRequest {
 #[derive(Clone, Debug)]
 pub struct GroupSummary {
     pub group_id: ContextGroupId,
-    pub app_key: AppKey,
+    pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
     pub created_at: u64,
     pub name: Option<String>,
@@ -365,7 +365,7 @@ impl Message for SyncGroupRequest {
 #[derive(Clone, Debug)]
 pub struct SyncGroupResponse {
     pub group_id: ContextGroupId,
-    pub app_key: [u8; 32],
+    pub bytecode_id: [u8; 32],
     pub target_application_id: ApplicationId,
     pub member_count: u64,
     pub context_count: u64,
@@ -1175,7 +1175,7 @@ impl Message for StoreDefaultCapabilitiesRequest {
 #[derive(Clone, Debug)]
 pub struct NamespaceSummary {
     pub namespace_id: ContextGroupId,
-    pub app_key: AppKey,
+    pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
     pub created_at: u64,
     pub name: Option<String>,

@@ -16,7 +16,7 @@ use crate::{MetaRepository, NamespaceRepository};
 
 /// One entry in a [`walk_for_predicate`] result.
 ///
-/// `matched` records the result of the `from_app_key == GroupMeta.app_key`
+/// `matched` records the result of the `from_bytecode_id == GroupMeta.bytecode_id`
 /// predicate at walk time. The signed group itself is always emitted (so
 /// the apply handler can apply the op to the root of the cascade) — its
 /// `matched` is computed exactly the same way as any descendant's, with
@@ -31,26 +31,26 @@ use crate::{MetaRepository, NamespaceRepository};
 /// than as an error keeps the cascade apply liveness-correct on
 /// catching-up peers: the row will arrive in a subsequent governance
 /// round and the matching descendant will be picked up by the next
-/// cascade op (the predicate `from_app_key == X` doesn't change just
-/// because a peer fell behind). A `from_app_key == [0; 32]` op against
+/// cascade op (the predicate `from_bytecode_id == X` doesn't change just
+/// because a peer fell behind). A `from_bytecode_id == [0; 32]` op against
 /// such a peer would still legitimately fail to match — `[0; 32]` is
-/// not a real app_key.
+/// not a real bytecode_id.
 #[derive(Debug, Clone)]
 pub struct WalkEntry {
     pub group_id: ContextGroupId,
     pub matched: bool,
-    /// The descendant's actual `app_key` value at walk time (or
+    /// The descendant's actual `bytecode_id` value at walk time (or
     /// `[0u8; 32]` if no `GroupMeta` was loadable for the group).
     /// Surfaced primarily for diagnostic logging in the cascade apply
     /// arms: when `matched == false`, this lets the skip log identify
     /// *which* value the predicate compared against, distinguishing
-    /// "subtree app_key was never set" from "subtree was already at a
+    /// "subtree bytecode_id was never set" from "subtree was already at a
     /// different version".
-    pub app_key: [u8; 32],
+    pub bytecode_id: [u8; 32],
 }
 
 /// Walk the descendant tree of `signed_group_id` and evaluate the
-/// `from_app_key == GroupMeta.app_key` predicate at each node, including
+/// `from_bytecode_id == GroupMeta.bytecode_id` predicate at each node, including
 /// the signed group itself.
 ///
 /// **Cycle and depth safety.** The walk maintains an explicit visited-set
@@ -77,7 +77,7 @@ pub struct WalkEntry {
 pub fn walk_for_predicate(
     store: &Store,
     signed_group_id: ContextGroupId,
-    from_app_key: [u8; 32],
+    from_bytecode_id: [u8; 32],
 ) -> EyreResult<Vec<WalkEntry>> {
     let mut out: Vec<WalkEntry> = Vec::new();
     let mut visited: HashSet<ContextGroupId> = HashSet::new();
@@ -97,28 +97,31 @@ pub fn walk_for_predicate(
 
         let meta_opt = MetaRepository::new(store).load(&current)?;
         // `matched` must use the original predicate shape — `None` meta
-        // returns `false` UNCONDITIONALLY, even when `from_app_key` is
+        // returns `false` UNCONDITIONALLY, even when `from_bytecode_id` is
         // `[0u8; 32]`. The doc comment on `WalkEntry` (lines 36-38)
         // explicitly preserves this invariant: a catching-up peer with
         // a missing meta row must not be retroactively "matched" by a
-        // pathological `from_app_key == [0; 32]` op. A naive refactor
+        // pathological `from_bytecode_id == [0; 32]` op. A naive refactor
         // to "default missing to zero, then compare" silently breaks
         // that guarantee.
         let matched = meta_opt
             .as_ref()
-            .map(|m| m.app_key == from_app_key)
+            .map(|m| m.bytecode_id == from_bytecode_id)
             .unwrap_or(false);
-        // `app_key` is exposed for diagnostic logging only — defaulting
+        // `bytecode_id` is exposed for diagnostic logging only — defaulting
         // to zero when meta is missing is fine here because the value
         // is never compared against the predicate (the comparison above
-        // owns that). Distinguishes "subtree app_key was never seeded"
+        // owns that). Distinguishes "subtree bytecode_id was never seeded"
         // (zero) from "subtree was already at a different version"
         // (non-zero, non-matching) in the skip log.
-        let app_key = meta_opt.as_ref().map(|m| m.app_key).unwrap_or([0u8; 32]);
+        let bytecode_id = meta_opt
+            .as_ref()
+            .map(|m| m.bytecode_id)
+            .unwrap_or([0u8; 32]);
         out.push(WalkEntry {
             group_id: current,
             matched,
-            app_key,
+            bytecode_id,
         });
 
         // Push children for further descent. `list_child_groups` returns

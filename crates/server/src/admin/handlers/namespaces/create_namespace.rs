@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::CreateGroupRequest;
-use calimero_context_config::types::AppKey;
+use calimero_context_config::types::BytecodeId;
 use calimero_server_primitives::admin::{
     CreateNamespaceApiRequest, CreateNamespaceApiResponse, CreateNamespaceApiResponseData,
 };
@@ -20,7 +20,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     // Optional version pin: hex blob id of an installed version. Existence
     // and package-match are verified by the create-group handler.
-    let app_key = match &req.app_key {
+    let bytecode_id = match &req.bytecode_id {
         Some(hex_str) => {
             let bytes: [u8; 32] = match hex::decode(hex_str)
                 .map_err(|_| ())
@@ -35,19 +35,19 @@ pub async fn handler(
                     .into_response();
                 }
             };
-            Some(AppKey::from(bytes))
+            Some(BytecodeId::from(bytes))
         }
         None => None,
     };
 
-    info!(application_id=%req.application_id, has_app_key=app_key.is_some(), "Creating namespace");
+    info!(application_id=%req.application_id, has_bytecode_id=bytecode_id.is_some(), "Creating namespace");
 
     let result = state
         .ctx_client
         .create_group(CreateGroupRequest {
             parent_group_id: None,
             group_id: None,
-            app_key,
+            bytecode_id,
             application_id: req.application_id,
             name: req.name,
             // Root creation has no `GroupCreated` op; `restricted` is ignored

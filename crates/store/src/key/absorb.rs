@@ -33,9 +33,9 @@ impl KeyComponent for ContextIdComponent {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct AppKeyComponent;
+pub struct BytecodeIdComponent;
 
-impl KeyComponent for AppKeyComponent {
+impl KeyComponent for BytecodeIdComponent {
     type LEN = U32;
 }
 
@@ -47,7 +47,7 @@ impl KeyComponent for DeltaIdComponent {
 }
 
 /// Key for a buffered (absorbed) straggler delta:
-/// `prefix(1) ‖ context_id(32) ‖ producing_app_key(32) ‖ delta_id(32)` = 97 bytes.
+/// `prefix(1) ‖ context_id(32) ‖ producing_bytecode_id(32) ‖ delta_id(32)` = 97 bytes.
 ///
 /// The `delta_id` lives in the key so a re-delivered straggler delta overwrites
 /// rather than duplicates (idempotent absorb). The `context_id` prefix makes the
@@ -58,17 +58,17 @@ pub struct AbsorbBufferKey(
     Key<(
         AbsorbPrefix,
         ContextIdComponent,
-        AppKeyComponent,
+        BytecodeIdComponent,
         DeltaIdComponent,
     )>,
 );
 
 impl AbsorbBufferKey {
     #[must_use]
-    pub fn new(context_id: [u8; 32], producing_app_key: [u8; 32], delta_id: [u8; 32]) -> Self {
+    pub fn new(context_id: [u8; 32], producing_bytecode_id: [u8; 32], delta_id: [u8; 32]) -> Self {
         Self(Key(GenericArray::from([ABSORB_BUFFER_PREFIX])
             .concat(GenericArray::from(context_id))
-            .concat(GenericArray::from(producing_app_key))
+            .concat(GenericArray::from(producing_bytecode_id))
             .concat(GenericArray::from(delta_id))))
     }
 
@@ -80,7 +80,7 @@ impl AbsorbBufferKey {
     }
 
     #[must_use]
-    pub fn producing_app_key(&self) -> [u8; 32] {
+    pub fn producing_bytecode_id(&self) -> [u8; 32] {
         let mut key = [0; 32];
         key.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
         key
@@ -98,7 +98,7 @@ impl AsKeyParts for AbsorbBufferKey {
     type Components = (
         AbsorbPrefix,
         ContextIdComponent,
-        AppKeyComponent,
+        BytecodeIdComponent,
         DeltaIdComponent,
     );
 
@@ -123,7 +123,7 @@ impl Debug for AbsorbBufferKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("AbsorbBufferKey")
             .field("context_id", &self.context_id())
-            .field("producing_app_key", &self.producing_app_key())
+            .field("producing_bytecode_id", &self.producing_bytecode_id())
             .field("delta_id", &self.delta_id())
             .finish()
     }
@@ -137,7 +137,7 @@ mod tests {
     fn absorb_key_round_trips_three_components() {
         let k = AbsorbBufferKey::new([1; 32], [2; 32], [3; 32]);
         assert_eq!(k.context_id(), [1; 32]);
-        assert_eq!(k.producing_app_key(), [2; 32]);
+        assert_eq!(k.producing_bytecode_id(), [2; 32]);
         assert_eq!(k.delta_id(), [3; 32]);
         assert_eq!(AbsorbBufferKey::column(), Column::AbsorbBuffer);
     }

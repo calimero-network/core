@@ -129,7 +129,7 @@ pub struct DelegatedDeltaSignaturePayload<'a> {
     pub hlc: HybridTimestamp,
 }
 
-// NOT in this payload, deliberately: `producing_app_key`.
+// NOT in this payload, deliberately: `producing_bytecode_id`.
 //
 // Forging it is a censorship primitive rather than a forgery one — it drives the
 // HLC fence, so a rewritten value gets an otherwise valid delta buffered or
@@ -273,7 +273,7 @@ pub enum VerifiedEnvelope {
 /// Self-authored and delegated deltas differ in who signed and in what has to be
 /// established before the author-keyed gates may run. Writing that branch at each
 /// receive site is how a delta comes to verify on gossip and be refused on
-/// catchup — the failure mode `producing_app_key` still cannot be bound because
+/// catchup — the failure mode `producing_bytecode_id` still cannot be bound because
 /// of, and the one this function exists to make impossible. Gossip receive,
 /// DAG-catchup receive and snapshot-buffer replay all call this and nothing else.
 ///

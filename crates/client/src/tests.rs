@@ -433,7 +433,7 @@ async fn create_namespace() {
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
             name: None,
-            app_key: None,
+            bytecode_id: None,
         })
         .await
         .unwrap();
@@ -1014,7 +1014,7 @@ async fn create_namespace_returns_err_on_server_error() {
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
             name: None,
-            app_key: None,
+            bytecode_id: None,
         })
         .await;
 

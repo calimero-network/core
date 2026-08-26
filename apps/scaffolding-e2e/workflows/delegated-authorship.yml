@@ -118,19 +118,166 @@ steps:
 
   # --- The delegated write ---
   #
-  # One script, because the author is a key rather than a node and no workflow
-  # step can hold one. It performs steps 1-4 of the description and fails the run
-  # on any of them: an accepted write before the grant, a refusal after it, or an
-  # accepted replay are each a security regression rather than a flaky step.
-  - name: A member with no node writes through the relay
-    type: script
-    script: scripts/delegated-intent.sh
-    target: local
-    args:
+  # Steps, not a shell script. The script this replaces existed only because
+  # merobox had no way to hold a signing key or spend a warrant; `sign_warrant`
+  # and `perform_intent` (merobox #373) do both. The script also could not export
+  # custom `outputs:` — a `script` step only sets `script_output_local`, which the
+  # next one overwrites — so every value it minted for the next stage went through
+  # a temp file, and the assertions lived in shell rather than where a reader can
+  # see them.
+  #
+  # The author's key material is minted live on every run — see below. An earlier
+  # version of this file froze it as a fixture, which passed while exercising
+  # nothing about how a credential is produced.
+
+  # No membership step: the author is node-2's own account, already a member from
+  # its namespace join. What delegated authorship turns on is not that the account
+  # is new — it is that the DEVICE signing the warrant is in no group's binding
+  # rows, and the one minted below never joins anything.
+  #
+  # Minted by real `merod`, not supplied as a fixture. A frozen credential never
+  # runs `account sign-cert`, so a change in how a credential is PRODUCED would
+  # keep passing — which is exactly what the previous version of this file did,
+  # having replaced the shell script that used to mint one.
+  #
+  # The node is stopped for it: without `--from`, `sign-cert` reads the account
+  # root from the datastore and RocksDB's lock is exclusive. The admin API is not
+  # an alternative and never will be — the root private key deliberately never
+  # crosses it, leaving a node only via `account export`, as a mnemonic.
+
+  - name: Stop node-2 so its account root can be read
+    type: stop_node
+    nodes: delegated-node-2
+
+  - name: Mint a device for node-2's account, offline
+    type: node_exec
+    node: delegated-node-2
+    args: [account, sign-cert, --generate]
+    capture:
+      # The credential is the first line; the secret is four lines below it,
+      # which is why `stdout_first_line` alone cannot serve this step.
+      author_credential: '^([0-9a-f]{100,})$'
+      author_secret: '^Secret: +([0-9a-f]{64})$'
+      author_account: '^Account: +([0-9a-f]{64})$'
+    outputs:
+      author_credential: author_credential
+      author_secret: author_secret
+      author_account: author_account
+
+  - name: Start node-2 again
+    type: start_node
+    nodes: delegated-node-2
+
+  - name: Both nodes are back in the context
+    type: wait_for_sync
+    nodes:
       - delegated-node-1
-      - '{{context_id}}'
-      - '{{namespace_id}}'
-      - '1'
+      - delegated-node-2
+    context_id: '{{context_id}}'
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Read the relay's own account
+    type: node_identity
+    node: delegated-node-1
+    outputs:
+      relay_account: accountId
+
+  # Minted once and presented three times below: refused, accepted, refused. Same
+  # bytes each time, which is what makes the middle one evidence about the grant
+  # rather than about the warrant.
+  - name: The author mints one warrant
+    type: sign_warrant
+    context_id: '{{context_id}}'
+    executor: '{{relay_account}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    device_secret: '{{author_secret}}'
+    credential: '{{author_credential}}'
+    nonce: 1
+    outputs:
+      warrant: warrant
+      author_account: authorAccount
+
+  - name: The warrant speaks for the member that was added
+    type: assert
+    statements:
+      - "is_set({{author_account}})"
+
+  # DAR-11: refused at the API, never published as a delta peers would drop.
+  #
+  # `expected_error` is not decoration — without it a node that never started
+  # satisfies this assertion too. It names the endpoint's own reason, which is
+  # what makes this step distinguish "the relay holds no grant" from every other
+  # way a request can fail, including the replay refusal below.
+  #
+  # That specificity needed #3647: `calimero-client` used to replace every 403
+  # body with a fixed token hint, so both refusals here read identically and the
+  # assertion could only say "some 403 happened".
+  - name: Refused before the relay is granted authorship
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    warrant: '{{warrant}}'
+    author_proof: '{{author_credential}}'
+    expected_failure: true
+    expected_error: CAN_AUTHOR_ON_BEHALF
+
+  # Bit 9, so 512 on its own — authorship and nothing else, which is the posture
+  # the capability exists to make possible. Implied by neither membership nor
+  # admin, which the step above is what proves.
+  - name: Grant the relay CAN_AUTHOR_ON_BEHALF
+    type: set_member_capabilities
+    node: delegated-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{relay_account}}'
+    capabilities: 512
+
+  - name: The same warrant, now spendable
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    warrant: '{{warrant}}'
+    author_proof: '{{author_credential}}'
+    outputs:
+      intent_root: rootHash
+
+  # A 2xx is not enough. This assertion exists because that gap already hid a
+  # bug: the endpoint reported `deltaId: null` for an intent that had advanced no
+  # state, and the run sailed past it to fail four steps later on a value that was
+  # never written.
+  - name: The intent advanced state
+    type: assert
+    statements:
+      - "is_set({{intent_root}})"
+
+  # And it is single-use. The signature is still perfectly valid: replay is not
+  # forgery, which is why the nonce ledger has to exist and why the envelope check
+  # cannot be what stops it.
+  #
+  - name: The spent warrant is refused a second time
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: from-a-member-with-no-node
+    warrant: '{{warrant}}'
+    author_proof: '{{author_credential}}'
+    expected_failure: true
+    expected_error: nonce
 
   # --- The half a relay cannot fake ---
   #

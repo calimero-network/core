@@ -396,7 +396,7 @@ mod tests {
             },
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
-            app_key: Some([0x55; 32]),
+            bytecode_id: Some([0x55; 32]),
         }
     }
 

@@ -2,8 +2,8 @@
 //!
 //! When two cascade ops race against the same subtree, the
 //! *predicate-skip* path is the optimistic-concurrency guard: the loser
-//! arrives with `from_app_key` no longer matching any group's current
-//! `app_key`, so its walk produces zero matched entries and the apply
+//! arrives with `from_bytecode_id` no longer matching any group's current
+//! `bytecode_id`, so its walk produces zero matched entries and the apply
 //! arm finishes as a silent no-op (per spec §5). The handler must
 //! still report `handled = true` to the caller — otherwise
 //! [`apply_local_signed_group_op`] bails with "unsupported group op
@@ -56,9 +56,9 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::rngs::OsRng;
 
-const APP_KEY_1: [u8; 32] = [0x11; 32];
-const APP_KEY_2: [u8; 32] = [0x22; 32];
-const APP_KEY_3: [u8; 32] = [0x33; 32];
+const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
+const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
+const BYTECODE_ID_3: [u8; 32] = [0x33; 32];
 
 fn app_id_1() -> ApplicationId {
     ApplicationId::from([0xAA; 32])
@@ -76,11 +76,11 @@ fn empty_store() -> Store {
 
 fn meta(
     admin: calimero_account::AccountId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: target,
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -96,12 +96,12 @@ fn create_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> calimero_account::AccountId {
     let account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta(account, app_key, target))
+        .save(gid, &meta(account, bytecode_id, target))
         .unwrap();
     MembershipRepository::new(store)
         .add_member(gid, &account, GroupMemberRole::Admin)
@@ -115,8 +115,8 @@ fn build_replica(admin_pk: PublicKey) -> (Store, ContextGroupId, ContextGroupId)
     let store = empty_store();
     let r = ContextGroupId::from([0x70; 32]);
     let r_a = ContextGroupId::from([0x71; 32]);
-    create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_a, admin_pk, APP_KEY_1, app_id_1());
+    create_group(&store, &r, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_a, admin_pk, BYTECODE_ID_1, app_id_1());
     NamespaceRepository::new(&store).nest(&r, &r_a).unwrap();
     (store, r, r_a)
 }
@@ -142,8 +142,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         vec![[0u8; 32]],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1.into(),
-            app_key: APP_KEY_2.into(),
+            from_bytecode_id: BYTECODE_ID_1.into(),
+            bytecode_id: BYTECODE_ID_2.into(),
             target_application_id: app_id_2(),
             to_state_version: 0,
             migration: None,
@@ -154,7 +154,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
     let op_a_hash = op_a.content_hash().expect("op_a content_hash");
 
     // Op B: cascade K1 -> K3, causally AFTER op_a (parent =
-    // content_hash(op_a)). Same `from_app_key` as op_a, so on a tree
+    // content_hash(op_a)). Same `from_bytecode_id` as op_a, so on a tree
     // that's already executed op_a, op_b's predicate matches nothing
     // and the cascade arm hits the predicate-skip path.
     let op_b = SignedGroupOp::sign(
@@ -163,8 +163,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         vec![op_a_hash],
         2,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1.into(),
-            app_key: APP_KEY_3.into(),
+            from_bytecode_id: BYTECODE_ID_1.into(),
+            bytecode_id: BYTECODE_ID_3.into(),
             target_application_id: app_id_3(),
             to_state_version: 0,
             migration: None,
@@ -221,7 +221,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         // groups are still on K1.
         let pre = MetaRepository::new(&store_b).load(&root).unwrap().unwrap();
         assert_eq!(
-            pre.app_key, APP_KEY_1,
+            pre.bytecode_id, BYTECODE_ID_1,
             "replica B must still be on K1 while op_b is pending"
         );
 
@@ -243,7 +243,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
 
     // Convergence: both replicas land on identical state, despite
     // physically receiving the ops in opposite orders. The DAG-causal
-    // winner is op_a (it's op_b's ancestor), so the final app_key on
+    // winner is op_a (it's op_b's ancestor), so the final bytecode_id on
     // both replicas is K2 / APP_ID_2.
     let final_a_root = MetaRepository::new(&store_a).load(&root).unwrap().unwrap();
     let final_a_child = MetaRepository::new(&store_a).load(&child).unwrap().unwrap();
@@ -251,7 +251,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
     let final_b_child = MetaRepository::new(&store_b).load(&child).unwrap().unwrap();
 
     assert_eq!(
-        final_a_root.app_key, APP_KEY_2,
+        final_a_root.bytecode_id, BYTECODE_ID_2,
         "replica A: causal-winner op_a moved every group to K2"
     );
     assert_eq!(
@@ -259,36 +259,36 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         app_id_2(),
         "replica A: target_application_id == APP_ID_2"
     );
-    assert_eq!(final_a_child.app_key, APP_KEY_2);
+    assert_eq!(final_a_child.bytecode_id, BYTECODE_ID_2);
     assert_eq!(final_a_child.target_application_id, app_id_2());
 
     // Cross-replica convergence: replica B ends in the EXACT same
     // state as replica A — bytes-equal on every field of GroupMeta.
     assert_eq!(
-        final_b_root.app_key, final_a_root.app_key,
-        "convergence: replica B root app_key must match replica A"
+        final_b_root.bytecode_id, final_a_root.bytecode_id,
+        "convergence: replica B root bytecode_id must match replica A"
     );
     assert_eq!(
         final_b_root.target_application_id, final_a_root.target_application_id,
         "convergence: replica B root target_application_id must match replica A"
     );
     assert_eq!(
-        final_b_child.app_key, final_a_child.app_key,
-        "convergence: replica B child app_key must match replica A"
+        final_b_child.bytecode_id, final_a_child.bytecode_id,
+        "convergence: replica B child bytecode_id must match replica A"
     );
     assert_eq!(
         final_b_child.target_application_id, final_a_child.target_application_id,
         "convergence: replica B child target_application_id must match replica A"
     );
 
-    // Loser app_key (K3) won on neither replica — op_b's predicate
+    // Loser bytecode_id (K3) won on neither replica — op_b's predicate
     // skip was correctly triggered both times.
     assert_ne!(
-        final_a_root.app_key, APP_KEY_3,
+        final_a_root.bytecode_id, BYTECODE_ID_3,
         "loser op_b must NOT have written K3 on replica A"
     );
     assert_ne!(
-        final_b_root.app_key, APP_KEY_3,
+        final_b_root.bytecode_id, BYTECODE_ID_3,
         "loser op_b must NOT have written K3 on replica B"
     );
 }

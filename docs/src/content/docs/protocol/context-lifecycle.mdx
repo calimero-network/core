@@ -21,7 +21,7 @@ A context is never free-floating. It is created **inside a governance group** an
 Creation does the following, in order:
 
 - Derives a fresh context id from a random context secret (retried up to five times to avoid collision).
-- Resolves the application to init with. A group can be **pinned to a specific bytecode version** — if the group's `app_key` names a blob the node holds, the context inits on *that* bytecode, not the application row's current blob. This positions every new context on its group's upgrade ladder from birth. (See [Upgrades](/protocol/upgrades/).)
+- Resolves the application to init with. A group can be **pinned to a specific bytecode version** — if the group's `bytecode_id` names a blob the node holds, the context inits on *that* bytecode, not the application row's current blob. This positions every new context on its group's upgrade ladder from birth. (See [Upgrades](/protocol/upgrades/).)
 - Runs the application's `init` method, producing the context's first state and a **genesis delta** whose parent is `[0; 32]`. The genesis delta is persisted even when state is empty, so the DAG always has a head.
 - Writes local `ContextConfig`, `ContextMeta`, and a `ContextIdentity` row holding the creator's keys.
 - Publishes a `ContextRegistered` governance op into the group, then subscribes to the context and namespace gossipsub topics.
@@ -40,7 +40,7 @@ The credential carries:
 
 - **`inviter_signature`** — the inviter signs a SHA-256 of the serialized invitation with their group signing key, so any receiver can verify it came from an authorized member.
 - **`group_id`** and an **`expiration_timestamp`** — the invitation is scoped to one group and expires (default **365 days**, configurable at creation). Expiry is checked both locally as a fast-fail and authoritatively on apply.
-- **`application_id`** and **`app_key`** — the real target application and its pinned bytecode key. Carrying these lets the joiner **align on the same app schema** the inviter is on. Without them the joiner would seed its group metadata to zero and diverge from the inviter's state-hash view permanently.
+- **`application_id`** and **`bytecode_id`** — the real target application and its pinned bytecode id. Carrying these lets the joiner **align on the same app schema** the inviter is on. Without them the joiner would seed its group metadata to zero and diverge from the inviter's state-hash view permanently.
 - A random `secret_salt` and an `invited_role` (Member).
 
 The invitation is handed to the joiner out of band. Redemption is a **separate join step** — issuing the credential and acting on it are decoupled.
@@ -62,7 +62,7 @@ A node that is a group member can follow the group's contexts; auto-follow regis
     {label:'Namespace peers', color:'#d29922'}
   ]}
   steps={[
-    {from:0,to:0,label:'create_group_invitation → SignedGroupOpenInvitation (signed, expiring; carries group_id, app_id, app_key)'},
+    {from:0,to:0,label:'create_group_invitation → SignedGroupOpenInvitation (signed, expiring; carries group_id, app_id, bytecode_id)'},
     {from:0,to:1,label:'hand off invitation out-of-band', dashed:true},
     {from:1,to:2,label:'Gate 1: join_namespace — provision identity, subscribe, publish ReadinessProbe + MemberJoined'},
     {from:2,to:1,label:'KeyDelivery (group key) + namespace DAG backfill', dashed:true},

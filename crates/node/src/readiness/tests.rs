@@ -649,7 +649,7 @@ fn test_invitation() -> SignedGroupOpenInvitation {
         },
         inviter_signature: String::new(),
         application_id: None,
-        app_key: None,
+        bytecode_id: None,
     }
 }
 

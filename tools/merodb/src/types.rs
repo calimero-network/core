@@ -341,7 +341,7 @@ fn parse_blob_meta(data: &[u8]) -> Result<Value> {
     match StoreBlobMeta::try_from_slice(data) {
         Ok(meta) => Ok(json!({
             "size": meta.size,
-            "hash": String::from_utf8_lossy(&meta.hash),
+            "hash": String::from_utf8_lossy(meta.content_hash.as_ref()),
             "links_count": meta.links.len()
         })),
         Err(e) => Ok(json!({

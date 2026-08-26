@@ -112,10 +112,10 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     };
                     let target_application_id =
                         calimero_primitives::application::ApplicationId::from(application_id);
-                    // Prefer the invitation's `app_key` field when present.
+                    // Prefer the invitation's `bytecode_id` field when present.
                     // When it is missing (e.g. an older Python client on
                     // the wire deserialized the invitation against a
-                    // pre-`app_key` `SignedGroupOpenInvitation` and
+                    // pre-`bytecode_id` `SignedGroupOpenInvitation` and
                     // silently dropped the unknown field on its
                     // re-serialize), re-derive locally using the SAME
                     // algorithm the originator used in `create_group`
@@ -127,7 +127,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // — in that case the existing self-heal on the next
                     // governance op still recovers, just one
                     // gossip-round later.
-                    let app_key = invitation.app_key.unwrap_or_else(|| {
+                    let bytecode_id = invitation.bytecode_id.unwrap_or_else(|| {
                         let handle = datastore.handle();
                         let key = calimero_store::key::ApplicationMeta::new(target_application_id);
                         match handle.get(&key) {
@@ -161,7 +161,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         admin_identity: seeded_admin,
                         owner_identity: seeded_admin,
                         target_application_id,
-                        app_key,
+                        bytecode_id,
                         migration: None,
                         created_at: 0,
                         auto_join: true,

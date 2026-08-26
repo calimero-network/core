@@ -54,6 +54,9 @@ jobs:
       - name: Cargo format
         run: cargo fmt --check
 
+      - name: Naming gate
+        run: ./scripts/check-naming.sh
+
       # No-warnings gate: every workspace target (libs, bins, tests, examples)
       # must be clippy- and rustc-warning-free. `--features calimero-storage/testing`
       # pulls in that crate's feature-gated `testing` harness so it's linted in the

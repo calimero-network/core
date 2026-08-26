@@ -5,7 +5,7 @@ description: >
   version-stable ApplicationId). Installing v2 and upgrading only
   namespace A's subgroup must NOT change what namespace B executes:
   the application row is a download-cache pointer; each context loads
-  the bytecode its group's app_key / activation marker points at.
+  the bytecode its group's bytecode_id / activation marker points at.
 
   Pre-binding this fails: the second install (and the lazy upgrade's
   in-place reinstall) flipped the shared row, so B's context compiled

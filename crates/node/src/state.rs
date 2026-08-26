@@ -973,7 +973,7 @@ mod tests {
             governance_position: None,
             delta_signature: None,
             governance_drain_attempts: 0,
-            producing_app_key: None,
+            producing_bytecode_id: None,
             delegation: None,
         }
     }

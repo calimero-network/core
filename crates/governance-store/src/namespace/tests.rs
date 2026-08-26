@@ -132,7 +132,7 @@ fn test_signed_invitation(
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
-        app_key: None,
+        bytecode_id: None,
     }
 }
 
@@ -2769,7 +2769,7 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
 
     // Pre-establish meta: admin == founder (established), but owner DIVERGED to
     // a stray non-founder key. Use `sample_meta_with_admin` so other fields
-    // (app_key, target_application_id, created_at, auto_join)
+    // (bytecode_id, target_application_id, created_at, auto_join)
     // carry distinctive non-default values we can assert are preserved.
     let mut diverged = sample_meta_with_admin(founder_account);
     diverged.owner_identity = stray_owner_account;
@@ -2795,8 +2795,8 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     );
     // All other fields are preserved from the pre-established meta.
     assert_eq!(
-        meta.app_key, diverged.app_key,
-        "app_key preserved across the owner repair"
+        meta.bytecode_id, diverged.bytecode_id,
+        "bytecode_id preserved across the owner repair"
     );
     assert_eq!(
         meta.target_application_id, diverged.target_application_id,
@@ -4612,10 +4612,10 @@ fn execute_group_created_rejects_self_parent() {
 }
 
 #[test]
-fn execute_group_created_inherits_app_key_and_application_from_parent() {
+fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
     // Regression guard: a freshly-applied `GroupCreated` op must seed the
-    // subgroup's `GroupMetaValue` with the parent's `app_key` (not zero).
-    // The cascade predicate is `from_app_key == descendant.app_key`, so a
+    // subgroup's `GroupMetaValue` with the parent's `bytecode_id` (not zero).
+    // The cascade predicate is `from_bytecode_id == descendant.bytecode_id`, so a
     // zero-init here would make every cascade walk silently skip
     // remote-created subgroups even though the originator's local copy
     // had the right key (originator pre-populates meta with the derived
@@ -4636,7 +4636,7 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
 
-    // `sample_meta_with_admin` pins app_key = [0xBB; 32] and
+    // `sample_meta_with_admin` pins bytecode_id = [0xBB; 32] and
     // target_application_id = [0xCC; 32].
     let parent_meta = sample_meta_with_admin(admin_account);
     MetaRepository::new(&store)
@@ -4675,8 +4675,8 @@ fn execute_group_created_inherits_app_key_and_application_from_parent() {
         .expect("sub meta written");
 
     assert_eq!(
-        sub_meta.app_key, parent_meta.app_key,
-        "subgroup must inherit parent's app_key so cascade predicate matches"
+        sub_meta.bytecode_id, parent_meta.bytecode_id,
+        "subgroup must inherit parent's bytecode_id so cascade predicate matches"
     );
     assert_eq!(
         sub_meta.target_application_id, parent_meta.target_application_id,

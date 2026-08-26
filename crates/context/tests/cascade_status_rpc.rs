@@ -21,8 +21,8 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::rngs::OsRng;
 
-const APP_KEY_1: [u8; 32] = [0x11; 32];
-const APP_KEY_2: [u8; 32] = [0x22; 32];
+const BYTECODE_ID_1: [u8; 32] = [0x11; 32];
+const BYTECODE_ID_2: [u8; 32] = [0x22; 32];
 
 fn app_id_1() -> ApplicationId {
     ApplicationId::from([0xAA; 32])
@@ -37,11 +37,11 @@ fn empty_store() -> Store {
 
 fn meta(
     admin: calimero_account::AccountId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: target,
         created_at: 1_700_000_000,
         admin_identity: admin,
@@ -57,12 +57,12 @@ fn create_group(
     store: &Store,
     gid: &ContextGroupId,
     admin: PublicKey,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
     target: ApplicationId,
 ) -> calimero_account::AccountId {
     let account = calimero_context::test_support::enrol(store, gid, &admin);
     MetaRepository::new(store)
-        .save(gid, &meta(account, app_key, target))
+        .save(gid, &meta(account, bytecode_id, target))
         .unwrap();
     MembershipRepository::new(store)
         .add_member(gid, &account, GroupMemberRole::Admin)
@@ -81,9 +81,9 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
     let r_b = ContextGroupId::from([0xB1; 32]);
     let r_b_b1 = ContextGroupId::from([0xB2; 32]);
 
-    create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_b, admin_pk, APP_KEY_1, app_id_1());
-    create_group(&store, &r_b_b1, admin_pk, APP_KEY_1, app_id_1());
+    create_group(&store, &r, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_b, admin_pk, BYTECODE_ID_1, app_id_1());
+    create_group(&store, &r_b_b1, admin_pk, BYTECODE_ID_1, app_id_1());
 
     NamespaceRepository::new(&store).nest(&r, &r_b).unwrap();
     NamespaceRepository::new(&store)
@@ -97,8 +97,8 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
         vec![],
         1,
         GroupOp::CascadeUpgrade {
-            from_app_key: APP_KEY_1.into(),
-            app_key: APP_KEY_2.into(),
+            from_bytecode_id: BYTECODE_ID_1.into(),
+            bytecode_id: BYTECODE_ID_2.into(),
             target_application_id: app_id_2(),
             to_state_version: 0,
             migration: Some(b"migrate_v2".to_vec()),

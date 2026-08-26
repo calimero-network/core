@@ -172,7 +172,7 @@ The buffer is **durable** — a record persisted before a crash survives the res
 pub struct AbsorbRecord {
     pub id: [u8; 32],
     // ... delta fields (parents, hlc, payload, nonce, author_id, ...) ...
-    pub producing_app_key: Option<[u8; 32]>,
+    pub producing_bytecode_id: Option<[u8; 32]>,
     pub leaf: Option<AbsorbedLeaf>,     // buffered sync-repair leaf
     pub entity: Option<AbsorbedEntity>, // buffered snapshot entity
 }

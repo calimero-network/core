@@ -1,7 +1,7 @@
 //! Cascade-upgrade write-gate decisions for context execution: whether a
 //! group-upgrade status blocks writes, whether a committed write should be
 //! rejected mid-upgrade, the lazy-on-access migration trigger, and the
-//! producing-app-key resolver. Extracted from the execute handler.
+//! producing-`bytecode_id` resolver. Extracted from the execute handler.
 
 use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
@@ -52,7 +52,7 @@ pub(super) enum LazyUpgradeAction {
     SingleJump {
         target_application_id: ApplicationId,
         migrate_method: Option<String>,
-        target_app_key: [u8; 32],
+        target_bytecode_id: [u8; 32],
     },
     /// Context has an activation marker: replay the group's upgrade ladder
     /// from that bound blob, each hop's method resolved from the two
@@ -91,19 +91,19 @@ pub(super) fn maybe_lazy_upgrade(
     };
 
     // 3. The activation marker decides both staleness and the mode below.
-    let activated = crate::activation::activated_blob(datastore, context_id);
+    let activated = crate::activation::activated_bytecode(datastore, context_id);
 
     // 4. Compare current vs target application
     if *current_application_id == meta.target_application_id {
         // IDs match — bundle ids are version-stable, so this is either a
         // pending migration or a pending code-only bytecode bump. One rule
         // covers both: the context is up to date iff its activation marker
-        // equals the group's recorded target blob. A zero app_key carries no
+        // equals the group's recorded target blob. A zero bytecode_id carries no
         // bytecode signal to compare against, so nothing can be detected.
-        if meta.app_key == [0u8; 32] {
+        if meta.bytecode_id == [0u8; 32] {
             return None;
         }
-        if activated == Some(meta.app_key) {
+        if activated == Some(meta.bytecode_id) {
             return None; // bytecode + migration current — context is up to date
         }
         // Fall through: activation (migration and/or bytecode swap) pending.
@@ -130,8 +130,8 @@ pub(super) fn maybe_lazy_upgrade(
         // this blob before replaying, which also binds execution to it, so a
         // blocked hop strands the context on its real version instead of running
         // the target's bytecode on un-migrated state.
-        None => match crate::hlc_fence::loaded_reader_app_key(datastore, context_id) {
-            Ok(Some(current)) if current != meta.app_key => {
+        None => match crate::hlc_fence::loaded_reader_bytecode_id(datastore, context_id) {
+            Ok(Some(current)) if current != meta.bytecode_id => {
                 LazyUpgradeAction::Replay { bound: current }
             }
             // Current version unresolvable (no row), or it already equals the
@@ -148,17 +148,17 @@ pub(super) fn maybe_lazy_upgrade(
                     .migration
                     .as_ref()
                     .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
-                target_app_key: meta.app_key,
+                target_bytecode_id: meta.bytecode_id,
             },
         },
     })
 }
 
-/// The blob-derived app key the sender executes under (`GroupMeta.app_key`
+/// The blob-derived bytecode id the sender executes under (`GroupMeta.bytecode_id`
 /// of the owning group) — the schema discriminator stamped onto state-delta
 /// broadcasts so receivers can fence stale-schema deltas. `None` for
 /// non-group contexts.
-pub(super) fn resolve_producing_app_key(
+pub(super) fn resolve_producing_bytecode_id(
     datastore: &Store,
     context_id: &ContextId,
 ) -> eyre::Result<Option<[u8; 32]>> {
@@ -167,7 +167,7 @@ pub(super) fn resolve_producing_app_key(
     };
     Ok(MetaRepository::new(datastore)
         .load(&gid)?
-        .map(|m| m.app_key))
+        .map(|m| m.bytecode_id))
 }
 
 #[cfg(test)]
@@ -180,8 +180,8 @@ mod tests {
 
     use super::*;
 
-    const APP_KEY_OLD: [u8; 32] = [0x01; 32];
-    const APP_KEY_NEW: [u8; 32] = [0x02; 32];
+    const BYTECODE_ID_OLD: [u8; 32] = [0x01; 32];
+    const BYTECODE_ID_NEW: [u8; 32] = [0x02; 32];
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -205,7 +205,7 @@ mod tests {
             .save(
                 &gid,
                 &GroupMetaValue {
-                    app_key: APP_KEY_NEW,
+                    bytecode_id: BYTECODE_ID_NEW,
                     target_application_id: target_app(),
                     created_at: 0,
                     admin_identity: crate::test_support::account_for(&admin),
@@ -228,13 +228,18 @@ mod tests {
         let store = store();
         let ctx = ContextId::from([0x50; 32]);
         let _gid = seed_group(&store, &ctx);
-        crate::activation::record_activation(&store, &ctx, APP_KEY_OLD);
+        crate::activation::record_activation(&store, &ctx, BYTECODE_ID_OLD);
 
         let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
-        assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
+        assert_eq!(
+            action,
+            LazyUpgradeAction::Replay {
+                bound: BYTECODE_ID_OLD
+            }
+        );
     }
 
-    /// Seed a context's application row so `loaded_reader_app_key` resolves the
+    /// Seed a context's application row so `loaded_reader_bytecode_id` resolves the
     /// context's current bytecode blob to `blob` (an installed-but-never-migrated
     /// version). `app_id` keys the row; for a bundle it equals the group target.
     fn seed_app_row(store: &Store, ctx: &ContextId, app_id: ApplicationId, blob: [u8; 32]) {
@@ -280,16 +285,21 @@ mod tests {
         let store = store();
         let ctx = ContextId::from([0x51; 32]);
         let _gid = seed_group(&store, &ctx);
-        // Context installed (never migrated) at APP_KEY_OLD; group target is
-        // APP_KEY_NEW (bundle: same application id, different blob).
-        seed_app_row(&store, &ctx, target_app(), APP_KEY_OLD);
+        // Context installed (never migrated) at BYTECODE_ID_OLD; group target is
+        // BYTECODE_ID_NEW (bundle: same application id, different blob).
+        seed_app_row(&store, &ctx, target_app(), BYTECODE_ID_OLD);
 
         let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
-        assert_eq!(action, LazyUpgradeAction::Replay { bound: APP_KEY_OLD });
+        assert_eq!(
+            action,
+            LazyUpgradeAction::Replay {
+                bound: BYTECODE_ID_OLD
+            }
+        );
     }
 
     // A marker-less context whose current version is unresolvable (no row, so
-    // `loaded_reader_app_key` falls back to the group target) keeps the single
+    // `loaded_reader_bytecode_id` falls back to the group target) keeps the single
     // jump: the gate only reaches this arm because activation is pending, and
     // `loaded_reader == target` does NOT prove migration ran (a bundle install
     // bumps the shared row ahead of the marker). Returning None here would run
@@ -306,7 +316,7 @@ mod tests {
             LazyUpgradeAction::SingleJump {
                 target_application_id: target_app(),
                 migrate_method: Some("migrate_v2_to_v3".to_owned()),
-                target_app_key: APP_KEY_NEW,
+                target_bytecode_id: BYTECODE_ID_NEW,
             }
         );
     }
@@ -316,7 +326,7 @@ mod tests {
         let store = store();
         let ctx = ContextId::from([0x52; 32]);
         let _gid = seed_group(&store, &ctx);
-        crate::activation::record_activation(&store, &ctx, APP_KEY_NEW);
+        crate::activation::record_activation(&store, &ctx, BYTECODE_ID_NEW);
 
         assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
     }

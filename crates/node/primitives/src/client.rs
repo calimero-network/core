@@ -598,9 +598,9 @@ impl NodeClient {
         governance_position: Option<GovernanceParentEdge>,
         key_id: [u8; 32],
         delta_signature: Option<[u8; 64]>,
-        // `GroupMeta.app_key` the sender is executing under. `None` for
+        // `GroupMeta.bytecode_id` the sender is executing under. `None` for
         // non-group contexts or when the meta row could not be resolved.
-        producing_app_key: Option<[u8; 32]>,
+        producing_bytecode_id: Option<[u8; 32]>,
         // The author's consent, when this node executed on someone else's
         // behalf. `None` is the self-authored path.
         delegation: Option<calimero_account::Delegation>,
@@ -652,7 +652,7 @@ impl NodeClient {
             governance_position,
             key_id,
             delta_signature,
-            producing_app_key,
+            producing_bytecode_id,
             delegation,
         };
 

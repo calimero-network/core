@@ -37,7 +37,7 @@ pub async fn handler(
                 payload: GroupInfoApiResponse {
                     data: GroupInfoApiResponseData {
                         group_id: hex::encode(info.group_id.to_bytes()),
-                        app_key: hex::encode(info.app_key.to_bytes()),
+                        bytecode_id: hex::encode(info.bytecode_id.to_bytes()),
                         target_application_id: info.target_application_id,
                         member_count: info.member_count,
                         context_count: info.context_count,

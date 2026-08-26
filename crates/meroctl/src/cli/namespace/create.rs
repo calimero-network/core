@@ -16,10 +16,11 @@ pub struct CreateCommand {
 
     #[clap(
         long,
+        alias = "app-key",
         help = "Pin the namespace to a specific installed version (hex bytecode blob id); \
                 defaults to the latest installed"
     )]
-    pub app_key: Option<String>,
+    pub bytecode_id: Option<String>,
 }
 
 impl CreateCommand {
@@ -27,7 +28,7 @@ impl CreateCommand {
         let request = CreateNamespaceApiRequest {
             application_id: self.application_id,
             name: self.name,
-            app_key: self.app_key,
+            bytecode_id: self.bytecode_id,
         };
 
         let client = environment.client()?;

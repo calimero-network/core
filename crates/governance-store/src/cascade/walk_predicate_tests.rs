@@ -19,8 +19,8 @@ use calimero_store::Store;
 use super::walk_for_predicate;
 use crate::{MetaRepository, NamespaceRepository};
 
-const APP_KEY_A: [u8; 32] = [0xA1; 32];
-const APP_KEY_B: [u8; 32] = [0xB2; 32];
+const BYTECODE_ID_A: [u8; 32] = [0xA1; 32];
+const BYTECODE_ID_B: [u8; 32] = [0xB2; 32];
 
 fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -30,9 +30,9 @@ fn group_id(byte: u8) -> ContextGroupId {
     ContextGroupId::from([byte; 32])
 }
 
-fn meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
+fn meta_with_bytecode_id(bytecode_id: [u8; 32]) -> GroupMetaValue {
     GroupMetaValue {
-        app_key,
+        bytecode_id,
         target_application_id: ApplicationId::from([0xCC; 32]),
         created_at: 1_700_000_000,
         admin_identity: AccountId::from([0x01; 32]),
@@ -42,22 +42,22 @@ fn meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
     }
 }
 
-/// Build `root` with two direct children, every group on `app_key`.
+/// Build `root` with two direct children, every group on `bytecode_id`.
 fn fixture_homogeneous_tree(
     store: &Store,
     root: ContextGroupId,
     child_a: ContextGroupId,
     child_b: ContextGroupId,
-    app_key: [u8; 32],
+    bytecode_id: [u8; 32],
 ) {
     MetaRepository::new(store)
-        .save(&root, &meta_with_app_key(app_key))
+        .save(&root, &meta_with_bytecode_id(bytecode_id))
         .unwrap();
     MetaRepository::new(store)
-        .save(&child_a, &meta_with_app_key(app_key))
+        .save(&child_a, &meta_with_bytecode_id(bytecode_id))
         .unwrap();
     MetaRepository::new(store)
-        .save(&child_b, &meta_with_app_key(app_key))
+        .save(&child_b, &meta_with_bytecode_id(bytecode_id))
         .unwrap();
     NamespaceRepository::new(store)
         .nest(&root, &child_a)
@@ -73,9 +73,9 @@ fn predicate_match_includes_descendant() {
     let root = group_id(0xA0);
     let child_a = group_id(0xA1);
     let child_b = group_id(0xA2);
-    fixture_homogeneous_tree(&store, root, child_a, child_b, APP_KEY_A);
+    fixture_homogeneous_tree(&store, root, child_a, child_b, BYTECODE_ID_A);
 
-    let entries = walk_for_predicate(&store, root, APP_KEY_A).unwrap();
+    let entries = walk_for_predicate(&store, root, BYTECODE_ID_A).unwrap();
 
     assert_eq!(
         entries.len(),
@@ -84,7 +84,7 @@ fn predicate_match_includes_descendant() {
     );
     assert!(
         entries.iter().all(|e| e.matched),
-        "every entry must match when app_key is uniform across the tree: {entries:?}"
+        "every entry must match when bytecode_id is uniform across the tree: {entries:?}"
     );
 
     // Membership check — every fixture group must appear, order-agnostic.
@@ -98,17 +98,17 @@ fn predicate_match_includes_descendant() {
 fn predicate_mismatch_skips_descendant() {
     let store = test_store();
     let root = group_id(0xC0);
-    let child_a = group_id(0xC1); // app_key A — should match
-    let child_b = group_id(0xC2); // app_key B — should NOT match
+    let child_a = group_id(0xC1); // bytecode_id A — should match
+    let child_b = group_id(0xC2); // bytecode_id B — should NOT match
 
     MetaRepository::new(&store)
-        .save(&root, &meta_with_app_key(APP_KEY_A))
+        .save(&root, &meta_with_bytecode_id(BYTECODE_ID_A))
         .unwrap();
     MetaRepository::new(&store)
-        .save(&child_a, &meta_with_app_key(APP_KEY_A))
+        .save(&child_a, &meta_with_bytecode_id(BYTECODE_ID_A))
         .unwrap();
     MetaRepository::new(&store)
-        .save(&child_b, &meta_with_app_key(APP_KEY_B))
+        .save(&child_b, &meta_with_bytecode_id(BYTECODE_ID_B))
         .unwrap();
     NamespaceRepository::new(&store)
         .nest(&root, &child_a)
@@ -117,7 +117,7 @@ fn predicate_mismatch_skips_descendant() {
         .nest(&root, &child_b)
         .unwrap();
 
-    let entries = walk_for_predicate(&store, root, APP_KEY_A).unwrap();
+    let entries = walk_for_predicate(&store, root, BYTECODE_ID_A).unwrap();
     assert_eq!(entries.len(), 3, "walk must visit every group: {entries:?}");
 
     // The B-child must be present but marked `matched = false`.
@@ -127,7 +127,7 @@ fn predicate_mismatch_skips_descendant() {
         .expect("B-child must appear in walk output even though it skips");
     assert!(
         !b_entry.matched,
-        "B-child has app_key B but predicate is from_app_key=A — must not match"
+        "B-child has bytecode_id B but predicate is from_bytecode_id=A — must not match"
     );
 
     // The A-child + root must match.
@@ -135,12 +135,12 @@ fn predicate_mismatch_skips_descendant() {
         .iter()
         .find(|e| e.group_id == child_a)
         .expect("A-child must appear");
-    assert!(a_entry.matched, "A-child has app_key A — must match");
+    assert!(a_entry.matched, "A-child has bytecode_id A — must match");
     let root_entry = entries
         .iter()
         .find(|e| e.group_id == root)
         .expect("root must appear");
-    assert!(root_entry.matched, "root has app_key A — must match");
+    assert!(root_entry.matched, "root has bytecode_id A — must match");
 }
 
 #[test]
@@ -152,10 +152,10 @@ fn walk_includes_signed_group() {
     let store = test_store();
     let root = group_id(0xE0);
     MetaRepository::new(&store)
-        .save(&root, &meta_with_app_key(APP_KEY_A))
+        .save(&root, &meta_with_bytecode_id(BYTECODE_ID_A))
         .unwrap();
 
-    let entries = walk_for_predicate(&store, root, APP_KEY_A).unwrap();
+    let entries = walk_for_predicate(&store, root, BYTECODE_ID_A).unwrap();
 
     assert_eq!(
         entries.len(),
@@ -163,7 +163,10 @@ fn walk_includes_signed_group() {
         "signed group alone yields exactly 1 entry"
     );
     assert_eq!(entries[0].group_id, root);
-    assert!(entries[0].matched, "root with matching app_key must match");
+    assert!(
+        entries[0].matched,
+        "root with matching bytecode_id must match"
+    );
 }
 
 #[test]
@@ -176,7 +179,7 @@ fn walk_emits_signed_group_when_meta_missing() {
     let store = test_store();
     let root = group_id(0xF0);
 
-    let entries = walk_for_predicate(&store, root, APP_KEY_A).unwrap();
+    let entries = walk_for_predicate(&store, root, BYTECODE_ID_A).unwrap();
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].group_id, root);

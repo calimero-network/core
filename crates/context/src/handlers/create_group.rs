@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-use calimero_context_config::types::{AppKey, ContextGroupId};
+use calimero_context_config::types::{BytecodeId, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
@@ -26,7 +26,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         &mut self,
         CreateGroupRequest {
             group_id,
-            app_key,
+            bytecode_id,
             application_id,
             name,
             parent_group_id,
@@ -142,21 +142,21 @@ impl Handler<CreateGroupRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // Derive app_key from the resolved application's bytecode blob_id
+        // Derive bytecode_id from the resolved application's bytecode blob_id
         // when the caller didn't provide one. This is the same value that
         // `set_target_application` (upgrade_group's apply path) writes after
-        // an upgrade, so the cascade predicate (from_app_key == descendant
-        // app_key) walks into freshly-created subgroups without needing a
-        // pre-cascade alignment upgrade. A randomly-seeded app_key, which
+        // an upgrade, so the cascade predicate (from_bytecode_id == descendant
+        // bytecode_id) walks into freshly-created subgroups without needing a
+        // pre-cascade alignment upgrade. A randomly-seeded bytecode_id, which
         // is what this used to do, made every cascade silently skip the
         // descendant subtree.
         //
-        // A caller-provided app_key pins the group to a specific version;
+        // A caller-provided bytecode_id pins the group to a specific version;
         // it is verified inside the async block below (blob present locally
         // + manifest package matches the row's package).
         let row_blob = *app_meta.bytecode.blob_id().as_ref();
         let app_package = app_meta.package.clone();
-        let requested_app_key = app_key;
+        let requested_bytecode_id = bytecode_id;
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
@@ -170,7 +170,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // guard (the meta was only written later, inside the async body) and
         // each run the full create, emitting duplicate governance ops. The
         // async body overwrites this reservation with the final meta once the
-        // app_key is resolved/verified; the cleanup map on the returned future
+        // bytecode_id is resolved/verified; the cleanup map on the returned future
         // deletes it if that async work fails, so a failed create frees the id
         // for a clean retry rather than wedging it behind the guard forever.
         let reservation_now = match std::time::SystemTime::now()
@@ -189,10 +189,10 @@ impl Handler<CreateGroupRequest> for ContextManager {
         let reservation_meta = GroupMetaValue {
             // The reservation only holds the id slot; use the verified
             // application-row blob (never the caller's still-unverified
-            // `requested_app_key`) so a concurrent reader can't observe an
-            // unverified `app_key`. The async body overwrites this with the
-            // final, verified `app_key` on success.
-            app_key: row_blob,
+            // `requested_bytecode_id`) so a concurrent reader can't observe an
+            // unverified `bytecode_id`. The async body overwrites this with the
+            // final, verified `bytecode_id` on success.
+            bytecode_id: row_blob,
             target_application_id: effective_application_id,
             created_at: reservation_now,
             admin_identity: admin_account,
@@ -206,13 +206,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let app_key = match requested_app_key {
+                let bytecode_id = match requested_bytecode_id {
                     Some(requested) => {
-                        verify_requested_app_key(&node_client, &requested, row_blob, &app_package)
+                        verify_requested_bytecode_id(&node_client, &requested, row_blob, &app_package)
                             .await?;
                         requested
                     }
-                    None => AppKey::from(row_blob),
+                    None => BytecodeId::from(row_blob),
                 };
 
                 // Reuse the timestamp resolved (and warned-on-error) for the
@@ -220,7 +220,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // second silent `unwrap_or(0)`. The final meta and the
                 // reservation it replaces then carry the same `created_at`.
                 let meta = GroupMetaValue {
-                    app_key: app_key.to_bytes(),
+                    bytecode_id: bytecode_id.to_bytes(),
                     target_application_id: effective_application_id,
                     created_at: reservation_now,
                     admin_identity: admin_account,
@@ -638,32 +638,34 @@ fn load_app_meta(
         .ok_or_else(|| eyre::eyre!("application '{application_id}' not found"))
 }
 
-/// A caller-chosen `app_key` must point at locally-present bytecode of the
+/// A caller-chosen `bytecode_id` must point at locally-present bytecode of the
 /// SAME package as the group's application row — otherwise the group would
 /// bind to bytecode the node cannot execute, or to another app entirely.
-async fn verify_requested_app_key(
+async fn verify_requested_bytecode_id(
     node_client: &calimero_node_primitives::client::NodeClient,
-    app_key: &AppKey,
+    bytecode_id: &BytecodeId,
     row_blob: [u8; 32],
     expected_package: &str,
 ) -> eyre::Result<()> {
-    let key_bytes = app_key.to_bytes();
+    let key_bytes = bytecode_id.to_bytes();
     if key_bytes == [0u8; 32] {
-        eyre::bail!("app_key must not be zero");
+        eyre::bail!("bytecode_id must not be zero");
     }
     if key_bytes == row_blob {
         return Ok(()); // the row's own blob is trivially valid
     }
     let blob_id = calimero_primitives::blobs::BlobId::from(key_bytes);
     if !node_client.has_blob(&blob_id)? {
-        eyre::bail!("app_key blob '{blob_id}' is not present locally; install that version first");
+        eyre::bail!(
+            "bytecode_id blob '{blob_id}' is not present locally; install that version first"
+        );
     }
     let Some(manifest) = node_client.bundle_manifest_for_blob(&blob_id).await? else {
-        eyre::bail!("app_key blob '{blob_id}' is not an application bundle");
+        eyre::bail!("bytecode_id blob '{blob_id}' is not an application bundle");
     };
     if manifest.package != expected_package {
         eyre::bail!(
-            "app_key blob '{blob_id}' belongs to package '{}', expected '{expected_package}'",
+            "bytecode_id blob '{blob_id}' belongs to package '{}', expected '{expected_package}'",
             manifest.package
         );
     }
@@ -708,7 +710,7 @@ mod tests {
             .save(
                 group,
                 &GroupMetaValue {
-                    app_key: [0x11; 32],
+                    bytecode_id: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     created_at: 1_700_000_000,
                     admin_identity: admin_account,
@@ -856,7 +858,7 @@ mod tests {
             .save(
                 &group,
                 &GroupMetaValue {
-                    app_key: [0x11; 32],
+                    bytecode_id: [0x11; 32],
                     target_application_id: ApplicationId::from([0xCC; 32]),
                     created_at: 1,
                     admin_identity: crate::test_support::account_for(&admin),

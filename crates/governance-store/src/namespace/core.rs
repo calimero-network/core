@@ -350,16 +350,16 @@ impl<'a> NamespaceRepository<'a> {
                 .sign(&hash)
                 .map_err(|e| eyre::eyre!("signing: {e}"))?;
 
-            let (application_id, app_key) = match MetaRepository::new(self.store).load(&gid)? {
+            let (application_id, bytecode_id) = match MetaRepository::new(self.store).load(&gid)? {
                 Some(meta) => (
                     Some(*meta.target_application_id.as_ref()),
-                    Some(meta.app_key),
+                    Some(meta.bytecode_id),
                 ),
                 None => {
                     tracing::warn!(
                         group_id = %hex::encode(gid.to_bytes()),
                         "create_recursive_invitations: missing GroupMeta for descendant; \
-                         issuing invitation with application_id + app_key = None \
+                         issuing invitation with application_id + bytecode_id = None \
                          (joiner will fall back to zero)"
                     );
                     (None, None)
@@ -371,7 +371,7 @@ impl<'a> NamespaceRepository<'a> {
                 inviter_signature: hex::encode(sig.to_bytes()),
                 inviter_account: Some(inviter_account),
                 application_id,
-                app_key,
+                bytecode_id,
             };
 
             result.push((gid, signed));

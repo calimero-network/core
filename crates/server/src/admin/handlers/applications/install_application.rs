@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_primitives::content_hash::ContentHash;
 use calimero_server_primitives::admin::{InstallApplicationRequest, InstallApplicationResponse};
 use tracing::{error, info};
 
@@ -16,9 +17,17 @@ pub async fn handler(
 ) -> impl IntoResponse {
     info!(url=%req.url, "Installing application");
 
+    // The wire request still carries the general-purpose `Hash` type; bridge it
+    // to the digest-specific `ContentHash` the install path now expects.
+    let expected_content_hash = req.hash.as_ref().map(|h| ContentHash::from(*h.as_bytes()));
+
     match state
         .node_client
-        .install_application_from_url(req.url.clone(), req.metadata, req.hash.as_ref())
+        .install_application_from_url(
+            req.url.clone(),
+            req.metadata,
+            expected_content_hash.as_ref(),
+        )
         .await
     {
         Ok(application_id) => {

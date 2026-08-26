@@ -44,7 +44,7 @@ pub struct TriggerUpgradeCommand {
     #[clap(
         long,
         help = "Emit a cascade upgrade that fans out to every descendant subgroup whose \
-                current app_key matches the signed group's app_key. Default: false."
+                current bytecode_id matches the signed group's bytecode_id. Default: false."
     )]
     pub cascade: bool,
 

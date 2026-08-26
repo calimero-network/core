@@ -6,8 +6,8 @@ use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
 use calimero_primitives::{
     blobs::{BlobId, BlobInfo, BlobMetadata},
     common::DIGEST_SIZE,
+    content_hash::ContentHash,
     context::ContextId,
-    hash::Hash,
     identity::{PrivateKey, PublicKey},
 };
 use calimero_store::key;
@@ -41,11 +41,11 @@ impl BlobManager {
         &self,
         stream: S,
         expected_size: Option<u64>,
-        expected_hash: Option<&Hash>,
+        expected_content_hash: Option<&ContentHash>,
     ) -> eyre::Result<(BlobId, u64)> {
         debug!(
             expected_size,
-            has_expected_hash = expected_hash.is_some(),
+            has_expected_hash = expected_content_hash.is_some(),
             "add_blob invoked"
         );
 
@@ -69,7 +69,8 @@ impl BlobManager {
             }
         };
 
-        if matches!(expected_hash, Some(expected_hash) if hash != *expected_hash) {
+        if matches!(expected_content_hash, Some(expected_content_hash) if hash != *expected_content_hash)
+        {
             bail!("fatal: blob hash mismatch");
         }
 
@@ -113,10 +114,10 @@ impl NodeClient {
         &self,
         stream: S,
         expected_size: Option<u64>,
-        expected_hash: Option<&Hash>,
+        expected_content_hash: Option<&ContentHash>,
     ) -> eyre::Result<(BlobId, u64)> {
         self.blob_manager
-            .add_blob(stream, expected_size, expected_hash)
+            .add_blob(stream, expected_size, expected_content_hash)
             .await
     }
 
@@ -548,7 +549,7 @@ impl NodeClient {
                 Ok(Some(BlobMetadata {
                     blob_id,
                     size: blob_meta.size,
-                    hash: blob_meta.hash,
+                    hash: blob_meta.content_hash.into(),
                     mime_type,
                 }))
             }
