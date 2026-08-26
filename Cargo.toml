@@ -191,6 +191,7 @@ members = [
     "./tools/merodb",
     "./tools/mero-sign",
     "./tools/cargo-mero",
+    "./tools/storage-cost",
 ]
 
 [workspace.dependencies]
@@ -212,6 +213,7 @@ cargo_metadata = "0.20.0"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
 claims = "0.7.1"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 clap = "4.4.18"
 serial_test = "3.2"
 color-eyre = "0.6.2"

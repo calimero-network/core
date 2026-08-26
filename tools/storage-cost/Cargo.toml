@@ -1,0 +1,17 @@
+[package]
+name = "storage-cost"
+description = "Deterministic storage-cost measurement and benchmarks for calimero-storage"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+calimero-storage = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
