@@ -247,7 +247,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // straight from the closure's `Ok`.
                 let mut group_key_id: Option<[u8; 32]> = None;
                 let mut name_written = false;
-                let mut degraded_publish = false;
                 let write_local_rows = (|| -> eyre::Result<[u8; 32]> {
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
                     MembershipRepository::new(&datastore).add_member(
@@ -461,7 +460,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                                 // returning: the genesis applied, so what that tail
                                 // does - carrying this account's devices into the
                                 // namespace - is owed here too.
-                                degraded_publish = true;
                             }
 
                             // FATAL for namespace-ROOT creation (#2474): the genesis op
@@ -576,7 +574,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     ?group_id,
                     ?parent_group_id,
                     %admin_identity,
-                    degraded_publish,
                     "group created"
                 );
 
