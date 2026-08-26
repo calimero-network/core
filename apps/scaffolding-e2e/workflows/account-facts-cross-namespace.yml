@@ -204,26 +204,36 @@ steps:
 
   # ── Pair the phone, naming namespace A only ────────────────────────
 
+  # Namespace A only, and scoped to every application - which is what naming none
+  # means. What the holder publishes is decided by that scope rather than by the
+  # namespace named here, and the link reaching B as well is what the revocation
+  # below rests on.
   - name: Pair node-3 onto Alice's account, via namespace A
-    type: account_pair
+    type: script
+    script: scripts/account-pair.sh
+    target: local
+    args:
+      - account-xns-node-3
+      - account-xns-node-2
+      - '{{root_key}}'
+      - '-'
+      - '{{ns_a}}'
+
+  # A `script` step exports nothing, so what the pairing minted is read back from
+  # the device's own identity - which `pair-init` wrote synchronously, before the
+  # script returned.
+  - name: What node-3 speaks as, now that it is paired
+    type: node_identity
     node: account-xns-node-3
-    holder: account-xns-node-2
-    namespace_id: '{{ns_a}}'
-    root_key: '{{root_key}}'
-    # merobox's step still declares `nonce` required, and core ignores whatever
-    # arrives — the genesis carries no nonce.
-    nonce: '00000000000000000000000000000000'
     outputs:
       paired_account: accountId
       paired_device: deviceId
-      key_delivered: keyDelivered
 
   - name: The phone joined Alice's account, not one of its own
     type: json_assert
     statements:
       - 'json_equal({{paired_account}}, {{account_a}})'
       - 'json_not_equal({{paired_device}}, {{device_a}})'
-      - 'json_equal({{key_delivered}}, true)'
 
   - name: Settle the pairing in namespace A
     type: wait_for_sync
