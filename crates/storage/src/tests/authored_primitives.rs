@@ -58,6 +58,7 @@ fn build_signed_update_for(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
 
     let mut action = Action::Update {
@@ -110,6 +111,7 @@ fn build_signed_delete_for(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
 
     let mut action = Action::DeleteRef {

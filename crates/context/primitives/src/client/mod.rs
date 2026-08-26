@@ -125,16 +125,28 @@ mod borsh_layout {
     use calimero_primitives::crdt::CrdtType;
 
     /// Captures every field [`super::ContextRegistry::dump_root`] needs in
-    /// a single pass: children (with metadata), full_hash, own_hash.
+    /// a single pass: full_hash and own_hash.
     /// `compute_root_hash_via_borsh` reads only `full_hash`.
+    ///
+    /// Children are no longer inline: they live in the parent's `ChildTrie`,
+    /// which is its own keyspace. A diagnostic that wants the child list has to
+    /// read the trie rather than decode it out of this row.
     #[derive(BorshDeserialize)]
     #[allow(dead_code, reason = "fields required for borsh layout fidelity")]
     pub(super) struct EntityIndex {
         pub(super) id: [u8; 32],
         pub(super) parent_id: Option<[u8; 32]>,
-        pub(super) children: Option<Vec<ChildInfo>>,
         pub(super) full_hash: [u8; 32],
         pub(super) own_hash: [u8; 32],
+        // The mirror runs to the END of the struct on purpose, though only
+        // `full_hash` and `own_hash` are read. A prefix mirror decodes a row
+        // written under ANY later layout without complaint, which is precisely
+        // how an old row's `children` bytes could be read as `full_hash`.
+        // Covering every field lets `from_slice` reject a row that does not
+        // match this layout exactly, turning a silent wrong hash into an error.
+        pub(super) metadata: Metadata,
+        pub(super) deleted_at: Option<u64>,
+        pub(super) deleted_children: Vec<[u8; 32]>,
     }
 
     #[derive(BorshDeserialize)]
@@ -154,6 +166,7 @@ mod borsh_layout {
         pub(super) crdt_type: Option<CrdtType>,
         pub(super) field_name: Option<String>,
         pub(super) schema_version: Option<u32>,
+        pub(super) order: u64,
     }
 
     #[derive(BorshDeserialize)]
@@ -212,6 +225,62 @@ mod borsh_layout_round_trip {
     use calimero_storage::entities::{ChildInfo, Metadata, OpMask, SignatureData, StorageType};
 
     use super::borsh_layout;
+
+    /// An index row written before children moved into the `ChildTrie`
+    /// keyspace must FAIL to decode, not decode into something plausible.
+    ///
+    /// `children: Option<Vec<ChildInfo>>` used to sit immediately before
+    /// `full_hash`. The parser this replaces walked byte offsets, so on an old
+    /// row it read the children tag and vector length as the root hash and
+    /// returned it with no error — a wrong hash that propagates and is
+    /// undiagnosable by the time it matters. A loud decode failure is strictly
+    /// better than a quiet wrong hash, so pin that it is loud.
+    #[test]
+    fn an_old_layout_index_row_is_rejected_rather_than_misread() {
+        /// The layout as it was: `children` between `parent_id` and `full_hash`.
+        #[derive(borsh::BorshSerialize)]
+        struct OldEntityIndex {
+            id: [u8; 32],
+            parent_id: Option<[u8; 32]>,
+            children: Option<Vec<ChildInfo>>,
+            full_hash: [u8; 32],
+            own_hash: [u8; 32],
+            metadata: Metadata,
+            deleted_at: Option<u64>,
+            deleted_children: Vec<[u8; 32]>,
+        }
+
+        let old = OldEntityIndex {
+            id: [7; 32],
+            parent_id: None,
+            children: Some(vec![ChildInfo::new(
+                Id::new([9; 32]),
+                [0xAB; 32],
+                metadata_with(StorageType::User {
+                    owner: calimero_account::AccountId::from([0x11; 32]),
+                    signature_data: Some(SignatureData {
+                        signature: [0x22; 64],
+                        nonce: 42,
+                        signer: Some(PublicKey::from([0x33; 32])),
+                    }),
+                }),
+            )]),
+            full_hash: [0xFF; 32],
+            own_hash: [0xEE; 32],
+            metadata: metadata_with(StorageType::Public),
+            deleted_at: None,
+            deleted_children: Vec::new(),
+        };
+
+        let bytes = borsh::to_vec(&old).expect("serialise old layout");
+        let decoded = borsh::from_slice::<borsh_layout::EntityIndex>(&bytes);
+
+        assert!(
+            decoded.is_err(),
+            "an old-layout row must be rejected; decoding it under the current \
+             layout yields a full_hash read out of the children field"
+        );
+    }
 
     fn metadata_with(storage_type: StorageType) -> Metadata {
         let mut md = Metadata::new(1000, 2000);
@@ -724,104 +793,40 @@ impl ContextRegistry {
     }
 
     /// Parse EntityIndex bytes to extract the root hash.
+    ///
+    /// Decodes through the shared [`borsh_layout::EntityIndex`] mirror rather
+    /// than walking byte offsets by hand.
+    ///
+    /// The offset walk was worth it while a parent's children lived inline and
+    /// an index row could be tens of kilobytes. Children moved into their own
+    /// `ChildTrie` keyspace, so the row is now ~122 bytes even at 200 children
+    /// and there is nothing left to skip past.
+    ///
+    /// Removing it also removes a silent-misdecode hazard, which matters more
+    /// than the parse. `children: Option<Vec<ChildInfo>>` used to sit
+    /// immediately before `full_hash`, so an offset walk over a row written by
+    /// an older build reads the children tag and vector length AS the root
+    /// hash — returning a plausible, wrong hash with no error anywhere. That is
+    /// the worst available failure mode for this value: it does not fault, it
+    /// propagates, and it is undiagnosable at the point it finally matters.
+    /// `from_slice` rejects trailing bytes, so such a row fails loudly here
+    /// instead of quietly producing a hash nothing can back.
     fn parse_entity_index_root_hash(
         &self,
         context_id: &ContextId,
         bytes: &[u8],
     ) -> eyre::Result<[u8; 32]> {
-        // Deserialize EntityIndex and extract full_hash
-        // EntityIndex is borsh-serialized with full_hash at a known offset
-        // Structure: id(32) + parent_id(Option<32>) + children(Option<Vec>) + full_hash(32) + ...
-
-        if bytes.len() < 68 {
-            // Minimum size: id(32) + parent_id_tag(1) + children_tag(1) + full_hash(32) + own_hash(32) = 98
-            // But we check for 68 to be safe (id + tags + full_hash)
-            eyre::bail!(
-                "EntityIndex too small: {} bytes, expected at least 68",
-                bytes.len()
-            );
-        }
-
-        // Parse the EntityIndex structure manually for efficiency
-        // id: [u8; 32]
-        // parent_id: Option<Id> - 1 byte tag + optional 32 bytes
-        // children: Option<Vec<ChildInfo>> - 1 byte tag + optional length + data
-        // full_hash: [u8; 32]
-
-        let mut offset = 32; // Skip id
-
-        // Skip parent_id (Option<Id>)
-        let parent_tag = bytes[offset];
-        offset += 1;
-        if parent_tag == 1 {
-            offset += 32; // Skip the Id bytes
-        }
-
-        // Skip children (Option<Vec<ChildInfo>>)
-        let children_tag = bytes[offset];
-        offset += 1;
-        if children_tag == 1 {
-            // Children present - use full borsh deserialization for correctness
-            return self.compute_root_hash_via_borsh(context_id, bytes);
-        }
-
-        // Now at full_hash position
-        if offset + 32 > bytes.len() {
-            eyre::bail!(
-                "EntityIndex full_hash truncated at offset {}, len {}",
-                offset,
-                bytes.len()
-            );
-        }
-
-        let mut full_hash = [0u8; 32];
-        full_hash.copy_from_slice(&bytes[offset..offset + 32]);
-
-        tracing::debug!(
-            %context_id,
-            computed_root = ?Hash::from(full_hash),
-            "Computed root hash from storage"
-        );
-
-        Ok(full_hash)
-    }
-
-    /// Helper to compute root hash using full borsh deserialization.
-    ///
-    /// Used when `parse_entity_index_root_hash`'s fast-path can't skip past
-    /// the `children` field (i.e. children present). Reuses the shared
-    /// [`borsh_layout::EntityIndex`] mirror so that any layout change
-    /// touches exactly one definition.
-    fn compute_root_hash_via_borsh(
-        &self,
-        context_id: &ContextId,
-        bytes: &[u8],
-    ) -> eyre::Result<[u8; 32]> {
-        let mut reader: &[u8] = bytes;
-        let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader).map_err(|e| {
-            tracing::warn!(
-                %context_id,
-                error = %e,
-                total_bytes = bytes.len(),
-                "EntityIndex borsh decode failed in compute_root_hash_via_borsh"
-            );
-            eyre::eyre!("Failed to deserialize EntityIndex: {}", e)
+        let index: borsh_layout::EntityIndex = borsh::from_slice(bytes).map_err(|e| {
+            eyre::eyre!(
+                "EntityIndex decode failed ({e}); an index row written before children moved \
+                 into the ChildTrie keyspace does not decode under the current layout"
+            )
         })?;
-
-        let trailing = reader.len();
-        if trailing > 0 {
-            tracing::debug!(
-                %context_id,
-                trailing_bytes = trailing,
-                total_bytes = bytes.len(),
-                "EntityIndex deserialization skipped trailing bytes"
-            );
-        }
 
         tracing::debug!(
             %context_id,
             computed_root = ?Hash::from(index.full_hash),
-            "Computed root hash from storage (via borsh)"
+            "Computed root hash from storage"
         );
 
         Ok(index.full_hash)
@@ -951,19 +956,52 @@ impl ContextRegistry {
         let index = borsh_layout::EntityIndex::deserialize_reader(&mut reader)
             .map_err(|e| eyre::eyre!("dump_root: EntityIndex deserialize failed: {e}"))?;
 
-        let children: Vec<RootChildDump> = index
-            .children
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| RootChildDump {
-                id: c.id,
-                merkle_hash: c.merkle_hash,
-                created_at: c.metadata.created_at,
-                updated_at: c.metadata.updated_at,
-                crdt_type: c.metadata.crdt_type,
-                field_name: c.metadata.field_name,
-            })
-            .collect();
+        // Children are no longer inline in the EntityIndex row — they live in
+        // the parent's ChildTrie, a separate keyspace — so walk that keyspace
+        // with the same raw reader this path already uses.
+        //
+        // This has to work, and specifically it has to work HERE: the whole
+        // point of the dump is telling "matching children + mismatched
+        // own_hash" from "mismatched children → subtree divergence", and the
+        // change that moved children out of this row also moves every hash in
+        // the system. An empty list would read as "the root has no children"
+        // and misdiagnose exactly the divergence this is for.
+        //
+        // ROOT's entity id is the context id: `index_state_key` above hashes
+        // `Key::Index(context_id)`, so the row just decoded IS the root's, and
+        // its trie is addressed by the same id.
+        let root_id = calimero_storage::address::Id::new(**context_id);
+        let read_row = |trie_key: calimero_storage::store::Key| -> Option<Vec<u8>> {
+            let state_key = key::ContextState::new(*context_id, trie_key.to_bytes());
+            match handle.get(&state_key) {
+                Ok(row) => row.map(|r| r.as_ref().to_vec()),
+                Err(err) => {
+                    // A read error is not an absent child. Say so, because the
+                    // caller is triaging divergence and a short list here would
+                    // otherwise look like evidence.
+                    tracing::warn!(
+                        target: "calimero_context::dump_root",
+                        %context_id, %err,
+                        "dump_root: child-trie row read failed; the child list below is PARTIAL"
+                    );
+                    None
+                }
+            }
+        };
+
+        let children: Vec<RootChildDump> = calimero_storage::child_trie::ChildTrie::<
+            calimero_storage::store::MainStorage,
+        >::children_with(root_id, read_row)
+        .into_iter()
+        .map(|c| RootChildDump {
+            id: *c.id().as_bytes(),
+            merkle_hash: c.merkle_hash(),
+            created_at: c.metadata.created_at,
+            updated_at: *c.metadata.updated_at,
+            crdt_type: c.metadata.crdt_type,
+            field_name: c.metadata.field_name,
+        })
+        .collect();
 
         let entry_state_key = Self::entry_state_key(context_id);
         let entry_db_key = key::ContextState::new(*context_id, entry_state_key);

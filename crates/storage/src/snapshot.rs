@@ -31,6 +31,16 @@ pub struct Snapshot {
     /// Raw index data (ID -> serialized EntityIndex)
     pub indexes: Vec<(Id, Vec<u8>)>,
 
+    /// Raw child-trie rows (addressed ID -> serialized trie node/bucket).
+    ///
+    /// A parent's children live in `Key::ChildTrie`, not inside its index row.
+    /// Shipping only entries and indexes therefore installs every entity with
+    /// no parent->child link at all: `get_children_of` reads empty and every
+    /// parent's stored `full_hash`, which folds the trie root, stops matching a
+    /// recompute. The node-side sync path rebuilds these links explicitly after
+    /// installing pages; this module has no such pass, so it has to carry them.
+    pub trie_rows: Vec<(Id, Vec<u8>)>,
+
     /// Root Merkle hash for snapshot verification
     pub root_hash: [u8; 32],
 
@@ -50,6 +60,7 @@ pub struct Snapshot {
 pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError> {
     let mut entries = Vec::new();
     let mut indexes = Vec::new();
+    let mut trie_rows = Vec::new();
 
     // Iterate all keys in storage
     for key in S::storage_iter_keys() {
@@ -72,6 +83,11 @@ pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError>
                     }
                 }
             }
+            Key::ChildTrie(id) => {
+                if let Some(data) = S::storage_read(key) {
+                    trie_rows.push((id, data));
+                }
+            }
             _ => {
                 // Skip sync state and other metadata keys
             }
@@ -88,6 +104,7 @@ pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError>
         index_count: indexes.len(),
         entries,
         indexes,
+        trie_rows,
         root_hash,
         timestamp: time_now(),
     })
@@ -105,6 +122,7 @@ pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError>
 pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError> {
     let mut entries = Vec::new();
     let mut indexes = Vec::new();
+    let mut trie_rows = Vec::new();
 
     // Iterate all keys in storage
     for key in S::storage_iter_keys() {
@@ -118,6 +136,11 @@ pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageE
                 // Include ALL indexes, even tombstones
                 if let Some(data) = S::storage_read(key) {
                     indexes.push((id, data));
+                }
+            }
+            Key::ChildTrie(id) => {
+                if let Some(data) = S::storage_read(key) {
+                    trie_rows.push((id, data));
                 }
             }
             _ => {
@@ -136,6 +159,7 @@ pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageE
         index_count: indexes.len(),
         entries,
         indexes,
+        trie_rows,
         root_hash,
         timestamp: time_now(),
     })
@@ -164,6 +188,14 @@ pub fn apply_snapshot<S: IterableStorage>(snapshot: &Snapshot) -> Result<(), Sto
         let _ = S::storage_write(Key::Index(*id), data);
     }
 
+    // Step 4: Restore the child tries. Without this every entity lands with no
+    // link to its parent, which is unrecoverable in place: re-applying
+    // byte-identical entities takes the update path, never `add_child_to`, so
+    // nothing ever re-links them.
+    for (id, data) in &snapshot.trie_rows {
+        let _ = S::storage_write(Key::ChildTrie(*id), data);
+    }
+
     Ok(())
 }
 
@@ -180,7 +212,7 @@ fn clear_all_storage<S: IterableStorage>() -> Result<(), StorageError> {
 
     for key in S::storage_iter_keys() {
         match key {
-            Key::Entry(_) | Key::Index(_) => {
+            Key::Entry(_) | Key::Index(_) | Key::ChildTrie(_) => {
                 keys_to_delete.push(key);
             }
             _ => {

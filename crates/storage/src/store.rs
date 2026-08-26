@@ -21,6 +21,21 @@ pub enum Key {
 
     /// Sync state key for tracking last sync time with a remote node.
     SyncState(Id),
+
+    /// A node in a parent's child trie.
+    ///
+    /// Its own keyspace so children are addressed independently of the parent's
+    /// index row — which is the whole point, since holding them inline made a
+    /// link cost O(siblings).
+    ///
+    /// NOT a protection against tombstone GC, despite the separation: GC
+    /// iterates raw `ContextState` values across the column family and the
+    /// hashed key carries no recoverable tag, so it does see these rows. What
+    /// keeps it from deleting them is its borsh round-trip guard — it treats a
+    /// value as an index row only if re-serialising reproduces it byte for
+    /// byte. Relaxing that guard on the assumption that the keyspace already
+    /// separates them would let GC reclaim live trie rows.
+    ChildTrie(Id),
 }
 
 impl Key {
@@ -39,6 +54,10 @@ impl Key {
             }
             Self::SyncState(id) => {
                 bytes[0] = 2;
+                bytes[1..33].copy_from_slice(id.as_bytes());
+            }
+            Self::ChildTrie(id) => {
+                bytes[0] = 3;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }

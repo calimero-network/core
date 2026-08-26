@@ -72,8 +72,18 @@ impl SyncManager {
 
             // Count children (leaf entities) under root.
             // Minimum 1 when root exists (consistent with fallback estimation).
-            let children = root_index.children().unwrap_or_default();
-            let entity_count = (children.len() as u64).max(1);
+            let _ = &root_index;
+            // The id this row was read under, not `Id::root()`. `Id::root()`
+            // takes `context_id` from the `RUNTIME_ENV` thread-local, which is
+            // installed here today but silently yields a different id if that
+            // ever stops being true — and the failure is a count of 1, not an
+            // error.
+            // Only the count is wanted, and the trie maintains one along the
+            // spine precisely so this is a single row read rather than a walk.
+            let entity_count = calimero_storage::index::Index::<
+                calimero_storage::store::MainStorage,
+            >::child_count(root_id)
+            .max(1);
 
             // Depth: 1 when root has data (consistent with fallback).
             // For deeper trees, we'd need recursive traversal — tracked in #2054.

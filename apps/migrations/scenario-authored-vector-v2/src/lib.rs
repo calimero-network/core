@@ -71,9 +71,15 @@ impl ScenarioAuthoredVectorV2 {
         Ok(())
     }
 
-    pub fn push_entry(&mut self, value: String) -> app::Result<u64> {
-        let idx = self.entries.push(value.into())?;
-        Ok(idx as u64)
+    pub fn push_entry(&mut self, value: String) -> app::Result<String> {
+        // The id, not an index: a position is only meaningful until someone
+        // inserts ahead of it (core#3637).
+        let id = self.entries.push(value.into())?;
+        Ok(id
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>())
     }
 
     pub fn get_entry(&self, index: u64) -> app::Result<Option<String>> {

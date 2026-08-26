@@ -193,7 +193,8 @@ where
                     signature_data: None,
                 },
             )
-            .expect("failed to write initial WriterSetCell value");
+            .expect("failed to write initial WriterSetCell value")
+            .1;
         Self {
             inner,
             frozen,
@@ -273,7 +274,8 @@ where
                     signature_data: None,
                 },
             )
-            .expect("failed to relocate WriterSetCell value");
+            .expect("failed to relocate WriterSetCell value")
+            .1;
         *self.value.borrow_mut() = Some(value);
     }
 }
@@ -513,7 +515,7 @@ where
             anchor: self.inner.id(),
             signature_data: None,
         };
-        let new = self
+        let (_new_id, new) = self
             .inner
             .insert_with_storage_type(Some(value_id), value, member)?;
         *self.value.borrow_mut() = Some(new);

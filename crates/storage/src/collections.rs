@@ -637,6 +637,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // collection covers those paths too — not only the direct `map.insert`.
         let inherited = self.storage.metadata.storage_type.clone();
         self.insert_with_storage_type(id, item, inherited)
+            .map(|(_id, item)| item)
     }
 
     /// Inserts an item with a caller-provided fixed `id` and `field_name`,
@@ -667,12 +668,17 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     }
 
     /// Inserts an item into the collection with a specific StorageType.
+    ///
+    /// Returns the item alongside the element id it was stored under, because
+    /// the id is the only stable way to address the entry afterwards —
+    /// enumeration is `(created_at, id)` ordered over a set other replicas
+    /// insert into, so a position is not (core#3637).
     pub(crate) fn insert_with_storage_type(
         &mut self,
         id: Option<Id>,
         item: T,
         storage_type: StorageType,
-    ) -> StoreResult<T> {
+    ) -> StoreResult<(Id, T)> {
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
@@ -684,7 +690,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
         collection.insert(&mut entry)?;
 
-        Ok(entry.item)
+        let stored_id = entry.storage.id();
+        Ok((stored_id, entry.item))
     }
 
     #[inline(never)]
@@ -709,8 +716,24 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }))
     }
 
+    /// Number of children.
+    ///
+    /// Reads the child trie's maintained count — one row — rather than
+    /// materialising every child id. That distinction is not cosmetic: a
+    /// contract that derives an id from the current length counts on EVERY
+    /// write, so a linear count is a linear write, and the collection walls on
+    /// gas again with the index layer doing nothing wrong. (Measured: the chat
+    /// contract reached 1,187 messages with a linear `len` and stops walling
+    /// entirely without it.)
+    ///
+    /// The cache is preferred when it is already materialised, since then the
+    /// answer costs nothing. `CollectionMut::insert` writes the trie before
+    /// touching the cache, so the two never disagree.
     fn len(&self) -> StoreResult<usize> {
-        Ok(self.children_cache()?.len())
+        if let Some(cached) = self.children_ids.borrow().as_ref() {
+            return Ok(cached.len());
+        }
+        Ok(crate::index::Index::<S>::child_count(self.id()) as usize)
     }
 
     fn entries(
@@ -918,7 +941,18 @@ where
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
         let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
 
-        let _ignored = self.collection.children_cache()?.insert(item.id());
+        // Only touch the cache if it is ALREADY materialised. Calling
+        // `children_cache()` here would populate it — reading every existing
+        // child just to record one new id — which is an O(n) cost on every
+        // insert and defeats the bounded link the trie provides. A fresh
+        // contract call starts with an empty cache, so this fired on
+        // essentially every write.
+        //
+        // Leaving it unpopulated is safe: the trie is authoritative, so a
+        // later read materialises the cache from it with this child included.
+        if let Some(cache) = self.collection.children_ids.borrow_mut().as_mut() {
+            let _ignored = cache.insert(item.id());
+        }
 
         Ok(())
     }

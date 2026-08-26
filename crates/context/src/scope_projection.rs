@@ -250,8 +250,13 @@ pub fn load_rotation_log_direct(
         }
     };
     let mut entries = Vec::new();
-    if let Some(children) = index.children() {
-        for child in children {
+    {
+        // Children live in the anchor's ChildTrie, not inline in its index row,
+        // so walk the trie with the same raw reader this path already uses.
+        let _ = &index;
+        for child in
+            calimero_storage::child_trie::ChildTrie::<MainStorage>::children_with(map_id, read)
+        {
             let Some(bytes) = read(StorageKey::Entry(child.id())) else {
                 // The child is listed in the index but its value is unreadable
                 // (store error — already warned in `read` — or an absent value,
