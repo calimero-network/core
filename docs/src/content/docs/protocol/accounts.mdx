@@ -52,17 +52,35 @@ Because the id is a hash rather than a key, the keys underneath can rotate witho
 ## Three keys, one job each
 
 ```
-  ACCOUNT ROOT ──── signs device certificates and root-key handoffs.
-   (offline)        Nothing else. Never signs an operation, never
-                    receives data. One per node. Survives losing
+  ACCOUNT ROOT ──── signs device certificates, device REVOCATIONS, and
+   (offline)        root-key handoffs. Nothing else. Never signs an
+                    operation, never receives data. One per ACCOUNT —
+                    paired nodes share one, and a node started with
+                    --no-account-root holds none. Survives losing
                     every device.
 
-  SIGN KEY ──────── signs operations. This is the node's namespace
-                    identity — the "member identity" of the previous
-                    model, now demoted to one job.
+  SIGN KEY ──────── signs operations: governance ops, state deltas and
+                    warrants alike. ONE PER NODE, not one per namespace.
+                    Some code and older docs call it the "namespace
+                    identity"; that name predates the collapse of
+                    per-namespace identity and means nothing now.
 
-  KEM KEY ───────── receives wrapped scope keys (X25519).
+  KEM KEY ───────── receives wrapped scope keys (X25519). Signs nothing.
 ```
+
+Three corrections worth stating outright, because each one misleads in a direction
+that costs real work:
+
+- **Revocation is the root's third job.** `merod account revoke-proof` signs a
+  `DeviceRevocation` with the root and no node involved, which is the whole offline
+  recovery story — "certificates and handoffs" undersells what the root is for.
+- **The sign key is node-global.** Read "namespace identity" literally and you
+  conclude a device must be re-certified for every namespace it joins, so a cold
+  account root has to leave storage on every join. It does not: **one certificate
+  covers the node everywhere.**
+- **The root is per account, not per node.** Pairing puts one account — and therefore
+  one root — behind several nodes, and `merod init --no-account-root` gives a node
+  zero. "One per node" only describes the default `merod init` case.
 
 Separating the sign key from the KEM key is what lets a device rotate one without invalidating deliveries made under the other. Crossing the account root with the sign key is silent — a certificate signed by the wrong one still serializes and is refused only by peers — so the two have a dedicated invariant test beside the repository that owns them.
 
