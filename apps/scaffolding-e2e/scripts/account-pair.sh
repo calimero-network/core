@@ -1,7 +1,7 @@
 #!/bin/sh
 #
-# The account-level pairing exchange, over the two routes that replaced the
-# namespace-scoped ones.
+# The account-level pairing exchange, over `POST /admin-api/account/pair-init`
+# and `POST /admin-api/account/pair-complete`.
 #
 #     - name: Pair the phone onto Alice's account
 #       type: script
@@ -19,11 +19,10 @@
 # application set decides where the holder PUBLISHES the link, and the two are
 # deliberately independent.
 #
-# Why a script rather than merobox's `account_pair` step. That step drives
-# `namespaces/:id/account/pair-init` and `.../pair-complete` - one namespace from
-# the path, no application scope - which is exactly the shape these routes exist
-# to replace. It cannot express a set or a scope, so nothing it does would
-# exercise what is under test here.
+# Why a script rather than merobox's `account_pair` step. That step drives the
+# namespace-scoped routes, which were removed: they took one namespace from the
+# path and fanned the link out to every namespace regardless, so the caller named
+# a unit they had never heard of and got an outcome it did not decide.
 #
 # Exports nothing: a `script` step cannot, and it does not need to. Every value
 # minted here is readable afterwards from the new device's own

@@ -246,6 +246,7 @@ steps:
 
   # node-3 is NOT invited to the namespace and never joins as a member. Its only
   # route in is being a device of Alice's account.
+  #
   # One step for both halves because the ordering is forced: node-3 cannot mint
   # its DeviceId without the account, and node-2 cannot certify it without the id
   # and both keys. The script also checks that the two sides derived the same

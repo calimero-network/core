@@ -524,13 +524,12 @@ stop_all_nodes: true
 #
 # Every account-level route is driven by `target: local` scripts over raw curl,
 # because merobox has no native step for any of them. Its `account_pair` step
-# drives `namespaces/:id/account/pair-init` and `.../pair-complete` - one
-# namespace from the path, no application scope - which is exactly the shape
-# these routes replace, so it cannot express what is under test. `node_identity`
-# and `account_revoke` stay native, and are the only two values that have to
-# cross between steps: a `script` step cannot export custom `outputs:`, so
-# everything a later step needs is read back from an endpoint rather than
-# carried.
+# drives the namespace-scoped routes, which were removed - one namespace from the
+# path, no application scope - so it cannot express what is under test.
+# `node_identity` and `account_revoke` stay native, and are the only two values
+# that have to cross between steps: a `script` step cannot export custom
+# `outputs:`, so everything a later step needs is read back from an endpoint
+# rather than carried.
 #
 # node-2 appears in no `wait_for_sync`, in this scenario or any future one that
 # uses a paired device. A namespace barrier reads `groupStateHash`, which the
