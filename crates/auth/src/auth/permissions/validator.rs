@@ -72,6 +72,9 @@ static CONTEXT_READ_SUBRESOURCE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/(join|leave|resync)$").unwrap());
 
+static CONTEXT_INTENTS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/intents$").unwrap());
+
 static CONTEXT_SYNC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/sync/([^/]+)$").unwrap());
 
@@ -349,6 +352,32 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                     UserScope::Any,
                     None,
                 ))],
+                _ => vec![],
+            };
+        }
+    }
+
+    // Delegated intents: submit a write a MEMBER signed a warrant for.
+    //
+    // Mapped so an author can hold a token for this and nothing else. Unmapped,
+    // it fell to the default-deny below and needed `admin` — which meant the
+    // only way to let a member submit their own intent was handing them node
+    // credentials, the one thing the design exists to avoid.
+    //
+    // Scoped to the context, and deliberately NOT `Execute`: that also covers
+    // join/leave/resync, so reusing it would have handed an intent submitter
+    // membership operations as well.
+    //
+    // The token decides who may ASK. The warrant decides whether the write is
+    // authorised and whose it is, and a request carrying no warrant the author
+    // signed is refused whatever token presents it.
+    if let Some(captures) = CONTEXT_INTENTS_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => {
+                    vec![Permission::Context(ContextPermission::PerformIntent(scope))]
+                }
                 _ => vec![],
             };
         }
@@ -1198,6 +1227,83 @@ mod tests {
     /// Updating a key's permissions must require `admin`, so a non-admin key
     /// holding a scoped `keys:update-permissions` cannot escalate itself (or
     /// any key) to `admin`. Reading permissions stays a scoped key permission.
+    /// An author must be able to hold a token for submitting intents and
+    /// nothing else — that is the whole reason this route is mapped.
+    ///
+    /// Before it was, `/intents` fell to the admin-api default-deny, so letting
+    /// a member submit their own delegated write meant handing them node
+    /// credentials: the exact thing delegated authorship exists to avoid.
+    #[test]
+    fn performing_an_intent_does_not_require_admin() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-1/intents")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+
+        assert!(
+            matches!(
+                required.as_slice(),
+                [Permission::Context(ContextPermission::PerformIntent(_))]
+            ),
+            "expected a scoped intent permission, got {required:?}",
+        );
+
+        // The scoped token passes, and so does admin — but the point is the
+        // first one.
+        assert!(validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required));
+        assert!(validator.validate_permissions(&["admin".to_owned()], &required));
+    }
+
+    /// The scope is load-bearing: a token for one context must not reach
+    /// another. Otherwise "a token for this author's context" would in fact be
+    /// "a token for every context on the node".
+    #[test]
+    fn an_intent_token_is_confined_to_its_context() {
+        let validator = PermissionValidator::new();
+
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/admin-api/contexts/ctx-2/intents")
+            .body(Body::empty())
+            .unwrap();
+        let required = validator.determine_required_permissions(&post);
+
+        assert!(!validator.validate_permissions(&["context:intent[ctx-1]".to_owned()], &required));
+        assert!(validator.validate_permissions(&["context:intent[ctx-2]".to_owned()], &required));
+    }
+
+    /// And it reaches nothing else. `Execute` was the tempting variant to reuse,
+    /// and this is why it was not: it also covers join/leave/resync, so an
+    /// intent token minted from it would have carried membership operations.
+    #[test]
+    fn an_intent_token_grants_nothing_beyond_intents() {
+        let validator = PermissionValidator::new();
+        let token = vec!["context:intent[ctx-1]".to_owned()];
+
+        for (method, uri) in [
+            (Method::POST, "/admin-api/contexts/ctx-1/join"),
+            (Method::POST, "/admin-api/contexts/ctx-1/leave"),
+            (Method::POST, "/admin-api/contexts/ctx-1/resync"),
+            (Method::DELETE, "/admin-api/contexts/ctx-1"),
+            (Method::GET, "/admin-api/peers"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                !validator.validate_permissions(&token, &required),
+                "an intent-only token must not reach {method} {uri}",
+            );
+        }
+    }
+
     #[test]
     fn updating_key_permissions_requires_admin() {
         let validator = PermissionValidator::new();

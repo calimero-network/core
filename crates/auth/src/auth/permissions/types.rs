@@ -155,6 +155,19 @@ pub enum ContextPermission {
     Leave(ResourceScope, UserScope),
     Invite(ResourceScope, UserScope),
     Execute(ResourceScope, UserScope, Option<String>),
+    /// Submit a delegated intent: run one method under a warrant a MEMBER
+    /// signed, with the result attributed to them.
+    ///
+    /// Separate from `Execute` rather than folded into it, because the two are
+    /// not the same authority. `Execute` also covers join/leave/resync, so a
+    /// token minted for an author to submit intents would have carried
+    /// membership operations too — and the point of issuing one is that the
+    /// holder gets nothing else.
+    ///
+    /// It is an access grant, not the authority for the write. The warrant is
+    /// that: this token only decides who may *ask*, and a request without a
+    /// warrant the author signed is refused regardless.
+    PerformIntent(ResourceScope),
     Capabilities(CapabilityPermission),
     Application(ContextApplicationPermission),
     Alias(AliasPermission),
@@ -440,6 +453,7 @@ impl FromStr for Permission {
                     "execute" => Ok(Permission::Context(ContextPermission::Execute(
                         scope, user_scope, method,
                     ))),
+                    "intent" => Ok(Permission::Context(ContextPermission::PerformIntent(scope))),
                     "capabilities" => match *subaction {
                         "grant" => Ok(Permission::Context(ContextPermission::Capabilities(
                             CapabilityPermission::Grant(scope),
@@ -665,6 +679,10 @@ impl fmt::Display for Permission {
                     let params = format_params(scope, user, method);
                     write!(f, "context:execute{params}")
                 }
+                ContextPermission::PerformIntent(scope) => {
+                    let params = format_simple_params(scope);
+                    write!(f, "context:intent{params}")
+                }
                 ContextPermission::Alias(alias_perm) => match alias_perm {
                     AliasPermission::All(scope) => {
                         let params = format_simple_params(scope);
@@ -840,6 +858,10 @@ impl Permission {
                         && matches_user_scope(h_user, r_user)
                         && matches_method(h_method.as_deref(), r_method.as_deref())
                 }
+                (
+                    ContextPermission::PerformIntent(h_scope),
+                    ContextPermission::PerformIntent(r_scope),
+                ) => matches_scope(h_scope, r_scope),
                 (ContextPermission::Alias(held), ContextPermission::Alias(required)) => {
                     matches_alias(held, required)
                 }
