@@ -144,7 +144,7 @@ fn validate_type_def(type_def: &TypeDef, path: &str) -> Result<(), ValidationErr
                 }
             }
         }
-        TypeDef::Alias { target } => {
+        TypeDef::Alias { target, .. } => {
             validate_type_ref(target, path)?;
         }
     }
@@ -281,7 +281,7 @@ fn collect_refs_from_type_def(type_def: &TypeDef, path: &str, refs: &mut Vec<(St
         TypeDef::Bytes { .. } => {
             // No references in bytes types
         }
-        TypeDef::Alias { target } => {
+        TypeDef::Alias { target, .. } => {
             collect_refs_from_type_ref(target, path, refs);
         }
     }

@@ -50,7 +50,7 @@ fn resolve_top_level(ty: &TypeRef, manifest: &Manifest, depth: u8) -> Resolution
     if let Some(serde_json::Value::String(name)) = value.get("$ref") {
         return match manifest.types.get(name) {
             // An alias may wrap a CRDT collection — follow it.
-            Some(TypeDef::Alias { target }) => resolve_top_level(target, manifest, depth + 1),
+            Some(TypeDef::Alias { target, .. }) => resolve_top_level(target, manifest, depth + 1),
             // A ref to a record/variant/bytes is a genuine non-CRDT top level.
             Some(_) => Resolution::Plain,
             // Dangling ref: cannot determine — fail closed.
