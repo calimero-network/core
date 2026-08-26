@@ -157,8 +157,6 @@ jobs:
           MERO_AUTH_ADMIN_PASSWORD: dev-password
           MERO_E2E_USER: dev
           MERO_E2E_PASS: dev-password
-          # Docker-mode suites get this from the merod:local-dht image
-          # layer; binary mode has no image, so it inherits it from here.
           CALIMERO_REGISTRY_MODE: dht
         run: |
           merobox bootstrap run workflows/auth-seam.yml \
@@ -322,9 +320,6 @@ jobs:
             apps/team-metrics-macro/res/*
           retention-days: 1
 
-      # Every scenario installs from these now (not the raw wasm above); a
-      # separate artifact because dist/ sits outside apps/ and would otherwise
-      # collide with the apps/-relative extraction path below.
       - name: Upload app bundles
         uses: actions/upload-artifact@v7
         with:
