@@ -246,16 +246,6 @@ steps:
 
   # node-3 is NOT invited to the namespace and never joins as a member. Its only
   # route in is being a device of Alice's account.
-  - name: Pair node-3 onto Alice's account
-    type: script
-    script: scripts/account-pair-refusals.sh
-    target: local
-    args:
-      - account-revoke-node-2
-      - account-revoke-node-3
-      - '{{namespace_id}}'
-      - '{{root_key}}'
-
   # One step for both halves because the ordering is forced: node-3 cannot mint
   # its DeviceId without the account, and node-2 cannot certify it without the id
   # and both keys. The script also checks that the two sides derived the same
@@ -547,17 +537,13 @@ steps:
 # replaced used to carry it. The assertions are `json_assert` statements, where
 # a reader of this file can see them.
 #
-# One script remains, deliberately: `account-pair-refusals.sh`. It offers the
-# holder two payloads a real attacker would — somebody else's KEM key under the
-# real device id, and an honest payload with a mismatched confirmation code — and
-# asserts both are refused. `account_pair` cannot express that, and should not:
-# it runs the sanctioned exchange and passes what `pair-init` minted through
-# verbatim, which is exactly the thing an attacker does not do. Crafting hostile
-# payloads is script territory. (If merobox later exposes `pair_device_init` and
-# `pair_device_complete` as separate steps, these two cases can move into the
-# scenario as `expected_failure` steps — the client bindings already exist.)
+# What this scenario does NOT assert is the refusals: substituted key material
+# and a mismatched confirmation code are driven by
+# `account-pairing-application-scope`, against the live routes and at the states
+# where each is reachable. Repeating them here would need a second pairing to
+# refuse and buy no stronger claim.
 #
-# `account-api.sh` stays as its shared URL/auth/POST helper: nothing in the e2e
+# `account-api.sh` is the shared URL/auth/call helper: nothing in the e2e
 # suite invokes `meroctl`, merobox drives nodes through its own client, and the
 # merod image does not ship the CLI — so a `target: local` script talks to the
 # admin API directly. The CLI commands are thin wrappers over the same endpoints.
