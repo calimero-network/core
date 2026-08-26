@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::{DeviceId, KemPublicKey};
-use calimero_context_client::group::{PairDeviceCompleteRequest, PairingScope};
+use calimero_context_client::group::PairDeviceCompleteRequest;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
@@ -69,7 +69,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .pair_device_complete(PairDeviceCompleteRequest {
-            scope: PairingScope::Applications(applications),
+            applications,
             device,
             kem_pk,
             sign_pk,

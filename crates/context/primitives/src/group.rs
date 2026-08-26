@@ -803,27 +803,6 @@ impl Message for PairDeviceInitRequest {
     type Result = eyre::Result<PairDeviceInitResponse>;
 }
 
-/// Which namespaces a pairing covers.
-///
-/// A user can answer "which apps may this device use"; they cannot answer "which
-/// namespaces", because a namespace is an implementation unit they never named.
-/// So the caller picks applications and this side resolves them, rather than the
-/// other way round.
-#[derive(Debug)]
-pub enum PairingScope {
-    /// Every namespace this node takes part in, with the preconditions checked
-    /// against the one the caller named.
-    ///
-    /// Deprecated with the namespace-scoped route that produces it; the fan-out
-    /// never honoured the namespace anyway, so naming one only ever decided where
-    /// the checks ran. Use [`Self::Applications`].
-    Namespace(ContextGroupId),
-    /// The namespaces targeting these applications, or every namespace this node
-    /// takes part in when the list is empty - which is what a caller who names no
-    /// application is asking for.
-    Applications(Vec<ApplicationId>),
-}
-
 /// Certify a device another node minted, link it, and hand it the scope key —
 /// the second half of pairing, run on the device that already holds the account.
 ///
@@ -833,8 +812,14 @@ pub enum PairingScope {
 /// this side holds.
 #[derive(Debug)]
 pub struct PairDeviceCompleteRequest {
-    /// Which namespaces the link is published into.
-    pub scope: PairingScope,
+    /// Which applications the link is published for, resolved to the namespaces
+    /// this node takes part in that target one of them. Empty is every namespace,
+    /// which is what a caller who names no application asks for.
+    ///
+    /// Applications rather than namespaces because a user can answer "which apps
+    /// may this device use" and cannot answer "which namespaces" - a namespace is
+    /// an implementation unit they never named.
+    pub applications: Vec<ApplicationId>,
     /// The replica id the other node minted.
     pub device: DeviceId,
     /// The agreement key to wrap the scope key under.

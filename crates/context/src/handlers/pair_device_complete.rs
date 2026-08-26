@@ -53,7 +53,7 @@ use std::sync::Arc;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::{AccountId, AccountProof, DeviceCert, PairingOffer};
 use calimero_context_client::group::{
-    BindOutcome, PairDeviceCompleteRequest, PairDeviceCompleteResponse, PairingScope,
+    BindOutcome, PairDeviceCompleteRequest, PairDeviceCompleteResponse,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
@@ -96,42 +96,6 @@ fn namespaces_in_scope(
         .into_iter()
         .filter(|namespace| scoped.contains(&namespace.to_bytes()))
         .collect())
-}
-
-/// The namespaces the pairing is *gated on*, and the namespaces the link is
-/// *published into*.
-///
-/// The two differ only on the deprecated namespace-scoped route, which checks
-/// the one namespace it was handed and still fans out to every one. Left as it
-/// was: narrowing that fan-out would silently change what an existing caller
-/// gets, and the route is on its way out.
-fn resolve_scope(
-    store: &Store,
-    scope: &PairingScope,
-) -> EyreResult<(Vec<ContextGroupId>, Vec<ContextGroupId>)> {
-    Ok(match scope {
-        PairingScope::Namespace(namespace_id) => {
-            (vec![*namespace_id], namespaces_in_scope(store, &[])?)
-        }
-        // No namespace to name, so the resolved set answers for both.
-        PairingScope::Applications(applications) => {
-            let targets = namespaces_in_scope(store, applications)?;
-            (targets.clone(), targets)
-        }
-    })
-}
-
-/// The application scope the certificate cache keeps for this pairing.
-///
-/// The deprecated namespace-scoped route names no application and fans out
-/// unconditionally, which is the same reach an empty list means - so it stores
-/// one rather than a narrower guess that would leave the device out of
-/// namespaces the pairing itself covered.
-fn stored_scope(scope: &PairingScope) -> Vec<ApplicationId> {
-    match scope {
-        PairingScope::Namespace(_) => Vec::new(),
-        PairingScope::Applications(applications) => applications.clone(),
-    }
 }
 
 /// The key this node signs the endorsement, both ops and the key wrap with.
@@ -261,7 +225,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
     fn handle(
         &mut self,
         PairDeviceCompleteRequest {
-            scope,
+            applications,
             device,
             kem_pk,
             sign_pk,
@@ -272,15 +236,12 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
     ) -> Self::Result {
         let store = self.datastore.clone();
 
-        // The scope the cert store records, so a namespace gained later can be
-        // reached without re-pairing.
-        let applications = stored_scope(&scope);
-
         // Resolved before any check, because the scope is what the checks are
         // about: which namespaces have to hold an identity and a key for this
-        // pairing to be able to do anything.
-        let (gated_on, targets) = match resolve_scope(&store, &scope) {
-            Ok(resolved) => resolved,
+        // pairing to be able to do anything. The same set is published into and
+        // gated on - there is no namespace named separately to check against.
+        let targets = match namespaces_in_scope(&store, &applications) {
+            Ok(targets) => targets,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
@@ -288,7 +249,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrap. It must be a granted member: the endorsement is what carries the
         // link past the apply gate, and an endorsement from a non-member is
         // refused.
-        let signer_sk_bytes = match signing_identity(&store, &gated_on) {
+        let signer_sk_bytes = match signing_identity(&store, &targets) {
             Ok(identity) => identity,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -328,7 +289,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             // the request — possibly the attacker rather than an operator reading
             // logs. Ids only; no key material.
             warn!(
-                namespaces = gated_on.len(),
+                namespaces = targets.len(),
                 %account,
                 %device,
                 %err,
@@ -346,7 +307,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             // The warn carries no `err`, for the same reason the refusal carries
             // no expected code.
             warn!(
-                namespaces = gated_on.len(),
+                namespaces = targets.len(),
                 %account,
                 %device,
                 "refusing to certify device: confirmation code does not match the \
@@ -364,11 +325,10 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // wrapped for the new device. Checking it here, before anything is
         // signed, beats failing deep inside the publisher.
         //
-        // Only the namespaces this pairing is gated on are a precondition. The
-        // fan-out below reaches the others too, but a missing key there is a
-        // reason to skip that namespace rather than to refuse the pairing the
-        // caller asked for.
-        if let Err(err) = require_a_scope_key(&store, &gated_on) {
+        // One key anywhere in the scope is enough: the fan-out skips the
+        // namespaces it cannot publish into, and refusing the whole pairing for
+        // one of those would withhold the device from the rest.
+        if let Err(err) = require_a_scope_key(&store, &targets) {
             return ActorResponse::reply(Err(err));
         }
 
@@ -543,34 +503,13 @@ mod tests {
         ids
     }
 
-    /// What the certificate cache is handed, which decides every namespace this
-    /// device reaches from here on. The deprecated route fanned out to everything,
-    /// so storing anything narrower for it would shrink a pairing after the fact.
-    #[test]
-    fn the_stored_scope_is_what_the_pairing_actually_reached() {
-        assert!(stored_scope(&PairingScope::Namespace(NS_A.into())).is_empty());
-        assert!(stored_scope(&PairingScope::Applications(vec![])).is_empty());
-        assert_eq!(
-            stored_scope(&PairingScope::Applications(vec![app(APP_ONE)])),
-            vec![app(APP_ONE)],
-        );
-    }
-
     #[test]
     fn an_application_scope_reaches_that_applications_namespaces_and_no_others() {
         let store = namespaces_this_node_speaks_in();
 
-        let (gated_on, targets) =
-            resolve_scope(&store, &PairingScope::Applications(vec![app(APP_ONE)]))
-                .expect("resolve the scope");
+        let targets = namespaces_in_scope(&store, &[app(APP_ONE)]).expect("resolve the scope");
 
         assert_eq!(sorted(targets), vec![NS_A, NS_C]);
-        assert_eq!(
-            sorted(gated_on),
-            vec![NS_A, NS_C],
-            "an application scope names no namespace, so the resolved set is both \
-             what is checked and what is published into"
-        );
     }
 
     /// `NS_UNSYNCED` is the case that makes this more than a shortcut: it is
@@ -581,8 +520,7 @@ mod tests {
     fn naming_no_application_reaches_every_participating_namespace() {
         let store = namespaces_this_node_speaks_in();
 
-        let (_, targets) =
-            resolve_scope(&store, &PairingScope::Applications(vec![])).expect("resolve the scope");
+        let targets = namespaces_in_scope(&store, &[]).expect("resolve the scope");
 
         assert_eq!(
             sorted(targets),
@@ -598,25 +536,10 @@ mod tests {
     fn a_namespace_this_node_only_knows_of_is_not_a_target() {
         let store = namespaces_this_node_speaks_in();
 
-        for scope in [
-            PairingScope::Applications(vec![app(APP_ONE)]),
-            PairingScope::Applications(vec![]),
-            PairingScope::Namespace(NS_A.into()),
-        ] {
-            let (_, targets) = resolve_scope(&store, &scope).expect("resolve the scope");
+        for scope in [vec![app(APP_ONE)], vec![]] {
+            let targets = namespaces_in_scope(&store, &scope).expect("resolve the scope");
             assert!(!sorted(targets).contains(&NS_STRANGER));
         }
-    }
-
-    #[test]
-    fn the_namespace_scoped_route_gates_on_one_and_still_fans_out_to_all() {
-        let store = namespaces_this_node_speaks_in();
-
-        let (gated_on, targets) = resolve_scope(&store, &PairingScope::Namespace(NS_B.into()))
-            .expect("resolve the scope");
-
-        assert_eq!(sorted(gated_on), vec![NS_B]);
-        assert_eq!(sorted(targets), vec![NS_A, NS_B, NS_C, NS_UNSYNCED]);
     }
 
     /// The device subscribes to what it was told at pair-init and the holder
@@ -635,7 +558,7 @@ mod tests {
             )
             .expect("mint the device against the namespaces it was told about");
 
-        let (_, targets) = resolve_scope(&store, &PairingScope::Applications(vec![app(APP_TWO)]))
+        let targets = namespaces_in_scope(&store, &[app(APP_TWO)])
             .expect("resolve a scope that does not cover NS_A");
 
         assert_eq!(sorted(targets), vec![NS_B]);
@@ -658,13 +581,9 @@ mod tests {
     fn an_application_this_node_serves_nowhere_resolves_to_no_namespace() {
         let store = namespaces_this_node_speaks_in();
 
-        let (gated_on, targets) = resolve_scope(
-            &store,
-            &PairingScope::Applications(vec![app(APP_ELSEWHERE)]),
-        )
-        .expect("resolve the scope");
+        let targets =
+            namespaces_in_scope(&store, &[app(APP_ELSEWHERE)]).expect("resolve the scope");
 
-        assert!(gated_on.is_empty());
         assert!(targets.is_empty());
     }
 
