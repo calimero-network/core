@@ -231,6 +231,34 @@ mod tests {
         ));
     }
 
+    /// Authority before resource, and the order is the assertion. A caller at
+    /// the wrong machine must be told so whether or not the device it named
+    /// happens to be known here: answering `404` first would send an operator
+    /// looking for a missing device when the machine is what is wrong.
+    #[test]
+    fn the_wrong_machine_is_refused_before_the_device_is_looked_up() {
+        let store = a_node_holding_its_own_account();
+
+        let devices = NodeDeviceRepository::new(&store);
+        devices.delete().expect("release the slot");
+        let _adopted = devices
+            .ensure_enrolled_into(
+                &[NS.into()],
+                AccountGenesis::new(PrivateKey::from([0x42; 32]).public_key()),
+            )
+            .expect("adopt");
+
+        let refused = resolve_target(&store, DeviceId::from([0x61; 32]), vec![])
+            .expect_err("wrong machine, and a device nothing here knows");
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::PairingNotTheAccountHolder { .. })
+            ),
+            "the unknown device must not answer first; got: {refused}"
+        );
+    }
+
     /// Only a device this node holds a certificate for can be extended: the
     /// certificate is what a link carries, and the replicated binding row drops
     /// the root signature, so there is nothing to rebuild it from.
