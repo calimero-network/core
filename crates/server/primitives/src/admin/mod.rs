@@ -2595,7 +2595,7 @@ impl Validate for IssueOwnershipProofApiRequest {
                 field: "nonce",
                 reason: "nonce must be valid hex".into(),
             });
-        } else if n % 2 != 0 {
+        } else if !n.is_multiple_of(2) {
             // An odd-length hex string can't decode to whole bytes, which is
             // inconsistent with the documented "16..=64 raw bytes" contract.
             errors.push(ValidationError::InvalidFormat {
@@ -2660,7 +2660,7 @@ impl Validate for IssueNamespaceOwnershipProofApiRequest {
                 field: "nonce",
                 reason: "nonce must be valid hex".into(),
             });
-        } else if n % 2 != 0 {
+        } else if !n.is_multiple_of(2) {
             // An odd-length hex string can't decode to whole bytes, which is
             // inconsistent with the documented "16..=64 raw bytes" contract.
             errors.push(ValidationError::InvalidFormat {

@@ -189,19 +189,21 @@ impl NetworkBehaviour for Behaviour {
         // Check if this is a server dial-back we initiated
         let is_server_dialback = self.server_dialback_peers.remove(&peer);
 
-        if is_server_dialback && self.server.is_some() {
+        let dialback_server = if is_server_dialback {
+            self.server.as_mut()
+        } else {
+            None
+        };
+
+        if let Some(server) = dialback_server {
             // This is our server dialing back to a client
-            let handler = self
-                .server
-                .as_mut()
-                .unwrap()
-                .handle_established_outbound_connection(
-                    connection_id,
-                    peer,
-                    addr,
-                    role_override,
-                    port_use,
-                )?;
+            let handler = server.handle_established_outbound_connection(
+                connection_id,
+                peer,
+                addr,
+                role_override,
+                port_use,
+            )?;
 
             _ = self.connection_info.insert(
                 connection_id,

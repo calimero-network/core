@@ -195,8 +195,8 @@ fn tombstone_allows_newer_update() {
     let retrieved = TestInterface::find_by_id::<Page>(id).unwrap();
     // Note: Depending on implementation, this may or may not resurrect
     // The test documents expected behavior
-    if retrieved.is_some() {
-        assert_eq!(retrieved.unwrap().title, "Resurrected");
+    if let Some(retrieved) = retrieved {
+        assert_eq!(retrieved.title, "Resurrected");
     }
 }
 

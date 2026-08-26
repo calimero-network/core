@@ -271,7 +271,7 @@ impl ResolvedFilters {
 /// Returns an error if the hex string has odd length or contains invalid hex characters.
 fn decode_hex_string(value: &str) -> Result<Vec<u8>> {
     let trimmed = value.trim().trim_start_matches("0x");
-    if trimmed.len() % 2 != 0 {
+    if !trimmed.len().is_multiple_of(2) {
         bail!("hex string has odd length");
     }
     Ok(hex::decode(trimmed)?)

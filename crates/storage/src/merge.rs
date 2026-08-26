@@ -602,11 +602,7 @@ fn merge_rotation_log(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, Merge
     // delta; the tiebreak only disambiguates incidental byte differences.)
     let mut by_id: std::collections::BTreeMap<[u8; 32], crate::rotation_log::RotationLogEntry> =
         std::collections::BTreeMap::new();
-    for entry in existing_log
-        .entries
-        .into_iter()
-        .chain(incoming_log.entries.into_iter())
-    {
+    for entry in existing_log.entries.into_iter().chain(incoming_log.entries) {
         match by_id.entry(entry.delta_id) {
             std::collections::btree_map::Entry::Vacant(v) => {
                 let _ = v.insert(entry);

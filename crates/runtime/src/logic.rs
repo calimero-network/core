@@ -814,6 +814,12 @@ impl VMLogic<'_> {
     /// * `err` - An optional `FunctionCallError` that occurred during execution (e.g., a trap).
     ///   If `None`, the outcome is determined by the `returns` field.
     #[must_use]
+    #[expect(
+        clippy::result_large_err,
+        reason = "`FunctionCallError` is large by design and travels in `Outcome`; \
+                  boxing it would change a public signature, so it is left for a \
+                  follow-up."
+    )]
     pub fn finish(mut self, err: Option<FunctionCallError>) -> Outcome {
         let log_count = self.logs.len();
         let event_count = self.events.len();

@@ -94,7 +94,7 @@ fn sorted_members(
     let mut v = MembershipRepository::new(store)
         .list(gid, 0, usize::MAX)
         .expect("list_group_members");
-    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v.sort_by_key(|a| a.0);
     v
 }
 
