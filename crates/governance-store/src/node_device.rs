@@ -1096,16 +1096,6 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(certs)
     }
 
-    /// Forget the certificate held for `device`. Idempotent.
-    ///
-    /// # Errors
-    /// Propagates the store write failure.
-    pub fn forget_device_cert(&self, device: DeviceId) -> EyreResult<()> {
-        let key = NodeAccountDeviceCert::new(*device.as_bytes());
-        self.store.handle().delete(&key)?;
-        Ok(())
-    }
-
     /// The namespaces, among those this node takes part in, where `device` is
     /// tombstoned.
     ///

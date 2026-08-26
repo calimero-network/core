@@ -171,7 +171,7 @@ async fn publish_link_and_key(
 /// Never fails: every outcome is a value. A namespace gain is the primary
 /// operation and extending a device into it is best-effort on top, so a caller
 /// must not be able to propagate a failure here by accident.
-pub async fn ensure_bound(
+async fn ensure_bound(
     store: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
