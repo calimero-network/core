@@ -629,9 +629,12 @@ jobs:
           - workflow: auto-follow-flag-flipped-late
             file: workflows/auto-follow/auto-follow-flag-flipped-late.yml
             app: scaffolding-e2e
+          # node-2 opts out of auto-follow and never materialises a context, so
+          # by design nothing acquires from the registry in this scenario.
           - workflow: auto-follow-no-rejection-spam
             file: workflows/auto-follow/no-unknown-context-rejection-spam.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: auto-follow-asymmetric-context-membership
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
@@ -880,6 +883,7 @@ jobs:
           # A green http scenario proves nothing on its own: the node logs an
           # acquisition either way, so ask the fixture whether it served one.
           if [ "${{ matrix.image }}" != merod:local-dht ] \
+              && [ "${{ matrix.registry_fetch }}" != "false" ] \
               && ! docker logs fixture-registry 2>&1 | grep -q 'GET /artifacts/'; then
               echo "::error::${{ matrix.workflow }} fetched nothing from fixture-registry; it did not use the http registry"
               success=false

@@ -1416,7 +1416,6 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
- "tokio-util",
  "toml 0.8.23",
  "tracing",
  "url",
@@ -1628,7 +1627,6 @@ dependencies = [
  "serde_json",
  "tdx-quote",
  "thiserror 1.0.69",
- "url",
 ]
 
 [[package]]
