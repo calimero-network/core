@@ -3081,6 +3081,19 @@ pub struct NodeIdentityApiResponseData {
     /// The private root is not reachable from any HTTP route. It leaves the
     /// node only via `merod account export`, as a mnemonic.
     pub account_root_public_key: String,
+    /// Hex-encoded X25519 **public** agreement key of this node's device, or
+    /// `None` when it has no device row yet.
+    ///
+    /// The third input `merod account sign-cert` needs, alongside `device_id` and
+    /// `public_key`. Without it an operator holding an offline account root cannot
+    /// certify this node's device at all: the two ids were reachable here and this
+    /// key was not, so the certificate could be described but not signed.
+    ///
+    /// Public by construction — it is what wrapped scope keys are addressed to, so
+    /// it travels in every device binding this node publishes. The matching secret
+    /// is the one thing that opens those deliveries and is reachable from no HTTP
+    /// route.
+    pub device_agreement_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

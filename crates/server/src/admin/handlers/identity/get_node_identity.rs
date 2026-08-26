@@ -45,11 +45,15 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
     };
 
-    let (account, account_root_pk, device) = match held {
+    let (account, account_root_pk, device, agreement_key) = match held {
         Some(held) => (
             held.account,
             held.genesis.root_sign_pk,
             Some(hex::encode(held.device().as_bytes())),
+            // Through the crate's own accessor, not by reaching into the secret:
+            // `kem_public_key` is what certificates already publish, so the value
+            // reported here cannot drift from the one that gets certified.
+            Some(hex::encode(held.kem_public_key().as_bytes())),
         ),
         // No device row: this node speaks only for itself, so its own root answers
         // — and a node with neither has taken part in nothing at all.
@@ -73,7 +77,9 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 }
                 .into_response();
             };
-            (root.account(), root.genesis().root_sign_pk, None)
+            // No device row means no agreement key: it is the device's, and this
+            // branch is reached precisely because there is no device.
+            (root.account(), root.genesis().root_sign_pk, None, None)
         }
     };
 
@@ -115,6 +121,10 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 // is what a further device needs in order to pair into the same
                 // account.
                 account_root_public_key: hex::encode(AsRef::<[u8; 32]>::as_ref(&account_root_pk)),
+                // The third input `sign-cert` needs. An operator holding the
+                // offline root can now read all three from one call and certify
+                // this node's device without the node ever touching the root.
+                device_agreement_key: agreement_key,
             },
         },
     }

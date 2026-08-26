@@ -2265,4 +2265,34 @@ mod tests {
             .expect_err("a node with no root cannot certify its own device");
         assert!(err.to_string().contains("no account root"), "{err}");
     }
+
+    /// The agreement key a caller reads must be the one the certificate publishes.
+    ///
+    /// `GET /admin-api/identity` reports this so an operator holding an offline
+    /// account root can run `merod account sign-cert`. If it ever reported a
+    /// different key than the certificate names, scope keys would be wrapped to a
+    /// key this node cannot open — and the failure would look like key delivery
+    /// being broken, not like a wrong field in a read-only endpoint.
+    #[test]
+    fn the_agreement_key_survives_the_store_round_trip() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let minted = repo.ensure_enrolled(&ns).expect("enrol");
+        let reloaded = repo.get().expect("read").expect("a row was just written");
+
+        assert_eq!(
+            minted.kem_public_key().as_bytes(),
+            reloaded.kem_public_key().as_bytes(),
+            "the key read back must match the one minted, or a certificate signed \
+             from it addresses deliveries this node cannot open",
+        );
+        // And it really is the public half of the secret that opens deliveries,
+        // rather than an independently stored value that could drift from it.
+        assert_eq!(
+            reloaded.kem_public_key().as_bytes(),
+            reloaded.secret.kem_secret.public_key().as_bytes(),
+        );
+    }
 }

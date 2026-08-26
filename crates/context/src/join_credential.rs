@@ -17,10 +17,17 @@
 //! # The two keys, one use each
 //!
 //! The certificate is signed by the **account root**, and records the node's
-//! **namespace identity** as the device's `sign_pk` — because that is the key that
+//! **device signing key** as the device's `sign_pk` — because that is the key that
 //! actually signs ops on the governance path. Crossing them is silent: a certificate
-//! signed by the namespace identity still serializes, and is refused by every peer
+//! signed by the signing key itself still serializes, and is refused by every peer
 //! while the local enrolment looks fine.
+//!
+//! That key is **one per node, not one per namespace**, even though the parameter
+//! reaching here is still called a namespace identity — the name predates the
+//! collapse of per-namespace identity. It matters more than naming: a reader who
+//! takes it literally concludes a device needs re-certifying for every namespace it
+//! joins, and so that an offline account root must come out of cold storage on every
+//! join. One certificate covers the node everywhere.
 
 use calimero_account::DeviceCert;
 use calimero_context_client::local_governance::JoinAccountCredential;
