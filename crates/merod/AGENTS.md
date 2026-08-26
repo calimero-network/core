@@ -48,6 +48,19 @@ and `import` open the datastore directly, which means the node must be **stopped
 (RocksDB's lock is exclusive) and a KMS-encrypted store is refused rather than
 misread; `revoke-proof` needs no store at all when given `--from`.
 
+**Where a root comes from — exactly two places.** `merod init` provisions one, and
+`merod account import` restores one. Nothing mints a root lazily: everything that
+needs one calls `require_account_root`, which errors when there is none. So a node
+holds a root because it was provisioned, because it was imported, or not at all —
+and the third state is real rather than quietly repaired.
+
+`merod init --no-account-root` is how you ask for that third state: the root stays
+in cold storage and signs certificates, and the node's device is enabled by a
+certificate signed elsewhere. Such a node cannot certify a device (its own or
+anyone's) and cannot be the holder half of a pairing, so `ensure_enrolled` fails
+on it by design. It *can* still name its account, because a certified device row
+answers before the root fallback does.
+
 ```bash
 # Print the 24-word phrase to stdout.
 merod --node node1 account export

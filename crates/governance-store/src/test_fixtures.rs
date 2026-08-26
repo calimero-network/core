@@ -99,7 +99,30 @@ pub(super) fn account_for(sign_pk: &PublicKey) -> AccountId {
     real_join_account(sign_pk).statement.account
 }
 
+/// A store shaped like an initialised node's: it has an account root.
+///
+/// `merod init` provisions one, so every node that has ever run has a root
+/// unless it was started with `--no-account-root`. A fixture without one models
+/// a state production does not reach, and it used to pass only because
+/// `ensure_account_root` minted lazily — the fixture was relying on the very
+/// side effect that made a root-free node impossible.
+///
+/// Use [`test_store_without_account_root`] to model the root-free node
+/// deliberately.
 pub(super) fn test_store() -> Store {
+    let store = test_store_without_account_root();
+    crate::NodeDeviceRepository::new(&store)
+        .provision_account_root()
+        .expect("provision the account root an initialised node has");
+    store
+}
+
+/// A store shaped like a node started with `--no-account-root`.
+///
+/// It holds no signing root, so anything that must certify a device — its own or
+/// anyone's — fails. That is the point: such a node's device is enabled by a
+/// certificate its account root signed elsewhere.
+pub(super) fn test_store_without_account_root() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
 
