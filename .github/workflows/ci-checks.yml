@@ -12,6 +12,7 @@ on:
       - "e2e-tests/**"
       - "tools/**"
       - "scripts/check-wasm-size.sh"
+      - "scripts/check-storage-cost.sh"
       - ".github/workflows/ci-checks.yml"
 
 env:
@@ -225,3 +226,33 @@ jobs:
 
       - name: Check wasm sizes against the runtime module-size limit
         run: ./scripts/check-wasm-size.sh
+
+  # Storage costs are deterministic — same inputs, same read/write/remove counts
+  # on any machine — so this gates. Wall-clock benchmarks do NOT gate; they run
+  # post-merge in benchmarks.yml, because timing noise on shared runners makes a
+  # time-based gate a false-alarm generator, and because a timing bench against
+  # an in-memory store would not have caught core#3602 at all.
+  storage-cost:
+    name: Storage cost gate
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: storage-cost
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Shape first, constants second. The shape tests catch a complexity
+      # regression even when the snapshot was regenerated to absorb it, which is
+      # precisely how a reviewer gets fooled otherwise.
+      - name: Assert cost curves keep their declared shape
+        run: cargo test -p storage-cost --release
+
+      - name: Check storage costs against the committed snapshot
+        run: ./scripts/check-storage-cost.sh

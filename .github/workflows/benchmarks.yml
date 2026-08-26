@@ -1,0 +1,46 @@
+name: Benchmarks
+
+permissions:
+  contents: read
+
+# Post-merge on master, plus opt-in per PR via the `run-benchmarks` label.
+# Deliberately NOT on every pull_request: a full sweep is tens of minutes, and
+# the result is a trend line rather than a verdict.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [labeled]
+
+jobs:
+  criterion:
+    name: Criterion trend
+    # Never blocks a merge. Timing on shared runners is too noisy to gate on;
+    # the blocking storage-cost gate lives in ci-checks.yml.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.label.name == 'run-benchmarks'
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          shared-key: storage-cost
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Run benchmarks
+        run: cargo bench -p storage-cost -- --save-baseline ${{ github.sha }}
+
+      - name: Upload criterion baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-baseline-${{ github.sha }}
+          path: target/criterion
+          retention-days: 30
