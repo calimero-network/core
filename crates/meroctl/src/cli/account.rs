@@ -3,6 +3,7 @@ use eyre::Result;
 
 use crate::cli::Environment;
 
+mod alias;
 mod device_init;
 mod pair_complete;
 mod pair_init;
@@ -29,6 +30,7 @@ pub enum AccountSubCommands {
     PairComplete(pair_complete::PairCompleteCommand),
     Revoke(revoke::RevokeCommand),
     Show(show::ShowCommand),
+    Alias(alias::DeviceAliasCommand),
 }
 
 impl AccountCommand {
@@ -39,6 +41,7 @@ impl AccountCommand {
             AccountSubCommands::PairInit(cmd) => cmd.run(environment).await,
             AccountSubCommands::PairComplete(cmd) => cmd.run(environment).await,
             AccountSubCommands::Revoke(cmd) => cmd.run(environment).await,
+            AccountSubCommands::Alias(cmd) => cmd.run(environment).await,
         }
     }
 }

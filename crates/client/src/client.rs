@@ -10,11 +10,11 @@ use std::str::FromStr;
 use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{DeviceId, PublicKey};
 use calimero_server_primitives::admin::{
     AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
-    CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, ListAliasesResponse,
-    LookupAliasResponse,
+    CreateContextIdAlias, CreateContextIdentityAlias, CreateDeviceIdAlias, DeleteAliasResponse,
+    ListAliasesResponse, LookupAliasResponse,
 };
 use eyre::{bail, Result};
 use serde::de::DeserializeOwned;
@@ -73,6 +73,18 @@ impl UrlFragment for ApplicationId {
         CreateApplicationIdAlias {
             application_id: self,
         }
+    }
+
+    fn scoped(_: Option<&Self::Scope>) -> Option<String> {
+        None
+    }
+}
+
+impl UrlFragment for DeviceId {
+    const KIND: &'static str = "device";
+
+    fn create(self) -> Self::Value {
+        CreateDeviceIdAlias { device_id: self }
     }
 
     fn scoped(_: Option<&Self::Scope>) -> Option<String> {
