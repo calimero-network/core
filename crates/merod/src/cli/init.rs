@@ -252,7 +252,7 @@ pub struct InitCommand {
     /// Registry base URL to pull application bundles from. Overrides the
     /// default written into a fresh `config.toml`.
     #[clap(long)]
-    pub registry_url: Option<String>,
+    pub registry_url: Option<Url>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -537,7 +537,10 @@ impl InitCommand {
 
         // Written into config.toml rather than defaulted in code, so an operator
         // points elsewhere by editing one visible line instead of rebuilding.
-        config.registry.base_url = Some(resolve_registry_url(self.registry_url.as_deref())?);
+        config.registry.base_url = Some(self.registry_url.unwrap_or_else(|| {
+            // SAFETY: DEFAULT_REGISTRY_URL is a hardcoded valid URL.
+            DEFAULT_REGISTRY_URL.parse().expect("valid URL")
+        }));
 
         // `save` writes config.toml atomically and owner-only (0600); the file
         // holds the private key, so this keeps it unreadable to other users.
@@ -563,36 +566,34 @@ impl InitCommand {
     }
 }
 
-/// The `--registry-url` override, or the public registry when it is absent.
-fn resolve_registry_url(configured: Option<&str>) -> EyreResult<Url> {
-    Ok(configured.unwrap_or(DEFAULT_REGISTRY_URL).parse()?)
-}
-
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{resolve_registry_url, InitCommand};
+    use super::InitCommand;
 
     // `merod init` is the only place the registry default is written, so both
     // arms decide whether a fresh node resolves apps at all.
     #[test]
     fn registry_url_defaults_unless_overridden() {
+        let default = InitCommand::try_parse_from(["merod"]).unwrap();
         assert_eq!(
-            resolve_registry_url(None).unwrap().as_str(),
-            "https://apps.calimero.network/",
-            "a bare init must point at the public registry"
+            default.registry_url, None,
+            "a bare init must defer to the public-registry default, not parse one at arg time"
         );
+
+        let overridden =
+            InitCommand::try_parse_from(["merod", "--registry-url", "https://mirror.example/"])
+                .unwrap();
         assert_eq!(
-            resolve_registry_url(Some("https://mirror.example/"))
-                .unwrap()
-                .as_str(),
+            overridden.registry_url.unwrap().as_str(),
             "https://mirror.example/",
             "--registry-url must win"
         );
+
         assert!(
-            resolve_registry_url(Some("not a url")).is_err(),
-            "an unparseable override must fail init, not fall back"
+            InitCommand::try_parse_from(["merod", "--registry-url", "not a url"]).is_err(),
+            "an unparseable override must fail arg parsing, not fall back"
         );
     }
 
