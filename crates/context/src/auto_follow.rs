@@ -206,9 +206,14 @@ pub fn spawn(store: Store, context_client: ContextClient) {
     // receivers created before the send.)
     let rx = op_events::subscribe();
     let abort = tokio::spawn(async move {
-        // Bytecode only: this sweep publishes nothing and joins nothing, so the
-        // join path above stays purely event-driven.
-        sweep_applications(&store, &context_client).await;
+        // Acquire every known application once, because the event below is
+        // emitted on an op's FIRST apply only: a node whose peers were all
+        // unreachable in that moment has no second event coming for the same
+        // registration. Bytecode only - this publishes nothing and joins
+        // nothing, so the join path stays purely event-driven.
+        for (group_id, context_id) in applications_to_acquire(&store) {
+            acquire_application(&store, &context_client, group_id, context_id).await;
+        }
         run(rx, store, context_client, task_limiter).await;
     })
     .abort_handle();
@@ -537,19 +542,6 @@ pub(crate) fn applications_to_acquire(
         }
     }
     pairs
-}
-
-/// Acquire every known application once at startup.
-///
-/// The event this listener runs on is emitted on an op's FIRST apply only, so a
-/// node whose peers were all unreachable in that moment has no second event
-/// coming for the same registration. This sweep is what makes "the next pass
-/// retries" true rather than aspirational - the same reason the rotation
-/// listener drains its worklist on startup.
-async fn sweep_applications(store: &Store, context_client: &ContextClient) {
-    for (group_id, context_id) in applications_to_acquire(store) {
-        acquire_application(store, context_client, group_id, context_id).await;
-    }
 }
 
 async fn handle_context_registered(
