@@ -66,12 +66,12 @@ pub async fn handler(
         Ok(resp) => {
             let mut linked_in = Vec::new();
             let mut skipped = Vec::new();
-            for outcome in &resp.outcomes {
-                let namespace_id = hex::encode(outcome.namespace_id.to_bytes());
+            for (namespace, outcome) in &resp.outcomes {
+                let namespace_id = hex::encode(namespace.to_bytes());
                 // The wire names are produced here and the match is exhaustive on
                 // purpose: a new outcome has to be given a name rather than fall
                 // into a catch-all and be reported as something it is not.
-                let reason = match outcome.outcome {
+                let reason = match *outcome {
                     BindOutcome::Linked { key_delivered } => {
                         linked_in.push(RelinkOutcomeApiEntry {
                             namespace_id,

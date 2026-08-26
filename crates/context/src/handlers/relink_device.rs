@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::{AccountId, DeviceId};
-use calimero_context_client::group::{RelinkDeviceRequest, RelinkDeviceResponse, RelinkOutcome};
+use calimero_context_client::group::{RelinkDeviceRequest, RelinkDeviceResponse};
 use calimero_governance_store::{KnownDeviceCert, NamespaceRepository, NodeDeviceRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
@@ -129,10 +129,7 @@ impl Handler<RelinkDeviceRequest> for ContextManager {
                     &signer_sk,
                     &cached,
                 )
-                .await
-                .into_iter()
-                .map(|(namespace, outcome)| RelinkOutcome::new(namespace, outcome))
-                .collect::<Vec<_>>();
+                .await;
 
                 info!(%account, %device, ?outcomes, "relinked a device of this account");
 

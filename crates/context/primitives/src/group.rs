@@ -968,28 +968,6 @@ pub struct RelinkDeviceRequest {
     pub applications: Vec<ApplicationId>,
 }
 
-/// Where one namespace's relink landed.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub struct RelinkOutcome {
-    /// The namespace this is about.
-    pub namespace_id: ContextGroupId,
-    /// What happened there.
-    pub outcome: BindOutcome,
-}
-
-impl RelinkOutcome {
-    /// Build an outcome. Exists because the struct is `#[non_exhaustive]` and the
-    /// producer lives in another crate.
-    #[must_use]
-    pub const fn new(namespace_id: ContextGroupId, outcome: BindOutcome) -> Self {
-        Self {
-            namespace_id,
-            outcome,
-        }
-    }
-}
-
 /// What the relink repaired, and what it left alone.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -1006,7 +984,7 @@ pub struct RelinkDeviceResponse {
     /// Reported per namespace for the same reason a revocation is: publication is
     /// per-DAG, so a namespace missing a binding is a state an operator has to be
     /// able to see.
-    pub outcomes: Vec<RelinkOutcome>,
+    pub outcomes: Vec<(ContextGroupId, BindOutcome)>,
 }
 
 impl RelinkDeviceResponse {
@@ -1017,7 +995,7 @@ impl RelinkDeviceResponse {
         account: AccountId,
         device: DeviceId,
         applications: Vec<ApplicationId>,
-        outcomes: Vec<RelinkOutcome>,
+        outcomes: Vec<(ContextGroupId, BindOutcome)>,
     ) -> Self {
         Self {
             account,
