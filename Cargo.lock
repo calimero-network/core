@@ -1236,6 +1236,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
+ "calimero-wire-descriptor",
  "ed25519-dalek",
  "rand 0.8.5",
  "serde",
@@ -1408,6 +1409,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-primitives",
  "calimero-storage",
+ "calimero-wire-descriptor",
  "sha2",
 ]
 
@@ -1734,6 +1736,13 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "wasmparser 0.118.2",
+]
+
+[[package]]
+name = "calimero-wire-descriptor"
+version = "0.0.0"
+dependencies = [
+ "blake3",
 ]
 
 [[package]]
