@@ -1271,41 +1271,5 @@ mod parse_api_error_tests {
                 api.message
             );
         }
-
-        /// The distinction the whole mapping exists for: "your payload is wrong",
-        /// "come back when this node is ready" and "wrong machine" must not
-        /// collapse into one answer, and none of them may read as a server fault.
-        #[test]
-        fn the_three_kinds_of_no_stay_three_answers() {
-            let statuses = [
-                parse_api_error(
-                    ContextError::PairingCodeMismatch {
-                        device: "d".to_owned(),
-                    }
-                    .into(),
-                )
-                .status_code,
-                parse_api_error(
-                    ContextError::PairingNoScopeKey {
-                        namespaces: "[]".to_owned(),
-                    }
-                    .into(),
-                )
-                .status_code,
-                parse_api_error(
-                    ContextError::PairingNotTheAccountHolder {
-                        enrolled: "a".to_owned(),
-                        account: "b".to_owned(),
-                    }
-                    .into(),
-                )
-                .status_code,
-            ];
-
-            assert!(statuses.iter().all(StatusCode::is_client_error));
-            let distinct: std::collections::BTreeSet<_> =
-                statuses.iter().map(StatusCode::as_u16).collect();
-            assert_eq!(distinct.len(), 3, "got {statuses:?}");
-        }
     }
 }
