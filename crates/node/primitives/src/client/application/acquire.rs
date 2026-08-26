@@ -12,9 +12,11 @@ use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_store::key;
+use eyre::bail;
 use futures_util::io::Cursor;
 use tracing::warn;
 
+use super::bundle;
 use crate::client::NodeClient;
 
 impl NodeClient {
@@ -93,6 +95,8 @@ impl ApplicationStore for NodeClient {
         Ok(())
     }
 
+    /// A bundle id is re-derived and must equal `application_id`; a raw-wasm
+    /// id folds in per-node values, so it's adopted rather than re-derived.
     async fn bind_application(
         &self,
         application_id: &ApplicationId,
@@ -102,7 +106,32 @@ impl ApplicationStore for NodeClient {
         coords: Option<RegistryCoords<'_>>,
         bytes: &[u8],
     ) -> eyre::Result<()> {
-        self.bind_application_row(application_id, bytecode_id, size, source, coords, bytes)
-            .await
+        if Self::is_bundle_blob(bytes) {
+            let bundle_data: Arc<[u8]> = Arc::from(bytes);
+            // Derive before installing: `install_bundle` writes the row and a
+            // blob per service, and nothing reclaims either on a mismatch.
+            let derived = {
+                let bundle_data = Arc::clone(&bundle_data);
+                tokio::task::spawn_blocking(move || {
+                    let verified = bundle::VerifiedBundle::open(bundle_data)?;
+                    ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
+                })
+                .await??
+            };
+            if derived != *application_id {
+                bail!(
+                    "application mismatch: registry artifact is {derived}, not the \
+                     {application_id} this group targets"
+                );
+            }
+            // No package check: the derived id above already pins
+            // (package, signer) to what governance named.
+            let _ignored = self
+                .install_bundle(bundle_data, &bytecode_id, size, source, None)
+                .await?;
+            Ok(())
+        } else {
+            self.write_application_row(application_id, &bytecode_id, size, source, coords)
+        }
     }
 }

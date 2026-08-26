@@ -1,8 +1,6 @@
 //! Binding acquired bytes to an application row, and releasing them when that
 //! fails - there is no content-addressed GC to reclaim a rejected artifact.
 
-use std::sync::Arc;
-
 use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
@@ -11,7 +9,6 @@ use calimero_store::types;
 use eyre::bail;
 use tracing::warn;
 
-use super::bundle;
 use crate::client::NodeClient;
 
 impl NodeClient {
@@ -47,46 +44,6 @@ impl NodeClient {
             }
         }
         outcome
-    }
-
-    /// A bundle id is re-derived and must equal `application_id`; a raw-wasm
-    /// id folds in per-node values, so it's adopted rather than re-derived.
-    pub async fn bind_application_row(
-        &self,
-        application_id: &ApplicationId,
-        stored: BlobId,
-        size: u64,
-        source: &ApplicationSource,
-        coords: Option<RegistryCoords<'_>>,
-        bytes: &[u8],
-    ) -> eyre::Result<()> {
-        if Self::is_bundle_blob(bytes) {
-            let bundle_data: Arc<[u8]> = Arc::from(bytes);
-            // Derive before installing: `install_bundle` writes the row and a
-            // blob per service, and nothing reclaims either on a mismatch.
-            let derived = {
-                let bundle_data = Arc::clone(&bundle_data);
-                tokio::task::spawn_blocking(move || {
-                    let verified = bundle::VerifiedBundle::open(bundle_data)?;
-                    ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
-                })
-                .await??
-            };
-            if derived != *application_id {
-                bail!(
-                    "application mismatch: registry artifact is {derived}, not the \
-                     {application_id} this group targets"
-                );
-            }
-            // No package check: the derived id above already pins
-            // (package, signer) to what governance named.
-            let _ignored = self
-                .install_bundle(bundle_data, &stored, size, source, None)
-                .await?;
-            Ok(())
-        } else {
-            self.write_application_row(application_id, &stored, size, source, coords)
-        }
     }
 
     /// Write a row under a caller-named id, for ids that would vary per node.
