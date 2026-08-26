@@ -7,13 +7,17 @@
 #       type: script
 #       script: scripts/account-pair.sh
 #       target: local
-#       args: [ <new-node>, <holder>, <namespace-ids>, <root-key>, <application-ids> ]
+#       args: [ <new-node>, <holder>, <root-key>, <application-ids>, <namespace-id>... ]
 #
-# `<namespace-ids>` and `<application-ids>` are comma-separated; `-` for the
-# applications means every application, which is what a caller who names none
-# asks for. Both lists are the point of these routes: the namespace set decides
-# what the new device LISTENS on, the application set decides where the holder
-# PUBLISHES the link, and the two are deliberately independent.
+# The namespaces are trailing and variadic because merobox resolves ONE
+# placeholder per argument: `{{a}},{{b}}` in a single arg is read as one
+# placeholder named `a}},{{b` and passed through verbatim.
+#
+# `<application-ids>` is comma-separated and `-` means every application, which
+# is what a caller who names none asks for. Both lists are the point of these
+# routes: the namespace set decides what the new device LISTENS on, the
+# application set decides where the holder PUBLISHES the link, and the two are
+# deliberately independent.
 #
 # Why a script rather than merobox's `account_pair` step. That step drives
 # `namespaces/:id/account/pair-init` and `.../pair-complete` - one namespace from
@@ -27,8 +31,8 @@
 
 set -eu
 
-if [ "$#" -ne 5 ]; then
-    echo "usage: $0 <new-node> <holder> <namespace-ids> <root-key> <application-ids>" >&2
+if [ "$#" -lt 5 ]; then
+    echo "usage: $0 <new-node> <holder> <root-key> <application-ids> <namespace-id>..." >&2
     exit 1
 fi
 
@@ -36,18 +40,19 @@ fi
 
 newnode="$1"
 holder="$2"
-namespaces="$3"
-root_key="$4"
-applications="$5"
+root_key="$3"
+applications="$4"
+shift 4
+namespaces="$*"
 
-# A comma-separated list as a JSON array of strings. `-` is the empty list,
-# which is how "every application" is spelled on the wire.
+# A comma- or space-separated list as a JSON array of strings. `-` is the empty
+# list, which is how "every application" is spelled on the wire.
 json_array() {
     if [ -z "$1" ] || [ "$1" = "-" ]; then
         echo '[]'
         return 0
     fi
-    printf '%s' "$1" | jq -Rc 'split(",") | map(select(length > 0))'
+    printf '%s' "$1" | jq -Rc '[splits("[, ]+")] | map(select(length > 0))'
 }
 
 init=$(api_post "${newnode}" "account/pair-init" \

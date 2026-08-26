@@ -6,40 +6,65 @@
 #       type: script
 #       script: scripts/account-device-scope.sh
 #       target: local
-#       args: [ <holder>, <device-id>, <applications>, <namespaces>, <not-namespaces> ]
+#       args: [ <holder>, <device-id>,
+#               --scope <app>..., --bound <ns>..., --unbound <ns>... ]
 #
-# Every list is comma-separated, and `-` skips that check.
+# One id per argument, and each group is optional - an omitted group skips that
+# check. The groups are named rather than positional because merobox resolves
+# ONE placeholder per argument: `{{a}},{{b}}` in a single arg is read as one
+# placeholder named `a}},{{b` and passed through verbatim.
 #
-# `<applications>` is an EXACT set, because that is the claim: a device scoped to
-# one application must carry that one and nothing else. Empty is not expressible
-# and does not need to be - an empty stored scope means "every application" here,
+# `--scope` is an EXACT set, because that is the claim: a device scoped to one
+# application must carry that one and nothing else. Empty is not expressible and
+# does not need to be - an empty stored scope means "every application" here,
 # which is a different assertion from "scoped to exactly these".
 #
-# `<namespaces>` and `<not-namespaces>` are membership, not a set, because the
-# bound set grows over a scenario's life: a namespace gained later binds the
-# device on its own, so pinning the whole set would fail on the feature working.
-# The absence list is what carries the weight - it is the only way to say that a
-# scope actually NARROWED rather than merely reached what it was asked for.
+# `--bound` and `--unbound` are membership, not a set, because the bound set
+# grows over a scenario's life: a namespace gained later binds the device on its
+# own, so pinning the whole set would fail on the feature working. The absence
+# list is what carries the weight - it is the only way to say that a scope
+# actually NARROWED rather than merely reached what it was asked for.
 
 set -eu
 
-if [ "$#" -ne 5 ]; then
-    echo "usage: $0 <holder> <device-id> <applications> <namespaces> <not-namespaces>" >&2
+usage() {
+    echo "usage: $0 <holder> <device-id> [--scope <app>...] [--bound <ns>...] [--unbound <ns>...]" >&2
     exit 1
+}
+
+if [ "$#" -lt 3 ]; then
+    usage
 fi
 
 . "$(dirname "$0")/account-api.sh"
 
 holder="$1"
 device="$2"
-want_applications="$3"
-want_namespaces="$4"
-unwanted_namespaces="$5"
+shift 2
 
-# A comma-separated list as sorted, space-separated words, so two lists written
-# in different orders compare equal.
+want_applications=''
+want_namespaces=''
+unwanted_namespaces=''
+group=''
+for arg in "$@"; do
+    case "${arg}" in
+        --scope | --bound | --unbound)
+            group="${arg}"
+            continue
+            ;;
+    esac
+    case "${group}" in
+        --scope) want_applications="${want_applications} ${arg}" ;;
+        --bound) want_namespaces="${want_namespaces} ${arg}" ;;
+        --unbound) unwanted_namespaces="${unwanted_namespaces} ${arg}" ;;
+        *) usage ;;
+    esac
+done
+
+# A space-separated list as sorted words, so two lists written in different
+# orders compare equal.
 canonical() {
-    printf '%s' "$1" | tr ',' '\n' | grep -v '^$' | sort | tr '\n' ' '
+    printf '%s' "$1" | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' '
 }
 
 devices=$(api_get "${holder}" "account/devices")
@@ -61,8 +86,8 @@ if [ "$(echo "${row}" | jq -r '.revoked')" != "false" ]; then
     exit 1
 fi
 
-if [ "${want_applications}" != "-" ]; then
-    have=$(canonical "$(echo "${row}" | jq -r '.applications | join(",")')")
+if [ -n "${want_applications}" ]; then
+    have=$(canonical "$(echo "${row}" | jq -r '.applications | join(" ")')")
     want=$(canonical "${want_applications}")
     if [ "${have}" != "${want}" ]; then
         echo "${device} is scoped to [${have}], expected exactly [${want}]" >&2
@@ -73,22 +98,18 @@ fi
 
 bound=$(echo "${row}" | jq -r '.namespaces[]')
 
-if [ "${want_namespaces}" != "-" ]; then
-    for namespace in $(printf '%s' "${want_namespaces}" | tr ',' ' '); do
-        if ! echo "${bound}" | grep -qx "${namespace}"; then
-            echo "${device} holds no binding in ${namespace}; bound in: $(echo "${bound}" | tr '\n' ' ')" >&2
-            exit 1
-        fi
-        echo "${device} is bound in ${namespace}"
-    done
-fi
+for namespace in ${want_namespaces}; do
+    if ! echo "${bound}" | grep -qx "${namespace}"; then
+        echo "${device} holds no binding in ${namespace}; bound in: $(echo "${bound}" | tr '\n' ' ')" >&2
+        exit 1
+    fi
+    echo "${device} is bound in ${namespace}"
+done
 
-if [ "${unwanted_namespaces}" != "-" ]; then
-    for namespace in $(printf '%s' "${unwanted_namespaces}" | tr ',' ' '); do
-        if echo "${bound}" | grep -qx "${namespace}"; then
-            echo "${device} is bound in ${namespace}, which its application scope does not cover" >&2
-            exit 1
-        fi
-        echo "${device} is absent from ${namespace}, as its scope requires"
-    done
-fi
+for namespace in ${unwanted_namespaces}; do
+    if echo "${bound}" | grep -qx "${namespace}"; then
+        echo "${device} is bound in ${namespace}, which its application scope does not cover" >&2
+        exit 1
+    fi
+    echo "${device} is absent from ${namespace}, as its scope requires"
+done

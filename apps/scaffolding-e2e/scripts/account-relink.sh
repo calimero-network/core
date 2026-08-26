@@ -7,10 +7,13 @@
 #       type: script
 #       script: scripts/account-relink.sh
 #       target: local
-#       args: [ <holder>, <device-id>, <add-applications>, <linked>, <already-bound>, <scope> ]
+#       args: [ <holder>, <device-id>, <add-applications>, <linked>, <already-bound>, <scope>... ]
 #
-# Every list is comma-separated, and `-` skips that check (or, for
-# `<add-applications>`, sends none, which is the repair-only request).
+# Every list is comma-separated and `-` skips that check (or, for
+# `<add-applications>`, sends none, which is the repair-only request). The
+# expected scope is trailing and variadic because merobox resolves ONE
+# placeholder per argument: `{{a}},{{b}}` in a single arg is read as one
+# placeholder named `a}},{{b` and passed through verbatim.
 #
 # `<linked>` and `<already-bound>` are what makes this endpoint's answer worth
 # having: publication is per-DAG, so "it worked" is a set of namespaces rather
@@ -20,8 +23,8 @@
 
 set -eu
 
-if [ "$#" -ne 6 ]; then
-    echo "usage: $0 <holder> <device-id> <add-applications> <linked> <already-bound> <scope>" >&2
+if [ "$#" -lt 6 ]; then
+    echo "usage: $0 <holder> <device-id> <add-applications> <linked> <already-bound> <scope>..." >&2
     exit 1
 fi
 
@@ -32,10 +35,11 @@ device="$2"
 add_applications="$3"
 want_linked="$4"
 want_already_bound="$5"
-want_scope="$6"
+shift 5
+want_scope="$*"
 
 canonical() {
-    printf '%s' "$1" | tr ',' '\n' | grep -v '^$' | sort | tr '\n' ' '
+    printf '%s' "$1" | tr ',' ' ' | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' '
 }
 
 json_array() {
@@ -43,7 +47,7 @@ json_array() {
         echo '[]'
         return 0
     fi
-    printf '%s' "$1" | jq -Rc 'split(",") | map(select(length > 0))'
+    printf '%s' "$1" | jq -Rc '[splits("[, ]+")] | map(select(length > 0))'
 }
 
 relinked=$(api_post "${holder}" "account/devices/${device}/relink" \

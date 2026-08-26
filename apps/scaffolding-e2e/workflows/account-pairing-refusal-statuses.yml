@@ -194,9 +194,9 @@ steps:
     args:
       - account-refusal-node-2
       - account-refusal-node-1
-      - '{{ns}}'
       - '{{alice_root}}'
       - '-'
+      - '{{ns}}'
 
   - name: What node-2 speaks as, now that it is paired
     type: node_identity

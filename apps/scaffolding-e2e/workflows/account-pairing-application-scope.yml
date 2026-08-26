@@ -252,9 +252,10 @@ steps:
     args:
       - account-scope-node-2
       - account-scope-node-1
-      - '{{ns_a1}},{{ns_b1}}'
       - '{{alice_root}}'
       - '{{app_a}}'
+      - '{{ns_a1}}'
+      - '{{ns_b1}}'
 
   # Reads node-2's own device row, which `pair-init` wrote synchronously before
   # the script returned - so there is nothing here to wait for.
@@ -285,8 +286,11 @@ steps:
     args:
       - account-scope-node-1
       - '{{paired_device}}'
+      - --scope
       - '{{app_a}}'
+      - --bound
       - '{{ns_a1}}'
+      - --unbound
       - '{{ns_b1}}'
 
   # ── Widen the scope without the device being present ───────────────
@@ -301,7 +305,8 @@ steps:
       - '{{app_b}}'
       - '{{ns_b1}}'
       - '{{ns_a1}}'
-      - '{{app_a}},{{app_b}}'
+      - '{{app_a}}'
+      - '{{app_b}}'
 
   - name: Settle the relink's op in namespace B1
     type: wait_for_sync
@@ -318,9 +323,12 @@ steps:
     args:
       - account-scope-node-1
       - '{{paired_device}}'
-      - '{{app_a}},{{app_b}}'
-      - '{{ns_a1}},{{ns_b1}}'
-      - '-'
+      - --scope
+      - '{{app_a}}'
+      - '{{app_b}}'
+      - --bound
+      - '{{ns_a1}}'
+      - '{{ns_b1}}'
 
   # ── A namespace gained afterwards binds the device on its own ──────
 
@@ -344,9 +352,10 @@ steps:
     args:
       - account-scope-node-1
       - '{{paired_device}}'
-      - '-'
-      - '{{ns_a1}},{{ns_b1}},{{ns_a2}}'
-      - '-'
+      - --bound
+      - '{{ns_a1}}'
+      - '{{ns_b1}}'
+      - '{{ns_a2}}'
 
   # ── The device ends up able to RUN the application ─────────────────
 
