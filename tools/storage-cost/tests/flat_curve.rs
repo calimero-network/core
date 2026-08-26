@@ -99,7 +99,21 @@ fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
     let mut failures = Vec::new();
     for (name, points) in &series(shape, metric) {
         let (small, large) = (points[&SMALLEST], points[&LARGEST]);
-        if small > 0.0 && large > small * MAX_GROWTH {
+        // A zero baseline is not a free pass. `small == 0.0` means the workload
+        // does none of this metric at the smallest size — `unordered_map_get`
+        // and `unordered_map_len` write nothing, and should keep writing
+        // nothing. A ratio cannot express that (everything is infinity), so
+        // any growth at all is the failure, and skipping the check instead
+        // would leave the gate blind in exactly the case it exists for: an
+        // operation that starts doing something it never used to.
+        if small == 0.0 {
+            if large > 0.0 {
+                failures.push(format!(
+                    "{name}: {unit} went 0 (n={SMALLEST}) -> {large:.1} (n={LARGEST}); \
+                     an operation that did none of this now does some"
+                ));
+            }
+        } else if large > small * MAX_GROWTH {
             failures.push(format!(
                 "{name}: {unit} grew {small:.1} (n={SMALLEST}) -> {large:.1} \
                  (n={LARGEST}), {:.1}x — budget is {MAX_GROWTH}x",
