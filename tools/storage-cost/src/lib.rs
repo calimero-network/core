@@ -126,9 +126,36 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
     };
 
     let env = RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32]);
+
+    let previous = CURRENT.with(|c| c.borrow_mut().replace(Rc::clone(&backing)));
     let result = with_runtime_env(env, f);
+    CURRENT.with(|c| *c.borrow_mut() = previous);
+
     let costs = backing.borrow().costs;
     (result, costs)
+}
+
+thread_local! {
+    /// The backing store of the innermost in-flight [`measure`], so a workload
+    /// can zero the counters partway through. Restored on the way out, so
+    /// nesting behaves.
+    static CURRENT: RefCell<Option<Rc<RefCell<Backing>>>> = const { RefCell::new(None) };
+}
+
+/// Discard everything counted so far in the enclosing [`measure`] call.
+///
+/// This is what lets a workload isolate ONE operation from the build that had
+/// to precede it. A collection lives in the storage layer's thread-local state,
+/// so the build cannot happen outside the measured region; zeroing between the
+/// two is the only way to attribute cost to the operation alone.
+///
+/// A no-op outside `measure`, so a workload run directly in a test still works.
+pub fn reset_counters() {
+    CURRENT.with(|c| {
+        if let Some(backing) = c.borrow().as_ref() {
+            backing.borrow_mut().costs = Costs::default();
+        }
+    });
 }
 
 #[cfg(test)]
