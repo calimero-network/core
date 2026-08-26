@@ -16,6 +16,7 @@ use calimero_store::layer::LayerExt;
 use calimero_store::namespace_signer::resolve_owned_namespace_signer;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
+use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, trace, warn};
@@ -181,12 +182,15 @@ impl NodeClient {
                     "Attempting network discovery"
                 );
 
+                // Provider records are opportunistic (few paths announce, restarts
+                // drop them); the context's subscribers are the authoritative set.
                 let peers = match self
                     .network_client
                     .query_blob(*blob_id, Some(*context_id))
                     .await
                 {
-                    Ok(peers) => peers,
+                    Ok(peers) if !peers.is_empty() => peers,
+                    Ok(_) => self.context_subscribers(context_id).await,
                     Err(e) => {
                         tracing::warn!(
                             blob_id = %blob_id,
@@ -195,11 +199,7 @@ impl NodeClient {
                             error = %e,
                             "Failed to query DHT for blob"
                         );
-                        if attempt < MAX_RETRIES {
-                            tokio::time::sleep(backoff(attempt)).await;
-                            continue;
-                        }
-                        return Err(e);
+                        self.context_subscribers(context_id).await
                     }
                 };
 
@@ -398,6 +398,14 @@ impl NodeClient {
             // No context_id provided and blob not found locally
             Ok(None)
         }
+    }
+
+    /// Connected peers subscribed to a context's topic - who to ask for a blob
+    /// the DHT holds no provider record for.
+    async fn context_subscribers(&self, context_id: &ContextId) -> Vec<PeerId> {
+        self.network_client
+            .subscribed_peers(TopicHash::from_raw(*context_id))
+            .await
     }
 
     /// Query the network for peers that have a specific blob

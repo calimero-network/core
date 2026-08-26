@@ -284,6 +284,28 @@ async fn the_peer_source_leaves_the_application_installed() {
     assert!(node_client.has_blob(&expected).expect("lookup"));
 }
 
+// Nothing on the install or context-create path announces a provider record for
+// application bytecode, and a restart drops whatever was announced. A context
+// member holding the bytes must still be reached, or every dht-mode joiner runs
+// out of retries and its first execute dies on "not found in blobstore".
+#[actix::test]
+async fn a_context_member_that_never_announced_still_delivers_the_bytecode() {
+    let expected = common::blob_id_of(WASM).await;
+    let (network, _peer) =
+        common::fake_peer_network(common::PeerBehavior::ServesUnannounced(WASM.to_vec()));
+    let (node_client, _data, _blobs) = common::create_test_node_client_with(None, network).await;
+    let node_client = dht(&node_client);
+
+    let context = context();
+    assert_eq!(
+        node_client
+            .acquire_bytecode(&req(expected, None, Some(&context)))
+            .await,
+        Outcome::Installed
+    );
+    assert!(node_client.has_blob(&expected).expect("lookup"));
+}
+
 #[actix::test]
 async fn no_provider_leaves_the_bytecode_unavailable() {
     let context = context();

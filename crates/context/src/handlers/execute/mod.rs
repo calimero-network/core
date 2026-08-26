@@ -1573,14 +1573,16 @@ impl ContextManager {
             return async move { Ok(guard) }.into_actor(self).boxed_local();
         };
         let Some(rung) = crate::activation::next_rung(&ladder, bound, group_target) else {
-            // Every writer of `GroupMeta.bytecode_id` appends its rung first, so
-            // a divergence here means that invariant broke.
-            debug!(
-                %context_id,
-                bound = %hex::encode(bound),
-                group_target = %hex::encode(group_target),
-                "no ladder hop to replay"
-            );
+            // Reaching the target is every execute's steady state; a missing hop
+            // while behind means the append-rung-before-target invariant broke.
+            if bound != group_target {
+                debug!(
+                    %context_id,
+                    bound = %hex::encode(bound),
+                    group_target = %hex::encode(group_target),
+                    "no ladder hop to replay"
+                );
+            }
             return async move { Ok(guard) }.into_actor(self).boxed_local();
         };
         if budget == 0 {

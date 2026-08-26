@@ -3,10 +3,11 @@
 //! installing a bundle after blob sharing. Extracted from the manager
 //! god-file as an `impl SyncManager` fragment.
 
-use calimero_app_downloader::registry::stored_coords;
 use calimero_app_downloader::{AppRequest, Outcome};
+use calimero_context::handlers::upgrade_group::registry_coords;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
+use calimero_store::key;
 use eyre::bail;
 
 use super::SyncManager;
@@ -42,18 +43,25 @@ impl SyncManager {
         context: &calimero_primitives::context::Context,
         application: &calimero_primitives::application::Application,
     ) -> bool {
-        let version = application
-            .version
-            .as_ref()
-            .map_or_else(String::new, ToString::to_string);
-        let coords = stored_coords(&application.package, &version);
+        // Read off the row, not `Application`: the latter's version is
+        // semver-validated, and a registry coordinate never has to be semver.
+        let coords = self
+            .context_client
+            .datastore_handle()
+            .get(&key::ApplicationMeta::new(context.application_id))
+            .ok()
+            .flatten()
+            .and_then(|row| registry_coords(&row).ok());
+        let (package, version) = coords.as_ref().map_or(("", ""), |(package, version)| {
+            (package.as_str(), version.as_str())
+        });
         let outcome = self
             .node_client
             .acquire_bytecode(&AppRequest {
                 bytecode_id: Some(application.blob.bytecode),
                 application_id: Some(context.application_id),
-                package: coords.map_or("", |coords| coords.package),
-                version: coords.map_or("", |coords| coords.version),
+                package,
+                version,
                 context_id: Some(&context.id),
             })
             .await;

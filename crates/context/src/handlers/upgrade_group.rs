@@ -404,7 +404,7 @@ struct EmitRung {
 /// row the registry cannot address is refused here rather than signed onto an
 /// immutable op no receiver resolves. Gates on the row's raw version, which a
 /// registry path never needs to be semver.
-pub(crate) fn registry_coords(meta: &ApplicationMeta) -> eyre::Result<(String, String)> {
+pub fn registry_coords(meta: &ApplicationMeta) -> eyre::Result<(String, String)> {
     stored_coords(&meta.package, &meta.version)
         .map(|coords| (coords.package.to_owned(), coords.version.to_owned()))
         .ok_or_else(|| {

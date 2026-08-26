@@ -83,6 +83,9 @@ pub const FAKE_PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7E
 /// peer leg so a test can drive each without a network.
 pub enum PeerBehavior {
     Serves(Vec<u8>),
+    /// Holds the blob and is subscribed to the context, but never announced a
+    /// provider record - what every application bytecode blob looks like.
+    ServesUnannounced(Vec<u8>),
     NoProviders,
     QueryFails,
 }
@@ -108,14 +111,25 @@ impl Handler<NetworkMessage> for FakePeer {
                 let _previous = self.queries.fetch_add(1, Ordering::SeqCst);
                 let answer = match &self.behavior {
                     PeerBehavior::Serves(_) => Ok(vec![self.peer_id]),
-                    PeerBehavior::NoProviders => Ok(vec![]),
+                    PeerBehavior::ServesUnannounced(_) | PeerBehavior::NoProviders => Ok(vec![]),
                     PeerBehavior::QueryFails => Err(eyre::eyre!("dht query failed")),
+                };
+                let _ignored = outcome.send(answer);
+            }
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let answer = match &self.behavior {
+                    PeerBehavior::Serves(_) | PeerBehavior::ServesUnannounced(_) => {
+                        vec![self.peer_id]
+                    }
+                    PeerBehavior::NoProviders | PeerBehavior::QueryFails => vec![],
                 };
                 let _ignored = outcome.send(answer);
             }
             NetworkMessage::RequestBlob { outcome, .. } => {
                 let answer = match &self.behavior {
-                    PeerBehavior::Serves(bytes) => Some(bytes.clone()),
+                    PeerBehavior::Serves(bytes) | PeerBehavior::ServesUnannounced(bytes) => {
+                        Some(bytes.clone())
+                    }
                     PeerBehavior::NoProviders | PeerBehavior::QueryFails => None,
                 };
                 let _ignored = outcome.send(Ok(answer));
