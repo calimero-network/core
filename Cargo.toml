@@ -195,6 +195,7 @@ members = [
     "./tools/merodb",
     "./tools/mero-sign",
     "./tools/cargo-mero",
+    "./tools/storage-cost",
 ]
 
 [workspace.dependencies]
