@@ -419,11 +419,32 @@ impl<'a> NodeDeviceRepository<'a> {
 
         let existing = self.account_root()?;
         if let Some(previous) = &existing {
-            if !force {
+            // Gate on whether the root being replaced has CERTIFIED something, not
+            // merely on whether one exists.
+            //
+            // The cost this guard protects against is losing a root that devices
+            // depend on: replacing it orphans every certificate it signed, and
+            // there is no second copy. A root that has certified nothing carries
+            // none of that cost.
+            //
+            // That distinction became load-bearing when `init` started
+            // provisioning a root. The primary recovery flow is total loss — wipe
+            // the disk, `merod init`, restore the phrase — and the fresh node now
+            // always has a root, so gating on existence turned every restore into a
+            // `--force` ceremony. That trains an operator to reach for the flag
+            // precisely where it is dangerous: on a node where the root being
+            // replaced HAS certified devices and the loss is unrecoverable.
+            //
+            // One device row, so this is a read rather than a scan.
+            let certified_something = self
+                .get()?
+                .is_some_and(|row| row.account == previous.account());
+            if certified_something && !force {
                 eyre::bail!(
-                    "this node already has an account root ({}), and replacing it \
-                     cannot be undone: a root that has already certified devices \
-                     has no second copy",
+                    "this node already has an account root ({}) that has certified \
+                     a device, and replacing it cannot be undone: the certificates \
+                     it signed have no second copy. Export it first, then pass \
+                     --force to replace it",
                     previous.public_key()
                 );
             }
@@ -1127,12 +1148,63 @@ mod tests {
     /// the invariant depending on it" shape this codebase has been burned by
     /// before. Any future caller (meroctl, an RPC handler, a test helper) would
     /// have silently destroyed an unrecoverable key.
+    /// Restoring a backup onto a freshly initialised node needs no `--force`.
+    ///
+    /// The primary recovery flow: total loss, wipe, `merod init`, import the
+    /// phrase. Since init provisions a root, the target always has one — so a
+    /// guard gated on mere existence made every restore a `--force` ceremony, and
+    /// that trains an operator to reach for the flag exactly where it is
+    /// dangerous. Gated on having certified something, the guard stays where the
+    /// loss actually is.
+    ///
+    /// This is what core's `account-root-backup-restore` e2e exercises, and what
+    /// caught the regression.
+    #[test]
+    fn restoring_a_backup_over_an_untouched_root_needs_no_force() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let provisioned = repo.ensure_account_root().expect("generate");
+        let provisioned_pk = provisioned.public_key();
+
+        // A backup taken from the node whose disk was lost.
+        let backup_store = test_store();
+        let backup = NodeDeviceRepository::new(&backup_store)
+            .ensure_account_root()
+            .expect("generate");
+        let restored_pk = backup.public_key();
+        assert_ne!(provisioned_pk, restored_pk);
+
+        let outcome = repo
+            .try_import_account_root(&backup, false)
+            .expect("restoring over an uncertified root must not need --force");
+
+        assert_eq!(
+            outcome.replaced.map(|r| r.public_key()),
+            Some(provisioned_pk),
+            "the discarded root is still reported, so nothing is silent",
+        );
+        assert_eq!(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .public_key(),
+            restored_pk,
+            "and the backup is what the node now holds",
+        );
+    }
+
     #[test]
     fn importing_over_an_existing_root_is_refused_unless_forced() {
+        // Refused because the root has CERTIFIED a device, not merely because one
+        // exists. The uncertified case is
+        // `restoring_a_backup_over_an_untouched_root_needs_no_force`.
         let store = test_store();
+        let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
         let original = repo.ensure_account_root().expect("generate");
         let original_pk = original.public_key();
+        // What makes replacing it costly: a certificate that would be orphaned.
+        repo.ensure_enrolled(&ns).expect("enrol under the root");
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
