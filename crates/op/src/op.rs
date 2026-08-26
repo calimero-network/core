@@ -230,3 +230,37 @@ impl Op {
         hasher.finalize().into()
     }
 }
+
+/// Compile-time anchor for the [`Op`] entry in `tests::wire_fingerprint`'s
+/// structural descriptor.
+///
+/// It lives in this module, not beside the descriptor, because [`Op::id`] is
+/// private *here* — a sibling test module cannot destructure it, and neither
+/// could a central gate crate. The destructuring carries no `..` and annotates
+/// every binding, so adding, removing, reordering or retyping a field fails to
+/// compile until the descriptor and its snapshot are updated to match.
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "compile-time anchor: exists to be type-checked, never called"
+)]
+pub(crate) fn op_fields_are_described(op: &Op) {
+    let Op {
+        id,
+        scope,
+        parents,
+        authorship,
+        hlc,
+        payload,
+        expected_scope_root,
+        signature,
+    } = op;
+    let _: &[u8; 32] = id;
+    let _: &ScopeId = scope;
+    let _: &Vec<[u8; 32]> = parents;
+    let _: &Authorship = authorship;
+    let _: &HybridTimestamp = hlc;
+    let _: &OpPayload = payload;
+    let _: &[u8; 32] = expected_scope_root;
+    let _: &[u8; 64] = signature;
+}

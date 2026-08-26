@@ -1,0 +1,91 @@
+name: Wire Format (borsh)
+
+# The gate on the REPLICATED wire surface: the borsh types that travel between
+# nodes (governance ops, the unified `Op` envelope). Separate from
+# `wire-contract.yml`, which guards HTTP request/response DTOs — different
+# blast radius (a DTO break is a client 400; a borsh break is a fleet that
+# reports "joined" and replicates nothing, as in the rc.7/rc.8
+# NamespaceGovOpValue incident), different reviewers, and a path filter that
+# would otherwise make each job run on the other's changes.
+#
+# Two independent statements of the layout have to agree:
+#   * frozen-byte goldens, decoded (never re-encoded) — catch a renumbered
+#     discriminant, which a same-binary round-trip provably cannot;
+#   * a hand-maintained structural descriptor pinned to a committed snapshot —
+#     catches what a golden cannot, e.g. a field retyped or two same-width
+#     fields swapped.
+# Regenerate a snapshot after an intended change with
+# `UPDATE_WIRE_FINGERPRINT=1 cargo test -p <crate> wire_fingerprint`.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "crates/governance-types/**"
+      - "crates/op/**"
+      - "crates/wire-descriptor/**"
+      # Leaf types embedded in the wire surface: their layout is pinned by the
+      # snapshots above, so a change here can move a fingerprint.
+      - "crates/account/**"
+      - "crates/context/config/**"
+      - "crates/primitives/**"
+      - "crates/storage/**"
+      - ".github/workflows/wire-format-borsh.yml"
+  push:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wire-format-borsh:
+    name: Wire Format (borsh)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust toolchain
+        # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # The descriptor framework itself: its diff/fingerprint behaviour is what
+      # the two gates below report failures through, so it is tested first.
+      - name: Descriptor framework
+        run: cargo test -p calimero-wire-descriptor
+
+      # Governance ops: goldens (exhaustive over every variant) + snapshot.
+      - name: Governance wire surface
+        run: cargo test -p calimero-governance-types
+
+      # The unified op envelope: pinned tags + snapshot.
+      - name: Op envelope wire surface
+        run: cargo test -p calimero-op
+
+      # The snapshots are derived files, so regenerating them must be a no-op.
+      # This proves the documented regeneration command still works and that
+      # nobody hand-edited a snapshot into a shape the descriptor cannot
+      # produce — the same guarantee `wire-contract.yml` gets from
+      # `UPDATE_FIXTURES=1`.
+      - name: Snapshots regenerate clean
+        run: |
+          UPDATE_WIRE_FINGERPRINT=1 cargo test -p calimero-governance-types wire_fingerprint
+          UPDATE_WIRE_FINGERPRINT=1 cargo test -p calimero-op wire_fingerprint
+          git diff --exit-code
+          test -z "$(git status --porcelain)"

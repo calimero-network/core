@@ -16,3 +16,6 @@ calimero-account.workspace = true
 calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-storage.workspace = true
+
+[dev-dependencies]
+calimero-wire-descriptor.workspace = true
