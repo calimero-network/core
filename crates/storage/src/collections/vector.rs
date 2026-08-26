@@ -316,6 +316,19 @@ where
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system.
+    /// The id of the inner collection — the parent every entry of this vector
+    /// is a child of.
+    ///
+    /// Exposed so the authored layer can check that a caller-supplied entry id
+    /// actually belongs to THIS vector before acting on it. `Collection::get`
+    /// resolves an id through a global `find_by_id`, which is fine for the
+    /// positional API (an index can only ever name a child of self) and not
+    /// fine for the id-addressed one.
+    pub(crate) fn collection_id(&self) -> Id {
+        use crate::entities::Data as _;
+        self.inner.id()
+    }
+
     pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<ValueRef<V>>, StoreError> {
         Ok(self.inner.get(id)?.map(ValueRef::new))
     }

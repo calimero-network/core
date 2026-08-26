@@ -134,6 +134,12 @@ where
     where
         V: 'static,
     {
+        if !self.is_entry_of_self(id)? {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "AuthoredVector::update_by_id: id is not an entry of this vector".to_owned(),
+            )));
+        }
+
         let stored_owner = self.require_owner_of(id)?;
 
         if !super::authored_common::writer_matches_owner(&stored_owner) {
@@ -166,6 +172,9 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn get_by_id(&self, id: Id) -> Result<Option<V>, StoreError> {
+        if !self.is_entry_of_self(id)? {
+            return Ok(None);
+        }
         Ok(self.inner.get_by_id(id)?.map(ValueRef::into_inner))
     }
 
@@ -174,6 +183,9 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn owner_of_id(&self, id: Id) -> Result<Option<AccountId>, StoreError> {
+        if !self.is_entry_of_self(id)? {
+            return Ok(None);
+        }
         let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
         Ok(metadata.and_then(|m| match m.storage_type {
             StorageType::User { owner, .. } => Some(owner),
@@ -190,6 +202,26 @@ where
             .owner_of_id(id)?
             .as_ref()
             .is_some_and(super::authored_common::writer_matches_owner))
+    }
+
+    /// Whether `id` names an entry of THIS vector.
+    ///
+    /// The id-addressed API takes a caller-supplied 32-byte address and resolves
+    /// it through `Collection::get`/`get_mut`, which bottom out in a global
+    /// `Interface::find_by_id` over the whole context keyspace. The positional
+    /// API cannot reach outside itself — an index resolves through this
+    /// collection's own children — so the id-addressed replacement has to say
+    /// so explicitly or it silently becomes a wider capability wearing the same
+    /// shape.
+    ///
+    /// The owner check is not a substitute. It establishes that the caller owns
+    /// the target, not that the target is theirs to address from here: your own
+    /// entry in another collection passes it, and is then written with this
+    /// vector's value type. `JsAuthoredVector` is `Vec<u8>` throughout, so no
+    /// borsh mismatch catches it there.
+    fn is_entry_of_self(&self, id: Id) -> Result<bool, StoreError> {
+        let index = <Index<S>>::get_index(id).map_err(StoreError::StorageError)?;
+        Ok(index.and_then(|index| index.parent_id()) == Some(self.inner.collection_id()))
     }
 
     /// The owner of record for `id`, or an error explaining why there is none.
@@ -458,6 +490,45 @@ mod tests {
     /// need not return the last. That is a separate defect in `Vector`'s
     /// documented semantics, not something an id-addressed `push` fixes.
     #[test]
+    fn an_id_from_another_vector_is_not_addressable_from_this_one() {
+        let mut mine = AuthoredVector::<u64>::new();
+        let mut theirs = AuthoredVector::<u64>::new();
+
+        let (mine_id, theirs_id) = crate::env::with_merge_mode(|| {
+            let a = mine.push(1).expect("push mine");
+            let b = theirs.push(2).expect("push theirs");
+            (a, b)
+        });
+
+        // Same owner on both — this executor pushed each of them — so the
+        // ownership gate passes and only membership can refuse the write.
+        assert!(
+            mine.owned_by_me_id(mine_id).expect("owned"),
+            "the executor should own the entry it just pushed",
+        );
+
+        assert!(
+            mine.get_by_id(theirs_id).expect("get").is_none(),
+            "a foreign entry was readable through this vector",
+        );
+        assert!(
+            mine.owner_of_id(theirs_id).expect("owner").is_none(),
+            "a foreign entry's owner was readable through this vector",
+        );
+        assert!(
+            mine.update_by_id(theirs_id, 99).is_err(),
+            "a foreign entry was writable through this vector",
+        );
+
+        // The other vector still holds what it held: the refusal is a refusal,
+        // not a write that landed somewhere else.
+        assert_eq!(theirs.get_by_id(theirs_id).expect("get"), Some(2));
+        // And addressing this vector's OWN entry still works.
+        assert_eq!(mine.get_by_id(mine_id).expect("get"), Some(1));
+    }
+
+    #[test]
+    #[serial]
     fn push_returns_an_address_that_resolves_to_the_entry_it_wrote() {
         let mut v = AuthoredVector::<u64>::new();
         let mut handed_out = Vec::new();
