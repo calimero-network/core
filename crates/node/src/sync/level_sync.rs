@@ -67,6 +67,7 @@ use calimero_node_primitives::sync::{
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
+use calimero_storage::child_trie::ChildTrie;
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::Index;
 use calimero_storage::interface::Interface;
@@ -971,25 +972,33 @@ fn get_local_hashes_at_level(
 
     let root_id = Id::new(*context_id.as_ref());
 
-    // Get the root index to access children
-    let root_index = match Index::<MainStorage>::get_index(root_id) {
-        Ok(Some(idx)) => idx,
+    // Existence only. The children come from the trie below, so the decoded row
+    // itself is not wanted — binding it and then reaching for
+    // `get_children_of` is what made this a doubled read.
+    match Index::<MainStorage>::get_index(root_id) {
+        Ok(Some(_)) => {}
         Ok(None) => return Ok(hashes), // Empty tree
         Err(e) => {
             warn!(%context_id, error = %e, "Failed to get root index");
             return Ok(hashes);
         }
-    };
+    }
 
     match parent_ids {
         None => {
             // Level 0: get direct children of root
             {
-                let _ = &root_index;
                 // `root_id`, not `Id::root()`: the latter derives the context
                 // from the `RUNTIME_ENV` thread-local, and a divergence there
                 // yields silently empty level-0 hashes rather than an error.
-                for child in Index::<MainStorage>::get_children_of(root_id).unwrap_or_default() {
+                //
+                // The trie directly, not `get_children_of`: that re-reads and
+                // re-decodes the index row this function just proved decodable
+                // — a doubled read per parent per level, on a protocol chosen
+                // for wide trees — and its only failure here is that re-read,
+                // so `unwrap_or_default` would turn a corrupt row into "no
+                // children" instead of surfacing it.
+                for child in ChildTrie::<MainStorage>::new(root_id).children() {
                     let child_id = *child.id().as_bytes();
                     if let Some(child_hash) = Index::<MainStorage>::get_hashes_for(child.id())
                         .ok()
@@ -1004,12 +1013,11 @@ fn get_local_hashes_at_level(
             // Deeper levels: get children of specified parents
             for parent_id in parents {
                 let parent_storage_id = Id::new(*parent_id);
-                if let Ok(Some(parent_index)) = Index::<MainStorage>::get_index(parent_storage_id) {
+                if let Ok(Some(_)) = Index::<MainStorage>::get_index(parent_storage_id) {
                     {
-                        let _ = &parent_index;
-                        for child in Index::<MainStorage>::get_children_of(parent_storage_id)
-                            .unwrap_or_default()
-                        {
+                        // Same as level 0: existence is already established, so
+                        // walk the trie rather than re-reading the row.
+                        for child in ChildTrie::<MainStorage>::new(parent_storage_id).children() {
                             let child_id = *child.id().as_bytes();
                             if let Some(child_hash) =
                                 Index::<MainStorage>::get_hashes_for(child.id())

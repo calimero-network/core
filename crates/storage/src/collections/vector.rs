@@ -311,11 +311,6 @@ where
         Ok(Some(old))
     }
 
-    /// Read the value stored under `id`, whatever position it occupies.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system.
     /// The id of the inner collection — the parent every entry of this vector
     /// is a child of.
     ///
@@ -329,6 +324,11 @@ where
         self.inner.id()
     }
 
+    /// Read the value stored under `id`, whatever position it occupies.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
     pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<ValueRef<V>>, StoreError> {
         Ok(self.inner.get(id)?.map(ValueRef::new))
     }
