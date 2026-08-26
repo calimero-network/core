@@ -179,8 +179,15 @@ const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
 const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 /// Default maximum method name length in bytes.
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
-/// Default maximum WASM module size in MiB (20 MiB).
-const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
+/// Default maximum WASM module size in MiB (128 MiB).
+///
+/// Sized for the `app-profiling` build, not the shipped one. That profile keeps
+/// full debug info and skips `wasm-opt`, so its output is several times the
+/// `app-release` artifact and is what the fuzzy load test hands to a node. At 20
+/// MiB the largest such app had already reached 89% of the cap and a toolchain
+/// bump pushed it past — a limit a routine compiler upgrade can breach is too
+/// tight to be doing useful work.
+const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 128;
 /// Default maximum commit-artifact size in MiB (16 MiB).
 ///
 /// Bounds the binary artifact a guest hands to `env::commit`. The artifact is
@@ -192,10 +199,15 @@ const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
 const DEFAULT_MAX_ARTIFACT_SIZE_MIB: u64 = 16;
 /// Default maximum *precompiled* (serialized) module size in MiB (256 MiB).
 ///
-/// Generously larger than [`DEFAULT_MAX_MODULE_SIZE_MIB`] because a serialized
-/// artifact (native code + relocations + metadata) is materially bigger than
-/// the source WASM it was compiled from. This is a defense-in-depth ceiling on
+/// Larger than [`DEFAULT_MAX_MODULE_SIZE_MIB`] because a serialized artifact
+/// (native code + relocations + metadata) is materially bigger than the source
+/// WASM it was compiled from. This is a defense-in-depth ceiling on
 /// deserialization input, not a tight functional limit.
+///
+/// Note the headroom over the source limit is now 2x rather than the order of
+/// magnitude it once was. Today's modules are ~21 MiB, so nothing is close to
+/// either cap, but a module approaching the source limit could plausibly
+/// compile past this one.
 const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 /// Default maximum number of storage writes a single execution may perform.
 ///
@@ -1419,7 +1431,7 @@ mod tests {
     #[test]
     fn test_default_limits() {
         let limits = VMLimits::default();
-        assert_eq!(limits.max_module_size, 20 << 20); // 20 MiB
+        assert_eq!(limits.max_module_size, 128 << 20); // 128 MiB
         assert_eq!(limits.max_memory_pages, 1 << 10);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);

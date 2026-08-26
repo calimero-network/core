@@ -241,24 +241,29 @@ mod tests {
     fn test_type_scoped_t3() {
         let name = Thing::<Vec<u8>>::t3();
 
-        assert_eq!(name, "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t3::Contained<*const ()>");
+        // The exact rendering here is rustc's, and `type_name` makes no stability
+        // promise about it — 1.98 began printing the elided lifetime that 1.88
+        // omitted. If a toolchain bump breaks this line, re-read the new output and
+        // update it; the `compact_path` assertion below is the actual subject.
+        assert_eq!(name, "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t3::Contained<'_, *const ()>");
 
         let captures = compact_path(name).collect::<Vec<_>>();
 
-        assert_eq!(captures, ["<", "Thing<_>>::", "Contained<*const ()>"]);
+        assert_eq!(captures, ["<", "Thing<_>>::", "Contained<'_, *const ()>"]);
     }
 
     #[test]
     fn test_type_scoped_t4() {
         let name = Thing::<Vec<u8>>::t4();
 
-        assert_eq!(name, "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t4::Contained<u8>::t5::{{closure}}");
+        // See the note in `test_type_scoped_t3` about rustc-version dependence.
+        assert_eq!(name, "calimero_primitives::utils::tests::__PRIVATE::<impl calimero_primitives::utils::tests::Thing<_>>::t4::Contained<'_, u8>::t5::{{closure}}");
 
         let captures = compact_path(name).collect::<Vec<_>>();
 
         assert_eq!(
             captures,
-            ["<", "Thing<_>>::", "Contained<u8>::", "{{closure}}"]
+            ["<", "Thing<_>>::", "Contained<'_, u8>::", "{{closure}}"]
         );
     }
 }
