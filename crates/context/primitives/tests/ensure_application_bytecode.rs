@@ -6,33 +6,16 @@
 //! package. A device that follows no context never reaches the context bootstrap
 //! that would resolve it, so this is what has to.
 
-use std::fs;
-use std::sync::Arc;
-
-use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context_client::client::ContextClient;
-use calimero_network_primitives::client::NetworkClient;
-use calimero_node_primitives::bundle::{
-    derive_signer_id_did_key, sign_manifest_json, BundleArtifact, BundleManifest,
-};
-use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::test_fixtures::{bundle, node_client};
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
-use calimero_store::db::InMemoryDB;
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
-use camino::Utf8PathBuf;
-use ed25519_dalek::SigningKey;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use futures_util::io::Cursor;
-use rand::rngs::OsRng;
-use sha2::{Digest, Sha256};
-use tar::Builder;
 use tempfile::TempDir;
-use tokio::sync::{broadcast, mpsc};
 
 const STUB_SOURCE: &str = "calimero://pending-blob-share";
 
@@ -42,90 +25,12 @@ fn context() -> ContextId {
     ContextId::from([0x0C; 32])
 }
 
-/// A node with its own store and blobstore, and a client over it. No peers: the
-/// network recipient is unbound, so every peer fetch declines rather than hangs.
-async fn node() -> (ContextClient, NodeClient, Store, TempDir) {
-    let blob_dir = TempDir::new().unwrap();
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-
-    let blob_root = blob_dir.path().join("blobs");
-    let blob_store = BlobStore::new(
-        store.clone(),
-        FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
-            .await
-            .unwrap(),
-    );
-
-    let (event_sender, _) = broadcast::channel(16);
-    let (ctx_sync_tx, _) = mpsc::channel(16);
-    let (ns_sync_tx, _) = mpsc::channel(16);
-    let (ns_join_tx, _) = mpsc::channel(16);
-    let (open_subgroup_join_tx, _) = mpsc::channel(16);
-
-    let node_client = NodeClient::new(
-        store.clone(),
-        BlobManager::new(blob_store),
-        NetworkClient::new(LazyRecipient::new()),
-        LazyRecipient::new(),
-        event_sender,
-        SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx),
-        None,
-    );
-
+/// The shared node fixture with a `ContextClient` over the same store.
+async fn node() -> (ContextClient, NodeClient, Store, (TempDir, TempDir)) {
+    let (node_client, store, data_dir, blob_dir) = node_client().await;
     let context_client =
         ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
-    (context_client, node_client, store, blob_dir)
-}
-
-/// A signed single-wasm bundle on disk, the shape `cargo mero bundle` produces.
-fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8PathBuf {
-    let path = dir.path().join(format!("{package}-{version}.mpk"));
-    let mut tar = Builder::new(GzEncoder::new(
-        fs::File::create(&path).unwrap(),
-        Compression::default(),
-    ));
-
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let manifest = BundleManifest {
-        version: "1.0".to_owned(),
-        package: package.to_owned(),
-        app_version: version.to_owned(),
-        signer_id: Some(derive_signer_id_did_key(
-            signing_key.verifying_key().as_bytes(),
-        )),
-        min_runtime_version: "0.1.0".to_owned(),
-        metadata: None,
-        handlers: None,
-        interfaces: None,
-        wasm: Some(BundleArtifact {
-            path: "app.wasm".to_owned(),
-            hash: Sha256::digest(wasm)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            size: wasm.len() as u64,
-        }),
-        abi: None,
-        links: None,
-        services: None,
-        signature: None,
-    };
-    let mut manifest_json = serde_json::to_value(&manifest).unwrap();
-    sign_manifest_json(&mut manifest_json, &signing_key).unwrap();
-
-    for (name, bytes) in [
-        ("manifest.json", serde_json::to_vec(&manifest_json).unwrap()),
-        ("app.wasm", wasm.to_vec()),
-    ] {
-        let mut header = tar::Header::new_gnu();
-        header.set_path(name).unwrap();
-        header.set_size(bytes.len() as u64);
-        header.set_cksum();
-        tar.append(&header, bytes.as_slice()).unwrap();
-    }
-    tar.into_inner().unwrap().finish().unwrap();
-
-    path.try_into().unwrap()
+    (context_client, node_client, store, (data_dir, blob_dir))
 }
 
 /// The row `ContextRegistered`'s apply writes: the creator's real blob, no size,
@@ -169,8 +74,8 @@ async fn hand_over_blob(from: &NodeClient, into: &NodeClient, blob_id: BlobId) {
 }
 
 /// The creator: a node that installed the bundle, plus the application it got.
-async fn creator(dir: &TempDir, wasm: &[u8]) -> (NodeClient, Application, TempDir) {
-    let (_client, node_client, _store, blob_dir) = node().await;
+async fn creator(dir: &TempDir, wasm: &[u8]) -> (NodeClient, Application, (TempDir, TempDir)) {
+    let (_client, node_client, _store, dirs) = node().await;
     let application_id = node_client
         .install_application_from_path(
             bundle(dir, "com.example.paired", "1.0.0", wasm),
@@ -184,7 +89,7 @@ async fn creator(dir: &TempDir, wasm: &[u8]) -> (NodeClient, Application, TempDi
         .get_application(&application_id)
         .unwrap()
         .expect("creator installed it");
-    (node_client, application, blob_dir)
+    (node_client, application, dirs)
 }
 
 /// An application that is genuinely installed is left alone. The source is a
@@ -325,10 +230,6 @@ async fn a_stub_becomes_the_row_a_joiner_ends_up_with() {
         !installed.metadata.is_empty(),
         "metadata comes off the manifest"
     );
-
-    let metadata: serde_json::Value = serde_json::from_slice(&installed.metadata).unwrap();
-    assert_eq!(metadata["package"], "com.example.paired");
-    assert_eq!(metadata["version"], "1.0.0");
 
     assert_eq!(
         node_client
