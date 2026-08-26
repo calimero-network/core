@@ -1196,15 +1196,14 @@ impl SyncManager {
             let blob_id = calimero_primitives::blobs::BlobId::from(bound);
             if self.node_client.has_blob(&blob_id).unwrap_or(false) {
                 match self.context_client.get_context(&context_id) {
-                    Ok(Some(mut context)) => {
+                    Ok(Some(context)) => {
                         let mut application: Option<calimero_primitives::application::Application> =
                             None;
                         if let Err(err) = self
                             .install_bundle_after_blob_sharing(
                                 &context_id,
                                 &blob_id,
-                                &None,
-                                &mut context,
+                                &context,
                                 &mut application,
                             )
                             .await

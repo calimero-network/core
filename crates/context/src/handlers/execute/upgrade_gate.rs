@@ -53,6 +53,7 @@ pub(super) enum LazyUpgradeAction {
         target_application_id: ApplicationId,
         migrate_method: Option<String>,
         target_bytecode_id: [u8; 32],
+        coords: Option<(String, String)>,
     },
     /// Context has an activation marker: replay the group's upgrade ladder
     /// from that bound blob, each hop's method resolved from the two
@@ -149,9 +150,27 @@ pub(super) fn maybe_lazy_upgrade(
                     .as_ref()
                     .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
                 target_bytecode_id: meta.bytecode_id,
+                coords: ladder_coords(datastore, &group_id, meta.bytecode_id),
             },
         },
     })
+}
+
+/// The registry coordinates for one bytecode blob, from the group's upgrade
+/// ladder: a bundle's application id is version-stable, so only the per-rung
+/// record names a single published version.
+fn ladder_coords(
+    store: &Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    bytecode_id: [u8; 32],
+) -> Option<(String, String)> {
+    let rung = calimero_governance_store::UpgradeLadderRepository::new(store)
+        .load(group_id)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|rung| rung.bytecode_id == bytecode_id)?;
+    Some((rung.package, rung.version))
 }
 
 /// The blob-derived bytecode id the sender executes under (`GroupMeta.bytecode_id`
@@ -242,7 +261,13 @@ mod tests {
     /// Seed a context's application row so `loaded_reader_bytecode_id` resolves the
     /// context's current bytecode blob to `blob` (an installed-but-never-migrated
     /// version). `app_id` keys the row; for a bundle it equals the group target.
-    fn seed_app_row(store: &Store, ctx: &ContextId, app_id: ApplicationId, blob: [u8; 32]) {
+    fn seed_app_row(
+        store: &Store,
+        ctx: &ContextId,
+        app_id: ApplicationId,
+        blob: [u8; 32],
+        coords: (&str, &str),
+    ) {
         use calimero_store::types::{ApplicationMeta as ApplicationMetaValue, ContextMeta};
         let mut handle = store.handle();
         handle
@@ -255,8 +280,8 @@ mod tests {
                     Box::new([]),
                     calimero_store::key::BlobMeta::new([0u8; 32].into()),
                     calimero_store::types::PackageInfo {
-                        package: String::new().into_boxed_str(),
-                        version: String::new().into_boxed_str(),
+                        package: coords.0.into(),
+                        version: coords.1.into(),
                         signer_id: String::new().into_boxed_str(),
                         state_version: 0,
                     },
@@ -287,7 +312,7 @@ mod tests {
         let _gid = seed_group(&store, &ctx);
         // Context installed (never migrated) at BYTECODE_ID_OLD; group target is
         // BYTECODE_ID_NEW (bundle: same application id, different blob).
-        seed_app_row(&store, &ctx, target_app(), BYTECODE_ID_OLD);
+        seed_app_row(&store, &ctx, target_app(), BYTECODE_ID_OLD, ("", ""));
 
         let action = maybe_lazy_upgrade(&store, &ctx, &target_app()).expect("stale -> fires");
         assert_eq!(
@@ -317,6 +342,8 @@ mod tests {
                 target_application_id: target_app(),
                 migrate_method: Some("migrate_v2_to_v3".to_owned()),
                 target_bytecode_id: BYTECODE_ID_NEW,
+                // Nothing appended a rung here, so no rung names the blob.
+                coords: None,
             }
         );
     }
@@ -336,5 +363,170 @@ mod tests {
         let store = store();
         let ctx = ContextId::from([0x54; 32]);
         assert_eq!(maybe_lazy_upgrade(&store, &ctx, &target_app()), None);
+    }
+
+    /// Apply a real `TargetApplicationSet` naming `coords`, signed by an admin
+    /// this test enrols, so the ladder is written by the production choke point.
+    fn upgrade_group_to(
+        store: &Store,
+        gid: ContextGroupId,
+        bytecode_id: [u8; 32],
+        coords: (&str, &str),
+    ) {
+        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+        use calimero_governance_store::{apply_local_signed_group_op, MembershipRepository};
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::PrivateKey;
+
+        let admin_sk = PrivateKey::random(&mut rand::rngs::OsRng);
+        let admin = crate::test_support::enrol(store, &gid, &admin_sk.public_key());
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes().into(),
+            vec![],
+            1,
+            GroupOp::TargetApplicationSet {
+                bytecode_id: bytecode_id.into(),
+                target_application_id: target_app(),
+                package: coords.0.to_owned(),
+                version: coords.1.to_owned(),
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(store, &op).expect("apply TargetApplicationSet");
+    }
+
+    /// The bundle-upgrade seam. A bundle's application id is version-stable, so
+    /// a member already running the previous version keeps its row untouched -
+    /// which is why the row cannot be the coordinate carrier for the target.
+    #[test]
+    fn an_installed_member_still_reads_the_new_targets_coordinates() {
+        use calimero_app_downloader::registry::stored_coords;
+        use calimero_governance_store::UpgradeLadderRepository;
+
+        let store = store();
+        let ctx = ContextId::from([0x56; 32]);
+        let gid = ContextGroupId::from([0x64; 32]);
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextGroupRef::new((*ctx).into()),
+                &gid.to_bytes(),
+            )
+            .unwrap();
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(
+                &gid,
+                &GroupMetaValue {
+                    bytecode_id: BYTECODE_ID_OLD,
+                    target_application_id: target_app(),
+                    created_at: 0,
+                    admin_identity: crate::test_support::account_for(
+                        &calimero_primitives::identity::PublicKey::from([0x07; 32]),
+                    ),
+                    owner_identity: crate::test_support::account_for(
+                        &calimero_primitives::identity::PublicKey::from([0x07; 32]),
+                    ),
+                    migration: None,
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        // This member ALREADY holds the row for the version-stable bundle id,
+        // pinned to v1 - the case the row-derived coordinates silently lost.
+        seed_app_row(
+            &store,
+            &ctx,
+            target_app(),
+            BYTECODE_ID_OLD,
+            ("com.acme.app", "1.0.0"),
+        );
+
+        upgrade_group_to(&store, gid, BYTECODE_ID_NEW, ("com.acme.app", "2.0.0"));
+
+        // The local install always wins, so the row still names v1's bytes.
+        let row = store
+            .handle()
+            .get(&calimero_store::key::ApplicationMeta::new(target_app()))
+            .unwrap()
+            .expect("the pre-existing row survives the upgrade op");
+        assert_eq!(
+            *row.bytecode.blob_id().as_ref(),
+            BYTECODE_ID_OLD,
+            "seed_target_application_row must never overwrite a local install"
+        );
+        assert_eq!(
+            stored_coords(&row.package, &row.version).map(|c| c.version),
+            Some("1.0.0"),
+            "the row's coordinates are the INSTALLED version, not the target's"
+        );
+
+        // An installed-but-unmigrated member replays from its own version, and
+        // the rung it replays must carry the target's own coordinates.
+        assert_eq!(
+            maybe_lazy_upgrade(&store, &ctx, &target_app()),
+            Some(LazyUpgradeAction::Replay {
+                bound: BYTECODE_ID_OLD
+            })
+        );
+        let ladder = UpgradeLadderRepository::new(&store).load(&gid).unwrap();
+        let rung = crate::activation::next_rung(&ladder, BYTECODE_ID_OLD, BYTECODE_ID_NEW)
+            .expect("a stale member has a next rung");
+        assert_eq!(rung.bytecode_id, BYTECODE_ID_NEW);
+        assert_eq!(
+            (rung.package.as_str(), rung.version.as_str()),
+            ("com.acme.app", "2.0.0"),
+            "the rung, not the row, is what the fetch path resolves the target from"
+        );
+    }
+
+    /// The marker-less single jump reads the same ladder record, so a fresh
+    /// context resolves the target's own coordinates too.
+    #[test]
+    fn the_single_jump_carries_the_ladder_rungs_coordinates() {
+        let store = store();
+        let ctx = ContextId::from([0x57; 32]);
+        let gid = ContextGroupId::from([0x65; 32]);
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ContextGroupRef::new((*ctx).into()),
+                &gid.to_bytes(),
+            )
+            .unwrap();
+        let account = crate::test_support::account_for(
+            &calimero_primitives::identity::PublicKey::from([0x07; 32]),
+        );
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(
+                &gid,
+                &GroupMetaValue {
+                    bytecode_id: BYTECODE_ID_OLD,
+                    target_application_id: target_app(),
+                    created_at: 0,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: None,
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+
+        upgrade_group_to(&store, gid, BYTECODE_ID_NEW, ("com.acme.app", "2.0.0"));
+
+        // No context row, so the current version is unresolvable: single jump.
+        let Some(LazyUpgradeAction::SingleJump { coords, .. }) =
+            maybe_lazy_upgrade(&store, &ctx, &target_app())
+        else {
+            panic!("a context with no row must single-jump");
+        };
+        assert_eq!(
+            coords.as_ref().map(|(p, v)| (p.as_str(), v.as_str())),
+            Some(("com.acme.app", "2.0.0"))
+        );
     }
 }

@@ -17,3 +17,7 @@ calimero-storage.workspace = true
 
 [package.metadata.workspaces]
 independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.abi_conformance_resolved"
+name = "ABI Conformance Resolved"

@@ -665,44 +665,6 @@ impl ContextRegistry {
         Ok(())
     }
 
-    /// Updates the ApplicationId for a context.
-    ///
-    /// # Arguments
-    ///
-    /// * `context_id` - The ID of the context to update.
-    /// * `application_id` - The new ApplicationId.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success or failure.
-    pub fn update_context_application_id(
-        &self,
-        context_id: &ContextId,
-        application_id: ApplicationId,
-    ) -> eyre::Result<()> {
-        let handle = self.datastore.handle();
-
-        let key = key::ContextMeta::new(*context_id);
-
-        let Some(mut meta) = handle.get(&key)? else {
-            eyre::bail!("Context not found: {}", context_id);
-        };
-
-        // Update application_id
-        meta.application = key::ApplicationMeta::new(application_id);
-
-        // Write back to database
-        self.datastore.clone().handle().put(&key, &meta)?;
-
-        tracing::debug!(
-            %context_id,
-            %application_id,
-            "Updated application_id in database"
-        );
-
-        Ok(())
-    }
-
     /// Computes the actual root hash from storage by reading the root Index entry.
     ///
     /// This reads the EntityIndex for Id::root() from RocksDB and extracts the
@@ -1509,16 +1471,6 @@ impl ContextClient {
     /// Delegates to [`ContextRegistry::prune_delta_records`].
     pub fn prune_delta_records(&self, delta_keys: &[key::ContextDagDelta]) -> eyre::Result<()> {
         self.registry.prune_delta_records(delta_keys)
-    }
-
-    /// Updates the ApplicationId for a context.
-    pub fn update_context_application_id(
-        &self,
-        context_id: &ContextId,
-        application_id: ApplicationId,
-    ) -> eyre::Result<()> {
-        self.registry
-            .update_context_application_id(context_id, application_id)
     }
 
     /// Computes the actual root hash from storage by reading the root Index entry.

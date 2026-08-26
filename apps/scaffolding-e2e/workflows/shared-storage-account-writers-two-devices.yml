@@ -103,16 +103,10 @@ steps:
   - name: Install application on shared-account-node-1
     type: install_application
     node: shared-account-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
-
-  - name: Install application on shared-account-node-2
-    type: install_application
-    node: shared-account-node-2
-    path: res/scaffolding_e2e.wasm
-    dev: true
 
   - name: Node-1 creates the namespace
     type: create_namespace
@@ -261,15 +255,6 @@ steps:
   #
   # node-3 is never invited and never granted. Its only route in is being a
   # device of Alice's account.
-
-  # Installed here rather than with the other two: node-3 has nothing to do until
-  # it pairs, and an earlier install is a mutation on a node no barrier can cover
-  # — it is not in the context yet, so a `wait_for_sync` cannot name it.
-  - name: Install application on shared-account-node-3
-    type: install_application
-    node: shared-account-node-3
-    path: res/scaffolding_e2e.wasm
-    dev: true
 
   - name: Pair node-3 onto Alice's account
     type: account_pair

@@ -2928,6 +2928,8 @@ mod tests {
             blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
             source: "calimero://stub-app".to_owned(),
             service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         };
         let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt op");
         let ctx_registered_op = SignedNamespaceOp::sign(

@@ -7,9 +7,9 @@ sidebar:
 
 A **context** is a shared, replicated state machine. The code it runs is an
 **application**. This page explains that code-side model top-down: what an
-application *is*, how a **bundle** packages and distributes one, how **services**
-let a single application carry several WASM modules, and how a context picks the
-exact bytecode it executes.
+application *is*, how a **bundle** packages and distributes one, how those bytes
+reach a node, how **services** let a single application carry several WASM modules,
+and how a context picks the exact bytecode it executes.
 
 Throughout, the running example is a notes app, `notes-app`, that ships two
 modules: an `api` service that handles user requests and a `worker` service that
@@ -42,31 +42,29 @@ pub struct Application {
 absent). Because blobs are content-addressed, the same bytes always resolve to the
 same blob — see [Blobs](/protocol/blobs/).
 
-How the **application id** is derived depends on how the application entered the node:
+There is exactly one way an application id is derived, because there is exactly one
+kind of application: `ApplicationId::for_bundle` = `hash_borsh(package, signer_id)`,
+read off the bundle's signed manifest
+(`crates/primitives/src/application.rs`). It is therefore **version-stable**: the
+same `package` from the same signer keeps one id across every release.
 
-| Install kind | Application id is | Stability |
-| --- | --- | --- |
-| Raw `.wasm` | `hash_borsh(bytecode, size, source, metadata)` | tied to the exact bytes — any change is a new id |
-| Signed bundle | `hash_borsh(package, signer_id)` | **version-stable** — same `package` + signer keeps one id across releases |
+That id is about **which application**. The exact build a context executes is tracked
+separately, as a group's **`bytecode_id`** (a `BlobId` over the bytecode, changing on
+every release; see [Upgrades](/protocol/upgrades/)), and a signed bundle's
+**`ContentHash`** (a digest of a file's raw bytes, computed on every blob write; the
+only externally supplied one is the expected-hash check input, e.g. a CLI flag).
+`BlobId` and `ContentHash` are distinct types with no implicit conversion between
+them: assigning one to the other does not compile. Converting requires going through
+raw bytes explicitly, so a swap has to be written on purpose rather than happening by
+accident.
 
-This table is about **`ApplicationId`** — which application. The exact build a
-context executes is tracked separately, as a group's **`bytecode_id`** (a `BlobId`
-over the bytecode, changing on every release; see [Upgrades](/protocol/upgrades/)),
-and a signed bundle's **`ContentHash`** (a digest of a file's raw bytes, computed on
-every blob write; the only externally supplied one is the expected-hash check input,
-e.g. a CLI flag). `BlobId` and `ContentHash` are distinct types with no implicit
-conversion between them: assigning one to the other does not compile. Converting
-requires going through raw bytes explicitly, so a swap has to be written on purpose
-rather than happening by accident.
-
-Both are computed at install time in
-`crates/node/primitives/src/client/application/install.rs`. The raw-`.wasm` id folds
-in the bytecode blob id (already a content hash) together with size/source/metadata;
-`package` and `version` are *not* part of it, and default to `"unknown"` / `"0.0.0"`.
-The bundle id deliberately leaves out the bytecode: a new version of the same package
-from the same signer produces the **same** application id and overwrites the stored
-row in place. That version-stability is what lets an [upgrade](/protocol/upgrades/)
-move a context to new code without changing the id its members agree on.
+The id deliberately leaves out the bytecode: a new version of the same package from
+the same signer produces the **same** application id and overwrites the stored row in
+place. That version-stability is what lets an [upgrade](/protocol/upgrades/) move a
+context to new code without changing the id its members agree on. It is also what
+makes the id independently re-derivable: every node that verifies the same bundle
+computes the same id, so an id named on the wire is a claim any receiver can check
+against the bytes it fetched, rather than a label it has to trust.
 
 The stored `ApplicationMeta` carries the same shape with the package fields and a
 `services: Vec<ServiceMeta>` list. The `services` field was added after the initial
@@ -88,12 +86,139 @@ check of each wasm artifact against the signed manifest - are documented in full
 [Application Upgrades & Migration → Bundles, signing & install](/protocol/upgrades/).
 This page does not repeat that detail; it picks up at what the bundle *contains*.
 
+There are two ways to install one, and no third:
+
+| Admin API | `meroctl` | What it takes |
+| --- | --- | --- |
+| `install-application` | `app install PACKAGE@VERSION` | `{ "package", "version" }` - coordinates the node resolves against its own source |
+| `install-dev-application` | `app install --path app.mpk` | a local filesystem path to a signed `.mpk` |
+
+Neither request names a location on the network.
+The caller says *which* application; the node's own `[registry]` config says *where from*.
+The coordinate request sets `deny_unknown_fields`, so a body carrying a `url` field is a
+400 rather than an install of something the caller did not name.
+
+## How bytecode reaches a node
+
+Installing a bundle is one way an application enters a node.
+The other is that a group names the bytecode its members must run and each member acquires
+those bytes for itself - the code never rides along with the governance op that names it.
+
+A node has **exactly one** application source, chosen by
+[`[registry] mode`](/operate/config/#registry), and there is nothing behind it:
+
+| `mode` | Applications come from | This node serves application bytecode to peers |
+| --- | --- | --- |
+| `http` (default) | the node's own configured `base_url`, addressed by `package`/`version` | no |
+| `dht` | context members, over blob share | yes |
+
+`app_source` (`crates/app-downloader/src/source.rs`) picks that source once, from the
+mode, and hands back the only thing that can be asked for bytes.
+An `http` node holds no peer handle at all, and a `dht` node dials no registry, so
+neither mode can reach the other's transport even by accident.
+
+The serving side is symmetric with the fetching side: an `http` node is not a source of
+application bytecode, so it neither announces nor serves it
+(`NodeClient::may_share_blob`).
+User-data blobs are shared in both modes - only application artifacts are withheld.
+
+### One acquisition, four outcomes
+
+Every acquisition goes through one resolver, `acquire_bytecode`
+(`crates/node/primitives/src/client/application/acquire.rs`), which wraps
+`ApplicationDownloader::download`:
+
+| Step | What happens |
+| --- | --- |
+| 1 | The node already holds `bytecode_id` - nothing is fetched, and it is installed from local bytes if no row names it yet |
+| 2 | Otherwise the one configured source is asked for the bytes |
+| 3 | What arrives is stored, its blob id compared against `bytecode_id`, and installed - or released and refused |
+| 4 | The source had nothing: the node keeps running the version it has and retries on next access |
+
+Step 4 is `Outcome::Unavailable`, and it is not a failure.
+Nothing escalates it into one, and no second route is tried, because there is no second
+route to try.
+
+The join bootstrap (`sync_context_config`) resolves through this path, reading the
+coordinates off the target's stored application row - the row `GroupOp::ContextRegistered`
+seeds from the pair it carries.
+Sync resolves through the same path when a context's bytecode is missing
+(`sync/manager/blob_fetch.rs`), so a `dht` node acquires it the way a joiner does rather
+than opening a blob-share leg of its own.
+An upgrade reads the coordinates off the group's
+[upgrade ladder](/protocol/upgrades/#lazy-upgrades-replaying-the-ladder-hop-by-hop) instead,
+because a bundle's `ApplicationId` is version-stable: the row describes the version this
+node installed, while each ladder rung names the release it moves to.
+
+### Each node resolves against its own registry
+
+The op carries **coordinates, not a URL**.
+No remote party names an address this node fetches from; each receiver appends the
+coordinates it was given to its own configured base:
+
+```text
+{base_url}/artifacts/{package}/{version}/{package}-{version}.mpk
+```
+
+So the publisher's registry is not a dependency of every member.
+A mirror, or a registry inside an air-gapped deployment, works by pointing each node's
+[`[registry]` section](/operate/config/) somewhere else.
+
+Coordinates are mandatory on the wire: an application is a signed bundle, whose manifest
+carries both halves, so an application without them cannot exist.
+The emitting node refuses rather than signs an op no receiver could resolve - see
+[behaviour that fails loudly](#a-node-that-cannot-address-an-application-says-so) below.
+Each coordinate must be a single safe path segment (non-empty, at most 128 bytes,
+`[A-Za-z0-9._-]` only, never `.` or `..` and never containing `..`), so a coordinate
+cannot walk out of the configured base; anything else yields no URL, and the fetch is
+refused rather than attempted.
+
+### `bytecode_id` is the only byte authority
+
+`bytecode_id` names the bytecode blob, and it alone decides which bytes are acceptable: the
+download is stored, its blob id is compared against `bytecode_id`, and a mismatch deletes
+the stored blob and fails the leg.
+It is a `BlobId` - a hash over chunk ids - never a `ContentHash`, and the two do not
+convert implicitly, so the wrong one cannot be threaded in by mistake.
+A wrong, stale, or hostile registry can therefore only cause a **failure**, never a code
+substitution - the node keeps the version it runs and retries on next access.
+A bundle is checked twice over: its blob id must equal `bytecode_id`, and the
+`ApplicationId` re-derived from its verified manifest must equal the one governance named
+(`bind_application_row`).
+
+That is what lets the operator's own `base_url` be fetched with no host guard at all, which
+is what makes a private or air-gapped registry usable. Nothing remote-chosen ever names a
+URL, so there is no remote-chosen fetch left to guard.
+
+The corollary is a requirement on whoever runs the registry: **serve the `.mpk` byte for byte.**
+`bytecode_id` covers the whole envelope, so re-gzipping the tar, reordering its entries, or
+restamping mtimes yields a different blob id.
+Every registry fetch then fails the comparison, leaving every node on the version it
+already runs, with a `blob id mismatch` failure to show for it.
+
+### A node that cannot address an application says so
+
+Because there is no fallback, a node that cannot address an application fails where the
+mistake was made rather than degrading quietly later:
+
+| Situation | What happens |
+| --- | --- |
+| Creating a context whose application row carries no coordinates | `create_context` fails: `application <id> has no registry coordinates to register a context with` |
+| Emitting an upgrade for such a row | the upgrade is refused: `application <pkg>@<ver> has no registry coordinates to upgrade with` |
+| `mode = "http"` with no `base_url`, installing by coordinates | the install fails: `[registry] mode = "http" needs a base_url to fetch from` |
+| `mode = "http"` with no `base_url`, acquiring a group's bytecode | logged (`no application source is configured`) and reported as `Unavailable`; the context keeps its current version and retries |
+| `mode = "dht"`, installing `package@version` by name | nothing to ask - the peer route needs a context and a `bytecode_id`, so the install reports the coordinates as unpublished |
+
+The last row is the shape of `dht` mode generally: a `dht` node joins contexts and follows
+upgrades normally, but it cannot bare-install an application by name.
+It gets applications from governance, or from a local `.mpk` path.
+
 ## Services: one application, many modules
 
 A bundle is usually a single WASM module: the manifest's top-level `wasm` (plus an
 optional `abi`). It can instead declare a `services` array of named modules, each a
 `{name, wasm, abi?}` record. The rule is in
-`crates/node/primitives/src/bundle/mod.rs`:
+`crates/bundle/src/lib.rs`:
 
 > If `services` is present and non-empty, it takes priority over `wasm` / `abi`.
 
@@ -171,8 +296,8 @@ What actually *runs* once the blob is resolved — the host ABI boundary, the st
 layers, the determinism contract — is [Application Execution](/protocol/execution/).
 
 An [upgrade](/protocol/upgrades/) swaps the executed **bytecode** while the
-**application id stays stable** (that is exactly the version-stable bundle id from the
-table above). The context keeps targeting the same application id and the same
+**application id stays stable** (that is exactly the version-stable bundle id above).
+The context keeps targeting the same application id and the same
 service name; only the blob behind it advances, version by version.
 
 ## Where this leads

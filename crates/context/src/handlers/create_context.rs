@@ -607,6 +607,16 @@ async fn create_context(
 
     drop(handle);
 
+    // A joiner resolves the app from its OWN registry, so the op announces where
+    // this node's copy is published. An unaddressable row is refused here rather
+    // than signed onto an op no receiver can resolve.
+    let source = application.source.to_string();
+    let row = datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(context.application_id))?
+        .ok_or_eyre("application not found")?;
+    let (package, version) = super::upgrade_group::registry_coords(&row)?;
+
     // Register context in group BEFORE subscribing so that a registration
     // failure does not leave a subscribed-but-unregistered context.
     // Note: membership was verified in Prepared::new(); a TOCTOU gap exists
@@ -624,8 +634,10 @@ async fn create_context(
                 context_id: context.id,
                 application_id: context.application_id,
                 blob_id: application.blob.bytecode,
-                source: application.source.to_string(),
+                source,
                 service_name: context.service_name.clone(),
+                package,
+                version,
             },
         )
         .await?;

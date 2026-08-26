@@ -8,6 +8,7 @@ use std::time::Instant;
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
+use calimero_app_downloader::{AppRequest, Outcome as AcquireOutcome};
 use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::{
@@ -588,6 +589,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     target_application_id: target_app,
                     migrate_method: migrate,
                     target_bytecode_id,
+                    coords,
                 } => {
                     let datastore = act.datastore.clone();
                     let node_client = act.node_client.clone();
@@ -605,7 +607,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                         // previous version.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_blob_local(&blob_node_client, &cid, target_bytecode_id).await
+                            ensure_blob_local(
+                                &blob_node_client,
+                                &cid,
+                                target_app,
+                                target_bytecode_id,
+                                coords,
+                            )
+                            .await
                         }
                         .into_actor(act)
                         .then(move |blob_local, act, _ctx| {
@@ -712,7 +721,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                         // runs the old build.
                         let blob_node_client = node_client.clone();
                         async move {
-                            ensure_blob_local(&blob_node_client, &cid, target_bytecode_id).await
+                            ensure_blob_local(
+                                &blob_node_client,
+                                &cid,
+                                target_app,
+                                target_bytecode_id,
+                                coords,
+                            )
+                            .await
                         }
                         .into_actor(act)
                         .then(move |blob_available, act, _ctx| {
@@ -1541,7 +1557,7 @@ impl ContextManager {
         use calimero_governance_store::{get_group_for_context, UpgradeLadderRepository};
 
         let datastore = self.datastore.clone();
-        let next = get_group_for_context(&datastore, &context_id)
+        let walk = get_group_for_context(&datastore, &context_id)
             .ok()
             .flatten()
             .and_then(|gid| {
@@ -1550,16 +1566,21 @@ impl ContextManager {
                 let ladder = UpgradeLadderRepository::new(&datastore)
                     .load(&gid)
                     .unwrap_or_default();
-                crate::activation::next_rung(
-                    &ladder,
-                    bound,
-                    meta.bytecode_id,
-                    meta.target_application_id,
-                )
-                .map(|rung| (rung, bound))
+                Some((ladder, bound, meta.bytecode_id))
             });
 
-        let Some((rung, bound)) = next else {
+        let Some((ladder, bound, group_target)) = walk else {
+            return async move { Ok(guard) }.into_actor(self).boxed_local();
+        };
+        let Some(rung) = crate::activation::next_rung(&ladder, bound, group_target) else {
+            // Every writer of `GroupMeta.bytecode_id` appends its rung first, so
+            // a divergence here means that invariant broke.
+            debug!(
+                %context_id,
+                bound = %hex::encode(bound),
+                group_target = %hex::encode(group_target),
+                "no ladder hop to replay"
+            );
             return async move { Ok(guard) }.into_actor(self).boxed_local();
         };
         if budget == 0 {
@@ -1569,6 +1590,7 @@ impl ContextManager {
 
         let rung_bytecode_id = rung.bytecode_id;
         let rung_application_id = rung.application_id;
+        let rung_coords = Some((rung.package, rung.version));
 
         info!(
             %context_id,
@@ -1582,7 +1604,15 @@ impl ContextManager {
             // Binding a marker to an absent blob would wedge the context, so
             // the blob must be local (fetched from peers if needed) before
             // anything else.
-            if !ensure_blob_local(&node_client, &context_id, rung_bytecode_id).await {
+            if !ensure_blob_local(
+                &node_client,
+                &context_id,
+                rung_application_id,
+                rung_bytecode_id,
+                rung_coords,
+            )
+            .await
+            {
                 eyre::bail!("rung bytecode blob not available locally or from peers");
             }
             // Replay actuates an already-committed, already-gated governance
@@ -1861,43 +1891,36 @@ impl ContextManager {
     }
 }
 
-/// Ensure the bytecode blob is present in the local blobstore, fetching it
-/// from peers (it is announced at upgrade time; the sync gate leaves
-/// BlobShare open for exactly this) when absent. Pure byte movement — the
-/// application row is never touched; per-context binding decides what
-/// executes. `false` ⇒ unavailable (zero/legacy key, fetch failure): the
-/// caller falls back and the next access retries.
+/// The upgrade target, from this node's one configured source. `false` ⇒ that
+/// source had nothing yet; the caller retries next access.
 async fn ensure_blob_local(
     node_client: &NodeClient,
     context_id: &ContextId,
-    blob: [u8; 32],
+    application_id: ApplicationId,
+    bytecode_id: [u8; 32],
+    coords: Option<(String, String)>,
 ) -> bool {
-    if blob == [0u8; 32] {
+    let bytecode_id = calimero_primitives::blobs::BlobId::from(bytecode_id);
+    // A blob no ladder rung names has no coordinates to send. The registry
+    // route refuses the unaddressable request; the peer route ignores them.
+    let (package, version) = coords.as_ref().map_or(("", ""), |(package, version)| {
+        (package.as_str(), version.as_str())
+    });
+    let outcome = node_client
+        .acquire_bytecode(&AppRequest {
+            bytecode_id: Some(bytecode_id),
+            application_id: Some(application_id),
+            package,
+            version,
+            context_id: Some(context_id),
+        })
+        .await;
+
+    if outcome == AcquireOutcome::Unavailable {
+        warn!(%context_id, %bytecode_id, "lazy upgrade: target bytecode unavailable from the configured source");
         return false;
     }
-    let blob_id = calimero_primitives::blobs::BlobId::from(blob);
-    match node_client.has_blob(&blob_id) {
-        Ok(true) => return true,
-        Ok(false) => {}
-        Err(err) => {
-            warn!(%context_id, %blob_id, %err, "lazy upgrade: blobstore lookup failed");
-            return false;
-        }
-    }
-    info!(%context_id, %blob_id, "lazy upgrade: fetching target bytecode blob");
-    // A successful peer fetch persists the blob into the local blobstore,
-    // so the subsequent module load finds it.
-    match node_client.get_blob_bytes(&blob_id, Some(context_id)).await {
-        Ok(Some(_)) => true,
-        Ok(None) => {
-            warn!(%context_id, %blob_id, "lazy upgrade: target blob not available locally or from peers");
-            false
-        }
-        Err(err) => {
-            warn!(%context_id, %blob_id, %err, "lazy upgrade: target blob fetch failed");
-            false
-        }
-    }
+    true
 }
 
 /// Store-level executing-blob resolution for a context: its activation

@@ -108,6 +108,8 @@ fn cascade_upgrade_atomic_op_sets_target_bytecode_id_and_migration_and_records_c
             to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");
@@ -203,6 +205,8 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
             to_state_version: 4,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign op_c");

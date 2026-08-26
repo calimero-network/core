@@ -95,8 +95,19 @@ runs:
         path: merod-image-cache
         key: ${{ steps.cache-key.outputs.key }}
 
+    # Runs on the cache-hit path too, and after the cache save, so the cached
+    # layers stay keyed on the merod build alone.
+    - name: Layer the application source onto both tags
+      shell: bash
+      run: |
+        docker tag ${{ inputs.image-tag }} ${{ inputs.image-tag }}-dht
+        scripts/set-registry-mode.sh ${{ inputs.image-tag }}-dht dht
+        # The http tag's base_url is stamped where the fixture registry runs.
+        scripts/set-registry-mode.sh ${{ inputs.image-tag }} http
+
     - name: Verify merod image
       shell: bash
       run: |
-        echo "Final image:"
+        echo "Final images:"
         docker images ${{ inputs.image-tag }}
+        docker images ${{ inputs.image-tag }}-dht

@@ -107,7 +107,7 @@ GET  /admin-api/contexts/:id          # Get context
 DELETE /admin-api/contexts/:id        # Delete context
 
 GET  /admin-api/applications          # List apps
-POST /admin-api/install-application   # Install app
+POST /admin-api/install-application   # Install app by package@version
 GET  /admin-api/applications/:id      # Get app
 GET  /admin-api/applications/:id/abi  # Embedded WASM ABI manifest (optional ?service_name=)
 

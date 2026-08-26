@@ -208,7 +208,7 @@ rather than assume the event stream is a complete, gap-free log.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/admin-api/install-application` | Install an application from a package/URL. |
+| POST | `/admin-api/install-application` | Install `package`@`version` from the node's configured registry. |
 | POST | `/admin-api/install-dev-application` | Install a local dev application. |
 | GET | `/admin-api/applications` | List installed applications. |
 | GET | `/admin-api/applications/:application_id` | Get one application. |

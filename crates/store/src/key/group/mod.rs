@@ -1291,14 +1291,18 @@ pub struct GroupUpgradeValue {
     pub to_state_version: u32,
 }
 
-/// One rung of a group's upgrade ladder: the bytecode blob (`bytecode_id`) and
-/// application id an upgrade op targeted. Stored in causal-application order
-/// inside [`UpgradeLadderValue`].
+/// One rung of a group's upgrade ladder: the bytecode blob (`bytecode_id`), the
+/// application id an upgrade op targeted, and that release's registry
+/// coordinates - carried per rung because a bundle's application id is
+/// version-stable and so names every rung equally. Stored in
+/// causal-application order inside [`UpgradeLadderValue`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct LadderRung {
     pub bytecode_id: [u8; 32],
     pub application_id: ApplicationId,
+    pub package: String,
+    pub version: String,
 }
 
 /// Stored against [`GroupUpgradeLadder`]. Append-only fold state: every op

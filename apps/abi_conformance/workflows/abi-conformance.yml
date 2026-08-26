@@ -12,7 +12,7 @@ steps:
   - name: Install ABI Conformance Application
     type: install_application
     node: abi-conformance-node-1
-    path: res/abi_conformance.wasm
+    path: ../../dist/com.calimero.abi_conformance-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

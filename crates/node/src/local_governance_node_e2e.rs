@@ -1989,6 +1989,8 @@ async fn restricted_ctx_redriven_after_group_created() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
 
@@ -2226,6 +2228,8 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDFu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&namespace_key, &inner_op).expect("encrypt group op");
 
@@ -2611,6 +2615,8 @@ async fn tee_matrix_restricted_late_join() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
     let ctx_registered_op = SignedNamespaceOp::sign(

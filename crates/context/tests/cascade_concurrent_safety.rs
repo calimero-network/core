@@ -148,6 +148,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign op_a");
@@ -169,6 +171,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign op_b");

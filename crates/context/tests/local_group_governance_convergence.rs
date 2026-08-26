@@ -235,6 +235,8 @@ fn two_nodes_converge_on_target_application_and_migration() {
         GroupOp::TargetApplicationSet {
             bytecode_id: [0x11; 32].into(),
             target_application_id: new_target,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign TargetApplicationSet");
@@ -978,6 +980,8 @@ fn two_nodes_converge_on_context_alias_as_admin() {
             blob_id: calimero_primitives::blobs::BlobId::from([0xBB; 32]),
             source: String::new(),
             service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign ContextRegistered");

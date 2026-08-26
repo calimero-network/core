@@ -21,8 +21,11 @@ pub const EXAMPLES: &str = r"
   # Get details of an application
   $ meroctl --node node1 app get <app_id>
 
-  # Install an application with package/version
-  $ meroctl --node node1 app install --package com.example.myapp --version 1.0.0 --path ./my-app.wasm
+  # Install a published application from the node's registry
+  $ meroctl --node node1 app install com.example.myapp@1.0.0
+
+  # Install a local signed bundle
+  $ meroctl --node node1 app install --path ./dist/com.example.myapp-1.0.0.mpk
 
   # List all packages
   $ meroctl --node node1 app list-packages

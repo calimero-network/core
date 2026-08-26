@@ -6415,6 +6415,8 @@ fn curative_sweep_redrives_stranded_context() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).unwrap();
     let ctx_registered_op = SignedNamespaceOp::sign(
@@ -6520,6 +6522,8 @@ fn curative_sweep_redrives_stranded_context() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let nokey_encrypted = GroupKeyring::encrypt_op(&nokey_key, &nokey_inner).unwrap();
     let nokey_op = SignedNamespaceOp::sign(
@@ -7715,4 +7719,111 @@ fn resolving_an_identity_does_not_enlist_the_node_but_get_or_create_does() {
         resolved.0, again.1,
         "one node, one signing key — a second call must not mint another"
     );
+}
+
+// The stub an inbound `ContextRegistered` writes must record an http(s) source
+// verbatim and collapse anything else to the pending-blob-share marker.
+#[test]
+fn context_registered_stub_records_only_fetchable_sources() {
+    use calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE;
+
+    for (op_source, expected) in [
+        (
+            "https://reg.example/app-1.0.0.mpk",
+            "https://reg.example/app-1.0.0.mpk",
+        ),
+        (
+            "http://reg.example/app-1.0.0.mpk",
+            "http://reg.example/app-1.0.0.mpk",
+        ),
+        ("file:///home/dev/app.mpk", PENDING_BLOB_SHARE_SOURCE),
+        ("", PENDING_BLOB_SHARE_SOURCE),
+        ("ftp://reg.example/app.mpk", PENDING_BLOB_SHARE_SOURCE),
+    ] {
+        assert_eq!(
+            super::effective_stub_source(op_source),
+            expected,
+            "op source {op_source:?} must be stored as {expected:?}"
+        );
+    }
+}
+
+/// The join seam. Coordinates a `ContextRegistered` op carries must survive
+/// onto the joiner's stub row - that row is what the fetch path reads back.
+/// The op and the row each pass their own unit tests, so only a test spanning
+/// both can catch the coordinates going missing between them.
+#[test]
+fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
+    use calimero_app_downloader::registry::stored_coords;
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::application::ApplicationId;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    const SOURCE: &str =
+        "https://apps.calimero.network/artifacts/com.acme.app/1.2.3/com.acme.app-1.2.3.mpk";
+
+    // One registered context, applied through the real receive path.
+    let register =
+        |(package, version): (&str, &str), tag: u8| -> calimero_store::types::ApplicationMeta {
+            let store = test_store();
+            let mut rng = OsRng;
+            let signer_sk = PrivateKey::random(&mut rng);
+            let ns_gid = ContextGroupId::from([tag; 32]);
+            let signer_account = enrol_member(&store, &ns_gid, &signer_sk.public_key());
+            MetaRepository::new(&store)
+                .save(&ns_gid, &sample_meta_with_admin(signer_account))
+                .unwrap();
+            MembershipRepository::new(&store)
+                .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
+                .unwrap();
+            let group_key = [tag; 32];
+            let key_id = GroupKeyring::new(&store, ns_gid)
+                .store_key(&group_key)
+                .unwrap();
+
+            let application_id = ApplicationId::from([0xA7; 32]);
+            let inner = GroupOp::ContextRegistered {
+                context_id: ContextId::from([tag; 32]),
+                application_id,
+                blob_id: calimero_primitives::blobs::BlobId::from([0xB7; 32]),
+                source: SOURCE.to_owned(),
+                service_name: None,
+                package: package.to_owned(),
+                version: version.to_owned(),
+            };
+            let op = SignedNamespaceOp::sign(
+                &signer_sk,
+                ns_gid.to_bytes().into(),
+                vec![],
+                1,
+                NamespaceOp::Group {
+                    group_id: ns_gid.to_bytes().into(),
+                    key_id: key_id.into(),
+                    encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
+                    key_rotation: None,
+                },
+            )
+            .unwrap();
+            NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+                .apply_signed_op(&op)
+                .expect("apply ContextRegistered");
+
+            store
+                .handle()
+                .get(&calimero_store::key::ApplicationMeta::new(application_id))
+                .unwrap()
+                .expect("the op seeds the joiner's stub row")
+        };
+
+    // The bootstrap reads the row back exactly like `sync_context_config`.
+    let registered = register(("com.acme.app", "1.2.3"), 0xC7);
+    assert_eq!(
+        stored_coords(&registered.package, &registered.version)
+            .map(|coords| (coords.package, coords.version)),
+        Some(("com.acme.app", "1.2.3")),
+        "a published application's coordinates must reach the joiner's row"
+    );
+    assert_eq!(registered.source.as_ref(), SOURCE);
 }

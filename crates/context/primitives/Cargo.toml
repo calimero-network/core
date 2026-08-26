@@ -9,6 +9,7 @@ description.workspace = true
 publish = true
 
 [dependencies]
+calimero-app-downloader.workspace = true
 calimero-account.workspace = true
 actix.workspace = true
 async-stream.workspace = true
@@ -35,4 +36,5 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
+libp2p.workspace = true
 tempfile = "3.23"

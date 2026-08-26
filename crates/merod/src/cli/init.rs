@@ -28,6 +28,7 @@ use multiaddr::{Multiaddr, Protocol};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{info, warn};
+use url::Url;
 
 use super::admin_creds::AdminCredArgs;
 use super::auth_mode::AuthModeArg;
@@ -112,6 +113,9 @@ const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_SESSION_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
+
+/// Registry written into a fresh `config.toml`. Operators override it there.
+const DEFAULT_REGISTRY_URL: &str = "https://apps.calimero.network";
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum AuthStorageArg {
@@ -244,6 +248,11 @@ pub struct InitCommand {
     /// Node operation mode (standard or read-only)
     #[clap(long, value_enum, default_value_t = NodeMode::Standard)]
     pub mode: NodeMode,
+
+    /// Registry base URL to pull application bundles from. Overrides the
+    /// default written into a fresh `config.toml`.
+    #[clap(long)]
+    pub registry_url: Option<String>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -496,7 +505,7 @@ impl InitCommand {
             embedded_auth,
         );
 
-        let config = ConfigFile::new(
+        let mut config = ConfigFile::new(
             IdentityConfig { keypair: identity },
             self.mode,
             NetworkConfig::new(
@@ -526,6 +535,10 @@ impl InitCommand {
             ContextConfig { migration_v2: true },
         );
 
+        // Written into config.toml rather than defaulted in code, so an operator
+        // points elsewhere by editing one visible line instead of rebuilding.
+        config.registry.base_url = Some(resolve_registry_url(self.registry_url.as_deref())?);
+
         // `save` writes config.toml atomically and owner-only (0600); the file
         // holds the private key, so this keeps it unreadable to other users.
         config.save(&path).await?;
@@ -550,11 +563,38 @@ impl InitCommand {
     }
 }
 
+/// The `--registry-url` override, or the public registry when it is absent.
+fn resolve_registry_url(configured: Option<&str>) -> EyreResult<Url> {
+    Ok(configured.unwrap_or(DEFAULT_REGISTRY_URL).parse()?)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::InitCommand;
+    use super::{resolve_registry_url, InitCommand};
+
+    // `merod init` is the only place the registry default is written, so both
+    // arms decide whether a fresh node resolves apps at all.
+    #[test]
+    fn registry_url_defaults_unless_overridden() {
+        assert_eq!(
+            resolve_registry_url(None).unwrap().as_str(),
+            "https://apps.calimero.network/",
+            "a bare init must point at the public registry"
+        );
+        assert_eq!(
+            resolve_registry_url(Some("https://mirror.example/"))
+                .unwrap()
+                .as_str(),
+            "https://mirror.example/",
+            "--registry-url must win"
+        );
+        assert!(
+            resolve_registry_url(Some("not a url")).is_err(),
+            "an unparseable override must fail init, not fall back"
+        );
+    }
 
     // mDNS is opt-in: a fresh `merod init` must not write a config that
     // announces the node on the local network. `--mdns` is the way in, and the

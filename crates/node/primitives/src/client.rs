@@ -32,7 +32,7 @@ pub use crate::join_bundle::JoinBundle;
 
 mod alias;
 pub use alias::AliasExists;
-mod application;
+pub mod application;
 mod blob;
 
 pub use blob::BlobManager;
@@ -219,6 +219,9 @@ pub struct NodeClient {
     /// (NodeManager event handler) and readers (concurrent publishers)
     /// see the same map without an actor mailbox round-trip.
     known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
+    /// This node's `[registry]` settings, consulted by `acquire_bytecode`
+    /// before any peer fetch. Default (disabled) unless startup sets it.
+    registry: calimero_app_downloader::registry::RegistryConfig,
 }
 
 impl NodeClient {
@@ -247,7 +250,25 @@ impl NodeClient {
             sync_client,
             local_delta_tx,
             known_subscribers: Arc::new(DashMap::new()),
+            registry: calimero_app_downloader::registry::RegistryConfig::default(),
         }
+    }
+
+    /// Set this node's registry settings. Builder-style so the existing
+    /// call sites of `new` stay untouched.
+    #[must_use]
+    pub fn with_registry(
+        mut self,
+        registry: calimero_app_downloader::registry::RegistryConfig,
+    ) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    /// This node's registry settings. Wired from `[registry]` at startup.
+    #[must_use]
+    pub fn registry_config(&self) -> calimero_app_downloader::registry::RegistryConfig {
+        self.registry.clone()
     }
 
     /// Record that `peer_id` subscribed to `topic`. Called from the

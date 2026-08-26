@@ -65,7 +65,7 @@ steps:
   - name: Install kv-store-with-handlers on node-1
     type: install_application
     node: sync-regression-node-1
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: dist/com.calimero.kv-store-with-handlers-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
@@ -73,7 +73,7 @@ steps:
   - name: Install kv-store-with-handlers on node-2
     type: install_application
     node: sync-regression-node-2
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: dist/com.calimero.kv-store-with-handlers-0.0.0.mpk
     dev: true
 
   - name: Node-1 creates namespace

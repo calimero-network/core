@@ -52,6 +52,16 @@ pub struct ApplyNamespaceOpResult {
     pub divergence: Option<super::super::DivergenceReport>,
 }
 
+/// The source string to persist on an application stub built from an inbound
+/// op: a location a receiver cannot fetch from becomes the marker instead.
+pub(super) fn effective_stub_source(op_source: &str) -> &str {
+    if op_source.starts_with("http://") || op_source.starts_with("https://") {
+        op_source
+    } else {
+        calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE
+    }
+}
+
 pub(crate) fn min_acks_after_local_mutation(
     _known_at_gate: usize,
     known_at_publish: usize,
@@ -1779,6 +1789,8 @@ impl<'a> NamespaceGovernance<'a> {
             application_id,
             blob_id,
             source,
+            package,
+            version,
             ..
         } = op
         {
@@ -1792,11 +1804,7 @@ impl<'a> NamespaceGovernance<'a> {
                 if !handle.has(&bytecode_id)? {
                     drop(handle);
                     let blob_meta = calimero_store::key::BlobMeta::new(*blob_id);
-                    let effective_source = if source.starts_with("file://") || source.is_empty() {
-                        "calimero://pending-blob-share".to_owned()
-                    } else {
-                        source.clone()
-                    };
+                    let effective_source = effective_stub_source(source).to_owned();
                     let stub = calimero_store::types::ApplicationMeta::new(
                         blob_meta,
                         0,
@@ -1804,8 +1812,8 @@ impl<'a> NamespaceGovernance<'a> {
                         Vec::new().into_boxed_slice(),
                         blob_meta,
                         calimero_store::types::PackageInfo {
-                            package: String::new().into_boxed_str(),
-                            version: String::new().into_boxed_str(),
+                            package: package.as_str().into(),
+                            version: version.as_str().into(),
                             signer_id: String::new().into_boxed_str(),
                             state_version: 0,
                         },

@@ -103,6 +103,8 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
             to_state_version: 0,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");

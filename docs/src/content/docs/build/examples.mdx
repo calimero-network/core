@@ -115,13 +115,13 @@ writes to *different* keys all survive a merge.
 | `entries()` | Collect all pairs into a `BTreeMap<String, String>`. |
 | `len()` / `remove(key)` / `clear()` | Count, delete one, delete all (`Cleared`). |
 
-**Build & run.** From the app directory, `cargo mero build` drops
-`kv_store.wasm` into `res/`. Then follow the
-[Quickstart](/build/quickstart/) to install and call it:
+**Build & run.** From the app directory, `cargo mero bundle --dev --no-icon`
+signs a bundle into the repo root's `dist/`, named after the manifest's
+`package` and `version`. Then follow the [Quickstart](/build/quickstart/) to
+install and call it:
 
 ```sh
-meroctl --node node1 app install --path ./res/kv_store.wasm \
-  --package com.example.kvstore --version 1.0.0
+meroctl --node node1 app install --path dist/com.calimero.kv-store-0.0.0.mpk
 meroctl --node node1 call set --context <context-id> \
   --args '{"key": "hello", "value": "world"}'
 ```
@@ -160,8 +160,9 @@ pub struct KvStore {
   bookkeeping. The event→handler routing happens on a real node.
 </Aside>
 
-**Build & run.** `cargo mero build` produces `res/kv_store_with_handlers.wasm`;
-install and call it as in the [Quickstart](/build/quickstart/).
+**Build & run.** `cargo mero bundle --dev --no-icon` produces
+`dist/com.calimero.kv-store-with-handlers-0.0.0.mpk`; install and call it as in
+the [Quickstart](/build/quickstart/).
 
 ## collaborative-editor
 
@@ -197,9 +198,10 @@ into root state causes data loss under concurrent merges. `metadata` holds
 | `get_text()` / `get_length()` / `is_empty()` | Read the rendered document. |
 | `get_stats()` | Formatted title / length / edit-count / owner summary. |
 
-**Build & run.** `cargo mero build` produces `res/collaborative_editor.wasm`. The
-collaborative payoff appears with two nodes editing the same context — install
-on each, then interleave `insert_text` / `delete_text` calls and read
+**Build & run.** `cargo mero bundle --dev --no-icon` produces
+`dist/com.calimero.collaborative-editor-0.0.0.mpk`. The collaborative payoff
+appears with two nodes editing the same context: install on each, then
+interleave `insert_text` / `delete_text` calls and read
 `get_text()` on both; see [Quickstart](/build/quickstart/) for the install flow.
 
 ## team-metrics (macro & custom)
@@ -241,8 +243,9 @@ reason not to.
 | `record_win(team_id)` / `record_loss` / `record_draw` | `entry(team_id).or_default()`, increment the matching counter, return the new total, emit an event. |
 | `get_wins(team_id)` / `get_losses` / `get_draws` | Read a team's counter; errors if the team is unknown. |
 
-**Build & run.** `cargo mero build` produces `res/team_metrics_macro.wasm` (or
-`team_metrics_custom.wasm`); install and call per the
+**Build & run.** `cargo mero bundle --dev --no-icon` produces
+`dist/com.calimero.team-metrics-macro-0.0.0.mpk` (or
+`com.calimero.team-metrics-custom-0.0.0.mpk`); install and call per the
 [Quickstart](/build/quickstart/).
 
 ## blobs
@@ -285,8 +288,9 @@ would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
   [Blobs](/build/guides/blobs/) for how the blob store and announcement work.
 </Aside>
 
-**Build & run.** `cargo mero build` produces `res/blobs.wasm`; install and call
-per the [Quickstart](/build/quickstart/).
+**Build & run.** `cargo mero bundle --dev --no-icon` produces
+`dist/com.calimero.blobs-0.0.0.mpk`; install and call per the
+[Quickstart](/build/quickstart/).
 
 ## xcall-example
 
@@ -325,10 +329,10 @@ entry point — an xcall targeting it is denied by the node before it runs.
   [Cross-context calls](/build/guides/cross-context/).
 </Aside>
 
-**Build & run.** `cargo mero build` produces `res/xcall_example.wasm` with the
-embedded ABI; install it into two contexts, then `ping` one toward the other and
-watch `get_counter()` move on the target. See [Quickstart](/build/quickstart/)
-for the install flow.
+**Build & run.** `cargo mero bundle --dev --no-icon` produces
+`dist/com.calimero.xcall-example-0.0.0.mpk` with the embedded ABI; install it
+into two contexts, then `ping` one toward the other and watch `get_counter()`
+move on the target. See [Quickstart](/build/quickstart/) for the install flow.
 
 ## Test & conformance fixtures
 

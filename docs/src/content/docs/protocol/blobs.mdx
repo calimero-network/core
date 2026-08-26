@@ -239,8 +239,17 @@ and sends no chunks.
 
 ### Authorization
 
-Blob bytes are not served to anyone who asks. The provider authorizes each
-`BlobRequest` before streaming:
+Blob bytes are not served to anyone who asks.
+
+Application bytecode has a gate ahead of authorization: a node whose
+[`[registry] mode`](/operate/config/#registry) is `http` resolves applications from its
+own registry and is therefore not a source of their bytes, so it neither announces nor
+serves them and the request reads as "not held" (`NodeClient::may_share_blob`). Only
+`dht`-mode nodes serve application bytecode. User-data blobs are unaffected in both
+modes, and everything below applies to them either way.
+
+For the blobs a node will serve, the provider authorizes each `BlobRequest` before
+streaming:
 
 - **Public bundles.** If the requested `blob_id` is the context's application
   bytecode or compiled artifact (per the authoritative context config), access

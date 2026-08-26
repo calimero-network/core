@@ -1,3 +1,5 @@
+pub mod acquire;
+mod bind;
 pub mod bundle;
 mod install;
 mod query;
@@ -72,18 +74,6 @@ impl NodeClient {
         };
         self.application_bytes_from_blob(&application.bytecode.blob_id(), service_name)
             .await
-    }
-
-    pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
-        let handle = self.datastore.handle();
-
-        let key = key::ApplicationMeta::new(*application_id);
-
-        if let Some(application) = handle.get(&key)? {
-            return self.has_blob(&application.bytecode.blob_id());
-        }
-
-        Ok(false)
     }
 
     // Installation and uninstallation are in `install` submodule.

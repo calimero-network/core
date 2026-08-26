@@ -26,17 +26,6 @@ tracing.workspace = true
 independent = true
 
 [package.metadata.calimero]
-package = "com.calimero.scaffolding-e2e-multi"
+package = "com.calimero.scaffolding-e2e"
 name = "Scaffolding E2E"
 min-runtime-version = "0.0.0"
-
-# Both services build from this crate's own wasm under two names: what they
-# exercise in merod is multi-service install + service_name selection, not
-# two different programs.
-[[package.metadata.calimero.services]]
-name = "store-a"
-crate = "scaffolding-e2e"
-
-[[package.metadata.calimero.services]]
-name = "store-b"
-crate = "scaffolding-e2e"

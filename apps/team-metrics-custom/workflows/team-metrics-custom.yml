@@ -12,7 +12,7 @@ steps:
   - name: Install Team Metrics Custom Application on Node 1
     type: install_application
     node: team-custom-node-1
-    path: res/team_metrics_custom.wasm
+    path: ../../dist/com.calimero.team-metrics-custom-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

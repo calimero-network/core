@@ -75,6 +75,11 @@ pub struct ConfigFile {
     /// (set `enabled = false` to opt out).
     #[serde(default)]
     pub dag_compaction: DagCompactionConfig,
+
+    /// Where this node pulls application bytecode from (`[registry]`). Absent
+    /// section leaves peer-to-peer blob share as the only transport.
+    #[serde(default)]
+    pub registry: calimero_app_downloader::registry::RegistryConfig,
 }
 
 /// Configuration for TEE (Trusted Execution Environment) features.
@@ -498,6 +503,7 @@ impl ConfigFile {
             runtime: RuntimeConfig::default(),
             tee: None,
             dag_compaction: DagCompactionConfig::default(),
+            registry: calimero_app_downloader::registry::RegistryConfig::default(),
         }
     }
 
@@ -835,5 +841,47 @@ mod tests {
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "config file must be owner-only");
+    }
+}
+
+#[cfg(test)]
+mod registry_section_tests {
+    use super::{ConfigFile, IdentityConfig};
+
+    const BASE_URL: &str = "https://apps.calimero.network/";
+
+    /// The fixture omits `[identity]`, which no repository should carry key
+    /// material for; a real config.toml has one, so mint a throwaway per load.
+    fn legacy_config_toml() -> String {
+        let keypair = IdentityConfig::generate_default().keypair;
+        let fixture = std::fs::read_to_string("tests/fixtures/config-legacy.toml")
+            .expect("fixture must exist");
+        format!(
+            "{fixture}\n[identity]\npeer_id = \"{}\"\nkeypair = \"{}\"\n",
+            keypair.public().to_peer_id().to_base58(),
+            bs58::encode(keypair.to_protobuf_encoding().expect("protobuf")).into_string(),
+        )
+    }
+
+    /// Every config.toml written before this section existed must still load,
+    /// with the registry disabled so nothing about that node's behavior moves.
+    #[test]
+    fn absent_registry_section_defaults_to_disabled() {
+        let cfg: ConfigFile =
+            toml::from_str(&legacy_config_toml()).expect("legacy config must deserialize");
+        assert!(cfg.registry.base_url.is_none());
+    }
+
+    #[test]
+    fn registry_section_threads_through() {
+        let toml = format!(
+            "{}\n[registry]\nbase_url = \"{BASE_URL}\"\n",
+            legacy_config_toml()
+        );
+        let cfg: ConfigFile = toml::from_str(&toml).expect("config with registry must deserialize");
+        assert_eq!(
+            cfg.registry.base_url.map(String::from),
+            Some(BASE_URL.to_owned())
+        );
     }
 }

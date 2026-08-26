@@ -21,7 +21,7 @@ steps:
   - name: Install Bundle Application on Node 1
     type: install_application
     node: calimero-node-1
-    path: dist/com.calimero.kv-store-0.0.0.mpk
+    path: ../../dist/com.calimero.kv-store-0.0.0.mpk
     dev: true
     outputs:
       bundle_app_id: applicationId

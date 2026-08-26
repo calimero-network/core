@@ -36,7 +36,7 @@ steps:
   - name: Install Application on Node 1
     type: install_application
     node: new-calimero-node-1
-    path: "./res/components_demo.wasm"
+    path: "../../dist/com.calimero.components-demo-0.0.0.mpk"
     dev: true
     outputs:
       app_id: applicationId

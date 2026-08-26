@@ -74,6 +74,7 @@ exclude = [
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
     "./apps/scaffolding-e2e",
+    "./apps/scaffolding-e2e-multi",
     "./crates/merod",
     "./crates/meroctl",
     "./crates/build-utils",
@@ -83,6 +84,7 @@ exclude = [
 resolver = "2"
 members = [
     "./crates/account",
+    "./crates/app-downloader",
     "./crates/auth",
     "./crates/build-utils",
     "./crates/bundle",
@@ -126,6 +128,7 @@ members = [
     "./crates/wasm-abi",
 
     "./apps/scaffolding-e2e",
+    "./apps/scaffolding-e2e-multi",
     "./apps/kv-store",
     "./apps/custom-key-store",
     "./apps/migration-harness-example",
@@ -311,6 +314,7 @@ zeroize = "1.8"
 
 pyo3 = "0.20"
 
+calimero-app-downloader = { path = "./crates/app-downloader" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-blobstore = { path = "./crates/store/blobs" }

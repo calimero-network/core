@@ -9,37 +9,26 @@ use calimero_primitives::identity::{AccountId, DeviceId, MemberIdentity, PublicK
 use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Empty;
 
 // -------------------------------------------- Application API --------------------------------------------
+/// Install by registry coordinates. There is no URL: the node fetches from the
+/// one source its own `[registry]` names, which is what keeps this unforgeable.
+///
+/// `deny_unknown_fields` so a pre-coordinates body carrying `url` is refused
+/// outright, never served from the registry while its URL is dropped.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallApplicationRequest {
-    pub url: Url,
-    pub hash: Option<Hash>,
-    pub metadata: Vec<u8>,
-    pub package: Option<String>,
-    pub version: Option<String>,
+    pub package: String,
+    pub version: String,
 }
 
 impl InstallApplicationRequest {
-    pub fn new(
-        url: Url,
-        hash: Option<Hash>,
-        metadata: Vec<u8>,
-        package: Option<String>,
-        version: Option<String>,
-    ) -> Self {
-        Self {
-            url,
-            hash,
-            metadata,
-            package,
-            version,
-        }
+    pub const fn new(package: String, version: String) -> Self {
+        Self { package, version }
     }
 }
 
@@ -67,24 +56,11 @@ impl InstallApplicationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
-    pub metadata: Vec<u8>,
-    pub package: Option<String>,
-    pub version: Option<String>,
 }
 
 impl InstallDevApplicationRequest {
-    pub fn new(
-        path: Utf8PathBuf,
-        metadata: Vec<u8>,
-        package: Option<String>,
-        version: Option<String>,
-    ) -> Self {
-        Self {
-            path,
-            metadata,
-            package,
-            version,
-        }
+    pub const fn new(path: Utf8PathBuf) -> Self {
+        Self { path }
     }
 }
 
@@ -1054,66 +1030,33 @@ impl TeeAttestResponse {
 
 use crate::validation::{
     helpers::{
-        validate_bytes_size, validate_hex_string, validate_optional_string_length,
-        validate_safe_path, validate_string_length, validate_url,
+        validate_bytes_size, validate_hex_string, validate_non_empty, validate_safe_path,
+        validate_string_length,
     },
-    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_METADATA_SIZE, MAX_PACKAGE_NAME_LENGTH,
-    MAX_VERSION_LENGTH,
+    Validate, ValidationError, MAX_INIT_PARAMS_SIZE, MAX_PACKAGE_NAME_LENGTH, MAX_VERSION_LENGTH,
 };
 
 impl Validate for InstallApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_url(&self.url, "url") {
-            errors.push(e);
-        }
-
-        if let Some(e) = validate_bytes_size(&self.metadata, "metadata", MAX_METADATA_SIZE) {
-            errors.push(e);
-        }
-
-        if let Some(e) =
-            validate_optional_string_length(&self.package, "package", MAX_PACKAGE_NAME_LENGTH)
-        {
-            errors.push(e);
-        }
-
-        if let Some(e) =
-            validate_optional_string_length(&self.version, "version", MAX_VERSION_LENGTH)
-        {
-            errors.push(e);
-        }
-
-        errors
+        // Only the shape. What a coordinate may contain is decided where it
+        // becomes a path segment, in `RegistryCoords`.
+        [
+            validate_non_empty(&self.package, "package"),
+            validate_string_length(&self.package, "package", MAX_PACKAGE_NAME_LENGTH),
+            validate_non_empty(&self.version, "version"),
+            validate_string_length(&self.version, "version", MAX_VERSION_LENGTH),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
 impl Validate for InstallDevApplicationRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if let Some(e) = validate_safe_path(self.path.as_str(), "path") {
-            errors.push(e);
-        }
-
-        if let Some(e) = validate_bytes_size(&self.metadata, "metadata", MAX_METADATA_SIZE) {
-            errors.push(e);
-        }
-
-        if let Some(e) =
-            validate_optional_string_length(&self.package, "package", MAX_PACKAGE_NAME_LENGTH)
-        {
-            errors.push(e);
-        }
-
-        if let Some(e) =
-            validate_optional_string_length(&self.version, "version", MAX_VERSION_LENGTH)
-        {
-            errors.push(e);
-        }
-
-        errors
+        validate_safe_path(self.path.as_str(), "path")
+            .into_iter()
+            .collect()
     }
 }
 

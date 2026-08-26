@@ -1,3 +1,4 @@
+use calimero_app_downloader::registry::RegistryConfig;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
@@ -16,6 +17,11 @@ use super::auth_mode::AuthModeArg;
 use super::validation::validate_config;
 use crate::cli::RootArgs;
 use crate::kms;
+
+/// Overrides `[registry].mode` so CI containers can select a registry without editing config.toml.
+const CALIMERO_REGISTRY_MODE: &str = "CALIMERO_REGISTRY_MODE";
+/// Overrides `[registry].base_url`; same rationale as `CALIMERO_REGISTRY_MODE`.
+const CALIMERO_REGISTRY_URL: &str = "CALIMERO_REGISTRY_URL";
 
 /// Run a node
 #[derive(Debug, Parser)]
@@ -65,6 +71,8 @@ impl RunCommand {
         }
 
         let mut config = ConfigFile::load(&path).await?;
+
+        apply_registry_env(&mut config.registry, |k| std::env::var(k).ok())?;
 
         // Apply CLI auth_mode override before validation.
         if let Some(mode) = self.auth_mode {
@@ -278,6 +286,7 @@ impl RunCommand {
             datastore: datastore_config,
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
+            registry: config.registry,
             server: server_config,
             gc_interval_secs: None, // Use default (12 hours)
             dag_compaction: config.dag_compaction,
@@ -289,6 +298,26 @@ impl RunCommand {
         })
         .await
     }
+}
+
+/// Applies `CALIMERO_REGISTRY_MODE`/`CALIMERO_REGISTRY_URL` over a loaded config.
+/// A malformed value errors instead of keeping config.toml's setting - a misconfigured node must not start.
+fn apply_registry_env(
+    cfg: &mut RegistryConfig,
+    get: impl Fn(&str) -> Option<String>,
+) -> EyreResult<()> {
+    if let Some(raw) = get(CALIMERO_REGISTRY_MODE) {
+        cfg.mode = raw
+            .parse()
+            .map_err(|e: String| eyre::eyre!("{CALIMERO_REGISTRY_MODE} is invalid: {e}"))?;
+    }
+    if let Some(raw) = get(CALIMERO_REGISTRY_URL) {
+        cfg.base_url = Some(
+            raw.parse()
+                .map_err(|e| eyre::eyre!("{CALIMERO_REGISTRY_URL} is invalid: {e}"))?,
+        );
+    }
+    Ok(())
 }
 
 /// Warn when the server is reachable off-box but the node authenticates nothing
@@ -332,10 +361,60 @@ fn multiaddr_ip(addr: &Multiaddr) -> Option<core::net::IpAddr> {
 
 #[cfg(test)]
 mod tests {
+    use calimero_app_downloader::registry::RegistryMode;
+
     use super::*;
 
     fn addr(s: &str) -> Multiaddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn apply_registry_env_overrides_mode_and_url() {
+        let mut cfg = RegistryConfig::default();
+        apply_registry_env(&mut cfg, |k| match k {
+            "CALIMERO_REGISTRY_MODE" => Some("dht".to_owned()),
+            "CALIMERO_REGISTRY_URL" => Some("https://reg.example".to_owned()),
+            _ => None,
+        })
+        .expect("valid overrides must apply");
+        assert_eq!(cfg.mode, RegistryMode::Dht);
+        assert_eq!(
+            cfg.base_url.map(String::from),
+            Some("https://reg.example/".to_owned())
+        );
+    }
+
+    #[test]
+    fn apply_registry_env_leaves_config_when_absent() {
+        let mut cfg = RegistryConfig::new(
+            RegistryMode::Http,
+            Some("https://apps.calimero.network".parse().unwrap()),
+        );
+        let before = cfg.clone();
+        apply_registry_env(&mut cfg, |_| None).expect("absent env must not error");
+        assert_eq!(cfg.mode, before.mode);
+        assert_eq!(cfg.base_url, before.base_url);
+    }
+
+    #[test]
+    fn apply_registry_env_rejects_garbage_mode() {
+        let mut cfg = RegistryConfig::default();
+        let err = apply_registry_env(&mut cfg, |k| {
+            (k == "CALIMERO_REGISTRY_MODE").then(|| "carrier-pigeon".to_owned())
+        })
+        .expect_err("an unknown mode must not start the node");
+        assert!(err.to_string().contains("CALIMERO_REGISTRY_MODE"));
+    }
+
+    #[test]
+    fn apply_registry_env_rejects_garbage_url() {
+        let mut cfg = RegistryConfig::default();
+        let err = apply_registry_env(&mut cfg, |k| {
+            (k == "CALIMERO_REGISTRY_URL").then(|| "not a url".to_owned())
+        })
+        .expect_err("an unparseable URL must not start the node");
+        assert!(err.to_string().contains("CALIMERO_REGISTRY_URL"));
     }
 
     #[test]

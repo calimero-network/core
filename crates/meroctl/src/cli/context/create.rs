@@ -42,15 +42,9 @@ pub struct CreateCommand {
         long,
         short = 'w',
         conflicts_with = "application_id",
-        help = "Path to the application file to watch and install locally"
+        help = "Path to the application's signed .mpk bundle to watch and install locally"
     )]
     pub watch: Option<Utf8PathBuf>,
-
-    #[clap(
-        requires = "watch",
-        help = "Metadata needed for the application installation"
-    )]
-    pub metadata: Option<String>,
 
     #[clap(
         short = 's',
@@ -101,7 +95,6 @@ impl CreateCommand {
                 application_id: Some(app_id),
                 watch: None,
                 context_seed,
-                metadata: None,
                 params,
                 context,
                 service,
@@ -129,7 +122,6 @@ impl CreateCommand {
                 application_id: None,
                 watch: Some(path),
                 context_seed,
-                metadata,
                 params,
                 context,
                 service,
@@ -141,15 +133,9 @@ impl CreateCommand {
                 validate_file_exists(path.as_std_path())?;
 
                 let path = path.canonicalize_utf8()?;
-                let metadata = metadata.map(String::into_bytes);
                 let client = environment.client()?;
                 let application_id = client
-                    .install_dev_application(InstallDevApplicationRequest::new(
-                        path.clone(),
-                        metadata.clone().unwrap_or_default(),
-                        Some("unknown".to_owned()),
-                        Some("0.0.0".to_owned()),
-                    ))
+                    .install_dev_application(InstallDevApplicationRequest::new(path.clone()))
                     .await?
                     .data
                     .application_id;
@@ -175,7 +161,6 @@ impl CreateCommand {
                     &client_clone,
                     context_id,
                     path,
-                    metadata,
                     member_public_key,
                 )
                 .await?;
@@ -241,7 +226,6 @@ async fn watch_app_and_update_context(
     _client: &Client,
     context_id: ContextId,
     path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
     member_public_key: PublicKey,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
@@ -285,12 +269,7 @@ async fn watch_app_and_update_context(
 
         let client = environment.client()?;
         let application_id = client
-            .install_dev_application(InstallDevApplicationRequest::new(
-                path.clone(),
-                metadata.clone().unwrap_or_default(),
-                Some("unknown".to_owned()),
-                Some("0.0.0".to_owned()),
-            ))
+            .install_dev_application(InstallDevApplicationRequest::new(path.clone()))
             .await?
             .data
             .application_id;

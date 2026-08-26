@@ -314,6 +314,8 @@ async fn a_member_sees_started_then_fleet_progress_then_completed() {
             to_state_version: 2,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");

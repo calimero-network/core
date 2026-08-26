@@ -127,13 +127,28 @@ jobs:
         env:
           WASM_PROFILING: "true"
 
+      - name: Build kv-store bundle
+        run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
+        env:
+          WASM_PROFILING: "true"
+
       - name: Build kv-store-with-handlers app
         run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
         env:
           WASM_PROFILING: "true"
 
+      - name: Build kv-store-with-handlers bundle
+        run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)
+        env:
+          WASM_PROFILING: "true"
+
       - name: Build scaffolding-e2e app
         run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
+        env:
+          WASM_PROFILING: "true"
+
+      - name: Build scaffolding-e2e multi-service bundle
+        run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
         env:
           WASM_PROFILING: "true"
 
@@ -155,6 +170,16 @@ jobs:
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             apps/scaffolding-e2e/res/*.wasm
+          retention-days: 1
+
+      # Every fuzzy scenario installs from these now (not the raw wasm
+      # above); a separate artifact because dist/ sits outside apps/ and
+      # would otherwise collide with the apps/-relative extraction path.
+      - name: Upload build bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzzy-test-build-bundles
+          path: dist/*.mpk
           retention-days: 1
 
   fuzzy-test-kv-store:
@@ -185,6 +210,12 @@ jobs:
           # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
           # layout the merobox fuzzy configs reference.
           path: apps
+
+      - name: Download build bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: fuzzy-test-build-bundles
+          path: dist
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -242,6 +273,8 @@ jobs:
         run: |
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
           docker pull "$IMAGE" || true
+          # A soak test of the p2p paths, so its nodes resolve from each other.
+          ./scripts/set-registry-mode.sh "$IMAGE" dht
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent
@@ -410,6 +443,12 @@ jobs:
           # layout the merobox fuzzy configs reference.
           path: apps
 
+      - name: Download build bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: fuzzy-test-build-bundles
+          path: dist
+
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
@@ -465,6 +504,8 @@ jobs:
         run: |
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
           docker pull "$IMAGE" || true
+          # A soak test of the p2p paths, so its nodes resolve from each other.
+          ./scripts/set-registry-mode.sh "$IMAGE" dht
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-handlers
@@ -623,6 +664,12 @@ jobs:
           # layout the merobox fuzzy configs reference.
           path: apps
 
+      - name: Download build bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: fuzzy-test-build-bundles
+          path: dist
+
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
@@ -678,6 +725,8 @@ jobs:
         run: |
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
           docker pull "$IMAGE" || true
+          # A soak test of the p2p paths, so its nodes resolve from each other.
+          ./scripts/set-registry-mode.sh "$IMAGE" dht
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-e2e
@@ -834,6 +883,12 @@ jobs:
           # layout the merobox fuzzy configs reference.
           path: apps
 
+      - name: Download build bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: fuzzy-test-build-bundles
+          path: dist
+
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
@@ -889,6 +944,8 @@ jobs:
         run: |
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
           docker pull "$IMAGE" || true
+          # A soak test of the p2p paths, so its nodes resolve from each other.
+          ./scripts/set-registry-mode.sh "$IMAGE" dht
 
       - name: Setup vmagent for metrics collection
         id: setup-vmagent-gov

@@ -608,6 +608,8 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
             to_state_version: 2,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");
@@ -681,6 +683,8 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
             GroupOp::TargetApplicationSet {
                 bytecode_id: bytecode_id.into(),
                 target_application_id: app_id_v2(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign TargetApplicationSet")

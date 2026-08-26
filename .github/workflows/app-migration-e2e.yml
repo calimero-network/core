@@ -251,7 +251,7 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run "workflows/app-migration/${WORKFLOW}.yml" \
-              --image merod:local \
+              --image merod:local-dht \
               --e2e-mode \
               --verbose 2>&1 | tee "docker-logs/merobox-${WORKFLOW}.log"
           wf_exit=${PIPESTATUS[0]}

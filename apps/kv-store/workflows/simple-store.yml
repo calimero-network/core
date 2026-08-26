@@ -12,7 +12,7 @@ steps:
   - name: Install Simple Store Application
     type: install_application
     node: simple-store-node-1
-    path: "res/kv_store.wasm"
+    path: "../../dist/com.calimero.kv-store-0.0.0.mpk"
     dev: true
     outputs:
       app_id: applicationId

@@ -170,7 +170,13 @@ id_newtype! {
 /// every later variant, and added `to_state_version` to `CascadeUpgrade` so a
 /// non-initiator's upgrade record can carry the target ABI state version the
 /// rollup compares against.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 10;
+///
+/// v11: `TargetApplicationSet`, `CascadeUpgrade` and `ContextRegistered` gained
+/// mandatory `package`/`version`, so a receiver resolves the application from
+/// its own registry instead of depending on the publisher staying online. Adding
+/// fields to existing variants changes their content hash, so a peer on v10 must
+/// reject rather than mis-decode.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 11;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -363,21 +369,31 @@ pub enum GroupOp {
     /// Default capability bitmask for new members.
     DefaultCapabilitiesSet { capabilities: MemberCapabilities },
     /// Update target application and bytecode id in group metadata.
+    ///
+    /// `package`/`version` let a receiver resolve the artifact from its OWN
+    /// registry. Every application is a signed `.mpk` whose manifest carries
+    /// both, so an app without coordinates cannot exist.
     TargetApplicationSet {
         bytecode_id: BytecodeId,
         target_application_id: ApplicationId,
+        package: String,
+        version: String,
     },
     /// Register a context index under this group (must match `ContextGroupRef` invariants).
     ContextRegistered {
         context_id: ContextId,
         application_id: calimero_primitives::application::ApplicationId,
         blob_id: calimero_primitives::blobs::BlobId,
-        /// Source URL for the application (registry URL or `file://` for dev).
-        /// Joiners use this to install the app directly without blob sharing.
+        /// Where the registering node installed the application from. Recorded
+        /// on the receiver's application stub; only `http(s)` is fetchable.
         source: String,
         /// Which service from the application bundle this context runs.
         /// None for single-service applications.
         service_name: Option<String>,
+        /// The application's registry coordinates, resolved against the JOINER's
+        /// own registry.
+        package: String,
+        version: String,
     },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },
@@ -487,6 +503,10 @@ pub enum GroupOp {
         to_state_version: u32,
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
+        /// Target's registry coordinates, resolved against each receiver's own
+        /// registry.
+        package: String,
+        version: String,
     },
     /// Carrier for a forward-secrecy key rotation that follows a self-leave.
     ///
@@ -1431,6 +1451,9 @@ pub mod bounds {
     pub const MAX_METADATA_ENTRIES: usize = 1_024;
     /// Max byte length of a metadata name / key / value string.
     pub const MAX_METADATA_STRING_LEN: usize = 8_192;
+    /// Max byte length of a registry coordinate (`package` / `version`). Mirrors
+    /// the artifact-URL builder's own cap, applied here at decode instead.
+    pub const MAX_COORD_BYTES: usize = 128;
 }
 
 /// Fail with [`GovernanceError::Bounds`] if `len > max`.
@@ -1454,6 +1477,18 @@ fn check_metadata(
     for (k, v) in data {
         check_bound(field, k.len(), bounds::MAX_METADATA_STRING_LEN)?;
         check_bound(field, v.len(), bounds::MAX_METADATA_STRING_LEN)?;
+    }
+    Ok(())
+}
+
+/// Bound an op's registry coordinates. Empty is a rejection, not an absence:
+/// it addresses no registry, and the wire has no way to say "published nowhere".
+fn check_coords(package: &str, version: &str) -> Result<(), GovernanceError> {
+    for (field, coord) in [("group_op.package", package), ("group_op.version", version)] {
+        if coord.is_empty() {
+            return Err(GovernanceError::Bounds(format!("{field}: empty")));
+        }
+        check_bound(field, coord.len(), bounds::MAX_COORD_BYTES)?;
     }
     Ok(())
 }
@@ -1510,10 +1545,24 @@ impl GroupOp {
             ),
             Self::GroupMigrationSet {
                 migration: Some(m), ..
-            }
-            | Self::CascadeUpgrade {
-                migration: Some(m), ..
             } => check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES),
+            Self::CascadeUpgrade {
+                migration,
+                package,
+                version,
+                ..
+            } => {
+                if let Some(m) = migration {
+                    check_bound("group_op.migration", m.len(), bounds::MAX_BLOB_BYTES)?;
+                }
+                check_coords(package, version)
+            }
+            Self::TargetApplicationSet {
+                package, version, ..
+            }
+            | Self::ContextRegistered {
+                package, version, ..
+            } => check_coords(package, version),
             // Each handoff costs an Ed25519 verification in `root_key_at_epoch`,
             // reached from the wire before any authorization runs, so an
             // uncapped chain is verification amplification.

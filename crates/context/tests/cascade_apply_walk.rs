@@ -136,6 +136,8 @@ fn cascade_upgrade_updates_all_matching_descendants_and_skips_sibling_namespace(
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");

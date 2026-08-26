@@ -3,74 +3,61 @@
 //! installing a bundle after blob sharing. Extracted from the manager
 //! god-file as an `impl SyncManager` fragment.
 
+use calimero_app_downloader::registry::stored_coords;
+use calimero_app_downloader::{AppRequest, Outcome};
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::events::{
-    AppVersionChangedPayload, ContextEvent, ContextEventPayload, NodeEvent,
-};
 use eyre::bail;
-use tracing::{debug, warn};
 
 use super::SyncManager;
 
 impl SyncManager {
-    /// Get blob ID and application config from application or context config
+    /// The bytecode blob this context's application row names.
     pub(super) async fn get_blob_info(
         &self,
         context_id: &ContextId,
         application: &Option<calimero_primitives::application::Application>,
-    ) -> eyre::Result<(
-        calimero_primitives::blobs::BlobId,
-        Option<calimero_primitives::application::Application>,
-    )> {
+    ) -> eyre::Result<calimero_primitives::blobs::BlobId> {
         if let Some(ref app) = application {
-            Ok((app.blob.bytecode, None))
-        } else {
-            // Application not found - get blob_id from context config
-            let app_config = self
-                .context_client
-                .get_context_application(context_id)
-                .await?;
-            Ok((app_config.blob.bytecode, Some(app_config)))
+            return Ok(app.blob.bytecode);
         }
+        // No row under the context's application id, which is what
+        // `get_context_application` resolves too - so this errors, and is the
+        // one place that names why the session cannot proceed.
+        Ok(self
+            .context_client
+            .get_context_application(context_id)
+            .await?
+            .blob
+            .bytecode)
     }
 
-    /// Get application size from application, cached config, or context config
-    pub(super) async fn get_application_size(
+    /// Acquire a context's application bytecode from the ONE source this node
+    /// is configured with - never from peers behind an operator's back.
+    ///
+    /// `false` is "the source had nothing yet", never a fault: the caller skips
+    /// what it was staging and the next access retries.
+    pub(super) async fn acquire_context_bytecode(
         &self,
-        context_id: &ContextId,
-        application: &Option<calimero_primitives::application::Application>,
-        app_config_opt: &Option<calimero_primitives::application::Application>,
-    ) -> eyre::Result<u64> {
-        if let Some(ref app) = application {
-            Ok(app.size)
-        } else if let Some(ref app_config) = app_config_opt {
-            Ok(app_config.size)
-        } else {
-            let app_config = self
-                .context_client
-                .get_context_application(context_id)
-                .await?;
-            Ok(app_config.size)
-        }
-    }
-
-    /// Get application source from cached config or context config
-    async fn get_application_source(
-        &self,
-        context_id: &ContextId,
-        app_config_opt: &Option<calimero_primitives::application::Application>,
-    ) -> eyre::Result<calimero_primitives::application::ApplicationSource> {
-        if let Some(ref app_config) = app_config_opt {
-            Ok(app_config.source.clone())
-        } else {
-            let app_config = self
-                .context_client
-                .get_context_application(context_id)
-                .await?;
-            Ok(app_config.source.clone())
-        }
+        context: &calimero_primitives::context::Context,
+        application: &calimero_primitives::application::Application,
+    ) -> bool {
+        let version = application
+            .version
+            .as_ref()
+            .map_or_else(String::new, ToString::to_string);
+        let coords = stored_coords(&application.package, &version);
+        let outcome = self
+            .node_client
+            .acquire_bytecode(&AppRequest {
+                bytecode_id: Some(application.blob.bytecode),
+                application_id: Some(context.application_id),
+                package: coords.map_or("", |coords| coords.package),
+                version: coords.map_or("", |coords| coords.version),
+                context_id: Some(&context.id),
+            })
+            .await;
+        outcome != Outcome::Unavailable
     }
 
     /// Install bundle application after blob sharing completes.
@@ -82,8 +69,7 @@ impl SyncManager {
         &self,
         context_id: &ContextId,
         blob_id: &calimero_primitives::blobs::BlobId,
-        app_config_opt: &Option<calimero_primitives::application::Application>,
-        context: &mut calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         application: &mut Option<calimero_primitives::application::Application>,
     ) -> eyre::Result<()> {
         // Only proceed if blob is now available locally
@@ -102,10 +88,11 @@ impl SyncManager {
             tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
                 .await?;
 
-        // Get source from context config (use cached if available, otherwise fetch)
         let source = self
-            .get_application_source(context_id, app_config_opt)
-            .await?;
+            .context_client
+            .get_context_application(context_id)
+            .await?
+            .source;
 
         let installed_app_id = if is_bundle {
             self.node_client
@@ -119,29 +106,14 @@ impl SyncManager {
                     )
                 })?
         } else {
-            // For non-bundle apps, write ApplicationMeta directly under the
-            // known application_id rather than re-deriving it via
-            // install_application (which hashes source+metadata and would
-            // produce a different ID than the original installer used).
-            let size = blob_bytes.len() as u64;
-            let mut handle = self.context_client.datastore_handle();
-            handle.put(
-                &calimero_store::key::ApplicationMeta::new(context.application_id),
-                &calimero_store::types::ApplicationMeta::new(
-                    calimero_store::key::BlobMeta::new(*blob_id),
-                    size,
-                    source.to_string().into_boxed_str(),
-                    Box::default(),
-                    calimero_store::key::BlobMeta::new(calimero_primitives::blobs::BlobId::from(
-                        [0u8; 32],
-                    )),
-                    calimero_store::types::PackageInfo {
-                        package: "unknown".to_owned().into_boxed_str(),
-                        version: "0.0.0".to_owned().into_boxed_str(),
-                        signer_id: String::new().into_boxed_str(),
-                        state_version: 0,
-                    },
-                ),
+            // Adopt the known id rather than re-deriving it: a raw-wasm id
+            // hashes source+metadata, which vary per node.
+            self.node_client.write_application_row(
+                &context.application_id,
+                blob_id,
+                blob_bytes.len() as u64,
+                &source,
+                None,
             )?;
             context.application_id
         };
@@ -165,56 +137,15 @@ impl SyncManager {
             );
         };
 
-        // Check if the installed ApplicationId matches the context's ApplicationId
+        // The group named an application id; a bundle deriving a different one
+        // is a different application, and repointing the context at it would
+        // hand whoever served the bytes the power to swap a context's app.
         if installed_app_id != context.application_id {
-            warn!(
-                installed_app_id = %installed_app_id,
-                context_app_id = %context.application_id,
-                "Installed application ID does not match context application ID, updating to installed ID"
+            bail!(
+                "bundle blob {blob_id} derives application {installed_app_id}, \
+                 not the {} this context targets",
+                context.application_id
             );
-            // Capture the pre-flip id for the AppVersionChanged emit below; this
-            // is a durable application flip (this node just learned, via blob
-            // sync, that its context's app changed), so it must notify
-            // subscribers like the update_application workers do.
-            let old_app_id = context.application_id;
-
-            // Update context with the installed application ID for consistency
-            context.application_id = installed_app_id;
-
-            // Persist the ApplicationId change to the database
-            // This is critical: if we don't persist, the old ApplicationId will be
-            // used on node restart, causing application lookup failures
-            self.context_client
-                .update_context_application_id(context_id, installed_app_id)
-                .map_err(|e| {
-                    eyre::eyre!(
-                        "Failed to persist ApplicationId update for context {}: {}",
-                        context_id,
-                        e
-                    )
-                })?;
-
-            debug!(
-                %context_id,
-                installed_app_id = %installed_app_id,
-                "Persisted ApplicationId update to database"
-            );
-
-            // Notify subscribers of the version flip (skew #2). Best-effort, like
-            // the update_application emit. The guard above is the dedup (only a
-            // genuine id change reaches here). to_version comes straight off the
-            // installed Application; from_version resolves the old app row.
-            let event = NodeEvent::Context(ContextEvent {
-                context_id: *context_id,
-                payload: ContextEventPayload::AppVersionChanged(AppVersionChangedPayload {
-                    from_version: self.application_version(old_app_id),
-                    to_version: installed_application
-                        .version
-                        .as_ref()
-                        .map(|v| v.as_str().to_owned()),
-                }),
-            });
-            let _ = self.node_client.send_event(event);
         }
 
         // Use the verified installed application
@@ -250,18 +181,5 @@ impl SyncManager {
             sync_timeout: self.sync_config.timeout,
         };
         crate::handlers::state_delta::drain_absorbed(&drain_input, context_id).await;
-    }
-
-    /// Resolves an application's semver from its `ApplicationMeta` row via the
-    /// context store; `None` when the row is absent. Labels the from-version of
-    /// the blob-sync `AppVersionChanged` emit (mirrors the context-handler
-    /// `application_version` helper).
-    fn application_version(&self, application_id: ApplicationId) -> Option<String> {
-        self.context_client
-            .datastore_handle()
-            .get(&calimero_store::key::ApplicationMeta::new(application_id))
-            .ok()
-            .flatten()
-            .map(|meta| meta.version.to_string())
     }
 }

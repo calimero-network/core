@@ -964,6 +964,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-app-downloader"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "calimero-primitives",
+ "eyre",
+ "reqwest 0.12.28",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "calimero-authz"
 version = "0.0.0"
 dependencies = [
@@ -1051,6 +1067,7 @@ name = "calimero-config"
 version = "0.0.0"
 dependencies = [
  "bs58",
+ "calimero-app-downloader",
  "calimero-context",
  "calimero-network-primitives",
  "calimero-node-primitives",
@@ -1077,6 +1094,7 @@ dependencies = [
  "borsh",
  "bs58",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-authz",
  "calimero-context-client",
  "calimero-context-config",
@@ -1120,6 +1138,7 @@ dependencies = [
  "async-stream",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-governance-types",
@@ -1132,6 +1151,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex",
+ "libp2p",
  "rand 0.8.5",
  "serde",
  "sha2",
@@ -1196,6 +1216,7 @@ dependencies = [
  "bip39",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
@@ -1304,6 +1325,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-client",
@@ -1363,6 +1385,7 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-bundle",
  "calimero-context-config",
@@ -5772,6 +5795,7 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-build-utils",
  "calimero-config",
@@ -8127,6 +8151,10 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
 ]
+
+[[package]]
+name = "scaffolding-e2e-multi"
+version = "0.0.0"
 
 [[package]]
 name = "scale-info"

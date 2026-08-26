@@ -15,27 +15,24 @@ use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine};
 
 pub const EXAMPLES: &str = r#"
-  # Watch WASM file and update all contexts using this application
-  $ meroctl --node node1 app watch --path ./my-app.wasm
-
-  # Watch with custom metadata
-  $ meroctl --node node1 app watch --path ./my-app.wasm --metadata '{"version": "1.0.0"}'
+  # Watch a signed bundle and update all contexts using this application
+  $ meroctl --node node1 app watch --path ./my-app.mpk
 
   # Watch and update contexts based on current application blob
-  $ meroctl --node node1 app watch --path ./my-app.wasm --current-app-id <app_id>
+  $ meroctl --node node1 app watch --path ./my-app.mpk --current-app-id <app_id>
 "#;
 
 #[derive(Debug, Parser)]
 #[command(after_help = EXAMPLES)]
-#[command(about = "Watch WASM file and update all contexts using the application")]
+#[command(about = "Watch a signed .mpk bundle and update all contexts using the application")]
 pub struct WatchCommand {
-    /// Path to the WASM file to watch
-    #[arg(long, short = 'p', help = "Path to the WASM file to watch for changes")]
+    /// Path to the bundle to watch
+    #[arg(
+        long,
+        short = 'p',
+        help = "Path to the signed .mpk bundle to watch for changes"
+    )]
     pub path: Utf8PathBuf,
-
-    /// Metadata for the application
-    #[arg(long, help = "Metadata needed for the application installation")]
-    pub metadata: Option<String>,
 
     /// Current application ID to find contexts (if not provided, will install and find by blob comparison)
     #[arg(
@@ -43,18 +40,6 @@ pub struct WatchCommand {
         help = "Current application ID - will find all contexts using this app"
     )]
     pub current_app_id: Option<ApplicationId>,
-
-    /// Package name (e.g., com.example.myapp)
-    #[arg(
-        long,
-        help = "Package name (e.g., com.example.myapp)",
-        default_value = "unknown"
-    )]
-    pub package: String,
-
-    /// Version (e.g., 1.0.0)
-    #[arg(long, help = "Version (e.g., 1.0.0)", default_value = "0.0.0")]
-    pub version: String,
 }
 
 impl WatchCommand {
@@ -64,21 +49,13 @@ impl WatchCommand {
 
         let client = environment.client()?;
 
-        // First, install the initial application to get the baseline
-        let metadata = self.metadata.clone().map(String::into_bytes);
-
         environment.output.write(&InfoLine(&format!(
             "Installing initial application from {} to establish baseline...",
             self.path
         )));
 
         let initial_app_id = client
-            .install_dev_application(InstallDevApplicationRequest::new(
-                self.path.clone(),
-                metadata.clone().unwrap_or_default(),
-                Some(self.package.clone()),
-                Some(self.version.clone()),
-            ))
+            .install_dev_application(InstallDevApplicationRequest::new(self.path.clone()))
             .await?
             .data
             .application_id;
@@ -101,15 +78,7 @@ impl WatchCommand {
         )));
 
         // Start watching the file
-        watch_app_and_update_contexts(
-            environment,
-            target_app_id,
-            self.path,
-            metadata,
-            self.package,
-            self.version,
-        )
-        .await
+        watch_app_and_update_contexts(environment, target_app_id, self.path).await
     }
 }
 
@@ -117,9 +86,6 @@ async fn watch_app_and_update_contexts(
     environment: &mut Environment,
     mut baseline_app_id: ApplicationId,
     path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
-    package: String,
-    version: String,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -163,12 +129,7 @@ async fn watch_app_and_update_contexts(
         // Install the new application version
         let client = environment.client()?;
         let new_application_id = client
-            .install_dev_application(InstallDevApplicationRequest::new(
-                path.clone(),
-                metadata.clone().unwrap_or_default(),
-                Some(package.clone()),
-                Some(version.clone()),
-            ))
+            .install_dev_application(InstallDevApplicationRequest::new(path.clone()))
             .await?
             .data
             .application_id;
@@ -319,28 +280,9 @@ mod tests {
     fn test_watch_command_parsing_minimal() {
         use clap::Parser;
 
-        let cmd = WatchCommand::try_parse_from(["watch", "--path", "./test.wasm"]).unwrap();
+        let cmd = WatchCommand::try_parse_from(["watch", "--path", "./test.mpk"]).unwrap();
 
-        assert_eq!(cmd.path.as_str(), "./test.wasm");
-        assert_eq!(cmd.metadata, None);
-        assert_eq!(cmd.current_app_id, None);
-    }
-
-    #[test]
-    fn test_watch_command_parsing_with_metadata() {
-        use clap::Parser;
-
-        let cmd = WatchCommand::try_parse_from([
-            "watch",
-            "--path",
-            "./test.wasm",
-            "--metadata",
-            r#"{"version": "1.0.0"}"#,
-        ])
-        .unwrap();
-
-        assert_eq!(cmd.path.as_str(), "./test.wasm");
-        assert_eq!(cmd.metadata, Some(r#"{"version": "1.0.0"}"#.to_string()));
+        assert_eq!(cmd.path.as_str(), "./test.mpk");
         assert_eq!(cmd.current_app_id, None);
     }
 
@@ -352,35 +294,13 @@ mod tests {
         let cmd = WatchCommand::try_parse_from([
             "watch",
             "--path",
-            "./test.wasm",
+            "./test.mpk",
             "--current-app-id",
             &app_id.to_string(),
         ])
         .unwrap();
 
-        assert_eq!(cmd.path.as_str(), "./test.wasm");
-        assert_eq!(cmd.metadata, None);
-        assert_eq!(cmd.current_app_id, Some(app_id));
-    }
-
-    #[test]
-    fn test_watch_command_parsing_all_options() {
-        use clap::Parser;
-
-        let app_id = ApplicationId::from([1u8; 32]);
-        let cmd = WatchCommand::try_parse_from([
-            "watch",
-            "--path",
-            "./test.wasm",
-            "--metadata",
-            "{}",
-            "--current-app-id",
-            &app_id.to_string(),
-        ])
-        .unwrap();
-
-        assert_eq!(cmd.path.as_str(), "./test.wasm");
-        assert_eq!(cmd.metadata, Some("{}".to_string()));
+        assert_eq!(cmd.path.as_str(), "./test.mpk");
         assert_eq!(cmd.current_app_id, Some(app_id));
     }
 
@@ -388,9 +308,9 @@ mod tests {
     fn test_watch_command_parsing_short_flags() {
         use clap::Parser;
 
-        let cmd = WatchCommand::try_parse_from(["watch", "-p", "./test.wasm"]).unwrap();
+        let cmd = WatchCommand::try_parse_from(["watch", "-p", "./test.mpk"]).unwrap();
 
-        assert_eq!(cmd.path.as_str(), "./test.wasm");
+        assert_eq!(cmd.path.as_str(), "./test.mpk");
     }
 
     #[test]
@@ -408,7 +328,7 @@ mod tests {
         let result = WatchCommand::try_parse_from([
             "watch",
             "--path",
-            "./test.wasm",
+            "./test.mpk",
             "--current-app-id",
             "invalid-app-id",
         ]);
