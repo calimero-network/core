@@ -9,14 +9,14 @@ license.workspace = true
 publish = true
 
 [dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.1"
 async-trait.workspace = true
 axum = { workspace = true, features = ["macros"] }
 base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
-config = { version = "0.13", default-features = false, features = ["json", "toml"] }
-ctor = "0.1"
+config = { version = "0.15", default-features = false, features = ["json", "toml"] }
+ctor = "1.0"
 eyre.workspace = true
 hex.workspace = true
 jsonwebtoken.workspace = true
@@ -41,10 +41,10 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid = { version = "1.6", features = ["v4", "serde"] }
-validator = { version = "0.20.0", features = ["derive"] }
+validator = { version = "0.21.0", features = ["derive"] }
 
 [dev-dependencies]
-mockall = "0.11"
+mockall = "0.15"
 reqwest = { workspace = true, features = ["json"] }
 tempfile = "3.8"
 tokio-test = "0.4"
