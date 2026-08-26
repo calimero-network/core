@@ -45,17 +45,7 @@ applications="$4"
 shift 4
 namespaces="$*"
 
-# A comma- or space-separated list as a JSON array of strings. `-` is the empty
-# list, which is how "every application" is spelled on the wire.
-json_array() {
-    if [ -z "$1" ] || [ "$1" = "-" ]; then
-        echo '[]'
-        return 0
-    fi
-    printf '%s' "$1" | jq -Rc '[splits("[, ]+")] | map(select(length > 0))'
-}
-
-init=$(api_post "${newnode}" "account/pair-init" \
+init=$(api "${newnode}" POST "account/pair-init" \
     "{\"accountRootPublicKey\":\"${root_key}\",\"namespaces\":$(json_array "${namespaces}")}")
 
 account=$(echo "${init}" | jq -r '.data.accountId')
@@ -73,7 +63,7 @@ for value in "${account}" "${device}" "${kem}" "${sign}" "${statement}" "${code}
 done
 echo "minted device ${device} for account ${account} across ${namespaces}"
 
-complete=$(api_post "${holder}" "account/pair-complete" \
+complete=$(api "${holder}" POST "account/pair-complete" \
     "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${code}\",\"applications\":$(json_array "${applications}")}")
 
 # The holder certifies into the account its OWN root owns, so an account that

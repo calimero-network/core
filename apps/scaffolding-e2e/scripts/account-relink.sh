@@ -38,19 +38,7 @@ want_already_bound="$5"
 shift 5
 want_scope="$*"
 
-canonical() {
-    printf '%s' "$1" | tr ',' ' ' | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' '
-}
-
-json_array() {
-    if [ -z "$1" ] || [ "$1" = "-" ]; then
-        echo '[]'
-        return 0
-    fi
-    printf '%s' "$1" | jq -Rc '[splits("[, ]+")] | map(select(length > 0))'
-}
-
-relinked=$(api_post "${holder}" "account/devices/${device}/relink" \
+relinked=$(api "${holder}" POST "account/devices/${device}/relink" \
     "{\"applications\":$(json_array "${add_applications}")}")
 
 if [ "$(echo "${relinked}" | jq -r '.data.deviceId')" != "${device}" ]; then

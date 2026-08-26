@@ -44,7 +44,7 @@ holder_account="$3"
 attempt=0
 while :; do
     attempt=$((attempt + 1))
-    status=$(api_get_status "${devicenode}" "identity")
+    status=$(api_status "${devicenode}" GET "identity")
 
     if [ "${status}" = "404" ]; then
         echo "${devicenode} reports no identity at all: its device is spent and it holds no root of its own"
@@ -54,7 +54,7 @@ while :; do
     if [ "${status}" = "200" ]; then
         # Tolerated rather than asserted: the tombstone can land between the two
         # calls, turning this into the `404` the branch above accepts anyway.
-        identity=$(api_get "${devicenode}" "identity") || identity=''
+        identity=$(api "${devicenode}" GET "identity") || identity=''
     fi
     if [ "${status}" = "200" ] && [ -n "${identity:-}" ]; then
         device=$(echo "${identity}" | jq -r '.data.deviceId // "null"')

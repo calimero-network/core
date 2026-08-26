@@ -61,13 +61,7 @@ for arg in "$@"; do
     esac
 done
 
-# A space-separated list as sorted words, so two lists written in different
-# orders compare equal.
-canonical() {
-    printf '%s' "$1" | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' '
-}
-
-devices=$(api_get "${holder}" "account/devices")
+devices=$(api "${holder}" GET "account/devices")
 row=$(echo "${devices}" | jq -c --arg d "${device}" '.devices[] | select(.deviceId == $d)')
 if [ -z "${row}" ]; then
     echo "${holder} lists no device ${device}: ${devices}" >&2

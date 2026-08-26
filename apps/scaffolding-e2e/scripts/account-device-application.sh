@@ -44,7 +44,7 @@ namespace="$3"
 attempt=0
 while :; do
     attempt=$((attempt + 1))
-    installed=$(api_get "${devicenode}" "applications")
+    installed=$(api "${devicenode}" GET "applications")
     # `size > 0`, not merely the id being listed. The `ContextRegistered` apply
     # writes a STUB row under the real application id on every replica that can
     # decrypt it - the creator's blob and nothing else - so the id alone is
@@ -68,7 +68,7 @@ done
 # because a namespace summary is withheld from non-members. This is the only
 # route by which a paired device can be told which applications its account
 # speaks in.
-applications=$(api_get "${devicenode}" "account/applications")
+applications=$(api "${devicenode}" GET "account/applications")
 entry=$(echo "${applications}" | jq -c --arg a "${application}" \
     '.applications[] | select(.applicationId == $a)')
 if [ -z "${entry}" ]; then

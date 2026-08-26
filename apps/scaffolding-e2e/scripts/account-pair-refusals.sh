@@ -43,7 +43,7 @@ newnode="$2"
 namespace="$3"
 root_key="$4"
 
-init=$(api_post "${newnode}" "namespaces/${namespace}/account/pair-init" \
+init=$(api "${newnode}" POST "namespaces/${namespace}/account/pair-init" \
     "{\"accountRootPublicKey\":\"${root_key}\"}")
 
 device=$(echo "${init}" | jq -r '.data.deviceId')
@@ -68,7 +68,7 @@ done
 # and any other answer - a `200` that certified it, a `500` that reads as a
 # broken node - is the regression this guards.
 forged_kem="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-forged=$(api_post_status "${holder}" "namespaces/${namespace}/account/pair-complete" \
+forged=$(api_status "${holder}" POST "namespaces/${namespace}/account/pair-complete" \
     "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${forged_kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"${init_code}\"}")
 if [ "${forged}" != "400" ]; then
     echo "pair-complete answered ${forged} to substituted key material, expected 400" >&2
@@ -80,7 +80,7 @@ echo "substituted KEM key refused with 400, as it must be"
 # material is refused. This is what stands between the account and a WHOLESALE
 # substitution — one that replaces both keys and re-signs, so the statement above
 # verifies cleanly and only the code disagrees.
-wrong=$(api_post_status "${holder}" "namespaces/${namespace}/account/pair-complete" \
+wrong=$(api_status "${holder}" POST "namespaces/${namespace}/account/pair-complete" \
     "{\"deviceId\":\"${device}\",\"kemPublicKey\":\"${kem}\",\"signPublicKey\":\"${sign}\",\"statement\":\"${statement}\",\"confirmationCode\":\"DEAD-BEEF-DEAD-BEEF\"}")
 if [ "${wrong}" != "400" ]; then
     echo "pair-complete answered ${wrong} to a mismatched confirmation code, expected 400" >&2

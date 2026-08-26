@@ -31,9 +31,5 @@ fi
 holder="$1"
 revoked_device="$2"
 
-got=$(api_post_status "${holder}" "account/devices/${revoked_device}/relink" '{"applications":[]}')
-if [ "${got}" != "403" ]; then
-    echo "relink on ${holder} answered ${got} to a relink of a revoked device, expected 403" >&2
-    exit 1
-fi
-echo "a relink of a revoked device refused with 403, as it must be"
+expect_status 403 "${holder}" "account/devices/${revoked_device}/relink" \
+    '{"applications":[]}' "a relink of a revoked device"
