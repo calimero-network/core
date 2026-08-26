@@ -60,7 +60,7 @@ pub fn build(
 ) -> EyreResult<Box<JoinAccountCredential>> {
     let devices = NodeDeviceRepository::new(datastore);
     let root = devices
-        .ensure_account_root()
+        .require_account_root()
         .wrap_err("join credential: could not resolve this node's account root")?;
     let enrolled = devices
         .ensure_enrolled(namespace_id)
