@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::address::Id;
+use crate::child_trie::{self, ChildTrie};
 use crate::entities::{ChildInfo, Metadata, UpdatedAt};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
@@ -326,13 +327,6 @@ pub struct EntityIndex {
     /// Parent ID.
     parent_id: Option<Id>,
 
-    /// Children list.
-    ///
-    /// Collection name not stored - entity can only have one collection,
-    /// so the name is redundant. API still accepts collection param for
-    /// backwards compatibility but it's ignored internally.
-    children: Option<Vec<ChildInfo>>,
-
     /// Full hash (entity + descendants).
     full_hash: [u8; 32],
 
@@ -372,7 +366,6 @@ impl EntityIndex {
         Self {
             id,
             parent_id: None,
-            children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: Metadata::default(),
@@ -385,11 +378,26 @@ impl EntityIndex {
     ///
     /// A context's ROOT index carries the hash that
     /// `ContextRegistry::compute_root_hash` reads, so a test that needs the
-    /// state-derived root to *move* has to be able to set it. Kept childless so
-    /// the reader stays on its offset fast path.
+    /// state-derived root to *move* has to be able to set it.
     #[must_use]
     pub fn minimal_for_test_with_full_hash(id: Id, full_hash: [u8; 32]) -> Self {
         Self {
+            full_hash,
+            ..Self::minimal_for_test(id)
+        }
+    }
+
+    /// Like [`Self::minimal_for_test`] but parented, and with a chosen
+    /// `full_hash`.
+    ///
+    /// Snapshot install writes index rows verbatim, so a test for the
+    /// receive-side trie rebuild has to be able to produce a row that names its
+    /// parent — that link is the only thing the rebuild has to work from.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn minimal_for_test_with_parent(id: Id, parent_id: Id, full_hash: [u8; 32]) -> Self {
+        Self {
+            parent_id: Some(parent_id),
             full_hash,
             ..Self::minimal_for_test(id)
         }
@@ -405,12 +413,6 @@ impl EntityIndex {
     #[must_use]
     pub fn parent_id(&self) -> Option<Id> {
         self.parent_id
-    }
-
-    /// Returns the children, if any.
-    #[must_use]
-    pub fn children(&self) -> Option<&[ChildInfo]> {
-        self.children.as_deref()
     }
 
     /// Ids of this entity's children that have been removed (tombstoned).
@@ -441,6 +443,32 @@ pub struct Index<S: StorageAdaptor>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a parent's collection.
+    /// Write `child`'s own index record, pointing it at `parent_id`.
+    ///
+    /// This is the half of child registration that costs O(1): it touches one
+    /// record, the child's. It does not list the child among the parent's
+    /// `children`, and so does not refold the parent's hash over its siblings.
+    /// Returns the child's recomputed `full_hash`, which the caller needs when
+    /// listing the child in its parent.
+    fn write_child_index(parent_id: Id, child: &ChildInfo) -> Result<[u8; 32], StorageError> {
+        let mut child_index = Self::get_index(child.id())?.unwrap_or_else(|| EntityIndex {
+            id: child.id(),
+            parent_id: None,
+            full_hash: [0; 32],
+            own_hash: [0; 32],
+            metadata: child.metadata.clone(),
+            deleted_at: None,
+            deleted_children: Vec::new(),
+        });
+        child_index.parent_id = Some(parent_id);
+        child_index.own_hash = child.merkle_hash();
+        child_index.full_hash = Self::full_hash_from_trie(child.id(), child_index.own_hash);
+        child_index.deleted_at = None;
+        let full_hash = child_index.full_hash;
+        Self::save_index(&child_index)?;
+        Ok(full_hash)
+    }
+
     pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
         let added_child_id = child.id();
         // Serialize the read-modify-write so a concurrent local-write / sync
@@ -451,7 +479,6 @@ impl<S: StorageAdaptor> Index<S> {
         let mut parent_index = Self::get_index(parent_id)?.unwrap_or_else(|| EntityIndex {
             id: parent_id,
             parent_id: None,
-            children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: Metadata::default(),
@@ -459,76 +486,18 @@ impl<S: StorageAdaptor> Index<S> {
             deleted_children: Vec::new(),
         });
 
-        // Get or create child index
-        let mut child_index = Self::get_index(child.id())?.unwrap_or_else(|| EntityIndex {
-            id: child.id(),
-            parent_id: None,
-            children: None,
-            full_hash: [0; 32],
-            own_hash: [0; 32],
-            metadata: child.metadata.clone(),
-            deleted_at: None,
-            deleted_children: Vec::new(),
-        });
-        child_index.parent_id = Some(parent_id);
-        child_index.own_hash = child.merkle_hash();
-        child_index.full_hash =
-            Self::calculate_full_hash_for_children(child_index.own_hash, &child_index.children)?;
         // Adding a child means it is live: clear any tombstone, else find_by_id
         // hides an entity the parent hash now counts (upsert-on-tombstone
         // divergence). Pairs with the deleted_children.retain below.
-        child_index.deleted_at = None;
-        Self::save_index(&child_index)?;
+        let child_full_hash = Self::write_child_index(parent_id, &child)?;
 
-        // Insert into parent's children list, keeping it sorted by `ChildInfo`'s
-        // Ord (primary: created_at, tiebreaker: id). The list is always sorted
-        // by construction — binary search both finds the existing entry (to
-        // replace if present) and the correct insertion point (otherwise) in
-        // O(log K) without rebuilding a BTreeSet + Vec each call (#2238 Fix 3).
-        //
-        // Prior implementation:
-        //     let mut ordered = children_vec.drain(..).collect::<BTreeSet<_>>();
-        //     ordered.replace(new_entry);
-        //     *children_vec = ordered.into_iter().collect();
-        // Allocated a BTreeSet, inserted K entries to re-sort an already-sorted
-        // list, then re-materialized a Vec — two transient allocations and
-        // O(K log K) sort work per call. `dlmalloc::malloc` was 13.06% of
-        // inclusive CPU in the baseline flamegraph; a real chunk of that lives
-        // here on the merge hot path.
-        let children_vec = parent_index.children.get_or_insert_with(Vec::new);
-        let new_entry = ChildInfo::new(child.id(), child_index.full_hash, child.metadata);
-        // Dedup by ID, not by `ChildInfo`'s `(created_at, id)` Ord. A child can
-        // be re-added with a CHANGED `created_at` (e.g. CRDT merge re-materialises
-        // an entity that two nodes first-created at different HLC times). The
-        // `(created_at, id)`-ordered `binary_search` would then miss the existing
-        // same-id entry and `insert` a SECOND ChildInfo for the same id.
-        // `calculate_full_hash_for_children` hashes every child's `merkle_hash`
-        // (sorted by id), so a duplicate entry hashes that child twice → the
-        // parent's `full_hash` (and the root) diverges depending on the order the
-        // creating deltas were applied — the "same DAG, different root hash"
-        // family. We must keep at most one ChildInfo per id.
-        //
-        // The common case — re-adding an unchanged child — hits the `Ok` branch
-        // and replaces in place in O(log K) with no scan, preserving the
-        // invariant inductively (there is never a pre-existing same-id
-        // duplicate). Only the rare `created_at`-changed miss pays an O(K) scan to
-        // evict the stale same-id entry before inserting. (The `insert`/`remove`
-        // shifts are already O(K), so this adds no asymptotic cost over the
-        // pre-dedup code.)
-        match children_vec.binary_search(&new_entry) {
-            Ok(pos) => children_vec[pos] = new_entry,
-            Err(pos) => {
-                if let Some(stale) = children_vec.iter().position(|c| c.id() == new_entry.id()) {
-                    let _ = children_vec.remove(stale);
-                    match children_vec.binary_search(&new_entry) {
-                        Ok(p) => children_vec[p] = new_entry,
-                        Err(p) => children_vec.insert(p, new_entry),
-                    }
-                } else {
-                    children_vec.insert(pos, new_entry);
-                }
-            }
-        }
+        // Link through the parent's child trie. The list this replaces was one
+        // inline blob: adding child N read N, wrote N+1 and re-hashed all of
+        // them, so a write cost grew with history until it exhausted the gas
+        // limit (core#3602). A trie link touches a bounded number of rows
+        // whatever the parent holds.
+        let new_entry = ChildInfo::new(child.id(), child_full_hash, child.metadata);
+        let trie_root = <ChildTrie<S>>::new(parent_id).insert(new_entry);
 
         // A re-added (resurrected) child is live again, so it must no longer be
         // advertised as deleted on the wire — else a peer would apply a stale
@@ -537,8 +506,7 @@ impl<S: StorageAdaptor> Index<S> {
             .deleted_children
             .retain(|id| *id != added_child_id);
 
-        parent_index.full_hash =
-            Self::calculate_full_hash_for_children(parent_index.own_hash, &parent_index.children)?;
+        parent_index.full_hash = Self::full_hash_from_root(parent_index.own_hash, trie_root);
         Self::save_index(&parent_index)?;
 
         Self::recalculate_ancestor_hashes_for(parent_id)?;
@@ -554,7 +522,6 @@ impl<S: StorageAdaptor> Index<S> {
         let mut index = Self::get_index(root.id())?.unwrap_or_else(|| EntityIndex {
             id: root.id(),
             parent_id: None,
-            children: None,
             full_hash: [0; 32],
             own_hash: [0; 32],
             metadata: root.metadata.clone(),
@@ -568,47 +535,39 @@ impl<S: StorageAdaptor> Index<S> {
         // to re-hash the children Vec every time. With the stored value
         // kept current by each write site, reads become O(1).
         // See #2238 Fix 1.
-        index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
+        index.full_hash = Self::full_hash_from_trie(index.id, index.own_hash);
         Self::save_index(&index)?;
         Ok(())
     }
 
-    /// Calculates full Merkle hash from own hash and children.
+    /// An entity's full hash, folding its children through the child trie.
     ///
-    /// **Iteration order is `id`-sorted, not `ChildInfo`'s natural
-    /// `(created_at, id)` Ord.** The merkle hash must be deterministic
-    /// across peers regardless of when each peer first observed each
-    /// child — and `created_at` is a local-clock observation that
-    /// diverges for entities two peers create independently with the
-    /// same content (canonical case: the `Root<T>` opaque-marker
-    /// entity the storage layer creates the first time an app
-    /// touches its state). Sorting by `id` alone before hashing
-    /// makes the parent hash purely content-derived: identical child
-    /// sets at identical merkle hashes produce identical parent
-    /// hashes regardless of when each node first wrote each child.
+    /// Replaces folding a sibling list: the trie root already commits to every
+    /// child, and maintaining it costs a bounded number of rows per link rather
+    /// than rewriting and re-hashing every sibling. See [`ChildTrie`].
     ///
-    /// The stored `ChildInfo` list keeps its `(created_at, id)`
-    /// order — that's load-bearing for `Vector::get(idx)`'s
-    /// insertion-order semantics and other collections that
-    /// depend on iteration order at the storage layer. The hash
-    /// content is decoupled from that layout here.
-    pub(crate) fn calculate_full_hash_for_children(
-        own_hash: [u8; 32],
-        children: &Option<Vec<ChildInfo>>,
-    ) -> Result<[u8; 32], StorageError> {
+    /// The trie root is order-independent, so this is a pure function of the
+    /// child set — which is what two replicas must agree on.
+    pub(crate) fn full_hash_from_trie(id: Id, own_hash: [u8; 32]) -> [u8; 32] {
+        Self::full_hash_from_root(own_hash, <ChildTrie<S>>::new(id).root())
+    }
+
+    /// The fold itself: `own_hash`, then the trie root unless it is empty.
+    ///
+    /// One definition on purpose. Callers that have just written the trie hold
+    /// the new root already and should not pay a row read to get it back, so
+    /// they cannot go through [`full_hash_from_trie`](Self::full_hash_from_trie)
+    /// — but the RULE they apply (field order, and skipping an empty root so a
+    /// childless entity hashes as itself) has to be the same one, because a
+    /// copy that drifts forks replicas silently: both sides compute a hash,
+    /// they just compute different ones.
+    pub(crate) fn full_hash_from_root(own_hash: [u8; 32], root: [u8; 32]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(own_hash);
-
-        if let Some(children_vec) = children {
-            // Sort by id before hashing — see method-level doc.
-            let mut by_id: Vec<&ChildInfo> = children_vec.iter().collect();
-            by_id.sort_by_key(|c| c.id());
-            for child in by_id {
-                hasher.update(child.merkle_hash());
-            }
+        if root != child_trie::EMPTY {
+            hasher.update(root);
         }
-
-        Ok(hasher.finalize().into())
+        hasher.finalize().into()
     }
 
     /// Returns the stored full Merkle hash for an entity.
@@ -623,8 +582,8 @@ impl<S: StorageAdaptor> Index<S> {
     /// If the entity doesn't exist in the index, returns
     /// `StorageError::IndexNotFound`. If a future write site adds `full_hash`
     /// drift somehow, tests in `tests::merkle` enforce the invariant
-    /// `stored_full_hash == calculate_full_hash_for_children(...)` after
-    /// common operation sequences.
+    /// `stored_full_hash == recompute from the child trie` after common
+    /// operation sequences.
     pub(crate) fn get_full_merkle_hash_for(id: Id) -> Result<[u8; 32], StorageError> {
         Self::get_hashes_for(id)?
             .map(|(full_hash, _)| full_hash)
@@ -811,9 +770,25 @@ impl<S: StorageAdaptor> Index<S> {
     /// # Errors
     /// Returns `StorageError` if index cannot be loaded or deserialized.
     pub fn get_children_of(parent_id: Id) -> Result<Vec<ChildInfo>, StorageError> {
-        let index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+        let _index = Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
-        Ok(index.children.unwrap_or_default())
+        Ok(<ChildTrie<S>>::new(parent_id).children())
+    }
+
+    /// How many children `parent_id` has, without enumerating them.
+    ///
+    /// One row read: the trie maintains a subtree count along the spine an
+    /// insert already walks. Callers that count on every write — a contract
+    /// deriving an id from `len()`, the ancestor-recompute log line — must use
+    /// this rather than `get_children_of(..).len()`, which is a full walk.
+    ///
+    /// Exists so the rest of the crate does not reach past `Index` into
+    /// `ChildTrie`. That type's public surface is earned by the callers that
+    /// reach the store directly with no `StorageAdaptor` — snapshot install and
+    /// the raw-DB diagnostics — not by intra-crate use.
+    #[must_use]
+    pub fn child_count(parent_id: Id) -> u64 {
+        <ChildTrie<S>>::new(parent_id).len()
     }
 
     /// Returns (full_hash, own_hash) tuple for an entity.
@@ -854,14 +829,12 @@ impl<S: StorageAdaptor> Index<S> {
     /// Checks if a collection has any children.
     ///
     /// Collection param ignored - just checks if entity has any children.
-    pub(crate) fn has_children(parent_id: Id) -> Result<bool, StorageError> {
+    pub fn has_children(parent_id: Id) -> Result<bool, StorageError> {
         let parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
-        Ok(parent_index
-            .children
-            .as_ref()
-            .is_some_and(|c| !c.is_empty()))
+        let _ = &parent_index;
+        Ok(<ChildTrie<S>>::new(parent_id).root() != child_trie::EMPTY)
     }
 
     /// Recalculates ancestor hashes recursively up to root.
@@ -909,9 +882,10 @@ impl<S: StorageAdaptor> Index<S> {
                 Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
             let old_full_hash = parent_index.full_hash;
 
-            // Update the child's hash in the parent's children list
-            if let Some(children) = &mut parent_index.children {
-                if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
+            // Refresh the child's entry in the parent's trie.
+            let parent_trie = <ChildTrie<S>>::new(parent_id);
+            if let Some(mut child) = parent_trie.get(current_id) {
+                {
                     let new_child_hash = Self::get_full_merkle_hash_for(current_id)?;
                     if child.merkle_hash() != new_child_hash {
                         // Log when a child's hash changes and affects the root
@@ -924,20 +898,21 @@ impl<S: StorageAdaptor> Index<S> {
                                 "ROOT MERKLE: Child hash updated"
                             );
                         }
-                        *child = ChildInfo::new(current_id, new_child_hash, child.metadata.clone());
+                        child = ChildInfo::new(current_id, new_child_hash, child.metadata.clone());
+                        let _root = parent_trie.insert(child);
                     }
                 }
             }
 
-            // Recalculate the parent's full hash
-            parent_index.full_hash = Self::calculate_full_hash_for_children(
-                parent_index.own_hash,
-                &parent_index.children,
-            )?;
+            // Recalculate the parent's full hash from the trie root.
+            parent_index.full_hash = Self::full_hash_from_trie(parent_id, parent_index.own_hash);
 
             // Log when root hash changes
             if parent_id.is_root() && old_full_hash != parent_index.full_hash {
-                let children_count = parent_index.children.as_ref().map(|c| c.len()).unwrap_or(0);
+                // `len()`, not `children().len()`: this runs on the ancestor
+                // recompute of every write, and enumerating the trie here made
+                // each write read every child of the parent.
+                let children_count = Self::child_count(parent_id);
                 info!(
                     target: "storage::merkle",
                     parent_id = %parent_id,
@@ -987,12 +962,21 @@ impl<S: StorageAdaptor> Index<S> {
     /// Deletes entity data and creates a tombstone marker for a single entity.
     ///
     /// Step 1 of deletion: Remove actual data, keep index for CRDT sync.
-    fn delete_entity_and_create_tombstone(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+    pub(crate) fn delete_entity_and_create_tombstone(
+        id: Id,
+        deleted_at: u64,
+    ) -> Result<(), StorageError> {
         // Tombstone first, then drop the data: if mark_deleted fails the entry
         // is left intact and the delete can be retried, instead of leaving the
         // data gone with no tombstone while the parent still lists it live.
         Self::mark_deleted(id, deleted_at)?;
         let _ignored = S::storage_remove(Key::Entry(id));
+        // The entity's own child trie goes with its data. Nothing else reaches
+        // those rows — they are their own keyspace, so tombstone GC (which
+        // requires a row to decode as a tombstoned `EntityIndex`) never sees
+        // them. Left behind, they resurrect as ghost children the next time a
+        // deterministically-named collection is re-created at the same id.
+        <ChildTrie<S>>::new(id).drop_all();
         Ok(())
     }
 
@@ -1066,8 +1050,8 @@ impl<S: StorageAdaptor> Index<S> {
             {
                 continue;
             }
-            if let Some(children) = &index.children {
-                for child in children {
+            {
+                for child in <ChildTrie<S>>::new(id).children() {
                     stack.push(child.id());
                 }
             }
@@ -1114,8 +1098,8 @@ impl<S: StorageAdaptor> Index<S> {
             {
                 return Ok(Some(id));
             }
-            if let Some(children) = &index.children {
-                for child in children {
+            {
+                for child in <ChildTrie<S>>::new(id).children() {
                     stack.push(child.id());
                 }
             }
@@ -1149,14 +1133,8 @@ impl<S: StorageAdaptor> Index<S> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
-        // Remove child from collection (collection name ignored)
-        if let Some(children) = &mut parent_index.children {
-            children.retain(|child| child.id() != child_id);
-            // Clear children if empty
-            if children.is_empty() {
-                parent_index.children = None;
-            }
-        }
+        // Remove child from the parent's trie (collection name ignored).
+        let trie_root = <ChildTrie<S>>::new(parent_id).remove(child_id);
 
         // Record the removal so the deletion is explicit on the sync wire
         // (the child vanishes from `children`, which the add-biased HC/LevelWise
@@ -1167,9 +1145,8 @@ impl<S: StorageAdaptor> Index<S> {
             parent_index.deleted_children.push(child_id);
         }
 
-        // Recalculate parent's hash
-        parent_index.full_hash =
-            Self::calculate_full_hash_for_children(parent_index.own_hash, &parent_index.children)?;
+        // Recalculate parent's hash from the trie root.
+        parent_index.full_hash = Self::full_hash_from_root(parent_index.own_hash, trie_root);
         Self::save_index(&parent_index)?;
 
         Ok(())
@@ -1207,7 +1184,7 @@ impl<S: StorageAdaptor> Index<S> {
         let old_own_hash = index.own_hash;
         let old_full_hash = index.full_hash;
         index.own_hash = merkle_hash;
-        index.full_hash = Self::calculate_full_hash_for_children(index.own_hash, &index.children)?;
+        index.full_hash = Self::full_hash_from_trie(id, index.own_hash);
         if let Some(updated_at) = updated_at {
             index.metadata.updated_at = updated_at;
         }
@@ -1227,16 +1204,25 @@ impl<S: StorageAdaptor> Index<S> {
 
         // Log detailed info for root entity hash updates
         if id.is_root() {
-            let children_count = index.children.as_ref().map(|c| c.len()).unwrap_or(0);
-            let children_hashes: Vec<String> = index
-                .children
-                .as_ref()
-                .map(|c| {
-                    c.iter()
-                        .map(|child| format!("{}:{}", child.id(), hex::encode(child.merkle_hash())))
-                        .collect()
-                })
-                .unwrap_or_default();
+            // O(1): the trie maintains the count. Enumerating every child here
+            // put a LINEAR READ on every root hash update — that is, on every
+            // write — and hex-formatted each one into a String on the way.
+            // Measured at 599 records: 7,697 reads and 640 KB read for a single
+            // insert, versus 76 writes. It was also built eagerly, so the cost
+            // was paid even when the log level discarded the result.
+            let children_count = <ChildTrie<S>>::new(id).len();
+            // The per-child dump is a genuine diagnostic, so keep it — but only
+            // materialise it when something is actually listening at TRACE.
+            let children_hashes: Vec<String> = if tracing::enabled!(target: "storage::merkle", tracing::Level::TRACE)
+            {
+                <ChildTrie<S>>::new(id)
+                    .children()
+                    .iter()
+                    .map(|child| format!("{}:{}", child.id(), hex::encode(child.merkle_hash())))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             info!(
                 target: "storage::merkle",
                 %id,

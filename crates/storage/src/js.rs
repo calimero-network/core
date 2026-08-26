@@ -1571,13 +1571,63 @@ impl JsAuthoredVector {
 
     /// Pushes a new value at the tail, stamping the current executor as owner.
     ///
-    /// Returns the index of the newly appended slot.
+    /// Returns the ID of the new entry, not its index. Enumeration is
+    /// `(created_at, id)` ordered over a set other replicas insert into, so a
+    /// position is only valid until someone inserts ahead of it, while an id
+    /// names the entry for as long as it exists (core#3637).
     ///
     /// # Errors
     ///
     /// Propagates [`StoreError`] if the storage write fails.
-    pub fn push(&mut self, value: &[u8]) -> Result<usize, StoreError> {
-        self.vector.push(value.to_vec())
+    pub fn push(&mut self, value: &[u8]) -> Result<[u8; 32], StoreError> {
+        self.vector.push(value.to_vec()).map(|id| *id.as_bytes())
+    }
+
+    /// Replaces the value stored under `id`. Only the entry's owner may call
+    /// this.
+    ///
+    /// The id-addressed counterpart to [`update`](Self::update), and the one to
+    /// use when the address was not resolved in the same call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] with `ActionNotAllowed` if the current executor is
+    /// not the stored owner, `NotFound` if no entry is stored under `id`, or any
+    /// underlying storage error.
+    pub fn update_by_id(&mut self, id: [u8; 32], value: &[u8]) -> Result<(), StoreError> {
+        self.vector
+            .update_by_id(crate::address::Id::new(id), value.to_vec())
+    }
+
+    /// Reads the value stored under `id`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the storage read fails.
+    pub fn get_by_id(&self, id: [u8; 32]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.vector.get_by_id(crate::address::Id::new(id))
+    }
+
+    /// Tombstones the entry stored under `id` (overwrites it with an empty
+    /// value). Only the entry's owner may call this.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`update_by_id`](Self::update_by_id).
+    pub fn tombstone_by_id(&mut self, id: [u8; 32]) -> Result<(), StoreError> {
+        self.vector.tombstone_by_id(crate::address::Id::new(id))
+    }
+
+    /// The account that owns the entry stored under `id`, if it exists.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`StoreError`] if the storage read fails.
+    pub fn owner_of_id(&self, id: [u8; 32]) -> Result<Option<[u8; 32]>, StoreError> {
+        Ok(self
+            .vector
+            .owner_of_id(crate::address::Id::new(id))?
+            .map(|account| *account.as_bytes()))
     }
 
     /// Replaces the value at `index`. Only the slot's owner may call this.
@@ -1912,8 +1962,9 @@ mod roundtrip_tests {
         ensure_root_index();
 
         let mut v = JsAuthoredVector::new();
-        let idx = v.push(HELLO_BORSH).expect("push");
-        assert_eq!(idx, 0);
+        let entry_id = v.push(HELLO_BORSH).expect("push");
+        // An id, not a position: the entry is addressed by name.
+        assert_eq!(v.get_by_id(entry_id).unwrap().as_deref(), Some(HELLO_BORSH));
         let id = v.id();
         save_wrapper(&mut v);
 

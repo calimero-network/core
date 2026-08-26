@@ -419,6 +419,39 @@ impl SyncManager {
             .request_and_apply_snapshot_pages(context_id, &boundary, force, &mut stream)
             .await?;
 
+        // Reconstruct the child tries before reading the root back. Snapshot
+        // ships entity rows only, so without this the receiver holds every
+        // entity and can enumerate none of them.
+        {
+            let mut handle = self.context_client.datastore_handle();
+            match rebuild_child_tries_after_snapshot(&mut handle, context_id) {
+                Ok(linked) => info!(
+                    %context_id,
+                    linked,
+                    "Rebuilt child-trie links for snapshot-installed entities"
+                ),
+                // Fail the sync rather than warn. There is no "next resync" to
+                // wait for: `verified_snapshot_root` below reads the ROOT
+                // index's SHIPPED `full_hash`, so a node with an unlinked trie
+                // still verifies, still publishes a root matching its peers,
+                // and therefore never looks like it needs repair. Returning
+                // here leaves the sync-in-progress marker set, exactly as the
+                // I7 arms do, so crash-recovery retries instead.
+                Err(e) => {
+                    warn!(
+                        %context_id,
+                        error = %e,
+                        "Failed to rebuild child-trie links after snapshot; failing the \
+                         sync for retry rather than publishing a root whose collections \
+                         read back empty"
+                    );
+                    return Err(eyre::eyre!(
+                        "snapshot: child-trie rebuild failed for {context_id}: {e}"
+                    ));
+                }
+            }
+        }
+
         // Verify snapshot integrity against the state that actually landed (I7).
         // Either arm of a failure returns before the sync-in-progress marker is
         // cleared, so crash-recovery re-syncs and retries rather than publishing
@@ -1379,7 +1412,176 @@ pub(crate) fn persist_buffered_snapshot_entity(
     let index_slice: Slice<'_> = index.to_vec().into();
     handle.put(&entry_key, &ContextStateValue::from(entry_slice))?;
     handle.put(&index_key, &ContextStateValue::from(index_slice))?;
+
+    // Link into the parent's child trie HERE, not only in the one-shot rebuild
+    // after the snapshot pages land.
+    //
+    // This path runs from `drain_absorbed_leaves`, which fires on a later delta
+    // once the loaded reader has advanced to the entity's schema — long after
+    // `rebuild_child_tries_after_snapshot` has already run. An entity that lands
+    // now would otherwise be present but unenumerable from its parent forever,
+    // because (as that rebuild's own doc notes) re-applying byte-identical
+    // entities never re-links: it goes through the update path, not
+    // `add_child_to`. That is the same permanent, self-stable divergence the
+    // rebuild exists to prevent, arriving through the late door.
+    if let Some(parent_id) = index_entity.parent_id() {
+        link_child_into_parent_trie(
+            handle,
+            context_id,
+            parent_id,
+            calimero_storage::entities::ChildInfo::new(
+                index_entity.id(),
+                index_entity.full_hash(),
+                index_entity.metadata.clone(),
+            ),
+        )?;
+    }
+
     Ok(SnapshotEntityDrainOutcome::Persisted)
+}
+
+/// Insert one parent→child link into the parent's `ChildTrie`, through a raw
+/// store handle.
+///
+/// Shared by the post-snapshot rebuild and the late buffered-entity drain so
+/// the two cannot drift in how a link is written — they are the same operation
+/// arriving at different times.
+fn link_child_into_parent_trie(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+    parent_id: Id,
+    child: calimero_storage::entities::ChildInfo,
+) -> Result<()> {
+    link_children_into_parent_trie(handle, context_id, parent_id, vec![child])
+}
+
+/// Link many children of ONE parent, sharing a row cache across them.
+///
+/// Siblings collide on the same `DEPTH+1` spine rows by construction — that is
+/// what makes the trie bounded — so linking them one at a time re-reads and
+/// rewrites the same spine for every child. Buffering the parent's rows and
+/// flushing once cuts the store traffic by most of that factor.
+///
+/// Worth doing even though this runs on install rather than per operation: a
+/// context with tens of thousands of entities pays it in full on every
+/// bootstrap, and "one-time" is not the same as "free".
+///
+/// Correctness is unchanged: `insert_with` is a pure function of the rows it
+/// reads, so serving those rows from a cache that already holds this parent's
+/// pending writes gives exactly the sequence the uncached path would, one
+/// child at a time.
+fn link_children_into_parent_trie(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+    parent_id: Id,
+    children: Vec<calimero_storage::entities::ChildInfo>,
+) -> Result<()> {
+    let mut pending: BTreeMap<StorageKey, Vec<u8>> = BTreeMap::new();
+
+    for child in children {
+        let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
+        {
+            let read = |key: StorageKey| -> Option<Vec<u8>> {
+                if let Some(bytes) = pending.get(&key) {
+                    return Some(bytes.clone());
+                }
+                let k = ContextStateKey::new(context_id, key.to_bytes());
+                handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
+            };
+            calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
+                parent_id,
+                child,
+                read,
+                |key, bytes| writes.push((key, bytes.to_vec())),
+            );
+        }
+        for (key, bytes) in writes {
+            let _prev = pending.insert(key, bytes);
+        }
+    }
+
+    for (key, bytes) in pending {
+        let k = ContextStateKey::new(context_id, key.to_bytes());
+        let slice: Slice<'_> = bytes.into();
+        handle.put(&k, &ContextStateValue::from(slice))?;
+    }
+    Ok(())
+}
+
+/// Rebuild every installed entity's link into its parent's child trie.
+///
+/// # Why a whole pass, after the fact
+///
+/// Snapshot installs an entity by writing its `Entry` and `Index` rows
+/// verbatim. While a parent's children lived INSIDE its index row, that shipped
+/// the parent→child links for free. They now live in their own keyspace
+/// (`Key::ChildTrie`), which snapshot discovery cannot recognise — it finds
+/// entities by deserialising `EntityIndex`, and a trie row never will.
+///
+/// Without this, a snapshot receiver holds every entity and can enumerate none
+/// of them: `get_children_of` is trie-backed, so collections read back empty
+/// while the entity rows sit there intact.
+///
+/// It is a separate pass rather than a hook in the install sites because there
+/// are three of them (the page-apply loop, the re-drive loop, and the buffered
+/// drain), and a link missed by any one is silent. Rebuilding from what
+/// actually landed cannot miss a path.
+///
+/// Replays the sender's own `full_hash` for each child, so the reconstructed
+/// trie reproduces the sender's root exactly — the trie is a pure function of
+/// the `{(id, full_hash)}` set. No re-hashing, and no parent-before-child
+/// ordering requirement.
+fn rebuild_child_tries_after_snapshot(
+    handle: &mut calimero_store::Handle<calimero_store::Store>,
+    context_id: ContextId,
+) -> Result<usize> {
+    // Collect first: the iterator borrows the handle we need to write through.
+    let mut links: Vec<(Id, calimero_storage::entities::ChildInfo)> = Vec::new();
+    {
+        let mut iter = handle.iter::<ContextStateKey>()?;
+        for (key_result, value_result) in iter.entries() {
+            let key = key_result?;
+            let value = value_result?;
+            if key.context_id() != context_id {
+                continue;
+            }
+            let state_key = key.state_key();
+            let Ok(index_entity) =
+                borsh::from_slice::<calimero_storage::index::EntityIndex>(value.value.as_ref())
+            else {
+                continue;
+            };
+            // Same cross-check the sender's discovery uses: an Entry value can
+            // borsh-deserialise as a partial EntityIndex by coincidence.
+            if StorageKey::Index(index_entity.id()).to_bytes() != state_key {
+                continue;
+            }
+            if let Some(parent_id) = index_entity.parent_id() {
+                links.push((
+                    parent_id,
+                    calimero_storage::entities::ChildInfo::new(
+                        index_entity.id(),
+                        index_entity.full_hash(),
+                        index_entity.metadata.clone(),
+                    ),
+                ));
+            }
+        }
+    }
+
+    let linked = links.len();
+
+    // Group by parent so siblings share one pass over the spine rows they all
+    // touch, rather than each re-reading and rewriting them.
+    let mut by_parent: BTreeMap<Id, Vec<calimero_storage::entities::ChildInfo>> = BTreeMap::new();
+    for (parent_id, child) in links {
+        by_parent.entry(parent_id).or_default().push(child);
+    }
+    for (parent_id, children) in by_parent {
+        link_children_into_parent_trie(handle, context_id, parent_id, children)?;
+    }
+
+    Ok(linked)
 }
 
 /// Result of a successful snapshot sync.
@@ -2256,6 +2458,178 @@ mod tests {
     // node-primitives and is exercised only here (the sender never emits a
     // rotation-log auxiliary record — the log syncs as collection children).
     use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
+
+    /// Grouping siblings behind one row cache must be invisible in the result.
+    ///
+    /// The cache exists so siblings stop re-reading the `DEPTH+1` spine rows
+    /// they all share. That is a pure win only if serving a row from the cache
+    /// gives byte-identical output to reading it back from the store — if it
+    /// ever does not, a snapshot receiver builds a different trie than the
+    /// sender and diverges permanently, which is the failure this whole pass
+    /// exists to prevent.
+    #[test]
+    fn grouping_siblings_writes_what_linking_them_one_at_a_time_writes() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::store::Key as StorageKey;
+
+        let context_id = ContextId::from([4; 32]);
+        let parent_id = Id::new([2; 32]);
+        let children: Vec<ChildInfo> = (0..12_u8)
+            .map(|i| {
+                ChildInfo::new(
+                    Id::new([i.wrapping_mul(17).wrapping_add(3); 32]),
+                    [i; 32],
+                    Metadata::default(),
+                )
+            })
+            .collect();
+
+        // Grouped: one call, one shared cache.
+        let grouped_store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut grouped = grouped_store.handle();
+        link_children_into_parent_trie(&mut grouped, context_id, parent_id, children.clone())
+            .expect("grouped link");
+
+        // One at a time: the same code with a cache of size 1 each call.
+        let single_store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut single = single_store.handle();
+        for child in children.clone() {
+            link_child_into_parent_trie(&mut single, context_id, parent_id, child)
+                .expect("single link");
+        }
+
+        let rows_of = |store: &Store| -> BTreeMap<Vec<u8>, Vec<u8>> {
+            let mut out = BTreeMap::new();
+            let handle = store.handle();
+            let mut iter = handle.iter::<ContextStateKey>().expect("iter");
+            for (k, v) in iter.entries() {
+                let k = k.expect("key");
+                let v = v.expect("value");
+                let _prev = out.insert(k.state_key().to_vec(), v.value.as_ref().to_vec());
+            }
+            out
+        };
+
+        let a = rows_of(&grouped_store);
+        let b = rows_of(&single_store);
+        assert!(!a.is_empty(), "grouped link wrote nothing");
+        assert_eq!(a, b, "grouped and one-at-a-time must write identical rows");
+
+        // And both must actually hold the children.
+        let read = |key: StorageKey| -> Option<Vec<u8>> {
+            let k = ContextStateKey::new(context_id, key.to_bytes());
+            grouped_store
+                .handle()
+                .get(&k)
+                .ok()
+                .flatten()
+                .map(|v| v.as_ref().to_vec())
+        };
+        let enumerated = calimero_storage::child_trie::ChildTrie::<
+            calimero_storage::store::MainStorage,
+        >::children_with(parent_id, read);
+        assert_eq!(enumerated.len(), children.len());
+    }
+
+    /// A snapshot receiver used to hold every entity and be able to enumerate
+    /// none of them.
+    ///
+    /// Snapshot installs an entity by writing its `Entry` and `Index` rows
+    /// verbatim. While a parent's children lived INSIDE its index row, that
+    /// shipped the parent->child links for free. Moving children into
+    /// `Key::ChildTrie` broke that silently: discovery finds entities by
+    /// deserialising `EntityIndex`, and a trie row never will.
+    ///
+    /// It never healed either, which is what makes this worth a test rather
+    /// than a one-off measurement. Hash comparison re-applied entities that
+    /// were already byte-identical, and that goes through the update path
+    /// rather than `add_child_to`, so no link was ever created — a stable
+    /// fixpoint, re-syncing every ~10s forever.
+    #[test]
+    fn rebuilding_after_snapshot_relinks_children_the_install_did_not() {
+        use calimero_storage::address::Id;
+        use calimero_storage::child_trie::ChildTrie;
+        use calimero_storage::store::{Key as StorageKey, MainStorage};
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut handle = store.handle();
+        let context_id = ContextId::from([9; 32]);
+
+        let parent_id = Id::new([1; 32]);
+        let child_ids: Vec<Id> = (0..5_u8).map(|i| Id::new([10 + i; 32])).collect();
+
+        // Install rows the way snapshot does: verbatim, no linking.
+        let put_index = |handle: &mut calimero_store::Handle<Store>, index: &EntityIndex| {
+            let key = ContextStateKey::new(context_id, StorageKey::Index(index.id()).to_bytes());
+            let bytes = borsh::to_vec(index).expect("serialise index");
+            let slice: Slice<'_> = bytes.into();
+            handle
+                .put(&key, &ContextStateValue::from(slice))
+                .expect("put index row");
+        };
+
+        put_index(&mut handle, &EntityIndex::minimal_for_test(parent_id));
+        for (i, id) in child_ids.iter().enumerate() {
+            put_index(
+                &mut handle,
+                &EntityIndex::minimal_for_test_with_parent(*id, parent_id, [20 + i as u8; 32]),
+            );
+        }
+
+        let read = |key: StorageKey| -> Option<Vec<u8>> {
+            let k = ContextStateKey::new(context_id, key.to_bytes());
+            store
+                .handle()
+                .get(&k)
+                .ok()
+                .flatten()
+                .map(|v| v.as_ref().to_vec())
+        };
+
+        // The bug: every entity present, none enumerable.
+        assert!(
+            ChildTrie::<MainStorage>::children_with(parent_id, read).is_empty(),
+            "precondition: a verbatim install links nothing"
+        );
+
+        let linked = rebuild_child_tries_after_snapshot(&mut handle, context_id)
+            .expect("rebuild must succeed");
+        assert_eq!(linked, child_ids.len(), "every parented row must be linked");
+
+        let rebuilt = ChildTrie::<MainStorage>::children_with(parent_id, read);
+        assert_eq!(
+            rebuilt.len(),
+            child_ids.len(),
+            "children must enumerate after the rebuild"
+        );
+
+        let got: BTreeSet<Id> = rebuilt
+            .iter()
+            .map(calimero_storage::entities::ChildInfo::id)
+            .collect();
+        let want: BTreeSet<Id> = child_ids.iter().copied().collect();
+        assert_eq!(
+            got, want,
+            "the rebuilt trie must hold exactly the shipped children"
+        );
+
+        // The rebuild replays the SENDER's full_hash per child, so the
+        // reconstructed trie has to reproduce the sender's root exactly —
+        // that equality is the whole point, not a side effect.
+        for (i, child) in rebuilt.iter().enumerate() {
+            let expected = child_ids
+                .iter()
+                .position(|id| *id == child.id())
+                .expect("child id known");
+            let _ = i;
+            assert_eq!(
+                child.merkle_hash(),
+                [20 + expected as u8; 32],
+                "the shipped full_hash must be what lands in the trie"
+            );
+        }
+    }
 
     #[test]
     fn snapshot_progress_unknown_total_yields_no_estimate() {

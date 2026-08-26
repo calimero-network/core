@@ -283,9 +283,13 @@ pub enum Event<'a> {
 
     // Authored Vector Events
     AuthoredVecPushed {
-        index: usize,
+        entry_id: &'a str,
         value: String,
         owner: String,
+    },
+    AuthoredVecUpdatedById {
+        entry_id: String,
+        value: String,
     },
     AuthoredVecUpdated {
         index: usize,
@@ -1305,15 +1309,40 @@ impl E2eKvStore {
 
     // AUTHORED VECTOR
 
-    pub fn authored_vec_push(&mut self, value: String) -> app::Result<usize> {
-        let index = self.authored_vec.push(LwwRegister::new(value.clone()))?;
+    /// Returns the new entry's ID, not its index.
+    ///
+    /// An index describes where the entry currently sits in a set every peer
+    /// inserts into, so it goes stale as soon as anyone inserts ahead of it.
+    /// The id names the entry (core#3637).
+    pub fn authored_vec_push(&mut self, value: String) -> app::Result<String> {
+        let id = self.authored_vec.push(LwwRegister::new(value.clone()))?;
+        let entry_id = bs58::encode(id.as_bytes()).into_string();
         let owner = bs58::encode(env::device_id()).into_string();
         app::emit!(Event::AuthoredVecPushed {
-            index,
+            entry_id: &entry_id,
             value,
             owner,
         });
-        Ok(index)
+        Ok(entry_id)
+    }
+
+    /// Update by ID — the address that survives a concurrent insert.
+    pub fn authored_vec_update_by_id(
+        &mut self,
+        entry_id: String,
+        value: String,
+    ) -> app::Result<()> {
+        let raw: [u8; 32] = bs58::decode(&entry_id)
+            .into_vec()
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .ok_or_else(|| app::err!("bad entry id"))?;
+        self.authored_vec.update_by_id(
+            calimero_storage::address::Id::new(raw),
+            LwwRegister::new(value.clone()),
+        )?;
+        app::emit!(Event::AuthoredVecUpdatedById { entry_id, value });
+        Ok(())
     }
 
     pub fn authored_vec_get(&self, index: usize) -> app::Result<Option<String>> {

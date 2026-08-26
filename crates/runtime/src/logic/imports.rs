@@ -202,6 +202,30 @@ impl VMLogic<'_> {
                 index: u64,
                 register_id: u64,
             ) -> i32;
+            // Id-addressed counterparts. A position is only valid until someone
+            // inserts ahead of it, so anything that resolves its target in a
+            // different call than it acts must use these (core#3637).
+            fn js_crdt_authored_vector_update_by_id(
+                vector_id_ptr: u64,
+                entry_id_ptr: u64,
+                value_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_tombstone_by_id(
+                vector_id_ptr: u64,
+                entry_id_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_get_by_id(
+                vector_id_ptr: u64,
+                entry_id_ptr: u64,
+                register_id: u64,
+            ) -> i32;
+            fn js_crdt_authored_vector_owner_of_id(
+                vector_id_ptr: u64,
+                entry_id_ptr: u64,
+                register_id: u64,
+            ) -> i32;
             fn js_crdt_authored_vector_owned_by_me(vector_id_ptr: u64, index: u64) -> i32;
             fn js_crdt_authored_vector_iter(vector_id_ptr: u64, register_id: u64) -> i32;
             fn js_crdt_authored_vector_len(vector_id_ptr: u64, register_id: u64) -> i32;

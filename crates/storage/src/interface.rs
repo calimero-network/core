@@ -46,6 +46,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, trace, warn};
 
 use crate::address::Id;
+use crate::child_trie::ChildTrie;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
@@ -1232,6 +1233,34 @@ impl<S: StorageAdaptor> Interface<S> {
         if !child.element().is_dirty() {
             return Ok(false);
         }
+
+        // Position among the parent's children, assigned by the WRITER, here,
+        // where local writes flow through (`CollectionMut::insert` — every
+        // WASM-side push). Deliberately NOT in `Index::add_child_to`: the
+        // remote-apply paths call that with metadata off the wire, and
+        // recomputing there would replace the writer's position with the
+        // receiver's own child count. The two replicas would then order the
+        // same collection differently.
+        //
+        // Set before both uses below, so the position reaches local state (the
+        // `ChildInfo` written into the parent's trie) AND peers (`save_raw`
+        // emits an action carrying this metadata).
+        //
+        // Existing children keep the position they were given. Re-linking
+        // happens on every update, and taking a fresh position then would move
+        // an entity to the end of its own collection each time it was edited.
+        // `ChildTrie::get` is a keyed lookup, not a walk.
+        //
+        // Why a position is needed at all: `Vector::get(i)` iterates children in
+        // `ChildInfo` order, and `created_at` cannot separate writes made in one
+        // call — it is the execution timestamp, the same for all of them and
+        // pinned to 0 under merge mode. Without this they tie and the random id
+        // decides, so `get(0)` could return the third push.
+        let trie = <ChildTrie<S>>::new(parent_id);
+        child.element_mut().metadata.order = match trie.get(child.id()) {
+            Some(existing) => existing.metadata.order,
+            None => trie.next_order(),
+        };
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
 
@@ -2756,9 +2785,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // under a tombstoned ancestor).
         <Index<S>>::tombstone_descendants_of(id, deleted_at)?;
 
-        // Deletion wins - apply it
-        let _ignored = S::storage_remove(Key::Entry(id));
-        let _ignored = <Index<S>>::mark_deleted(id, deleted_at);
+        // Deletion wins - apply it, through the SAME helper the local delete
+        // uses. Inlining the remove + tombstone here is how the two paths
+        // drifted: the helper also drops the entity's child trie, and this one
+        // did not, so a locally-deleted entity lost its trie while a replayed
+        // delete kept it. Collection ids are deterministic, so the next
+        // re-creation (or an add-wins resurrection, which recomputes
+        // `full_hash_from_trie`) folded EMPTY on one replica and a ghost root
+        // on the other — a different hash for the same logical state,
+        // propagating to the context root with nothing reporting an error.
+        // Exactly what the comment below warns about, one operation earlier.
+        <Index<S>>::delete_entity_and_create_tombstone(id, deleted_at)?;
 
         // CRITICAL: Update parent's children list and recalculate hashes
         // Without this, the receiving node would have a different root hash than
