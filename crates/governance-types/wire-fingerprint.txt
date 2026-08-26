@@ -1,0 +1,156 @@
+# Calimero replicated wire surface — GENERATED, DO NOT EDIT BY HAND.
+#
+# Regenerate with UPDATE_WIRE_FINGERPRINT=1 and the crate's test command; the
+# failing assertion prints the exact one.
+#
+# APPENDING a variant at the END of an enum is wire-COMPATIBLE: an old node
+# fails to decode the new tag and rejects the op, but every op it already
+# understands still decodes identically.
+#
+# INSERTING, REMOVING, REORDERING or RETYPING anything below is a HARD BREAK:
+# borsh discriminants are bare positional u8s, so every later variant silently
+# renumbers and an old peer decodes the WRONG variant rather than erroring.
+# That is the rc.7/rc.8 NamespaceGovOpValue incident — a fleet that reported
+# 'joined' while replicating nothing. If you must do it, bump the schema
+# version constant in the same commit and plan a coordinated rollout.
+fingerprint blake3=c1d66b7a7bcece0f
+
+surface calimero-governance-types
+
+enum NamespaceOp
+  0 Root(0: RootOp)
+  1 Group(group_id: ContextGroupId, key_id: KeyId, encrypted: EncryptedGroupOp, key_rotation: Option<KeyRotation>)
+
+enum RootOp
+  0 GroupCreated(group_id: ContextGroupId, parent_id: ContextGroupId, restricted: bool, admin: AccountId)
+  1 GroupReparented(child_group_id: ContextGroupId, new_parent_id: ContextGroupId)
+  2 GroupDeleted(root_group_id: ContextGroupId, cascade_group_ids: Vec<ContextGroupId>, cascade_context_ids: Vec<ContextId>)
+  3 AdminChanged(new_admin: AccountId)
+  4 PolicyUpdated(policy_bytes: Vec<u8>)
+  5 MemberJoined(member: AccountId, signed_invitation: SignedGroupOpenInvitation, account: Box<JoinAccountCredential>)
+  6 KeyDelivery(group_id: ContextGroupId, envelope: KeyEnvelope)
+  7 MemberJoinedOpen(member: AccountId, group_id: ContextGroupId, account: Box<JoinAccountCredential>)
+  8 MemberJoinedAt(member: AccountId, signed_invitation: SignedGroupOpenInvitation, joined_at: u64, account: Box<JoinAccountCredential>)
+  9 NamespaceCreated(founder: AccountId, account: Box<JoinAccountCredential>)
+  10 MemberJoinedViaTeeAttestation(group_id: ContextGroupId, member: PublicKey, quote_hash: [u8; 32], mrtd: String, rtmr0: String, rtmr1: String, rtmr2: String, rtmr3: String, tcb_status: String, role: GroupMemberRole, account: Box<JoinAccountCredential>)
+
+enum GroupOp
+  0 Noop
+  1 MemberAdded(member: AccountId, role: GroupMemberRole)
+  2 MemberRemoved(member: AccountId, expected_group_state_hash: [u8; 32], expected_context_state_hashes: Vec<(ContextId, [u8; 32])>)
+  3 MemberLeft(member: AccountId, expected_group_state_hash: [u8; 32], expected_context_state_hashes: Vec<(ContextId, [u8; 32])>)
+  4 MemberRoleSet(member: AccountId, role: GroupMemberRole)
+  5 MemberCapabilitySet(member: AccountId, capabilities: MemberCapabilities)
+  6 DefaultCapabilitiesSet(capabilities: MemberCapabilities)
+  7 TargetApplicationSet(bytecode_id: BytecodeId, target_application_id: ApplicationId)
+  8 ContextRegistered(context_id: ContextId, application_id: ApplicationId, blob_id: BlobId, source: String, service_name: Option<String>)
+  9 ContextDetached(context_id: ContextId)
+  10 SubgroupVisibilitySet(mode: VisibilityMode)
+  11 GroupMetadataSet(name: Option<String>, data: BTreeMap<String, String>)
+  12 MemberMetadataSet(member: AccountId, name: Option<String>, data: BTreeMap<String, String>)
+  13 ContextMetadataSet(context_id: ContextId, name: Option<String>, data: BTreeMap<String, String>)
+  14 GroupDelete
+  15 GroupMigrationSet(migration: Option<Vec<u8>>)
+  16 ContextCapabilityGranted(context_id: ContextId, member: AccountId, capability: ContextCapabilityBits)
+  17 ContextCapabilityRevoked(context_id: ContextId, member: AccountId, capability: ContextCapabilityBits)
+  18 TeeAdmissionPolicySet(allowed_mrtd: Vec<String>, allowed_rtmr0: Vec<String>, allowed_rtmr1: Vec<String>, allowed_rtmr2: Vec<String>, allowed_rtmr3: Vec<String>, allowed_tcb_statuses: Vec<String>, accept_mock: bool)
+  19 MemberJoinedViaTeeAttestation(member: AccountId, quote_hash: [u8; 32], mrtd: String, rtmr0: String, rtmr1: String, rtmr2: String, rtmr3: String, tcb_status: String, role: GroupMemberRole)
+  20 MemberSetAutoFollow(target: AccountId, auto_follow_contexts: bool, auto_follow_subgroups: bool)
+  21 TransferOwnership(new_owner: AccountId)
+  22 CascadeUpgrade(from_bytecode_id: BytecodeId, bytecode_id: BytecodeId, target_application_id: ApplicationId, to_state_version: u32, migration: Option<Vec<u8>>, cascade_hlc: HybridTimestamp)
+  23 GroupKeyRotated(departed: AccountId)
+  24 AccountDeviceLinked(genesis: AccountGenesis, chain: Vec<RootKeyHandoff>, cert: DeviceCert, endorsement: AccountMemberEndorsement)
+  25 AccountDeviceUnlinked(account: AccountId, device: DeviceId, proof: Option<SignedDeviceRevocation>)
+  26 AccountKeysRotated(handoff: RootKeyHandoff)
+  27 GroupKeyRotatedForDevice(device: DeviceId)
+
+enum EnvelopeRecipient
+  0 Member(identity: PublicKey, ephemeral_pk: PublicKey)
+  1 Device(device: DeviceId, ephemeral_pk: KemPublicKey)
+
+enum StoredNamespaceEntry
+  0 Signed(0: SignedNamespaceOp)
+  1 Opaque(0: OpaqueSkeleton)
+
+struct SignableGroupOp
+  0 version: u8
+  1 group_id: ContextGroupId
+  2 parent_op_hashes: Vec<[u8; 32]>
+  3 signer: PublicKey
+  4 nonce: u64
+  5 op: GroupOp
+
+struct SignedGroupOp
+  0 version: u8
+  1 group_id: ContextGroupId
+  2 parent_op_hashes: Vec<[u8; 32]>
+  3 signer: PublicKey
+  4 nonce: u64
+  5 op: GroupOp
+  6 signature: [u8; 64]
+
+struct SignableNamespaceOp
+  0 version: u8
+  1 namespace_id: NamespaceId
+  2 parent_op_hashes: Vec<[u8; 32]>
+  3 signer: PublicKey
+  4 nonce: u64
+  5 op: NamespaceOp
+
+struct SignedNamespaceOp
+  0 version: u8
+  1 namespace_id: NamespaceId
+  2 parent_op_hashes: Vec<[u8; 32]>
+  3 signer: PublicKey
+  4 nonce: u64
+  5 op: NamespaceOp
+  6 signature: [u8; 64]
+
+struct EncryptedGroupOp
+  0 nonce: [u8; 12]
+  1 ciphertext: Vec<u8>
+
+struct KeyEnvelope
+  0 recipient: EnvelopeRecipient
+  1 sender: PublicKey
+  2 nonce: [u8; 12]
+  3 ciphertext: Vec<u8>
+  4 signature: [u8; 64]
+
+struct KeyRotation
+  0 new_key_id: KeyId
+  1 envelopes: Vec<KeyEnvelope>
+
+struct OpaqueSkeleton
+  0 delta_id: [u8; 32]
+  1 parent_op_hashes: Vec<[u8; 32]>
+  2 group_id: ContextGroupId
+  3 signer: PublicKey
+
+leaf AccountGenesis len=33 blake3=79efc4eb5e34fb06
+leaf AccountMemberEndorsement len=128 blake3=272fc82430c30a4f
+leaf DeviceCert len=200 blake3=bb7c84c0d6cc4368
+leaf RootKeyHandoff len=132 blake3=ff46c07437cfbd6e
+leaf DeviceRevocation len=132 blake3=ff46c07437cfbd6e
+leaf JoinAccountCredential len=237 blake3=039d086a90863034
+leaf SignedDeviceRevocation len=169 blake3=7f5fcb6788d30126
+leaf SignedGroupOpenInvitation len=112 blake3=5318e0796f6dd682
+leaf HybridTimestamp::zero len=24 blake3=ffc587cc36ab1393
+leaf MemberCapabilities::empty len=4 blake3=ec2bd03bf86b935f
+leaf GroupMemberRole::Admin len=1 blake3=2d3adedff11b61f1
+leaf GroupMemberRole::Member len=1 blake3=48fc721fbbc172e0
+leaf GroupMemberRole::ReadOnly len=1 blake3=ab13bedf42e84bae
+leaf GroupMemberRole::ReadOnlyTee len=1 blake3=e1e0e81d6ea39b0c
+leaf VisibilityMode::Open len=1 blake3=2d3adedff11b61f1
+leaf VisibilityMode::Restricted len=1 blake3=48fc721fbbc172e0
+leaf AccountId len=32 blake3=2ada83c1819a5372
+leaf DeviceId len=32 blake3=2ada83c1819a5372
+leaf PublicKey len=32 blake3=2ada83c1819a5372
+leaf KemPublicKey len=32 blake3=2ada83c1819a5372
+leaf ContextId len=32 blake3=2ada83c1819a5372
+leaf ContextGroupId len=32 blake3=2ada83c1819a5372
+leaf BytecodeId len=32 blake3=2ada83c1819a5372
+leaf ApplicationId len=32 blake3=2ada83c1819a5372
+leaf BlobId len=32 blake3=2ada83c1819a5372
+leaf NamespaceId len=32 blake3=2ada83c1819a5372
+leaf KeyId len=32 blake3=2ada83c1819a5372

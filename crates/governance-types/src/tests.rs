@@ -1,5 +1,9 @@
 use super::*;
 
+// The structural-fingerprint gate. Lives beside these goldens because it reads
+// them: the descriptor there and the frozen bytes here check each other.
+mod wire_fingerprint;
+
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use rand::rngs::OsRng;
 
@@ -299,6 +303,17 @@ const GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED: &[u8] = &[
     0, // handoff.signature
 ];
 
+/// GroupOp ordinal 27 - GroupKeyRotatedForDevice { device: [0;32] }
+///
+/// `DeviceId` is a transparent 32-byte newtype, so the payload is the bare id.
+/// Frozen here because the variant is the tail of the enum today: the next
+/// append lands at 28, and this vector is what proves 27 did not move under it.
+const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED_FOR_DEVICE: &[u8] = &[
+    27, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // device
+];
+
 /// GroupOp ordinal 23 - GroupKeyRotated { departed: [0;32] }
 const GOLDEN_GROUP_OP_GROUP_KEY_ROTATED: &[u8] = &[
     23, // discriminant
@@ -482,6 +497,11 @@ fn group_op_discriminants_are_golden() {
         GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED,
         GroupOp::AccountKeysRotated { .. },
         26
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_GROUP_KEY_ROTATED_FOR_DEVICE,
+        GroupOp::GroupKeyRotatedForDevice { .. },
+        27
     );
 
     assert!(
@@ -735,6 +755,26 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// NamespaceOp ordinal 1 — `Group` (the encrypted arm).
+///
+/// The `Root` arm is covered by every `GOLDEN_ROOT_OP_*` vector above; this is
+/// the only vector that pins tag 1. Without it a swap of the two arms would
+/// leave every RootOp golden still decoding "correctly" as tag 0 while every
+/// group-scoped op on the wire became unreadable.
+///
+/// Layout: tag, group_id[32], key_id[32], encrypted.nonce[12],
+/// encrypted.ciphertext (vec len 0), key_rotation = None.
+const GOLDEN_NAMESPACE_OP_GROUP: &[u8] = &[
+    1, // NamespaceOp::Group discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // group_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // key_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // encrypted.nonce [0u8; 12]
+    0, 0, 0, 0, // encrypted.ciphertext vec len = 0
+    0, // key_rotation = None
 ];
 
 #[test]
