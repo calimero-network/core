@@ -8,6 +8,24 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
+# Only the criterion target is a benchmark. Without this, `cargo bench -p
+# storage-cost` also hands the lib and integration-test targets to libtest,
+# which then rejects criterion's own CLI flags.
+[lib]
+bench = false
+
+[[bin]]
+name = "storage-cost"
+bench = false
+
+[[test]]
+name = "flat_curve"
+bench = false
+
+[[test]]
+name = "reproducible"
+bench = false
+
 [dependencies]
 calimero-storage = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -15,3 +33,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+
+# `harness = false` hands the target's `main` to criterion instead of libtest.
+[[bench]]
+name = "collections"
+harness = false
