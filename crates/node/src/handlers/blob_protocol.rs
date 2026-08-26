@@ -88,7 +88,7 @@ pub async fn handle_blob_protocol_stream(
 /// 3. Send empty chunk to signal end
 ///
 /// Features:
-/// - Timeouts (5 min total, 30 sec per chunk)
+/// - Timeouts (5 min total, no per-chunk timeout)
 /// - Binary chunk encoding for efficiency
 async fn handle_blob_request_stream(
     node_client: NodeClient,

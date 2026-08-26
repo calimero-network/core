@@ -203,8 +203,7 @@ mistake was made rather than degrading quietly later:
 
 | Situation | What happens |
 | --- | --- |
-| Creating a context whose application row carries no coordinates | `create_context` fails: `application <id> has no registry coordinates to register a context with` |
-| Emitting an upgrade for such a row | the upgrade is refused: `application <pkg>@<ver> has no registry coordinates to upgrade with` |
+| Creating a context, or emitting an upgrade, against an application row that carries no coordinates | both fail with the same error, from the shared `registry_coords` check: `application <pkg>@<version> has no registry coordinates` |
 | `mode = "http"` with no `base_url`, installing by coordinates | the install fails: `[registry] mode = "http" needs a base_url to fetch from` |
 | `mode = "http"` with no `base_url`, acquiring a group's bytecode | logged (`no application source is configured`) and reported as `Unavailable`; the context keeps its current version and retries |
 | `mode = "dht"`, installing `package@version` by name | nothing to ask - the peer route needs a context and a `bytecode_id`, so the install reports the coordinates as unpublished |

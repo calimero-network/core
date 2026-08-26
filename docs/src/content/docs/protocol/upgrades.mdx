@@ -394,9 +394,10 @@ opt-in.
 Changing an identity-gated type to a plain one (`AuthoredMap → UnorderedMap`,
 `SharedStorage → UnorderedMap`, `AuthoredVector → Vector`, or dropping the field) strips
 per-entry authorship / the writer ACL across the **whole network**. This is refused
-twice: in CI by `cargo mero abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding,
-`crates/wasm-abi/src/downgrade.rs`), and at the node by the upgrade gate, before the
-upgrade op is even emitted.
+twice: in CI by `cargo mero abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding, detected by
+`identity_downgrades()` in `crates/wasm-abi/src/downgrade.rs` and tagged
+`FindingClass::UnsafeIdentityDowngrade` in `tools/calimero-abi/src/diff.rs`), and at the
+node by the upgrade gate, before the upgrade op is even emitted.
 
 ## The stale-schema delta fence
 
@@ -489,9 +490,9 @@ identical pair, and so does `GroupOp::ContextRegistered` - that is how a joiner 
 to fetch the application it was just registered against.
 Because the field is mandatory, an emitter that has no coordinates to put there **fails**
 instead of signing an op no receiver could resolve: emitting an upgrade against an
-unaddressable application row errors with `has no registry coordinates to upgrade with`,
-and creating a context against one errors with
-`has no registry coordinates to register a context with`.
+unaddressable application row, and creating a context against one, both error with the same
+`application <pkg>@<version> has no registry coordinates` message, raised by the shared
+`registry_coords` check both paths call (`crates/context/src/handlers/upgrade_group.rs`).
 There is no coordinate-less arm left to degrade into.
 
 <Aside type="caution" title="Schema v11 is a flag day: upgrade a namespace's peers together">
@@ -678,8 +679,10 @@ The `CascadeUpgrade` records the new target application plus the migration and s
 `cascade_hlc` fence; nothing migrates yet, and every context reshapes its state on first
 access. `A` and `B`, which are actively used, migrate on their next context access: each runs
 `migrate_v1_to_v2` against its own byte-identical `v1` state, the `migration_check` (if any)
-passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: 1, toVersion: 2 }`
-fires. `C`, idle, keeps `DocV1` bytes on disk until it is next accessed.
+passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: "1", toVersion: "2" }`
+fires - the payload carries the application's own package version strings (this example's
+app happens to use bare `"1"`/`"2"` as its semver), not the `state_version` schema generation.
+`C`, idle, keeps `DocV1` bytes on disk until it is next accessed.
 
 **The lagging node.** Say `C` stays offline across a *second* release, v3. While `C` is
 behind, the `v2`/`v3`-schema deltas its migrated peers broadcast arrive under a schema that

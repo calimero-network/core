@@ -184,6 +184,14 @@ Each returned peer is then asked for the bytes over the transfer protocol below;
 the first peer that delivers a blob whose recomputed id matches wins, and the
 bytes are stored locally for reuse.
 
+An announcement is opportunistic: only some paths publish one, and a restart
+drops the records a node held.
+So a lookup that comes back empty, or fails outright, falls back within the same
+attempt to the peers subscribed to the context's gossipsub topic - the
+authoritative set of members entitled to these bytes, and the route by which a
+late joiner reaches a context's application bytecode, which nothing announces at
+install time.
+
 :::note
 Global (context-less) blob queries are not supported — discovery always names a
 context. New nodes that cannot yet sign requests are still bootstrapped because
@@ -285,7 +293,6 @@ Both ends bound the transfer so a stalled peer cannot pin resources:
 | Requester | whole transfer | 60 s |
 | Requester | per chunk received | 30 s |
 | Provider | whole serve | 300 s |
-| Provider | per chunk sent | 30 s |
 
 Every frame is length-delimited and capped at `MAX_MESSAGE_SIZE` (8 MiB) by the
 stream codec. Since stored chunks are 1 MiB, a `BlobChunk` frame stays well
