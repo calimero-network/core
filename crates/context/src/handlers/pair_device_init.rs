@@ -66,10 +66,16 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
         // records participation. That marker is not cosmetic: the sync layer and
         // the startup sweep walk it, so a namespace missing one is a namespace
         // this node never syncs.
+        // The key is node-level, so the first namespace's answer is the same key
+        // as any other. An empty set never reaches here: the request validator
+        // refuses one, because a device certified to listen on no topic at all is
+        // a pairing that reaches nowhere.
         let mut identity = None;
         for namespace_id in &namespaces {
             match self.get_or_create_namespace_identity(namespace_id) {
-                Ok((_, sign_pk, sign_sk)) => identity = Some((sign_pk, PrivateKey::from(sign_sk))),
+                Ok((_, sign_pk, sign_sk)) => {
+                    _ = identity.get_or_insert((sign_pk, PrivateKey::from(sign_sk)));
+                }
                 Err(err) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "failed to provision a namespace identity for {namespace_id:?}: {err}"
@@ -77,14 +83,9 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 }
             }
         }
-        // Nothing to enroll into, so nothing to subscribe to: the device would be
-        // certified and then listen on no topic at all. Refusing beats reporting
-        // a pairing that reaches nowhere.
         let Some((sign_pk, sign_sk)) = identity else {
             return ActorResponse::reply(Err(eyre::eyre!(
-                "pairing needs at least one namespace to enroll into, and only the \
-                 device that holds the account knows which ones it speaks in — so it \
-                 has to name them"
+                "pair-init reached the handler with no namespace to enroll into"
             )));
         };
 
