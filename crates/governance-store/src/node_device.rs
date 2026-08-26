@@ -355,7 +355,6 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
 /// endorsement, and a key wrap. Nothing about it expires, and the device need
 /// not be online.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct KnownDeviceCert {
     /// The proof exactly as a link op carries it: genesis, handoff chain, cert.
     pub proof: AccountProof<DeviceCert>,

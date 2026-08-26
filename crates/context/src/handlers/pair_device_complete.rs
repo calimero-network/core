@@ -51,12 +51,14 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{AccountId, DeviceCert, PairingOffer};
+use calimero_account::{AccountId, AccountProof, DeviceCert, PairingOffer};
 use calimero_context_client::group::{
-    PairDeviceCompleteRequest, PairDeviceCompleteResponse, PairingScope,
+    BindOutcome, PairDeviceCompleteRequest, PairDeviceCompleteResponse, PairingScope,
 };
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{GroupKeyring, NamespaceRepository, NodeDeviceRepository};
+use calimero_governance_store::{
+    GroupKeyring, KnownDeviceCert, NamespaceRepository, NodeDeviceRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -154,6 +156,36 @@ pub(crate) fn signing_identity(store: &Store, gated_on: &[ContextGroupId]) -> Ey
         namespaces: format!("{gated_on:?}"),
     }
     .into())
+}
+
+/// Did the pairing reach a namespace at all?
+///
+/// `AlreadyBound` counts: `pair-init` is idempotent, so a retried pairing
+/// republishes nothing and is still a device that is paired here. Reaching
+/// nowhere is the one outcome that has to fail the call - the device would be
+/// certified, holding no key and bound in no namespace.
+fn reached_a_namespace(outcomes: &[(ContextGroupId, BindOutcome)]) -> bool {
+    outcomes.iter().any(|(_, outcome)| {
+        matches!(
+            outcome,
+            BindOutcome::Linked { .. } | BindOutcome::AlreadyBound
+        )
+    })
+}
+
+/// Did every link this pairing published carry its scope key?
+///
+/// A namespace that was skipped delivered nothing and owes nothing; only a link
+/// that landed without its key leaves the device authorized and unable to read.
+fn key_delivered_everywhere(outcomes: &[(ContextGroupId, BindOutcome)]) -> bool {
+    outcomes.iter().all(|(_, outcome)| {
+        !matches!(
+            outcome,
+            BindOutcome::Linked {
+                key_delivered: false
+            }
+        )
+    })
 }
 
 /// Is `statement` the offering device's own signature over exactly these keys?
@@ -343,7 +375,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
         // Epoch 0 on both counts: the account root has not rotated (rotation is
         // not implemented yet), so there are no handoffs to carry and the
         // certifying key is the genesis key itself.
-        let cert = match DeviceCert::sign(
+        let device_cert = match DeviceCert::sign(
             account_root.signing_key(),
             account,
             device,
@@ -360,16 +392,18 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
             }
         };
 
-        // The device this certifies needs the proof to present itself, and cannot
-        // read it off the DAG until it is a member somewhere - which for a thin
-        // client is never. The same proof is what the publisher below builds each
-        // link from, and what the cert store keeps, so a namespace this account
-        // gains later can bind the device without a second pairing ceremony.
-        let credential = Box::new(calimero_account::AccountProof {
-            genesis,
-            chain: vec![],
-            statement: cert,
-        });
+        // One certificate for all three uses: the fan-out publishes it, the cert
+        // store keeps it so a namespace gained later can bind the device with no
+        // second ceremony, and the response hands it back to the device - which
+        // cannot read it off a DAG it is a member of nowhere.
+        let cert = KnownDeviceCert {
+            proof: AccountProof {
+                genesis,
+                chain: vec![],
+                statement: device_cert,
+            },
+            applications,
+        };
 
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
@@ -392,49 +426,23 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 // that namespace's DAG and is picked up whenever it does subscribe,
                 // and a subscription this never reaches costs the device nothing.
                 // Only prompt delivery depends on the two overlapping.
-                let mut linked_in = Vec::new();
-                let mut key_delivered_everywhere = true;
+                let outcomes = calimero_governance_store::bind_device_everywhere(
+                    &store,
+                    &node_client,
+                    &ack_router,
+                    &targets,
+                    &signer_sk,
+                    &cert,
+                )
+                .await;
 
-                for ns in targets {
-                    // No key here means this node cannot publish an encrypted group
-                    // op for the namespace, let alone deliver one. Skip rather than
-                    // fail: the scope the caller asked about is checked above, and
-                    // the others are a bonus this pairing is extending.
-                    let Ok(Some((_key_id, ns_key))) =
-                        GroupKeyring::new(&store, ns).load_current_key()
-                    else {
-                        continue;
-                    };
-
-                    match calimero_governance_store::device_link::publish_link_and_key(
-                        &store,
-                        &node_client,
-                        &ack_router,
-                        &ns,
-                        &signer_sk,
-                        &credential,
-                        &ns_key,
-                    )
-                    .await
-                    {
-                        Ok(key_delivered) => {
-                            key_delivered_everywhere &= key_delivered;
-                            linked_in.push(ns);
-                        }
-                        // One namespace failing must not withhold the device from
-                        // the rest. The caller sees which ones landed.
-                        Err(err) => warn!(namespace_id = ?ns, %device, %err,
-                                          "pairing: extending the device here failed; \
-                                           others continue"),
-                    }
-                }
-
-                if linked_in.is_empty() {
+                if !reached_a_namespace(&outcomes) {
                     eyre::bail!(
                         "the link for {device} reached no namespace, so it is paired \
                          nowhere and holds no scope key"
                     );
                 }
+                let key_delivered = key_delivered_everywhere(&outcomes);
 
                 // Kept only once the pairing reached somewhere, so a call that
                 // failed leaves nothing behind. From here on a namespace this
@@ -442,21 +450,19 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
                 // signature - which the replicated binding row drops - is written
                 // down where it was made.
                 if let Err(err) = NodeDeviceRepository::new(&store)
-                    .remember_device_cert(&credential, &applications)
+                    .remember_device_cert(&cert.proof, &cert.applications)
                 {
                     warn!(%device, %err,
                           "paired, but this node could not remember the certificate; \
                            namespaces gained later will need an explicit relink");
                 }
 
-                let key_delivered = key_delivered_everywhere;
-
                 Ok(PairDeviceCompleteResponse::new(
                     account,
                     device,
                     key_delivered,
                     confirmation_code,
-                    credential,
+                    Box::new(cert.proof),
                 ))
             }
             .into_actor(self),
@@ -778,6 +784,53 @@ mod tests {
             refused.downcast_ref::<ContextError>(),
             Some(ContextError::PairingStatementInvalid { .. })
         ));
+    }
+
+    /// The one outcome that decides idempotency. A repeated `pair-complete`
+    /// republishes nothing - every namespace answers `AlreadyBound` - and the
+    /// device is still paired, so reporting "reached no namespace" would fail a
+    /// call that changed nothing rather than one that achieved nothing.
+    #[test]
+    fn a_pairing_that_republished_nothing_still_reached_its_namespaces() {
+        let already = [(ContextGroupId::from(NS_A), BindOutcome::AlreadyBound)];
+        assert!(reached_a_namespace(&already));
+
+        let nowhere = [
+            (ContextGroupId::from(NS_A), BindOutcome::NoScopeKey),
+            (ContextGroupId::from(NS_B), BindOutcome::OutOfScope),
+        ];
+        assert!(!reached_a_namespace(&nowhere));
+        assert!(!reached_a_namespace(&[]), "no namespace is nowhere");
+    }
+
+    /// A skipped namespace owes no key; a link that landed without one does. The
+    /// device is authorized and unable to read until its own pull recovers the
+    /// key, which is the state this flag exists to surface.
+    #[test]
+    fn only_a_link_that_landed_without_its_key_is_an_undelivered_key() {
+        assert!(key_delivered_everywhere(&[
+            (
+                ContextGroupId::from(NS_A),
+                BindOutcome::Linked {
+                    key_delivered: true
+                }
+            ),
+            (ContextGroupId::from(NS_B), BindOutcome::OutOfScope),
+        ]));
+        assert!(!key_delivered_everywhere(&[
+            (
+                ContextGroupId::from(NS_A),
+                BindOutcome::Linked {
+                    key_delivered: true
+                }
+            ),
+            (
+                ContextGroupId::from(NS_B),
+                BindOutcome::Linked {
+                    key_delivered: false
+                }
+            ),
+        ]));
     }
 
     /// A node that paired INTO somebody else's account cannot certify a third

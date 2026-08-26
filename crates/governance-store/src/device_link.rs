@@ -90,11 +90,7 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
 /// `Ok(false)` means the link landed and the delivery did not - not a failed
 /// bind. An `Err` means nothing was published: the wrap runs first precisely so a
 /// device this node cannot address never gets a link published for it.
-///
-/// # Errors
-/// If the endorsement cannot be signed, the scope key cannot be wrapped for the
-/// device, or the link fails to publish.
-pub async fn publish_link_and_key(
+async fn publish_link_and_key(
     store: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
