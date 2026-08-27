@@ -16,4 +16,5 @@ mod revocation;
 mod root_key;
 mod signed;
 mod warrant;
+mod warrant_wire_fixture;
 mod wire;
