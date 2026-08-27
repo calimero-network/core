@@ -57,7 +57,9 @@ fn resolve_target(
         .into());
     }
 
-    if !applications.is_empty() {
+    // An empty stored scope already covers every application, so adding to it could
+    // only narrow the device rather than widen it.
+    if !applications.is_empty() && !cached.applications.is_empty() {
         for application in applications {
             if !cached.applications.contains(&application) {
                 cached.applications.push(application);
@@ -285,6 +287,33 @@ mod tests {
         // And a repair that names nothing must not narrow it back.
         let (_account, repaired) = resolve_target(&store, device, vec![]).expect("repair");
         assert_eq!(repaired.applications, vec![app(APP_ONE), app(APP_TWO)]);
+    }
+
+    /// An empty scope already covers every application, so naming one must not
+    /// replace "all" with "only that one" - a widening request that silently
+    /// narrows is the worst shape this endpoint could have.
+    #[test]
+    fn naming_an_application_on_an_all_applications_device_does_not_narrow_it() {
+        let store = a_node_holding_its_own_account();
+        let device = certify_device(&store, 0x35, &[]);
+
+        let (_account, cached) =
+            resolve_target(&store, device, vec![app(APP_ONE)]).expect("repair");
+
+        assert!(
+            cached.applications.is_empty(),
+            "an all-applications device stayed all-applications, got {:?}",
+            cached.applications
+        );
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .device_cert(device)
+                .expect("read")
+                .expect("present")
+                .applications
+                .is_empty(),
+            "and the narrowing must not have been persisted either"
+        );
     }
 
     /// Naming an application the device already covers is a no-op rather than a
