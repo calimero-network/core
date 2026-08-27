@@ -783,7 +783,16 @@ impl<'a> NamespaceRepository<'a> {
     }
 
     /// Record that this node takes part in the namespace containing `group_id`,
-    /// and return the one key it signs with — minting it on first use.
+    /// and return the one key it signs with — minting it if absent.
+    ///
+    /// The mint is now a **back-compatibility path**, not the normal one:
+    /// `merod init` calls [`Self::provision_node_identity`], so a node initialised
+    /// by a current binary already holds its key and this only reads it. It still
+    /// mints for a node initialised before that existed, which is why the branch
+    /// stays rather than becoming an error the way the account root's did — a
+    /// lazily minted signing key is harmless (the node self-signs its own device
+    /// certificate at this same moment), whereas a lazily minted *root* would have
+    /// the node speak as an account nobody recognises.
     ///
     /// It was `get_or_create_identity`, which read as "an identity per group".
     /// There is one identity: the create half mints the NODE's keypair, once
