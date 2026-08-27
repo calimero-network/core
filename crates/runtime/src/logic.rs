@@ -517,6 +517,20 @@ pub struct VMLogic<'a> {
     /// Cumulative `key + value` bytes written to storage so far (same shared
     /// budget as `storage_writes`).
     storage_write_bytes: u64,
+    /// Number of guest storage reads performed so far.
+    ///
+    /// Telemetry, NOT a budget — unlike `storage_writes` there is no limit to
+    /// charge against, and gas never sees a read (a `storage_read` costs only
+    /// the ~4 wasm operators of the caller, independent of value size). It is
+    /// counted because read COUNT is the thing that predicts cost: each read
+    /// hands the guest bytes to borsh-decode, and that decode is what the
+    /// metered instruction count actually measures.
+    storage_reads: u64,
+    /// Cumulative bytes returned by those reads.
+    ///
+    /// The better cost predictor of the two: guest-side decode work scales with
+    /// bytes, not with call count.
+    storage_read_bytes: u64,
     /// Cumulative bytes streamed into blobs so far across all write handles.
     blob_bytes_written: u64,
     /// Gas the execution consumed, recorded by the runtime after the guest
@@ -623,6 +637,8 @@ impl<'a> VMLogic<'a> {
 
             storage_writes: 0,
             storage_write_bytes: 0,
+            storage_reads: 0,
+            storage_read_bytes: 0,
             blob_bytes_written: 0,
             gas_used: None,
         }
@@ -769,6 +785,20 @@ pub struct Outcome {
     /// the replicated artifact — surfaced so operators can size
     /// [`VMLimits::max_gas`] from the distribution of real workloads.
     pub gas_used: Option<u64>,
+    /// Guest storage reads this execution performed. Node-local telemetry, like
+    /// [`gas_used`](Self::gas_used) — never part of the replicated artifact.
+    ///
+    /// Exposed so a test can assert that a write's cost does not grow with the
+    /// collection it writes into. That class of regression is invisible to
+    /// correctness tests and has repeatedly shipped: reads are unmetered and
+    /// unlimited, so an O(n) read pattern shows up only as gas spent decoding.
+    pub storage_reads: u64,
+    /// Bytes returned by those reads.
+    pub storage_read_bytes: u64,
+    /// Guest storage writes this execution performed.
+    pub storage_writes: u64,
+    /// `key + value` bytes those writes carried.
+    pub storage_write_bytes: u64,
     //TODO: current storage usage of the app (???).
 }
 
@@ -864,6 +894,10 @@ impl VMLogic<'_> {
             artifact: self.artifact,
             migration_witness: self.migration_witness,
             gas_used: self.gas_used,
+            storage_reads: self.storage_reads,
+            storage_read_bytes: self.storage_read_bytes,
+            storage_writes: self.storage_writes,
+            storage_write_bytes: self.storage_write_bytes,
         }
     }
 }

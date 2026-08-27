@@ -390,6 +390,7 @@ mod tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -408,6 +409,7 @@ mod tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -426,6 +428,7 @@ mod tests {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 

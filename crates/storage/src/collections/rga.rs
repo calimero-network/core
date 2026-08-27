@@ -736,9 +736,10 @@ mod tombstone_merge_tests {
             "precondition: 'H' must be advertised as deleted before the merge"
         );
         assert!(
-            pre.children()
-                .map(|c| c.iter().all(|ci| ci.id() != a_entry))
-                .unwrap_or(true),
+            Index::<A>::get_children_of(parent)
+                .unwrap()
+                .iter()
+                .all(|ci| ci.id() != a_entry),
             "precondition: 'H' must NOT be a live child before the merge"
         );
 
@@ -756,9 +757,10 @@ mod tombstone_merge_tests {
             "blob merge dropped 'H' from the wire tombstone advertisement"
         );
         assert!(
-            post.children()
-                .map(|c| c.iter().all(|ci| ci.id() != a_entry))
-                .unwrap_or(true),
+            Index::<A>::get_children_of(parent)
+                .unwrap()
+                .iter()
+                .all(|ci| ci.id() != a_entry),
             "blob merge re-added 'H' as a live child — resurrection"
         );
         assert_eq!(
@@ -872,9 +874,10 @@ mod tombstone_merge_tests {
             "'H' must still be advertised as deleted on the wire after merge"
         );
         assert!(
-            idx.children()
-                .map(|c| c.iter().any(|ci| ci.id() == bang_entry))
-                .unwrap_or(false),
+            Index::<A>::get_children_of(parent)
+                .unwrap()
+                .iter()
+                .any(|ci| ci.id() == bang_entry),
             "'!' must be a live child after merge (add-wins)"
         );
         // get_text masks the tombstone (iterator filters deleted ids), so the

@@ -24,6 +24,7 @@ use calimero_account::AccountId;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, ValueRef, Vector};
+use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -110,9 +111,131 @@ where
     ///
     /// # Errors
     /// Returns any underlying storage error.
-    pub fn push(&mut self, value: V) -> Result<usize, StoreError> {
+    pub fn push(&mut self, value: V) -> Result<Id, StoreError> {
         let storage_type = super::authored_common::make_owner_stamp();
         self.inner.push_with_storage_type(value, storage_type)
+    }
+
+    /// Replaces the value stored under `id`. Only the entry's owner may call
+    /// this.
+    ///
+    /// Prefer this over the positional [`update`](Self::update) for anything
+    /// that does not resolve the position in the same call. An index describes
+    /// where an entry currently sits in a set other replicas insert into, so a
+    /// remote insert ahead of it silently renumbers it — and because `update`
+    /// is ownership-gated BY the address it is given, a stale index checks
+    /// ownership against, and writes to, a different entry (core#3637).
+    ///
+    /// # Errors
+    /// Returns `NotFound` if no entry is stored under `id`, `ActionNotAllowed`
+    /// if the current executor is not the stored owner, `InvalidData` if the
+    /// entry carries no owner stamp, or any underlying storage error.
+    pub fn update_by_id(&mut self, id: Id, value: V) -> Result<(), StoreError>
+    where
+        V: 'static,
+    {
+        if !self.is_entry_of_self(id)? {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "AuthoredVector::update_by_id: id is not an entry of this vector".to_owned(),
+            )));
+        }
+
+        let stored_owner = self.require_owner_of(id)?;
+
+        if !super::authored_common::writer_matches_owner(&stored_owner) {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                "AuthoredVector::update_by_id: not entry owner".to_owned(),
+            )));
+        }
+
+        let _old = self
+            .inner
+            .update_by_id(id, value)?
+            .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+        Ok(())
+    }
+
+    /// Tombstones the entry stored under `id` by overwriting it with
+    /// `V::default()`. Only the entry's owner may call this.
+    ///
+    /// # Errors
+    /// Same as [`update_by_id`](Self::update_by_id).
+    pub fn tombstone_by_id(&mut self, id: Id) -> Result<(), StoreError>
+    where
+        V: Default + 'static,
+    {
+        self.update_by_id(id, V::default())
+    }
+
+    /// Returns the value stored under `id`, if any.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn get_by_id(&self, id: Id) -> Result<Option<V>, StoreError> {
+        if !self.is_entry_of_self(id)? {
+            return Ok(None);
+        }
+        Ok(self.inner.get_by_id(id)?.map(ValueRef::into_inner))
+    }
+
+    /// Returns the account that owns the entry stored under `id`, if it exists.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owner_of_id(&self, id: Id) -> Result<Option<AccountId>, StoreError> {
+        if !self.is_entry_of_self(id)? {
+            return Ok(None);
+        }
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        Ok(metadata.and_then(|m| match m.storage_type {
+            StorageType::User { owner, .. } => Some(owner),
+            _ => None,
+        }))
+    }
+
+    /// Returns whether the current executor owns the entry stored under `id`.
+    ///
+    /// # Errors
+    /// Returns any underlying storage error.
+    pub fn owned_by_me_id(&self, id: Id) -> Result<bool, StoreError> {
+        Ok(self
+            .owner_of_id(id)?
+            .as_ref()
+            .is_some_and(super::authored_common::writer_matches_owner))
+    }
+
+    /// Whether `id` names an entry of THIS vector.
+    ///
+    /// The id-addressed API takes a caller-supplied 32-byte address and resolves
+    /// it through `Collection::get`/`get_mut`, which bottom out in a global
+    /// `Interface::find_by_id` over the whole context keyspace. The positional
+    /// API cannot reach outside itself — an index resolves through this
+    /// collection's own children — so the id-addressed replacement has to say
+    /// so explicitly or it silently becomes a wider capability wearing the same
+    /// shape.
+    ///
+    /// The owner check is not a substitute. It establishes that the caller owns
+    /// the target, not that the target is theirs to address from here: your own
+    /// entry in another collection passes it, and is then written with this
+    /// vector's value type. `JsAuthoredVector` is `Vec<u8>` throughout, so no
+    /// borsh mismatch catches it there.
+    fn is_entry_of_self(&self, id: Id) -> Result<bool, StoreError> {
+        let index = <Index<S>>::get_index(id).map_err(StoreError::StorageError)?;
+        Ok(index.and_then(|index| index.parent_id()) == Some(self.inner.collection_id()))
+    }
+
+    /// The owner of record for `id`, or an error explaining why there is none.
+    fn require_owner_of(&self, id: Id) -> Result<AccountId, StoreError> {
+        let metadata = <Index<S>>::get_metadata(id).map_err(StoreError::StorageError)?;
+        match metadata {
+            Some(m) => match m.storage_type {
+                StorageType::User { owner, .. } => Ok(owner),
+                _ => Err(StoreError::StorageError(StorageError::InvalidData(
+                    "AuthoredVector entry missing User stamp".to_owned(),
+                ))),
+            },
+            None => Err(StoreError::StorageError(StorageError::NotFound(id))),
+        }
     }
 
     /// Replaces the value at `index`. Only the entry's owner may call this.
@@ -338,6 +461,98 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    /// `push` documents its return as the index of the entry it just wrote,
+    /// and `update`/`owner_of` address entries by that index — so a wrong one
+    /// is an ownership-gated write against the wrong element.
+    ///
+    /// It held because `insert` used to materialise the child cache and append
+    /// the new id at the END. It no longer does — that populate was an O(n)
+    /// read per insert and is most of what this branch removed — so the first
+    /// read materialises from the trie in `ChildInfo` order, `(created_at,
+    /// id)`.
+    ///
+    /// `created_at` is the execution timestamp, so it is CONSTANT for every
+    /// push within one contract call (and a flat 0 under merge mode, for
+    /// determinism). Every entry pushed in one call therefore ties, and the
+    /// random `id` decides position. A call that pushes once is unaffected —
+    /// the new entry has the largest `created_at` and does sort last — which is
+    /// why this is latent rather than immediately obvious.
+    ///
+    /// This was the reproduction while `push` returned an index. It is now the
+    /// guard: `push` returns the entry's ID, so the address it hands back names
+    /// the entry rather than describing where it currently sits, and stays
+    /// correct however the ties fall.
+    ///
+    /// Note what it does NOT cover. The positional API still enumerates in
+    /// `(created_at, id)` order, so entries pushed in one call still come back
+    /// in an arbitrary order — `get(0)` need not be the first push, and `pop`
+    /// need not return the last. That is a separate defect in `Vector`'s
+    /// documented semantics, not something an id-addressed `push` fixes.
+    #[test]
+    fn an_id_from_another_vector_is_not_addressable_from_this_one() {
+        let mut mine = AuthoredVector::<u64>::new();
+        let mut theirs = AuthoredVector::<u64>::new();
+
+        let (mine_id, theirs_id) = crate::env::with_merge_mode(|| {
+            let a = mine.push(1).expect("push mine");
+            let b = theirs.push(2).expect("push theirs");
+            (a, b)
+        });
+
+        // Same owner on both — this executor pushed each of them — so the
+        // ownership gate passes and only membership can refuse the write.
+        assert!(
+            mine.owned_by_me_id(mine_id).expect("owned"),
+            "the executor should own the entry it just pushed",
+        );
+
+        assert!(
+            mine.get_by_id(theirs_id).expect("get").is_none(),
+            "a foreign entry was readable through this vector",
+        );
+        assert!(
+            mine.owner_of_id(theirs_id).expect("owner").is_none(),
+            "a foreign entry's owner was readable through this vector",
+        );
+        assert!(
+            mine.update_by_id(theirs_id, 99).is_err(),
+            "a foreign entry was writable through this vector",
+        );
+
+        // The other vector still holds what it held: the refusal is a refusal,
+        // not a write that landed somewhere else.
+        assert_eq!(theirs.get_by_id(theirs_id).expect("get"), Some(2));
+        // And addressing this vector's OWN entry still works.
+        assert_eq!(mine.get_by_id(mine_id).expect("get"), Some(1));
+    }
+
+    #[test]
+    #[serial]
+    fn push_returns_an_address_that_resolves_to_the_entry_it_wrote() {
+        let mut v = AuthoredVector::<u64>::new();
+        let mut handed_out = Vec::new();
+        // Merge mode is the case that actually bites: `timestamp_for_operation`
+        // returns 0 there for determinism, so EVERY entry ties on `created_at`
+        // and the random id decides position. Outside it the test clock
+        // advances per call and trie order coincides with insertion order,
+        // which is why this passes without the wrapper and proves nothing.
+        crate::env::with_merge_mode(|| {
+            for n in 0..32_u64 {
+                let id = v.push(n).expect("push");
+                handed_out.push((id, n));
+            }
+        });
+        for (id, want) in handed_out {
+            let got = v.get_by_id(id).expect("get");
+            assert_eq!(
+                got,
+                Some(want),
+                "push handed back an address for {want} that resolves to {got:?}"
+            );
+        }
+    }
+
     use calimero_account::AccountId;
     use serial_test::serial;
 
@@ -362,6 +577,83 @@ mod tests {
         assert_eq!(
             <AuthoredVector<u32> as crate::entities::Data>::id(&a),
             <AuthoredVector<u32> as crate::entities::Data>::id(&b),
+        );
+    }
+
+    /// Can an element id be used as a durable external address — a permalink?
+    ///
+    /// The question is not academic: an id-addressed link is only honest if the
+    /// id keeps naming the same entry for as long as links live. `push` returns
+    /// an `Id`, and `get_by_id` resolves it, so the API *looks* like it offers
+    /// that guarantee.
+    ///
+    /// It does not, and this test pins where it stops. Vector elements are
+    /// inserted with `Id::random()`, so a deterministic re-key — which every
+    /// node performs so independently-created collections converge — rewrites
+    /// element ids, *derived from append position*. After a re-key an element
+    /// id is a function of the index rather than an identity of its own, so it
+    /// cannot outlive the thing an index cannot outlive.
+    ///
+    /// If this ever starts failing because ids survive, an id-addressed
+    /// permalink becomes available and this comment is the reason to revisit.
+    #[test]
+    #[serial]
+    fn element_ids_do_not_survive_a_deterministic_rekey() {
+        env::reset_for_testing();
+
+        let mut v: AuthoredVector<u32> = AuthoredVector::new();
+        let mut minted = Vec::new();
+        for n in 0..4_u32 {
+            minted.push((v.push(n).expect("push"), n));
+        }
+
+        // Every id resolves to the value it was handed out for, before re-key.
+        for &(id, want) in &minted {
+            assert_eq!(v.get_by_id(id).expect("get"), Some(want));
+        }
+
+        v.reassign_deterministic_id("messages");
+
+        let survivors: Vec<u32> = minted
+            .iter()
+            .filter_map(|&(id, want)| v.get_by_id(id).expect("get").filter(|got| *got == want))
+            .collect();
+
+        assert!(
+            survivors.is_empty(),
+            "element ids survived a re-key ({survivors:?} still resolve) — an \
+             id-addressed permalink may now be viable; see this test's comment"
+        );
+
+        // The entries themselves are intact; only their addresses moved.
+        assert_eq!(v.len().expect("len"), 4);
+    }
+
+    /// Two nodes re-keying independently must agree on the element ids.
+    ///
+    /// This is what the re-key is FOR, and it is the reason element ids are
+    /// positional afterwards: a stable-but-random id per node would never
+    /// converge. Worth pinning alongside the test above, so the cost and the
+    /// benefit are recorded together.
+    #[test]
+    #[serial]
+    fn independent_rekeys_agree_on_element_ids() {
+        env::reset_for_testing();
+
+        let mut a: AuthoredVector<u32> = AuthoredVector::new();
+        let mut b: AuthoredVector<u32> = AuthoredVector::new();
+        for n in 0..4_u32 {
+            let _ = a.push(n).expect("push a");
+            let _ = b.push(n).expect("push b");
+        }
+
+        a.reassign_deterministic_id("messages");
+        b.reassign_deterministic_id("messages");
+
+        assert_eq!(
+            <AuthoredVector<u32> as crate::entities::Data>::id(&a),
+            <AuthoredVector<u32> as crate::entities::Data>::id(&b),
+            "two nodes must mint the same collection id",
         );
     }
 
@@ -403,10 +695,9 @@ mod tests {
         env::set_account_id(ALICE);
 
         let mut v = Root::new(AuthoredVector::<u64>::new);
-        let idx = v.push(7).expect("push");
-        assert_eq!(idx, 0);
-        assert_eq!(v.get(0).unwrap(), Some(7));
-        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
+        let id = v.push(7).expect("push");
+        assert_eq!(v.get_by_id(id).unwrap(), Some(7));
+        assert_eq!(v.owner_of_id(id).unwrap(), Some(acct(ALICE)));
         assert_eq!(v.len().unwrap(), 1);
     }
 
@@ -424,10 +715,15 @@ mod tests {
         env::set_account_id(ALICE);
         let c = v.push(3).unwrap();
 
-        assert_eq!((a, b, c), (0, 1, 2));
-        assert_eq!(v.owner_of(0).unwrap(), Some(acct(ALICE)));
-        assert_eq!(v.owner_of(1).unwrap(), Some(acct(BOB)));
-        assert_eq!(v.owner_of(2).unwrap(), Some(acct(ALICE)));
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        // Each id addresses ITS OWN entry's owner — which a position could not
+        // promise, since the three were pushed in one call and therefore tie on
+        // `created_at`.
+        assert_eq!(v.owner_of_id(a).unwrap(), Some(acct(ALICE)));
+        assert_eq!(v.owner_of_id(b).unwrap(), Some(acct(BOB)));
+        assert_eq!(v.owner_of_id(c).unwrap(), Some(acct(ALICE)));
     }
 
     #[test]
