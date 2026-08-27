@@ -38,9 +38,23 @@ pub fn hex_lower(bytes: &[u8]) -> String {
 /// The store is handed back because the tests that drive a node from the outside
 /// have to write the rows a replicated op would otherwise write.
 pub async fn node_client() -> (NodeClient, Store, TempDir, TempDir) {
+    let datastore = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, data_dir, blob_dir) =
+        node_client_over(datastore.clone(), NetworkClient::new(LazyRecipient::new())).await;
+    (node_client, datastore, data_dir, blob_dir)
+}
+
+/// [`node_client`], over a store and a network the caller supplies.
+///
+/// An unbound network recipient QUEUES rather than declines, so a test that
+/// drives a path which subscribes or publishes has to stand an actor in front of
+/// it or the call never returns.
+pub async fn node_client_over(
+    datastore: Store,
+    network_client: NetworkClient,
+) -> (NodeClient, TempDir, TempDir) {
     let data_dir = TempDir::new().unwrap();
     let blob_dir = TempDir::new().unwrap();
-    let datastore = Store::new(Arc::new(InMemoryDB::owned()));
 
     // Nested one level down: the node derives its root as the blob root's
     // parent, so a bare TempDir would make every node share the OS temp dir.
@@ -61,15 +75,15 @@ pub async fn node_client() -> (NodeClient, Store, TempDir, TempDir) {
     let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
 
     let node_client = NodeClient::new(
-        datastore.clone(),
+        datastore,
         blob_manager,
-        NetworkClient::new(LazyRecipient::new()),
+        network_client,
         LazyRecipient::new(),
         event_sender,
         sync_client,
         None,
     );
-    (node_client, datastore, data_dir, blob_dir)
+    (node_client, data_dir, blob_dir)
 }
 
 /// Pack a `.mpk` from an explicit list of tar entries, so a test can ship a

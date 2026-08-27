@@ -701,11 +701,12 @@ async fn verify_requested_bytecode_id(
 mod tests {
     use std::sync::Arc;
 
+    use calimero_context_client::group::CreateGroupRequest;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        now_millis, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-        MetadataRepository,
+        now_millis, AccountBindingRepository, CapabilitiesRepository, GroupKeyring,
+        MembershipRepository, MetaRepository, MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -713,9 +714,13 @@ mod tests {
     use calimero_primitives::metadata::MetadataRecord;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
-    use calimero_store::Store;
+    use calimero_store::{key, types, Store};
 
     use super::rollback_local_group_rows;
+    use crate::test_support::{actor, certify_device};
+
+    const APP: [u8; 32] = [0xC1; 32];
+    const GROUP: [u8; 32] = [0xC2; 32];
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -903,5 +908,61 @@ mod tests {
         );
 
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
+    }
+
+    /// The application row a creation resolves its bytecode through.
+    fn install_application(store: &Store, application: ApplicationId) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ApplicationMeta::new(application),
+                &types::ApplicationMeta::new(
+                    key::BlobMeta::new([0x01; 32].into()),
+                    1024,
+                    "file://test.wasm".into(),
+                    vec![].into(),
+                    key::BlobMeta::new([0x02; 32].into()),
+                    types::PackageInfo {
+                        package: "com.test.app".into(),
+                        version: "1.0.0".into(),
+                        signer_id: "test".into(),
+                        state_version: 0,
+                    },
+                ),
+            )
+            .expect("install the application");
+    }
+
+    /// A namespace this node creates is a namespace it has just gained, and the
+    /// devices it already certified belong there. Without the auto-bind the
+    /// creation succeeds and the paired device silently never sees the group.
+    #[actix::test]
+    async fn creating_a_namespace_carries_this_accounts_devices_into_it() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        let device = certify_device(&store, 0xC3, &[]);
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: ApplicationId::from(APP),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert!(
+            AccountBindingRepository::new(&store)
+                .is_device_linked(&created.group_id, device)
+                .expect("read the bindings"),
+            "the device this account already certified has to be bound in the \
+             namespace the creation just gained"
+        );
     }
 }
