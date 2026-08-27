@@ -1,9 +1,9 @@
 use calimero_server_primitives::admin::{
-    CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
-    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse,
-    ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
-    PairDeviceCompleteApiRequest, PairDeviceCompleteApiResponse, PairDeviceInitApiRequest,
+    AccountPairCompleteApiRequest, AccountPairInitApiRequest, CreateGroupInvitationApiRequest,
+    CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
+    DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest,
+    JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
     PairDeviceInitApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
 use eyre::Result;
@@ -89,43 +89,38 @@ where
     }
 
     /// Mint a device on this node for an account that already exists elsewhere
-    /// — the first half of pairing.
+    /// - the first half of pairing.
     ///
-    /// Needs no scope key: nothing is
-    /// published here. It returns the device id and agreement key that the
-    /// account holder certifies in the second half.
+    /// Takes the SET of namespaces the device will listen on, because a node
+    /// that is a member of nothing can neither read its account's namespaces off
+    /// a DAG nor derive them. Needs no scope key: nothing is published here. It
+    /// returns the device id and agreement key that the account holder certifies
+    /// in the second half.
     pub async fn pair_device_init(
         &self,
-        namespace_id: &str,
-        request: PairDeviceInitApiRequest,
+        request: AccountPairInitApiRequest,
     ) -> Result<PairDeviceInitApiResponse> {
         let response = self
             .connection
-            .post(
-                &format!("admin-api/namespaces/{namespace_id}/account/pair-init"),
-                request,
-            )
+            .post("admin-api/account/pair-init", request)
             .await?;
         Ok(response)
     }
 
     /// Certify a device another node minted, link it, and deliver the scope
-    /// key — the second half of pairing.
+    /// keys - the second half of pairing.
     ///
-    /// Run on the node that holds the account. Needs the current scope key:
-    /// the link is an encrypted group op, and the delivery is that same key
-    /// wrapped for the new device.
+    /// Run on the node that holds the account, and scoped by APPLICATION rather
+    /// than by namespace: naming none means every namespace this node takes part
+    /// in. Needs the current scope key there: the link is an encrypted group op,
+    /// and the delivery is that same key wrapped for the new device.
     pub async fn pair_device_complete(
         &self,
-        namespace_id: &str,
-        request: PairDeviceCompleteApiRequest,
+        request: AccountPairCompleteApiRequest,
     ) -> Result<PairDeviceCompleteApiResponse> {
         let response = self
             .connection
-            .post(
-                &format!("admin-api/namespaces/{namespace_id}/account/pair-complete"),
-                request,
-            )
+            .post("admin-api/account/pair-complete", request)
             .await?;
         Ok(response)
     }

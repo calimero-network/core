@@ -115,9 +115,10 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::ContextRegistered {
             context_id,
             application_id,
+            blob_id,
             service_name,
             ..
-        } => context_registered::apply(ctx, context_id, application_id, service_name)?,
+        } => context_registered::apply(ctx, context_id, application_id, blob_id, service_name)?,
         GroupOp::ContextDetached { context_id } => context_detached::apply(ctx, context_id)?,
         GroupOp::SubgroupVisibilitySet { mode } => subgroup_visibility_set::apply(ctx, mode)?,
         GroupOp::GroupMetadataSet { name, data } => group_metadata_set::apply(ctx, name, data)?,

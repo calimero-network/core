@@ -17,7 +17,7 @@ use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::{alias, blob, groups, namespaces, tee};
+use super::handlers::{account, alias, blob, groups, namespaces, tee};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, get_application_abi, install_application, install_dev_application,
@@ -314,13 +314,26 @@ pub(crate) fn setup(
             post(groups::create_group_invitation::handler),
         )
         .route("/groups/join", post(groups::join_group::handler))
+        // Pairing is account-level: the certificate is root-signed and the
+        // endorsement node-level, so neither half ever named a namespace.
+        .route("/account/pair-init", post(account::pair_init::handler))
         .route(
-            "/namespaces/:namespace_id/account/pair-init",
-            post(namespaces::pair_device_init::handler),
+            "/account/pair-complete",
+            post(account::pair_complete::handler),
         )
+        // Read-only aggregation over the same account-level state: the settings
+        // UI's device list and the applications this account speaks in.
+        .route("/account/devices", get(account::devices::handler))
         .route(
-            "/namespaces/:namespace_id/account/pair-complete",
-            post(namespaces::pair_device_complete::handler),
+            "/account/applications",
+            get(account::applications::handler),
+        )
+        // Pairing is a snapshot; this is how it is repeated. A namespace gained
+        // after a pairing binds its devices on its own, and this closes the drift
+        // left by every one gained before that landed.
+        .route(
+            "/account/devices/:device_id/relink",
+            post(account::relink::handler),
         )
         .route(
             "/namespaces/:namespace_id/account/revoke",
@@ -629,6 +642,30 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// The status a device-pairing refusal answers with, or `None` if `err` is not
+/// one.
+///
+/// Grouped rather than one arm apiece because the statuses are the whole
+/// distinction a client can act on: fix the payload, come back when this node is
+/// ready, go to the node that holds the account, or stop - this can never work.
+fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option<StatusCode> {
+    use calimero_context::error::ContextError as Refusal;
+
+    Some(match err {
+        Refusal::PairingStatementInvalid { .. } | Refusal::PairingCodeMismatch { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        Refusal::PairingNoNamespaceIdentity { .. } | Refusal::PairingNoScopeKey { .. } => {
+            StatusCode::CONFLICT
+        }
+        Refusal::PairingNotTheAccountHolder { .. } | Refusal::PairingDeviceRevoked { .. } => {
+            StatusCode::FORBIDDEN
+        }
+        Refusal::PairingUnknownDevice { .. } => StatusCode::NOT_FOUND,
+        _ => return None,
+    })
+}
+
 #[must_use]
 pub fn parse_api_error(err: Report) -> ApiError {
     // A membership-gate rejection ("node is not a member of group X") is a
@@ -695,6 +732,28 @@ pub fn parse_api_error(err: Report) -> ApiError {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: err.to_string(),
+        };
+    }
+    // A pairing refusal is always about the caller or about this node's state,
+    // never about its health, and the five are not interchangeable: retrying a
+    // bad confirmation code is pointless, retrying a missing scope key is
+    // exactly right. Flattened to one `500` a client can tell neither.
+    if let Some(status_code) = err
+        .downcast_ref::<calimero_context::error::ContextError>()
+        .and_then(pairing_refusal_status)
+    {
+        return ApiError {
+            status_code,
+            message: err.to_string(),
+        };
+    }
+    // This node's own device slot already holds a linked device for another
+    // account. The request is well-formed and the node is healthy; it is simply
+    // not the machine that may certify here, which no retry changes.
+    if let Some(refusal) = err.downcast_ref::<calimero_governance_store::NodeDeviceError>() {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
         };
     }
     match err.downcast::<ApiError>() {
@@ -1059,5 +1118,149 @@ mod parse_api_error_tests {
         );
         assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         assert_eq!(api.message, "bad group id");
+    }
+
+    /// The five refusals both pairing handlers raise, and the one the device slot
+    /// underneath them raises. Every one of them used to answer
+    /// `500 {"error":"Internal server error"}`, so a client could not tell a
+    /// mistyped code from a node that had not synced a scope key yet.
+    mod pairing {
+        use calimero_context::error::ContextError;
+
+        use super::{parse_api_error, StatusCode};
+
+        /// The statement is the caller's bytes, so a caller can fix it.
+        #[test]
+        fn an_unverifiable_statement_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::PairingStatementInvalid {
+                    device: "d".to_owned(),
+                    cause: "pairing statement signature is invalid".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert!(
+                api.message.contains("account pair-init"),
+                "the refusal should say how to get a good statement; got: {}",
+                api.message
+            );
+        }
+
+        /// And it must still never echo the code the caller failed to supply -
+        /// an attacker driving this endpoint would otherwise be handed the one
+        /// value it cannot compute.
+        #[test]
+        fn a_mismatched_confirmation_code_maps_to_400_without_the_expected_code() {
+            let api = parse_api_error(
+                ContextError::PairingCodeMismatch {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+            assert!(
+                !api.message.chars().any(|c| c.is_ascii_digit()),
+                "a confirmation code is hex, so no digit should reach the caller; got: {}",
+                api.message
+            );
+        }
+
+        /// `409`, not `400`: the request is well-formed and the identical call
+        /// works once this node takes part in the namespaces it names.
+        #[test]
+        fn a_scope_this_node_signs_nowhere_in_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::PairingNoNamespaceIdentity {
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+        }
+
+        #[test]
+        fn no_current_scope_key_maps_to_409() {
+            let api = parse_api_error(
+                ContextError::PairingNoScopeKey {
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::CONFLICT);
+        }
+
+        /// The right request at the wrong node, which no retry and no sync fixes.
+        #[test]
+        fn a_node_that_does_not_hold_the_account_maps_to_403() {
+            let api = parse_api_error(
+                ContextError::PairingNotTheAccountHolder {
+                    enrolled: "a".to_owned(),
+                    account: "b".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("the node that holds the account"),
+                "the caller should learn where to run this; got: {}",
+                api.message
+            );
+        }
+
+        /// Raised a crate deeper, in `calimero-governance-store`, and it reaches
+        /// the client only because the context handler propagates the report
+        /// rather than restating it.
+        #[test]
+        fn a_device_linked_to_another_account_maps_to_403() {
+            let api = parse_api_error(
+                calimero_governance_store::NodeDeviceError::LinkedToAnotherAccount {
+                    device: "d".to_owned(),
+                    account: "a".to_owned(),
+                    namespace: "ns".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("revoking the existing device first"),
+                "the refusal has to say what to do next; got: {}",
+                api.message
+            );
+        }
+
+        /// A relink names a device this node holds no certificate for. `404`,
+        /// because the thing being addressed does not exist here - not `403`,
+        /// which would say the caller is at the wrong machine.
+        #[test]
+        fn an_unknown_device_maps_to_404() {
+            let api = parse_api_error(
+                ContextError::PairingUnknownDevice {
+                    device: "d".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::NOT_FOUND);
+        }
+
+        /// And a revoked one to `403`, permanently: re-enrolling the machine mints
+        /// a FRESH device id, so no sequence of calls makes this id work again -
+        /// which the message has to say rather than imply an un-revoke.
+        #[test]
+        fn a_revoked_device_maps_to_403_and_says_re_enrolling_mints_a_new_id() {
+            let api = parse_api_error(
+                ContextError::PairingDeviceRevoked {
+                    device: "d".to_owned(),
+                    namespaces: "[]".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("mints a new device id"),
+                "the caller must learn that the id is spent for good; got: {}",
+                api.message
+            );
+        }
     }
 }

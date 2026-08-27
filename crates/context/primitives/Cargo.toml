@@ -36,5 +36,7 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
+calimero-node-primitives = { workspace = true, features = ["testing"] }
 libp2p.workspace = true
 tempfile = "3.23"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

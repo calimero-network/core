@@ -3,7 +3,7 @@ use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{AccountId, DeviceId};
+use calimero_account::{AccountId, AccountProof, DeviceCert, DeviceId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId as PrimitiveContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4A` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4B`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4B` is taken
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4C`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -1860,6 +1860,11 @@ pub const NODE_DEVICE_IDENTITY_PREFIX: u8 = 0x44;
 /// This node's account root secret (see [`NodeAccountRoot`]).
 pub const NODE_ACCOUNT_ROOT_PREFIX: u8 = 0x45;
 
+/// Device certificates of this node's own account (see [`NodeAccountDeviceCert`]).
+/// Distinct from [`NODE_DEVICE_CERTIFICATE_PREFIX`], which holds the single
+/// certificate signed for THIS device elsewhere.
+pub const NODE_ACCOUNT_DEVICE_CERT_PREFIX: u8 = 0x4C;
+
 /// This node's signing identity (see [`NodeIdentity`]).
 pub const NODE_IDENTITY_PREFIX: u8 = 0x48;
 
@@ -2481,6 +2486,61 @@ impl NodeDeviceIdentity {
     }
 }
 
+/// Prefix for [`NodeDeviceCertificate`].
+pub const NODE_DEVICE_CERTIFICATE_PREFIX: u8 = 0x4B;
+
+/// A device certificate this node's account root signed **elsewhere** — a
+/// **singleton**, like the device row it belongs to.
+///
+/// # Why this is its own row rather than a field on `NodeDeviceIdentityValue`
+///
+/// That value is borsh, and borsh is not self-describing: an existing row is
+/// exactly three 32-byte fields, so a struct expecting one more byte fails to
+/// decode every row already on disk. There is no version tag to branch on and no
+/// length to compare against. A separate row costs one prefix and needs no
+/// migration — absent means "no imported certificate", which is precisely the
+/// state every node is in today.
+///
+/// Absence is therefore load-bearing, not merely tolerated: a node that holds an
+/// account root signs its own certificate and never reads this, and only a
+/// root-free node presents a stored one.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceCertificate(Key<(GroupPrefix,)>);
+
+impl NodeDeviceCertificate {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_CERTIFICATE_PREFIX])))
+    }
+}
+
+impl Default for NodeDeviceCertificate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeDeviceCertificate {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeDeviceCertificate {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 impl Default for NodeDeviceIdentity {
     fn default() -> Self {
         Self::new()
@@ -2619,6 +2679,21 @@ pub struct NodeDeviceIdentityValue {
     pub kem_secret: [u8; 32],
 }
 
+/// The encoded `AccountProof<DeviceCert>` a holder signed for this node's device.
+///
+/// Stored opaquely, as the exact bytes `merod account sign-cert` printed, for the
+/// same reason the certificate is self-certifying on the wire: it carries its own
+/// genesis and root-key chain, so a verifier needs nothing this row could add.
+/// Decoding it here to store it structurally would mean re-encoding it to present
+/// it, and a round trip that is not byte-exact produces a proof whose signature no
+/// longer checks — with the failure surfacing at a peer, as a refused join.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceCertificateValue {
+    /// Borsh-encoded `AccountProof<DeviceCert>`, verbatim as it arrived.
+    pub proof: Vec<u8>,
+}
+
 /// Redacted by hand, never derived. `kem_secret` is the only thing that can
 /// unwrap a scope key addressed to this device, and a derived `Debug` prints it
 /// — one `tracing` field, one `dbg!`, one error context and the secret is in a
@@ -2630,6 +2705,81 @@ impl Debug for NodeDeviceIdentityValue {
             .field("kem_secret", &"[redacted]")
             .finish()
     }
+}
+
+/// A device certificate of this node's OWN account, kept so the node can
+/// re-publish the binding into namespaces it gains later (see
+/// [`NODE_ACCOUNT_DEVICE_CERT_PREFIX`]).
+///
+/// Key layout: `NODE_ACCOUNT_DEVICE_CERT_PREFIX (1 byte) + device_id (32)`.
+///
+/// NODE-LOCAL, never gossiped - it is a cache of what the account already
+/// authorized, not a claim about it. The replicated [`GroupDeviceBinding`] row
+/// cannot serve here because it drops the root signature, so a valid certificate
+/// cannot be reconstructed from it without a DAG scan.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountDeviceCert(Key<(GroupPrefix, GroupIdComponent)>);
+
+impl NodeAccountDeviceCert {
+    #[must_use]
+    pub fn new(device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([NODE_ACCOUNT_DEVICE_CERT_PREFIX])
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 33]>::as_ref(&self.0)[1..]);
+        id
+    }
+}
+
+impl AsKeyParts for NodeAccountDeviceCert {
+    type Components = (GroupPrefix, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeAccountDeviceCert {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for NodeAccountDeviceCert {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeAccountDeviceCert")
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
+/// The certificate and scope a [`NodeAccountDeviceCert`] row carries.
+///
+/// The whole proof rather than its fields: `genesis`, `chain` and `cert` are
+/// exactly what a link op puts on the wire, so storing the assembled
+/// [`AccountProof`] keeps the row and the op one shape. Nothing here is secret -
+/// a certificate is public data and proves nothing without the device key it
+/// names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeAccountDeviceCertValue {
+    /// The root-signed certificate with the genesis and handoff chain that reach
+    /// the epoch which signed it.
+    pub proof: AccountProof<DeviceCert>,
+    /// Applications this device may speak for. **Empty means all of them**, which
+    /// is what a pairing that named no application asked for.
+    pub applications: Vec<ApplicationId>,
 }
 
 /// Namespace-root inherited-deny entry (see [`GROUP_INHERITED_DENIED_MEMBER_PREFIX`]).
@@ -3435,6 +3585,8 @@ mod tests {
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
+            ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
+            ("NODE_ACCOUNT_DEVICE_CERT", NODE_ACCOUNT_DEVICE_CERT_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
             (

@@ -35,6 +35,8 @@ pub struct AccountCommand {
 
 #[derive(Debug, Subcommand)]
 enum AccountSubcommands {
+    /// Print an account's id and root PUBLIC key, revealing no secret
+    Root(RootCommand),
     /// Print this node's account root as a 24-word recovery phrase
     Export(ExportCommand),
     /// Restore an account root from a recovery phrase
@@ -43,6 +45,8 @@ enum AccountSubcommands {
     RevokeProof(RevokeProofCommand),
     /// Certify a device offline, for a client that holds no node
     SignCert(SignCertCommand),
+    /// Import a certificate this account's root signed elsewhere
+    ImportCert(ImportCertCommand),
     /// Sign a warrant offline, authorising one relay to perform one intent
     Warrant(WarrantCommand),
 }
@@ -114,10 +118,12 @@ pub struct RevokeProofCommand {
 impl AccountCommand {
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         match self.action {
+            AccountSubcommands::Root(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Export(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Import(cmd) => cmd.run(root_args).await,
             AccountSubcommands::RevokeProof(cmd) => cmd.run(root_args).await,
             AccountSubcommands::SignCert(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
         }
     }
@@ -881,5 +887,172 @@ mod tests {
             base58.parse::<calimero_account::AccountId>().is_err(),
             "base58 must not parse as an account id"
         );
+    }
+
+    /// The two lines `account root` prints must describe the same account.
+    ///
+    /// They are pasted into different places — the public key into `init
+    /// --account-root`, the account id into a membership grant — so if they
+    /// disagreed an operator would provision a node under one account and grant
+    /// rights to another. Nothing would error; the node would simply never be a
+    /// member, and the cause would be two numbers that looked fine side by side.
+    #[test]
+    fn the_printed_root_key_and_account_describe_the_same_account() {
+        let root = root();
+
+        assert_eq!(
+            root.account(),
+            calimero_account::AccountGenesis::new(root.public_key()).account_id(),
+            "the account id must be the content address of the printed public key",
+        );
+    }
+}
+
+/// Adopt a device certificate this account's root signed somewhere else.
+///
+/// The other half of `sign-cert`, and what makes a node with **no account root**
+/// usable rather than merely permitted: the root stays in cold storage, signs a
+/// certificate for this node's device, and this command is how the node starts
+/// presenting it.
+///
+/// The ordering is forced and worth stating, because getting it wrong wastes an
+/// air-gap trip: a certificate is signed **over** a device id, a signing key and an
+/// agreement key, so the device must already exist here before anybody can certify
+/// it. Read those three from `GET /admin-api/identity` (or `meroctl account show`),
+/// certify them on the machine holding the root, then import the result.
+///
+/// Opens the datastore directly, so the node must be **stopped** — RocksDB's lock
+/// is exclusive, exactly as for `export` and `import`.
+///
+/// Nothing here is secret. The certificate is public by construction: it travels in
+/// every device binding this node publishes, and it authorises nothing on its own —
+/// only the device holding the matching signing key can use it.
+#[derive(Debug, Parser)]
+pub struct ImportCertCommand {
+    /// The hex credential, as printed by `merod account sign-cert`.
+    ///
+    /// Read from stdin when absent, so a certificate can be piped in without
+    /// landing in shell history.
+    #[arg(value_name = "HEX")]
+    credential: Option<String>,
+}
+
+impl ImportCertCommand {
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let encoded = match self.credential {
+            Some(hex) => hex,
+            None => {
+                eprintln!("Paste the certificate, then press Ctrl-D:");
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .wrap_err("Failed to read the certificate from stdin")?;
+                buf
+            }
+        };
+        let bytes = hex::decode(encoded.trim())
+            .wrap_err("the credential is not hex; paste the line `sign-cert` printed")?;
+
+        let proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
+            borsh::from_slice(&bytes)
+                .wrap_err("the credential did not decode as a device certificate")?;
+
+        let store = open_store(root_args).await?;
+        let repo = NodeDeviceRepository::new(&store);
+
+        // The device row must already be here, and must be the one certified.
+        //
+        // Checked now rather than at the first join, because a mismatch is
+        // otherwise invisible until a peer refuses the join — and at that point
+        // nothing local points at a mistyped `--device`.
+        let device = repo
+            .get()
+            .wrap_err("could not read this node's device row")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has no device row yet, so there is nothing a certificate \
+                     could describe. A device is minted when the node first takes part \
+                     in a namespace, and it is those values a certificate is signed over"
+                )
+            })?;
+
+        // Authenticity against the account the ROW names, not the one the proof
+        // carries: a proof always verifies against its own genesis, so checking it
+        // against itself would admit a certificate for an unrelated account.
+        let verified = proof.verify(device.account).map_err(|err| {
+            eyre::eyre!(
+                "the certificate does not verify for this node's account {}: {err}",
+                device.account
+            )
+        })?;
+
+        eyre::ensure!(
+            verified.device == device.device(),
+            "the certificate is for device {} but this node is {}",
+            verified.device,
+            device.device(),
+        );
+        eyre::ensure!(
+            verified.kem_pk == device.kem_public_key(),
+            "the certificate names an agreement key that is not this device's, so scope \
+             keys wrapped to it could not be opened here",
+        );
+
+        repo.store_imported_certificate(&bytes)
+            .wrap_err("could not store the certificate")?;
+
+        println!("Imported a certificate for device {}", device.device());
+        println!("Account: {}", device.account);
+        println!();
+        println!(
+            "This node will present it when it joins, instead of signing one with an \
+             account root it does not hold."
+        );
+        Ok(())
+    }
+}
+
+/// Report an account's id and root **public** key. Reveals nothing secret.
+///
+/// The read the offline posture was missing. `merod init --no-account-root
+/// --account-root <HEX>` needs an account's root public key, and until now the only
+/// way to obtain one was from a **running holder node** — precisely the machine that
+/// posture says should not exist. With `--from` this answers from the phrase alone:
+/// no node, no store, no init.
+///
+/// Distinct from `export`, which prints the phrase — the whole account. This prints
+/// only what is public by construction: the root public key is hashed into the
+/// account id and travels in every genesis, so publishing it grants nothing. Two
+/// commands rather than a flag on one, because "show me the account" and "hand me
+/// the secret" should not be one keystroke apart.
+///
+/// Without `--from` it reads this node's own root, so the node must be **stopped**
+/// (RocksDB's lock is exclusive).
+#[derive(Debug, Parser)]
+pub struct RootCommand {
+    /// Read the root from a recovery phrase at PATH instead of this node's store.
+    ///
+    /// Opens no datastore, so it works on a machine with no node.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+impl RootCommand {
+    #[expect(
+        clippy::print_stdout,
+        reason = "the values are what an operator pastes into `init --account-root`, \
+                  so they go to stdout for piping rather than through a formatter"
+    )]
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+
+        println!("Account root public key: {}", root.public_key());
+        println!("Account:                 {}", root.account());
+        println!();
+        println!(
+            "Neither value is secret: the root public key is hashed into the account id \
+             and travels in every genesis. The private root leaves a node only via \
+             `merod account export`."
+        );
+        Ok(())
     }
 }

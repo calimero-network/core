@@ -234,34 +234,33 @@ steps:
 
   # node-3 is NOT invited to the namespace and never joins as a member. Its only
   # route in is being a device of Alice's account.
+  #
+  # One step for both halves because the ordering is forced: node-3 cannot mint
+  # its DeviceId without the account, and node-2 cannot certify it without the id
+  # and both keys. The script also checks that the two sides derived the same
+  # confirmation code, and that the scope key was delivered. Scoped to every
+  # application, which is what naming none means.
   - name: Pair node-3 onto Alice's account
     type: script
-    script: scripts/account-pair-refusals.sh
+    script: scripts/account-pair.sh
     target: local
     args:
-      - account-revoke-node-2
       - account-revoke-node-3
-      - '{{namespace_id}}'
+      - account-revoke-node-2
       - '{{root_key}}'
+      - '-'
+      - '{{namespace_id}}'
 
-  # The sanctioned exchange, after the two refusals above. One step for both
-  # halves because the ordering is forced: node-3 cannot mint its DeviceId
-  # without the account, and node-2 cannot certify it without the id and both
-  # keys. The step also compares the confirmation code the two sides derive.
-  - name: Pair node-3 onto Alice's account
-    type: account_pair
+  # A `script` step exports nothing, so what the pairing minted is read back from
+  # the device's own identity - which `pair-init` wrote synchronously, before the
+  # script returned.
+  - name: What node-3 speaks as, now that it is paired
+    type: node_identity
     node: account-revoke-node-3
-    holder: account-revoke-node-2
-    namespace_id: '{{namespace_id}}'
-    root_key: '{{root_key}}'
-    # merobox's step still declares `nonce` required, and core ignores whatever
-    # arrives — the genesis carries no nonce. A literal rather than a captured
-    # value, so nothing threads a dead field through the workflow.
-    nonce: '00000000000000000000000000000000'
     outputs:
       paired_account: accountId
       paired_device: deviceId
-      key_delivered: keyDelivered
+
   - name: Node-3 follows the context as a device of Alice's account
     type: join_context
     node: account-revoke-node-3
@@ -339,7 +338,6 @@ steps:
       - 'json_equal({{laptop_shown}}, {{phone_shown}})'
       - 'json_equal({{laptop_shown}}, {{alice_account}})'
       - 'json_equal({{paired_account}}, {{alice_account}})'
-      - 'json_equal({{key_delivered}}, true)'
 
   # ── Phase 5: revoke the paired device ─────────────────────────────
 
@@ -515,28 +513,26 @@ steps:
 #
 # Wired into `.github/workflows/e2e-rust-apps.yml`.
 #
-# The account operations are NATIVE merobox steps: `node_identity` (>= 0.6.54),
-# `account_pair`, `account_revoke`, `account_show`. They replaced four shell
-# scripts that drove the same admin-api endpoints. The scripts worked, but a
-# `script` step cannot export custom `outputs:` — it only sets
-# `script_output_local`, which the next script step overwrites — so every value
-# one script minted for the next (device ids, the account genesis halves) had to
-# travel through a temp file keyed by namespace. The scenario then read as a
-# sequence of side effects, and the interesting assertions lived inside shell
-# where nobody reading this file could see them. They are `json_assert`
-# statements now.
+# `node_identity` (>= 0.6.54), `account_revoke` and `account_show` are NATIVE
+# merobox steps. Pairing is not: merobox's `account_pair` drives the
+# namespace-scoped routes, which no longer exist - they took one namespace from
+# the path and fanned the link out to every namespace regardless - so it runs
+# through `scripts/account-pair.sh` against the account-level pair.
 #
-# One script remains, deliberately: `account-pair-refusals.sh`. It offers the
-# holder two payloads a real attacker would — somebody else's KEM key under the
-# real device id, and an honest payload with a mismatched confirmation code — and
-# asserts both are refused. `account_pair` cannot express that, and should not:
-# it runs the sanctioned exchange and passes what `pair-init` minted through
-# verbatim, which is exactly the thing an attacker does not do. Crafting hostile
-# payloads is script territory. (If merobox later exposes `pair_device_init` and
-# `pair_device_complete` as separate steps, these two cases can move into the
-# scenario as `expected_failure` steps — the client bindings already exist.)
+# A `script` step cannot export custom `outputs:` - it only sets
+# `script_output_local`, which the next script step overwrites - so what the
+# pairing minted is read back from the device's own `node_identity` rather than
+# threaded through a temp file, which is how the four shell scripts these steps
+# replaced used to carry it. The assertions are `json_assert` statements, where
+# a reader of this file can see them.
 #
-# `account-api.sh` stays as its shared URL/auth/POST helper: nothing in the e2e
+# What this scenario does NOT assert is the refusals: substituted key material
+# and a mismatched confirmation code are driven by
+# `account-pairing-application-scope`, against the live routes and at the states
+# where each is reachable. Repeating them here would need a second pairing to
+# refuse and buy no stronger claim.
+#
+# `account-api.sh` is the shared URL/auth/call helper: nothing in the e2e
 # suite invokes `meroctl`, merobox drives nodes through its own client, and the
 # merod image does not ship the CLI — so a `target: local` script talks to the
 # admin API directly. The CLI commands are thin wrappers over the same endpoints.

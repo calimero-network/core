@@ -311,4 +311,17 @@ impl NodeClient {
         .await??;
         Ok(Some(wasm))
     }
+
+    /// Whether this node holds the bytecode `application_id`'s row names.
+    pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+
+        let key = key::ApplicationMeta::new(*application_id);
+
+        if let Some(application) = handle.get(&key)? {
+            return self.has_blob(&application.bytecode.blob_id());
+        }
+
+        Ok(false)
+    }
 }

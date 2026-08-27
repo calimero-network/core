@@ -6,7 +6,7 @@ use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
-use futures_util::TryStreamExt;
+use futures_util::{AsyncReadExt, TryStreamExt};
 use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -90,11 +90,20 @@ impl SyncManager {
 
         let (tx, mut rx) = mpsc::channel(1);
 
-        // No advertised size: `size` is 0 for every stub row a joiner starts
-        // from, and `add_blob` reads its argument as an assertion, not a cap.
-        let add_task =
-            self.node_client
-                .add_blob(poll_fn(|cx| rx.poll_recv(cx)).into_async_read(), None, None);
+        // A ceiling, not an assertion: `size` is the application's recorded size,
+        // which is 0 on a stub, so integrity rests on the blob id checked below.
+        let size_limit = if size > 0 {
+            size.min(MAX_BLOB_STREAM_SIZE_BYTES)
+        } else {
+            MAX_BLOB_STREAM_SIZE_BYTES
+        };
+        let add_task = self.node_client.add_blob(
+            poll_fn(|cx| rx.poll_recv(cx))
+                .into_async_read()
+                .take(size_limit),
+            None,
+            None,
+        );
 
         let read_task = async {
             let mut sequencer = Sequencer::default();

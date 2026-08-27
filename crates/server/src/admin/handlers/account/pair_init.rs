@@ -1,19 +1,18 @@
 use std::sync::Arc;
 
-use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_account::AccountGenesis;
 use calimero_context_client::group::PairDeviceInitRequest;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    PairDeviceInitApiRequest, PairDeviceInitApiResponse, PairDeviceInitApiResponseData,
+    AccountPairInitApiRequest, PairDeviceInitApiResponse, PairDeviceInitApiResponseData,
 };
-use reqwest::StatusCode;
 use tracing::info;
 
+use crate::admin::handlers::account::decode32;
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 /// Mint a device on this node for an account that already exists elsewhere.
@@ -22,35 +21,31 @@ use crate::AdminState;
 /// produces the `DeviceId` and KEM key that the account holder's
 /// `pair-complete` will certify, the device's signature over them, and the code
 /// to read out to the account holder.
+///
+/// One device covers every namespace named, so there is one of each to hand
+/// over however many the caller listed. The list is the caller's to supply: this
+/// node is a member of nothing and cannot discover which namespaces the account
+/// speaks in.
 pub async fn handler(
-    Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    ValidatedJson(req): ValidatedJson<PairDeviceInitApiRequest>,
+    ValidatedJson(req): ValidatedJson<AccountPairInitApiRequest>,
 ) -> impl IntoResponse {
-    let namespace_id = match super::super::groups::parse_group_id(&namespace_id_str) {
-        Ok(id) => id,
+    let root_key = match decode32(&req.account_root_public_key, "accountRootPublicKey") {
+        Ok(bytes) => bytes,
         Err(err) => return err.into_response(),
-    };
-
-    // Lengths are already validated; the decode still has to be handled because
-    // validation and parsing are separate layers here.
-    let root_key: [u8; 32] = match hex::decode(&req.account_root_public_key)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-    {
-        Some(bytes) => bytes,
-        None => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "accountRootPublicKey must be 64 hex chars (32 bytes)".to_owned(),
-            }
-            .into_response();
-        }
     };
     let genesis = AccountGenesis::new(PublicKey::from(root_key));
 
+    let mut namespaces = Vec::with_capacity(req.namespaces.len());
+    for namespace_id in &req.namespaces {
+        match decode32(namespace_id, "namespaces[]") {
+            Ok(bytes) => namespaces.push(bytes.into()),
+            Err(err) => return err.into_response(),
+        }
+    }
+
     info!(
-        namespace_id = %namespace_id_str,
+        namespaces = namespaces.len(),
         account = %genesis.account_id(),
         "minting a device for an existing account"
     );
@@ -58,7 +53,7 @@ pub async fn handler(
     let result = state
         .ctx_client
         .pair_device_init(PairDeviceInitRequest {
-            namespace_id,
+            namespaces,
             genesis,
         })
         .await
@@ -67,7 +62,6 @@ pub async fn handler(
     match result {
         Ok(resp) => {
             info!(
-                namespace_id = %namespace_id_str,
                 account = %resp.account,
                 device = %resp.device,
                 "device minted; awaiting its certificate"

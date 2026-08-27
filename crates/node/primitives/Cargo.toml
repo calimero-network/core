@@ -46,14 +46,23 @@ serde_json.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
 tar.workspace = true
+tempfile = { workspace = true, optional = true }
 base64.workspace = true
 semver.workspace = true
+
+[features]
+default = []
+# Exposes `test_fixtures` - a node over an in-memory store, and the tar/bundle
+# packers - to dependent crates' tests, which otherwise mirror them per crate.
+testing = ["dep:tempfile"]
 
 [build-dependencies]
 toml.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+# On this crate itself, so its own tests always carry the fixtures rather than
+# depending on some other crate in the workspace happening to enable them.
+calimero-node-primitives = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["full"] }
 rand.workspace = true
 toml.workspace = true

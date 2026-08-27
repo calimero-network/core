@@ -3,6 +3,7 @@
 
 use calimero_app_downloader::registry::stored_coords;
 use calimero_app_downloader::{AppRequest, Outcome};
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
@@ -11,11 +12,103 @@ use calimero_store::{key, types};
 use eyre::WrapErr;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
+use url::Url;
 
 use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
 impl ContextClient {
+    /// Put `application_id`'s bytecode on this node, the way a joiner gets it.
+    ///
+    /// A joiner reaches the chain below through a context bootstrap. A device
+    /// that holds an account but follows no context never does, so this drives
+    /// the same chain off the application row the `ContextRegistered` apply
+    /// writes: registry source first, then the blob layer's on-demand fetch.
+    ///
+    /// `context_id` names the scope the bytecode is announced under, not a
+    /// membership claim - a context's own application bundle is served to any
+    /// requester, which is the allowance that lets a node bootstrap at all.
+    ///
+    /// `Ok(false)` is "not yet", never a failure: nothing is known to fetch, no
+    /// peer served it, or the row names bytecode whose id this node cannot
+    /// reproduce. Callers retry.
+    ///
+    /// # Errors
+    /// Propagates store reads and a failed bundle install.
+    pub async fn ensure_application_bytecode(
+        &self,
+        application_id: ApplicationId,
+        context_id: ContextId,
+    ) -> eyre::Result<bool> {
+        let Some(application) = self.node_client.get_application(&application_id)? else {
+            return Ok(false);
+        };
+        // `has_application` alone is not "installed". The `ContextRegistered` stub
+        // names the creator's real blob, so a node holding those bytes for any
+        // other reason already satisfies it while the row still carries no
+        // package, version or size. `size == 0` is the same still-a-stub sentinel
+        // the joiner's post-blob-share install keys on.
+        if application.size != 0 && self.node_client.has_application(&application_id)? {
+            return Ok(true);
+        }
+        // A zero blob is the context bootstrap's stub, which names no bytecode to
+        // fetch; the peer rung below declines it on its own, and the registry rung
+        // can still resolve such a row from its coordinates.
+        let blob_id = application.blob.bytecode;
+        let source: Url = application.source.into();
+
+        // First rung of the joiner's chain, and the one that needs no peer. A
+        // stub row records no coordinates, so there is nothing to address yet.
+        let version = application.version.as_ref().map(ToString::to_string);
+        if let (package, Some(version)) = (application.package.as_str(), version.as_deref()) {
+            if let Some(coords) = stored_coords(package, version) {
+                if let Some(installed) = self
+                    .node_client
+                    .install_by_coords(coords.package, coords.version)
+                    .await?
+                {
+                    return Self::installed_as_expected(application_id, installed);
+                }
+            }
+        }
+
+        // Fetches from peers when absent and persists what it gets, so this both
+        // acquires the blob and hands back the bytes the bundle check needs.
+        let Some(blob_bytes) = self
+            .node_client
+            .get_blob_bytes(&blob_id, Some(&context_id))
+            .await?
+        else {
+            debug!(%application_id, %blob_id, %context_id, "no peer served the application bytecode yet");
+            return Ok(false);
+        };
+
+        let probe = blob_bytes.to_vec();
+        if !tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&probe)).await? {
+            // A raw-wasm id is derived from the bytes, size, source and metadata
+            // it was installed with, and a stub row carries none of them
+            // faithfully - installing would write a row under a different id.
+            warn!(%application_id, %blob_id, "application bytecode is not a bundle; it can only be installed through a context sync");
+            return Ok(false);
+        }
+
+        let installed = self
+            .node_client
+            .install_application_from_bundle_blob(&blob_id, &source.into())
+            .await?;
+        Self::installed_as_expected(application_id, installed)
+    }
+
+    fn installed_as_expected(
+        expected: ApplicationId,
+        installed: ApplicationId,
+    ) -> eyre::Result<bool> {
+        if installed != expected {
+            eyre::bail!("application mismatch: expected {expected}, got {installed}");
+        }
+        Ok(true)
+    }
+
     /// Synchronize context configuration and ensure context metadata is present.
     ///
     /// Two modes:
