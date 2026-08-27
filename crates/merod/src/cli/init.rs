@@ -583,16 +583,9 @@ impl InitCommand {
             // Minted here for the same reason the root is: so there is a namable
             // moment when this node acquired an identity, rather than one that
             // depends on which request arrived first.
-            if let Some(hex_pk) = self.account_root.as_deref() {
-                let raw: [u8; 32] = hex::decode(hex_pk.trim())
-                    .wrap_err("--account-root is not hex")?
-                    .try_into()
-                    .map_err(|_| {
-                        eyre::eyre!("--account-root must be 32 bytes, i.e. 64 hex characters")
-                    })?;
-                let genesis = calimero_account::AccountGenesis::new(
-                    calimero_primitives::identity::PublicKey::from(raw),
-                );
+            if let Some(given) = self.account_root.as_deref() {
+                let root_pk = parse_account_root_pk(given)?;
+                let genesis = calimero_account::AccountGenesis::new(root_pk);
                 let device = NodeDeviceRepository::new(&store)
                     .adopt_account(genesis)
                     .wrap_err("could not mint this node's device for that account")?;
@@ -626,6 +619,39 @@ impl InitCommand {
 
         Ok(())
     }
+}
+
+/// Parse `--account-root`, accepting **either** encoding an operator can be handed.
+///
+/// A `PublicKey` renders base58, and that is what `merod account root` and `merod
+/// account export` print. The admin API hex-encodes the same value in
+/// `accountRootPublicKey`, which is what `meroctl account show` displays. So the two
+/// legitimate ways to obtain this key disagree on its encoding, and requiring one of
+/// them made the documented flow fail on the first copy-paste with
+/// "--account-root is not hex".
+///
+/// Accepting both is the fix rather than picking a side: neither existing printer is
+/// wrong for its own context, and an operator has no reason to know which one they
+/// are holding.
+///
+/// # Errors
+/// If the value is neither 64 hex characters nor a base58 public key.
+fn parse_account_root_pk(given: &str) -> EyreResult<calimero_primitives::identity::PublicKey> {
+    let given = given.trim();
+
+    if let Ok(bytes) = hex::decode(given) {
+        let raw: [u8; 32] = bytes.try_into().map_err(|_| {
+            eyre::eyre!("--account-root is hex but not 32 bytes; it must be 64 hex characters")
+        })?;
+        return Ok(calimero_primitives::identity::PublicKey::from(raw));
+    }
+
+    given.parse().map_err(|_| {
+        eyre::eyre!(
+            "--account-root is neither 64 hex characters nor a base58 public key. Take it \
+             from `merod account root` (base58) or `meroctl account show` (hex)"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -748,5 +774,46 @@ mod tests {
                 "advertise_address should be set for {args:?}"
             );
         }
+    }
+
+    /// `--account-root` must accept either encoding an operator can be handed.
+    ///
+    /// The two legitimate sources disagree: a `PublicKey` renders base58, which is
+    /// what `merod account root` and `merod account export` print, while the admin
+    /// API hex-encodes the same value in `accountRootPublicKey`, which is what
+    /// `meroctl account show` shows.
+    ///
+    /// Requiring hex made the documented flow fail on the first copy-paste with
+    /// "--account-root is not hex" — a wrong-encoding error for a value the
+    /// operator read out of our own command moments earlier.
+    #[test]
+    fn account_root_accepts_both_hex_and_base58() {
+        use calimero_primitives::identity::{PrivateKey, PublicKey};
+
+        let expected: PublicKey = PrivateKey::from([9u8; 32]).public_key();
+        let raw = *AsRef::<[u8; 32]>::as_ref(&expected);
+
+        let from_hex = super::parse_account_root_pk(&hex::encode(raw)).expect("hex");
+        let from_b58 = super::parse_account_root_pk(&expected.to_string()).expect("base58");
+
+        assert_eq!(from_hex, expected);
+        assert_eq!(from_b58, expected, "base58 is what our own commands print");
+        assert_eq!(from_hex, from_b58, "both encodings must name the same key");
+    }
+
+    /// A rejection must name where to get the value, not just that it is wrong.
+    #[test]
+    fn a_bad_account_root_says_where_to_get_a_good_one() {
+        let err = super::parse_account_root_pk("not-a-key").expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("merod account root"), "{msg}");
+        assert!(msg.contains("meroctl account show"), "{msg}");
+    }
+
+    /// Hex of the wrong length is a distinct mistake from a wrong encoding.
+    #[test]
+    fn hex_of_the_wrong_length_says_so() {
+        let err = super::parse_account_root_pk(&hex::encode([1u8; 16])).expect_err("must refuse");
+        assert!(err.to_string().contains("32 bytes"), "{err}");
     }
 }

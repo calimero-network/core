@@ -35,6 +35,8 @@ pub struct AccountCommand {
 
 #[derive(Debug, Subcommand)]
 enum AccountSubcommands {
+    /// Print an account's id and root PUBLIC key, revealing no secret
+    Root(RootCommand),
     /// Print this node's account root as a 24-word recovery phrase
     Export(ExportCommand),
     /// Restore an account root from a recovery phrase
@@ -116,6 +118,7 @@ pub struct RevokeProofCommand {
 impl AccountCommand {
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         match self.action {
+            AccountSubcommands::Root(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Export(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Import(cmd) => cmd.run(root_args).await,
             AccountSubcommands::RevokeProof(cmd) => cmd.run(root_args).await,
@@ -885,6 +888,24 @@ mod tests {
             "base58 must not parse as an account id"
         );
     }
+
+    /// The two lines `account root` prints must describe the same account.
+    ///
+    /// They are pasted into different places — the public key into `init
+    /// --account-root`, the account id into a membership grant — so if they
+    /// disagreed an operator would provision a node under one account and grant
+    /// rights to another. Nothing would error; the node would simply never be a
+    /// member, and the cause would be two numbers that looked fine side by side.
+    #[test]
+    fn the_printed_root_key_and_account_describe_the_same_account() {
+        let root = root();
+
+        assert_eq!(
+            root.account(),
+            calimero_account::AccountGenesis::new(root.public_key()).account_id(),
+            "the account id must be the content address of the printed public key",
+        );
+    }
 }
 
 /// Adopt a device certificate this account's root signed somewhere else.
@@ -985,6 +1006,52 @@ impl ImportCertCommand {
         println!(
             "This node will present it when it joins, instead of signing one with an \
              account root it does not hold."
+        );
+        Ok(())
+    }
+}
+
+/// Report an account's id and root **public** key. Reveals nothing secret.
+///
+/// The read the offline posture was missing. `merod init --no-account-root
+/// --account-root <HEX>` needs an account's root public key, and until now the only
+/// way to obtain one was from a **running holder node** — precisely the machine that
+/// posture says should not exist. With `--from` this answers from the phrase alone:
+/// no node, no store, no init.
+///
+/// Distinct from `export`, which prints the phrase — the whole account. This prints
+/// only what is public by construction: the root public key is hashed into the
+/// account id and travels in every genesis, so publishing it grants nothing. Two
+/// commands rather than a flag on one, because "show me the account" and "hand me
+/// the secret" should not be one keystroke apart.
+///
+/// Without `--from` it reads this node's own root, so the node must be **stopped**
+/// (RocksDB's lock is exclusive).
+#[derive(Debug, Parser)]
+pub struct RootCommand {
+    /// Read the root from a recovery phrase at PATH instead of this node's store.
+    ///
+    /// Opens no datastore, so it works on a machine with no node.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+impl RootCommand {
+    #[expect(
+        clippy::print_stdout,
+        reason = "the values are what an operator pastes into `init --account-root`, \
+                  so they go to stdout for piping rather than through a formatter"
+    )]
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+
+        println!("Account root public key: {}", root.public_key());
+        println!("Account:                 {}", root.account());
+        println!();
+        println!(
+            "Neither value is secret: the root public key is hashed into the account id \
+             and travels in every genesis. The private root leaves a node only via \
+             `merod account export`."
         );
         Ok(())
     }
