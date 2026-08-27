@@ -335,8 +335,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `image: merod:local-dht` runs the peer app source instead of the http
-        # registry - for dht coverage, and for scenarios that never fetch at all.
+        # `image: merod:local-dht` is for scenarios that install on every node
+        # (nothing to fetch, so the registry gate below cannot apply) and for the
+        # three that ARE the peer route's coverage. Everything else runs http.
         include:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml
@@ -376,7 +377,6 @@ jobs:
           - workflow: group-3node
             file: workflows/group-3node.yml
             app: scaffolding-e2e
-            image: merod:local-dht
           - workflow: group-context-isolation
             file: workflows/group-context-isolation.yml
             app: scaffolding-e2e
@@ -402,7 +402,6 @@ jobs:
           - workflow: group-membership
             file: workflows/group-membership.yml
             app: scaffolding-e2e
-            image: merod:local-dht
           - workflow: account-device-revoke-lockout
             file: workflows/account-device-revoke-lockout.yml
             app: scaffolding-e2e
@@ -427,11 +426,9 @@ jobs:
           - workflow: group-leave-member
             file: workflows/group-leave-member.yml
             app: scaffolding-e2e
-            image: merod:local-dht
           - workflow: group-leave-namespace
             file: workflows/group-leave-namespace.yml
             app: scaffolding-e2e
-            image: merod:local-dht
           - workflow: group-kick-and-rejoin-keyshare
             file: workflows/group-kick-and-rejoin-keyshare.yml
             app: scaffolding-e2e
@@ -491,7 +488,6 @@ jobs:
           - workflow: group-list-subgroups-restricted-hidden
             file: workflows/group-list-subgroups-restricted-hidden.yml
             app: scaffolding-e2e
-            image: merod:local-dht
           - workflow: member-removed-multi-context-convergence
             file: workflows/member-removed-multi-context-convergence.yml
             app: scaffolding-e2e
@@ -514,7 +510,6 @@ jobs:
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e
-            image: merod:local-dht
           - workflow: group-reparent
             file: workflows/group-reparent.yml
             app: scaffolding-e2e
@@ -727,7 +722,6 @@ jobs:
           - workflow: kv-store-simple
             file: workflows/simple-store.yml
             app: kv-store
-            image: merod:local-dht
           - workflow: kv-store-workflow-example
             file: workflows/workflow-example.yml
             app: kv-store
