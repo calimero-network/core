@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
-use calimero_app_downloader::registry::stored_coords;
+use calimero_app_downloader::registry::{stored_coords, RegistryCoords, RegistryCoordsBuf};
 use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
@@ -147,7 +147,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         *target_meta.bytecode.blob_id().as_ref(),
                         target_meta.size,
                         force_code_only,
-                        registry_coords(target_meta)?,
+                        registry_coords(target_meta)?.to_buf(),
                     )
                     .await?
                 };
@@ -187,7 +187,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     // short-circuit on its applied marker, so the new
                     // bytecode would never activate.
                     for rung in &rungs {
-                        let (package, version) = rung.coords.clone();
                         let report = calimero_governance_store::sign_apply_and_publish(
                             &datastore,
                             &node_client,
@@ -197,8 +196,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             GroupOp::TargetApplicationSet {
                                 bytecode_id: rung.bytecode_id.into(),
                                 target_application_id,
-                                package,
-                                version,
+                                package: rung.coords.package.clone(),
+                                version: rung.coords.version.clone(),
                             },
                         )
                         .await?;
@@ -403,23 +402,21 @@ struct EmitRung {
     migration: Option<MigrationParams>,
     /// This rung's own coordinates: an intermediate is a different release of
     /// the same package, so the target's version would name the wrong bytes.
-    coords: (String, String),
+    coords: RegistryCoordsBuf,
 }
 
 /// The coordinates an emitted op must carry, for every path that emits one. A
 /// row the registry cannot address is refused here rather than signed onto an
 /// immutable op no receiver resolves. Gates on the row's raw version, which a
 /// registry path never needs to be semver.
-pub fn registry_coords(meta: &ApplicationMeta) -> eyre::Result<(String, String)> {
-    stored_coords(&meta.package, &meta.version)
-        .map(|coords| (coords.package.to_owned(), coords.version.to_owned()))
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "application {}@{} has no registry coordinates",
-                meta.package,
-                meta.version
-            )
-        })
+pub fn registry_coords(meta: &ApplicationMeta) -> eyre::Result<RegistryCoords<'_>> {
+    stored_coords(&meta.package, &meta.version).ok_or_else(|| {
+        eyre::eyre!(
+            "application {}@{} has no registry coordinates",
+            meta.package,
+            meta.version
+        )
+    })
 }
 
 /// Max `state_version` across the blob's services, from its embedded ABIs.
@@ -491,7 +488,7 @@ async fn plan_emit_ladder(
     target_blob: [u8; 32],
     target_size: u64,
     force_code_only: bool,
-    target_coords: (String, String),
+    target_coords: RegistryCoordsBuf,
 ) -> eyre::Result<(Vec<EmitRung>, u32)> {
     let from_sv = blob_max_state_version(node_client, current_bytecode_id).await;
     let to_sv = blob_max_state_version(node_client, target_blob).await;
@@ -544,7 +541,7 @@ async fn plan_emit_ladder(
             resolve_upgrade_from_abis(node_client, prev, cand.bytecode_id, force_code_only).await?;
         // The inventory only yields blobs of the target's own package, so the
         // package carries over and only the version is per-rung.
-        let coords = (target_coords.0.clone(), cand.version.clone());
+        let coords = RegistryCoordsBuf::new(target_coords.package.clone(), cand.version.clone());
         rungs.push(EmitRung {
             bytecode_id: cand.bytecode_id,
             size: cand.size,
@@ -1483,8 +1480,8 @@ fn dispatch_cascade(
         pre_spawn_totals.push(total);
     }
 
-    let (cascade_package, cascade_version) = match registry_coords(&app_meta) {
-        Ok(coords) => coords,
+    let cascade_coords = match registry_coords(&app_meta) {
+        Ok(coords) => coords.to_buf(),
         Err(err) => return ActorResponse::reply(Err(err)),
     };
 
@@ -1556,8 +1553,8 @@ fn dispatch_cascade(
                 to_state_version: target_state_version,
                 migration: migration_bytes_for_publish.clone(),
                 cascade_hlc,
-                package: cascade_package.clone(),
-                version: cascade_version.clone(),
+                package: cascade_coords.package.clone(),
+                version: cascade_coords.version.clone(),
             },
         )
         .await?;
@@ -1732,6 +1729,7 @@ fn spawn_propagator_for(
 mod tests {
     use std::sync::Arc;
 
+    use calimero_app_downloader::registry::RegistryCoords;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
     use calimero_primitives::application::ApplicationId;
@@ -1775,11 +1773,11 @@ mod tests {
         // receiver's own registry has it - so it no longer gates the pair.
         assert_eq!(
             registry_coords(&app_meta("com.calimero.kv", "1.0.0", "/tmp/kv.mpk")).unwrap(),
-            ("com.calimero.kv".to_owned(), "1.0.0".to_owned())
+            RegistryCoords::new("com.calimero.kv", "1.0.0")
         );
         assert_eq!(
             registry_coords(&app_meta("com.calimero.kv", "1.0.0", URL)).unwrap(),
-            ("com.calimero.kv".to_owned(), "1.0.0".to_owned())
+            RegistryCoords::new("com.calimero.kv", "1.0.0")
         );
     }
 
@@ -2128,6 +2126,7 @@ mod tests {
 
 #[cfg(test)]
 mod registry_coords_tests {
+    use calimero_app_downloader::registry::RegistryCoords;
     use calimero_store::key::BlobMeta;
     use calimero_store::types::{ApplicationMeta, PackageInfo};
 
@@ -2156,7 +2155,7 @@ mod registry_coords_tests {
     fn a_non_semver_version_is_still_addressable() {
         assert_eq!(
             registry_coords(&row("com.acme.app", "1.0")).unwrap(),
-            ("com.acme.app".to_owned(), "1.0".to_owned())
+            RegistryCoords::new("com.acme.app", "1.0")
         );
     }
 

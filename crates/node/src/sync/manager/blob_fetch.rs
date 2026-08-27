@@ -45,16 +45,14 @@ impl SyncManager {
     ) -> bool {
         // Read off the row, not `Application`: the latter's version is
         // semver-validated, and a registry coordinate never has to be semver.
-        let coords = self
+        let row = self
             .context_client
             .datastore_handle()
             .get(&key::ApplicationMeta::new(context.application_id))
             .ok()
-            .flatten()
-            .and_then(|row| registry_coords(&row).ok());
-        let (package, version) = coords.as_ref().map_or(("", ""), |(package, version)| {
-            (package.as_str(), version.as_str())
-        });
+            .flatten();
+        let coords = row.as_ref().and_then(|row| registry_coords(row).ok());
+        let (package, version) = coords.map_or(("", ""), |coords| (coords.package, coords.version));
         let outcome = self
             .node_client
             .acquire_bytecode(&AppRequest {

@@ -75,11 +75,37 @@ pub struct RegistryCoords<'a> {
     pub version: &'a str,
 }
 
+/// Owned [`RegistryCoords`], for coordinates that must outlive the row they
+/// were read from. Same relationship as `Path` to `PathBuf`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct RegistryCoordsBuf {
+    pub package: String,
+    pub version: String,
+}
+
+impl RegistryCoordsBuf {
+    #[must_use]
+    pub fn new(package: String, version: String) -> Self {
+        Self { package, version }
+    }
+
+    #[must_use]
+    pub fn coords(&self) -> RegistryCoords<'_> {
+        RegistryCoords::new(&self.package, &self.version)
+    }
+}
+
 impl<'a> RegistryCoords<'a> {
     /// Both halves or neither: a lone package or version is not a location.
     #[must_use]
     pub const fn new(package: &'a str, version: &'a str) -> Self {
         Self { package, version }
+    }
+
+    #[must_use]
+    pub fn to_buf(&self) -> RegistryCoordsBuf {
+        RegistryCoordsBuf::new(self.package.to_owned(), self.version.to_owned())
     }
 
     /// Builds `{base}/artifacts/{package}/{version}/{package}-{version}.mpk`;

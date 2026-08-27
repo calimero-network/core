@@ -615,7 +615,7 @@ async fn create_context(
         .handle()
         .get(&key::ApplicationMeta::new(context.application_id))?
         .ok_or_eyre("application not found")?;
-    let (package, version) = super::upgrade_group::registry_coords(&row)?;
+    let coords = super::upgrade_group::registry_coords(&row)?.to_buf();
 
     // Register context in group BEFORE subscribing so that a registration
     // failure does not leave a subscribed-but-unregistered context.
@@ -636,8 +636,8 @@ async fn create_context(
                 blob_id: application.blob.bytecode,
                 source,
                 service_name: context.service_name.clone(),
-                package,
-                version,
+                package: coords.package,
+                version: coords.version,
             },
         )
         .await?;
