@@ -183,31 +183,14 @@ async fn perform(
         )))
     })?;
 
-    if warrant.context != context_id {
-        eyre::bail!(IntentRefusal::NotAuthorized(
-            "this warrant authorises a different context than the one it was presented in"
-                .to_owned()
-        ));
-    }
-
     let args = serde_json::to_vec(&req.args_json)
         .map_err(|err| eyre::eyre!("arguments could not be encoded: {err}"))?;
-    if !warrant.covers_intent(&req.method, &args) {
-        eyre::bail!(IntentRefusal::NotAuthorized(
-            "this warrant does not cover the intent presented with it: it commits to a \
-             different method or arguments"
-                .to_owned()
-        ));
-    }
 
-    // The one clock check in the system. See the module header.
-    let now = now_secs();
-    if warrant.not_after < now {
-        eyre::bail!(IntentRefusal::NotAuthorized(format!(
-            "this warrant expired at {} and it is now {now}; mint a fresh one",
-            warrant.not_after
-        )));
-    }
+    // Everything decidable from the warrant, the intent and a clock. Separated
+    // out because the clock is the whole difficulty: with `now_secs()` called
+    // inline, expiry could not be tested without moving the system clock, so the
+    // one time-dependent rule in the feature was the one rule no test covered.
+    warrant_authorises_intent(&warrant, context_id, &req.method, &args, now_secs())?;
 
     // Refuse rather than publish something peers will drop.
     let executor = warrant.executor;
@@ -278,4 +261,170 @@ async fn perform(
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok()),
         },
     })
+}
+
+/// The checks decidable from the warrant, the intent and a clock — nothing else.
+///
+/// `now` is a parameter rather than read here so expiry is testable. See the
+/// module header for why the clock lives on this side at all: a receiver checking
+/// wall-clock expiry would accept a delta on one node and refuse it on another,
+/// and authorization would stop converging.
+///
+/// # Errors
+/// [`IntentRefusal::NotAuthorized`] if the warrant is for another context, does
+/// not commit to this intent, or has expired.
+fn warrant_authorises_intent(
+    warrant: &calimero_account::Warrant,
+    context_id: ContextId,
+    method: &str,
+    args: &[u8],
+    now: u64,
+) -> eyre::Result<()> {
+    if warrant.context != context_id {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this warrant authorises a different context than the one it was presented in"
+                .to_owned()
+        ));
+    }
+
+    if !warrant.covers_intent(method, args) {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this warrant does not cover the intent presented with it: it commits to a \
+             different method or arguments"
+                .to_owned()
+        ));
+    }
+
+    // The one clock check in the system. `<` not `<=`: a warrant is live through
+    // the whole second it names, so `not_after == now` still authorises.
+    if warrant.not_after < now {
+        eyre::bail!(IntentRefusal::NotAuthorized(format!(
+            "this warrant expired at {} and it is now {now}; mint a fresh one",
+            warrant.not_after
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_account::Warrant;
+    use calimero_primitives::identity::PrivateKey;
+
+    use super::{warrant_authorises_intent, ContextId, IntentRefusal};
+
+    const METHOD: &str = "set";
+    const ARGS: &[u8] = br#"{"key":"k","value":"v"}"#;
+    const NOW: u64 = 1_700_000_000;
+
+    /// A warrant covering `METHOD`/`ARGS`, expiring at `not_after`.
+    ///
+    /// Built as a literal rather than signed: authenticity is established by
+    /// `delegation.verify()` before this function is ever called, so a signature
+    /// here would test `calimero-account`, not this.
+    fn warrant(context: ContextId, not_after: u64) -> Warrant {
+        Warrant {
+            context,
+            author_account: calimero_account::AccountGenesis::new(
+                PrivateKey::from([7u8; 32]).public_key(),
+            )
+            .account_id(),
+            author_device_key: PrivateKey::from([8u8; 32]).public_key(),
+            executor: calimero_account::AccountGenesis::new(
+                PrivateKey::from([9u8; 32]).public_key(),
+            )
+            .account_id(),
+            intent_hash: Warrant::intent_hash(METHOD, ARGS),
+            nonce: 1,
+            not_after,
+            signature: [0u8; 64],
+        }
+    }
+
+    fn refusal(err: &eyre::Report) -> String {
+        err.downcast_ref::<IntentRefusal>().map_or_else(
+            || format!("not an IntentRefusal: {err}"),
+            ToString::to_string,
+        )
+    }
+
+    #[test]
+    fn a_live_warrant_for_its_own_intent_is_authorised() {
+        let ctx = ContextId::from([1u8; 32]);
+        warrant_authorises_intent(&warrant(ctx, NOW + 60), ctx, METHOD, ARGS, NOW)
+            .expect("a warrant that has not expired must authorise its own intent");
+    }
+
+    #[test]
+    fn an_expired_warrant_is_refused() {
+        let ctx = ContextId::from([1u8; 32]);
+        let err = warrant_authorises_intent(&warrant(ctx, NOW - 1), ctx, METHOD, ARGS, NOW)
+            .expect_err("a warrant whose not_after has passed must be refused");
+        let msg = refusal(&err);
+        assert!(msg.contains("expired"), "{msg}");
+        // The message has to carry both clocks, or an operator cannot tell a
+        // stale warrant from a skewed relay.
+        assert!(msg.contains(&(NOW - 1).to_string()), "{msg}");
+        assert!(msg.contains(&NOW.to_string()), "{msg}");
+    }
+
+    /// The boundary, pinned deliberately: the check is `<`, not `<=`.
+    ///
+    /// A warrant is live through the whole second it names. Flipping this to `<=`
+    /// would expire warrants one second early — a change no other test would
+    /// notice, because every other case is far from the boundary.
+    #[test]
+    fn a_warrant_expiring_exactly_now_still_authorises() {
+        let ctx = ContextId::from([1u8; 32]);
+        warrant_authorises_intent(&warrant(ctx, NOW), ctx, METHOD, ARGS, NOW)
+            .expect("not_after == now is the last live second, not the first dead one");
+    }
+
+    /// Expiry must not mask a wrong-context warrant, or a relay presenting a
+    /// warrant for another context would be told to "mint a fresh one".
+    #[test]
+    fn a_warrant_for_another_context_is_refused_before_the_clock_matters() {
+        let err = warrant_authorises_intent(
+            &warrant(ContextId::from([1u8; 32]), NOW - 1),
+            ContextId::from([2u8; 32]),
+            METHOD,
+            ARGS,
+            NOW,
+        )
+        .expect_err("a warrant for another context must be refused");
+        let msg = refusal(&err);
+        assert!(msg.contains("different context"), "{msg}");
+        assert!(!msg.contains("expired"), "expiry must not shadow it: {msg}");
+    }
+
+    #[test]
+    fn a_warrant_committing_to_other_arguments_is_refused() {
+        let ctx = ContextId::from([1u8; 32]);
+        let err = warrant_authorises_intent(
+            &warrant(ctx, NOW + 60),
+            ctx,
+            METHOD,
+            br#"{"key":"k","value":"SOMETHING ELSE"}"#,
+            NOW,
+        )
+        .expect_err("a warrant is not a blank cheque for whatever the relay ran");
+        assert!(
+            refusal(&err).contains("does not cover"),
+            "{}",
+            refusal(&err)
+        );
+    }
+
+    #[test]
+    fn a_warrant_committing_to_another_method_is_refused() {
+        let ctx = ContextId::from([1u8; 32]);
+        let err = warrant_authorises_intent(&warrant(ctx, NOW + 60), ctx, "delete", ARGS, NOW)
+            .expect_err("the method is part of the commitment");
+        assert!(
+            refusal(&err).contains("does not cover"),
+            "{}",
+            refusal(&err)
+        );
+    }
 }
