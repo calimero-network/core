@@ -565,6 +565,23 @@ impl InitCommand {
         let datastore_path = path.join(&config.datastore.path);
         let store = Store::open::<RocksDB>(&StoreConfig::new(datastore_path.clone()))?;
 
+        // The key this node signs ops with, minted here rather than on first join.
+        //
+        // For an ordinary node this only moves *when*: it self-signs its device
+        // certificate at join time either way. For a node whose account root
+        // lives elsewhere it is the difference between working and not — that
+        // certificate must be signed over this key BEFORE the join, by a root
+        // this node does not hold, and the key did not exist until the join it
+        // was meant to enable.
+        //
+        // `participate_in` notes participation and then reads the existing
+        // keypair, so this is reused at first join rather than replaced —
+        // `store_identity` refuses a replacement outright.
+        let signing_key = calimero_governance_store::NamespaceRepository::new(&store)
+            .provision_node_identity()
+            .wrap_err("could not provision this node's signing identity")?;
+        info!(signing_key = %signing_key, "Provisioned the node's signing identity");
+
         // The one place a root is generated. Nothing mints lazily any more: what
         // needs a root calls `require_account_root`, which errors when there is
         // none. So a node has an account root because it was provisioned here,

@@ -61,6 +61,14 @@ anyone's) and cannot be the holder half of a pairing, so `ensure_enrolled` fails
 on it by design. It *can* still name its account, because a certified device row
 answers before the root fallback does.
 
+**The signing key is provisioned at init too.** `merod init` mints the keypair the
+node signs ops with, not just the account root. That used to happen on first
+namespace join, which is invisible for an ordinary node — it self-signs its device
+certificate at that same moment — and fatal for a node whose account root lives
+elsewhere: the certificate must be signed over that key BEFORE the join, and the key
+did not exist until the join it was meant to enable. `participate_in` still mints for
+nodes initialised by older binaries, and reuses the provisioned key otherwise.
+
 ```bash
 # Print the 24-word phrase to stdout.
 merod --node node1 account export
