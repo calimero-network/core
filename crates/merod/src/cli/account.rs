@@ -43,6 +43,8 @@ enum AccountSubcommands {
     RevokeProof(RevokeProofCommand),
     /// Certify a device offline, for a client that holds no node
     SignCert(SignCertCommand),
+    /// Import a certificate this account's root signed elsewhere
+    ImportCert(ImportCertCommand),
     /// Sign a warrant offline, authorising one relay to perform one intent
     Warrant(WarrantCommand),
 }
@@ -118,6 +120,7 @@ impl AccountCommand {
             AccountSubcommands::Import(cmd) => cmd.run(root_args).await,
             AccountSubcommands::RevokeProof(cmd) => cmd.run(root_args).await,
             AccountSubcommands::SignCert(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
         }
     }
@@ -881,5 +884,108 @@ mod tests {
             base58.parse::<calimero_account::AccountId>().is_err(),
             "base58 must not parse as an account id"
         );
+    }
+}
+
+/// Adopt a device certificate this account's root signed somewhere else.
+///
+/// The other half of `sign-cert`, and what makes a node with **no account root**
+/// usable rather than merely permitted: the root stays in cold storage, signs a
+/// certificate for this node's device, and this command is how the node starts
+/// presenting it.
+///
+/// The ordering is forced and worth stating, because getting it wrong wastes an
+/// air-gap trip: a certificate is signed **over** a device id, a signing key and an
+/// agreement key, so the device must already exist here before anybody can certify
+/// it. Read those three from `GET /admin-api/identity` (or `meroctl account show`),
+/// certify them on the machine holding the root, then import the result.
+///
+/// Opens the datastore directly, so the node must be **stopped** — RocksDB's lock
+/// is exclusive, exactly as for `export` and `import`.
+///
+/// Nothing here is secret. The certificate is public by construction: it travels in
+/// every device binding this node publishes, and it authorises nothing on its own —
+/// only the device holding the matching signing key can use it.
+#[derive(Debug, Parser)]
+pub struct ImportCertCommand {
+    /// The hex credential, as printed by `merod account sign-cert`.
+    ///
+    /// Read from stdin when absent, so a certificate can be piped in without
+    /// landing in shell history.
+    #[arg(value_name = "HEX")]
+    credential: Option<String>,
+}
+
+impl ImportCertCommand {
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let encoded = match self.credential {
+            Some(hex) => hex,
+            None => {
+                eprintln!("Paste the certificate, then press Ctrl-D:");
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .wrap_err("Failed to read the certificate from stdin")?;
+                buf
+            }
+        };
+        let bytes = hex::decode(encoded.trim())
+            .wrap_err("the credential is not hex; paste the line `sign-cert` printed")?;
+
+        let proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
+            borsh::from_slice(&bytes)
+                .wrap_err("the credential did not decode as a device certificate")?;
+
+        let store = open_store(root_args).await?;
+        let repo = NodeDeviceRepository::new(&store);
+
+        // The device row must already be here, and must be the one certified.
+        //
+        // Checked now rather than at the first join, because a mismatch is
+        // otherwise invisible until a peer refuses the join — and at that point
+        // nothing local points at a mistyped `--device`.
+        let device = repo
+            .get()
+            .wrap_err("could not read this node's device row")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has no device row yet, so there is nothing a certificate \
+                     could describe. A device is minted when the node first takes part \
+                     in a namespace, and it is those values a certificate is signed over"
+                )
+            })?;
+
+        // Authenticity against the account the ROW names, not the one the proof
+        // carries: a proof always verifies against its own genesis, so checking it
+        // against itself would admit a certificate for an unrelated account.
+        let verified = proof.verify(device.account).map_err(|err| {
+            eyre::eyre!(
+                "the certificate does not verify for this node's account {}: {err}",
+                device.account
+            )
+        })?;
+
+        eyre::ensure!(
+            verified.device == device.device(),
+            "the certificate is for device {} but this node is {}",
+            verified.device,
+            device.device(),
+        );
+        eyre::ensure!(
+            verified.kem_pk == device.kem_public_key(),
+            "the certificate names an agreement key that is not this device's, so scope \
+             keys wrapped to it could not be opened here",
+        );
+
+        repo.store_imported_certificate(&bytes)
+            .wrap_err("could not store the certificate")?;
+
+        println!("Imported a certificate for device {}", device.device());
+        println!("Account: {}", device.account);
+        println!();
+        println!(
+            "This node will present it when it joins, instead of signing one with an \
+             account root it does not hold."
+        );
+        Ok(())
     }
 }
