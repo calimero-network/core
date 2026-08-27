@@ -1,19 +1,9 @@
 //! Extending a device this account already certified into one more namespace.
 //!
-//! Pairing binds a device wherever the holder took part *at that moment*, and
-//! nothing repeated it afterwards - so a namespace created or joined later had no
-//! binding for a device paired before it, and the paired device silently never saw
-//! it. This is the repeat.
-//!
-//! It is cheap because a [`DeviceCert`](calimero_account::DeviceCert) carries no
-//! namespace and no expiry. Binding a known device somewhere new therefore needs
-//! only the stored certificate, a fresh endorsement any member of that namespace
-//! can sign, and one key wrap. No handshake, no confirmation code, and the device
-//! need not be online.
-//!
-//! One publish path, used by all three callers - pairing's fan-out, the auto-bind
-//! that runs when this node gains a namespace, and the relink endpoint that
-//! repairs drift.
+//! Cheap because a [`DeviceCert`](calimero_account::DeviceCert) names no namespace
+//! and no expiry, so this needs only the stored certificate, a fresh endorsement
+//! and one key wrap. One publish path for all three callers: pairing's fan-out,
+//! the auto-bind on gaining a namespace, and the relink that repairs drift.
 
 use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId};
 use calimero_context_client::group::BindOutcome;
@@ -80,12 +70,9 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
 /// carried inside an *encrypted* group op would be unreadable by its only
 /// recipient.
 ///
-/// **The endorsement is minted here, from the key that also signs the ops.** The
-/// two keys in play - the account root that certified the device and the
-/// namespace identity that endorses it - are trivially crossed, and a crossed
-/// pair produces a link every peer refuses while looking perfectly healthy
-/// locally. Taking one signing key makes that unrepresentable rather than
-/// merely checked.
+/// The endorsement is minted here from the key that also signs the ops: taking one
+/// signing key makes crossing the root and the namespace identity unrepresentable,
+/// and a crossed pair looks healthy locally while every peer refuses it.
 ///
 /// `Ok(false)` means the link landed and the delivery did not - not a failed
 /// bind. An `Err` means nothing was published: the wrap runs first precisely so a

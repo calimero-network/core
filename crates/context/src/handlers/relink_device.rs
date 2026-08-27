@@ -1,21 +1,8 @@
 //! `RelinkDeviceRequest` handler - repair or widen a device's bindings without
-//! re-pairing it.
-//!
-//! Pairing is a snapshot: the holder binds the device wherever it takes part at
-//! that moment. This re-runs the fan-out against the namespaces it takes part in
-//! **now**, which is the whole of the repair - the certificate is root-signed
-//! once and names no namespace, so a fresh endorsement and a key wrap are all a
-//! namespace gained afterwards is missing. No handshake, no confirmation code,
-//! and the device need not be online.
-//!
-//! Naming applications widens the stored scope first, and the widening is
-//! persisted before anything is published: a scope that only held for this one
-//! call would leave every namespace gained later back where it started.
-//!
-//! **A revoked device is refused outright, not skipped per namespace.** The
-//! tombstone is per namespace, but the `DeviceId` is spent everywhere - enrolling
-//! the machine again mints a fresh one - so a repair that quietly worked around a
-//! revocation would be repairing the wrong thing.
+//! re-pairing it, by re-running pairing's fan-out against the namespaces this
+//! node takes part in now. A revoked device is refused outright rather than
+//! skipped per namespace: the `DeviceId` is spent everywhere, not just where the
+//! tombstone landed.
 
 use std::sync::Arc;
 

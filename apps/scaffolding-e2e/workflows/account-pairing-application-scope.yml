@@ -512,27 +512,11 @@ stop_all_nodes: true
 
 # ── Wiring ─────────────────────────────────────────────────────────
 #
-# Registered in `.github/workflows/e2e-rust-apps.yml`, which is also where it
-# gets its first real run: nothing here has been executed against live nodes.
+# Refusals live here rather than in their own scenario because each needs a
+# different state of this one. They are `script` steps, not `expected_failure`,
+# which passes on the 500 the status mapping exists to stop.
 #
-# The refusals live here rather than in a scenario of their own because each
-# needs a different state of this one, and a second scenario would have to build
-# the pairing, the relink and the revocation again to reach them. They are
-# `script` steps rather than `expected_failure` steps because an
-# `expected_failure` passes on a `500` - which is the exact answer the mapping
-# they assert exists to stop the routes giving.
-#
-# Every account-level route is driven by `target: local` scripts over raw curl,
-# because merobox has no native step for any of them. Its `account_pair` step
-# drives the namespace-scoped routes, which were removed - one namespace from the
-# path, no application scope - so it cannot express what is under test.
-# `node_identity` and `account_revoke` stay native, and are the only two values
-# that have to cross between steps: a `script` step cannot export custom
-# `outputs:`, so everything a later step needs is read back from an endpoint
-# rather than carried.
-#
-# node-2 appears in no `wait_for_sync`, in this scenario or any future one that
-# uses a paired device. A namespace barrier reads `groupStateHash`, which the
-# node answers only for a member; a paired device is a member of nothing by
-# construction. Reads of its state are polled inside the scripts instead, which
-# is why two of them carry an attempt budget rather than a barrier.
+# Every account-level route is driven by `target: local` curl: merobox has no
+# native step for them. node-2 appears in no `wait_for_sync` - a namespace
+# barrier reads `groupStateHash`, which a node answers only for a member, and a
+# paired device is a member of nothing. Its state is polled inside the scripts.

@@ -1,26 +1,12 @@
 #!/bin/sh
 #
-# The application a paired device ends up holding, and the namespace it speaks in
-# - both read from the device's OWN admin API.
+# The application a paired device ends up holding, and the namespace it speaks
+# in - both read from the device's OWN admin API.
 #
-#     - name: The paired device acquired app A's bytecode
-#       type: script
-#       script: scripts/account-device-application.sh
-#       target: local
-#       args: [ <device-node>, <application-id>, <namespace-id> ]
+#     args: [ <device-node>, <application-id>, <namespace-id> ]
 #
-# Two claims, and the first is the one that could not be made before this branch.
-# A device of a member's account follows no context, so it never reaches the
-# context bootstrap that installs an application - it holds the row the
-# `ContextRegistered` apply wrote and nothing to run. Acquisition drives the
-# joiner's chain off that row instead, and the blob reaches a node that is a
-# member of nothing because a context's own application bundle is served to any
-# requester.
-#
-# Polled rather than barriered. `wait_for_sync` settles a DAG between nodes; this
-# waits on a best-effort acquisition that runs off an apply-time event and
-# reports "not yet" by design, so the only honest gate is to ask the device until
-# it has it.
+# Polled rather than barriered: acquisition is best-effort off an apply-time
+# event and reports "not yet" by design, so the only honest gate is to ask.
 
 set -eu
 

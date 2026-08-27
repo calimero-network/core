@@ -704,43 +704,12 @@ impl Message for AdmitTeeNodeRequest {
     type Result = eyre::Result<()>;
 }
 
-/// Enroll this node's device into a namespace under a fresh account, and publish
-/// the link so peers learn the binding.
-///
-/// The first thing in the account feature that publishes an account op, and the
-/// only way any of the account plane becomes reachable at runtime.
-///
-/// Must run AFTER the node holds the namespace's scope key: the link travels as an
-/// encrypted `GroupOp`, so a node with no key cannot publish one. That is not an
-/// implementation detail to be tidied away later — it is why `KeyEnvelope` can
-/// Adopt an **existing** account on this node and mint a device for it — the
-/// first half of pairing.
-///
-/// Pairing has to be a two-way exchange, and this is the half that produces the
-/// values the other half signs: a device cannot mint its `DeviceId` until it
-/// knows the account (`H(account ‖ nonce)`), while the account holder cannot
-/// certify that device until it knows the id and KEM key.
-///
-/// Deliberately does **not** require a scope key: nothing is published here.
-/// A pairing device holds none — obtaining one is what the second half is for —
-/// and it publishes nothing here, so there is no encrypted op to gate on.
+/// Adopt an existing account on this node and mint a device for it - the first
+/// half of pairing, which produces the values the holder's half then signs.
 #[derive(Debug)]
 pub struct PairDeviceInitRequest {
-    /// The namespaces to enroll in, provisioned and subscribed to in one pass.
-    ///
-    /// Named by the caller, and it has to be: this node is a member of nothing
-    /// and holds no scope key, so it can neither read the account's namespace set
-    /// off a DAG nor derive it. The holder is the only party that knows it, so it
-    /// tells the operator and the operator tells this side.
-    ///
-    /// The set decides what this device is *listening* on, which is why it exists.
-    /// One namespace left the device subscribed to one topic while the link fanned
-    /// out across all of them, so every other namespace stayed silent.
-    pub namespaces: Vec<ContextGroupId>,
-    /// The genesis of the account being joined, carried from the device that
-    /// already holds it. The nonce has to travel because the id is a hash over
-    /// it, so it cannot be recovered from the account id alone.
-    pub genesis: AccountGenesis,
+    pub namespaces: Vec<ContextGroupId>, // what the device subscribes to; only the holder knows the set
+    pub genesis: AccountGenesis,         // the nonce travels because the device id hashes over it
 }
 
 /// What the pairing device minted, for the account holder to certify.
@@ -901,55 +870,27 @@ impl PairDeviceCompleteResponse {
 
 /// What binding one device into one namespace came to.
 ///
-/// Produced by the one publish path that links a device - pairing's fan-out, the
-/// carry-over that runs when this node gains a namespace, and the relink that
-/// repairs drift - so all three report in the same terms.
-///
-/// Deliberately **not** `#[non_exhaustive]`: the admin API gives every variant a
-/// wire name, and a new one that silently fell into a catch-all would be reported
-/// as something it is not. Breaking that match is the point.
+/// Not `#[non_exhaustive]` on purpose: the admin API gives every variant a wire
+/// name, so a new one falling into a catch-all would be reported as the wrong thing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BindOutcome {
-    /// The link was published. `key_delivered` false means the link landed and
-    /// the scope-key delivery did not - the link is what confers authority, and
-    /// the device's own sync pull is the durable retry for the key.
-    Linked { key_delivered: bool },
-    /// The device's scope does not reach the application this namespace serves.
-    OutOfScope,
-    /// A tombstone here. Revocation is terminal, so the id can never be linked
-    /// again - in this account or any other.
-    Revoked,
-    /// A live binding already, so there is nothing to repair.
-    AlreadyBound,
-    /// This node holds no current scope key here, so it can neither publish an
-    /// encrypted group op nor deliver one.
-    NoScopeKey,
-    /// This node's own device, which ordinary enrolment already covers.
-    OwnDevice,
-    /// Nothing was published. The node's log names the cause; a namespace gain
-    /// must not fail because a device could not be extended into it.
-    Failed,
+    Linked { key_delivered: bool }, // false: link landed, key did not; the device's sync pull retries
+    OutOfScope,   // the device's scope does not reach this namespace's application
+    Revoked,      // terminal: a revoked id can never be linked again, in any account
+    AlreadyBound, // a live binding already
+    NoScopeKey,   // no current scope key here, so nothing can be published or delivered
+    OwnDevice,    // ordinary enrolment already covers it
+    Failed,       // nothing published; the node log names the cause
 }
 
-/// Repair or widen the reach of a device this account already certified.
-///
-/// Pairing bound the device wherever this node took part at the time. This
-/// re-runs that fan-out against the namespaces it takes part in **now**, which is
-/// what closes the drift a namespace created or joined afterwards leaves behind -
-/// with no ceremony, no confirmation code, and the device offline. The
-/// certificate is root-signed once and names no namespace, so a fresh endorsement
-/// and a key wrap are all that is missing.
+/// Repair or widen the reach of a device this account already certified, re-running
+/// pairing's fan-out against the namespaces this node takes part in *now*.
 #[derive(Debug)]
 pub struct RelinkDeviceRequest {
-    /// The device to repair. It must be one this node holds a certificate for.
-    pub device: DeviceId,
-    /// Applications to add to the device's stored scope.
-    ///
-    /// **Empty changes nothing** and repairs against the scope already stored -
-    /// which is the request an operator makes to heal drift. Widening a narrow
-    /// scope to *every* application is not expressible here on purpose: the empty
-    /// list already means "no change", and overloading it to mean "everything"
-    /// would make the accidental request the widest one.
+    pub device: DeviceId, // must be one this node holds a certificate for
+    /// Applications to add to the stored scope. Empty repairs without widening;
+    /// it is not overloaded to mean "every application" so the accidental request
+    /// is not the widest one.
     pub applications: Vec<ApplicationId>,
 }
 
@@ -957,24 +898,15 @@ pub struct RelinkDeviceRequest {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RelinkDeviceResponse {
-    /// The account the device speaks for.
-    pub account: AccountId,
-    /// The device that was repaired.
-    pub device: DeviceId,
-    /// The device's scope after the request, which is what every later namespace
-    /// gain will be judged against.
-    pub applications: Vec<ApplicationId>,
-    /// Every namespace this node takes part in, and what the repair did there.
-    ///
-    /// Reported per namespace for the same reason a revocation is: publication is
-    /// per-DAG, so a namespace missing a binding is a state an operator has to be
-    /// able to see.
-    pub outcomes: Vec<(ContextGroupId, BindOutcome)>,
+    pub account: AccountId,               // the account the device speaks for
+    pub device: DeviceId,                 // the device that was repaired
+    pub applications: Vec<ApplicationId>, // scope after the request; later namespace gains are judged against it
+    pub outcomes: Vec<(ContextGroupId, BindOutcome)>, // per namespace: publication is per-DAG, so a gap must be visible
 }
 
 impl RelinkDeviceResponse {
-    /// Build a response. Exists because the struct is `#[non_exhaustive]` and the
-    /// producer lives in another crate.
+    /// Exists because the struct is `#[non_exhaustive]` and the producer lives in
+    /// another crate.
     #[must_use]
     pub const fn new(
         account: AccountId,

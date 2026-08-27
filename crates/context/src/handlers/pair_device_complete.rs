@@ -1,51 +1,22 @@
-//! `PairDeviceCompleteRequest` handler — certify a device another node minted,
+//! `PairDeviceCompleteRequest` handler - certify a device another node minted,
 //! link it, and hand it the scope key.
 //!
-//! The second half of pairing, run on the device that already holds the account.
-//! It is two published ops, and both are load-bearing:
+//! The second half of pairing, run on the device holding the account. Publishes
+//! two ops: `AccountDeviceLinked` (encrypted, carries the root-signed certificate
+//! and confers authority) and `RootOp::KeyDelivery` (the current scope key wrapped
+//! to the device). Delivery must be a cleartext root op - the pairing device holds
+//! no scope key, so an encrypted envelope would be unreadable by its only
+//! recipient.
 //!
-//! 1. **`AccountDeviceLinked`** — an encrypted `GroupOp` carrying the device's
-//!    certificate, signed by the account root, plus a member endorsement. This
-//!    is what confers authority.
-//! 2. **`RootOp::KeyDelivery`** — the current scope key, wrapped to the device's
-//!    agreement key. Without it the link lands and the new device still cannot
-//!    read anything, which is the failure this half exists to prevent.
+//! Only the current key is delivered, so a paired device converges on forward
+//! state and cannot read ops sealed under retired epochs. Scope is chosen by
+//! application, not namespace, because that is the question the person pairing can
+//! answer; naming none means all of them.
 //!
-//! **Delivery has to be a cleartext `RootOp`, and that is not incidental.** The
-//! pairing device holds no scope key, so a device-addressed envelope carried
-//! inside an *encrypted* `GroupOp` would be unreadable by its only recipient —
-//! the same bootstrap deadlock that keeps the member-addressed envelope alive.
-//! `KeyDelivery` being a root op is what breaks the cycle.
-//!
-//! **Only the current key is delivered.** Peers retain rotated-out keys, so
-//! history *could* be handed back, but doing so would make every newly paired
-//! device a full-history reader — a capability decision that deserves its own
-//! change rather than riding in on pairing. The cost is that the paired device
-//! converges on forward state and cannot decrypt ops sealed under retired
-//! epochs.
-//!
-//! **The scope is chosen by application, not by namespace.** A namespace is an
-//! implementation unit nobody outside this crate named, so asking a caller to
-//! pick one left the rest of the outcome undecided; an application list settles
-//! which namespaces receive the binding and which scope keys are delivered, and
-//! it is a question the person doing the pairing can actually answer. Naming no
-//! application means all of them, which is what the fan-out did unconditionally
-//! before.
-//!
-//! **Two checks before anything is signed.** The pairing device's statement
-//! proves the key material came from the device that minted it, and the
-//! confirmation code the caller must supply proves the account holder is
-//! certifying the keys they were actually read. The first is a signature over
-//! the payload, so an attacker holding both keys can always make it agree with
-//! itself; the second is the value it cannot produce, because it arrives from the
-//! other device by a channel it does not control. Neither is a substitute for the
-//! other, and if the code travels beside the keys it describes it proves nothing
-//! — that part is the operator's channel, not this handler's.
-//!
-//! **Two keys, one use each.** The account root signs the certificate; the
-//! namespace identity signs the endorsement, the ops, and the key wrap. Crossing
-//! them is silent, which is why the publisher takes ONE signing key and mints the
-//! endorsement itself - see `device_link::publish_link_and_key`.
+//! Two checks before anything is signed: the pairing device's statement proves the
+//! key material came from the device that minted it, and the confirmation code
+//! proves the holder is certifying the keys they were read. An attacker holding
+//! both keys can satisfy the first but not the second.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

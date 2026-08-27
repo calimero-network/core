@@ -353,13 +353,8 @@ jobs:
           - workflow: account-facts-cross-namespace
             file: workflows/account-facts-cross-namespace.yml
             app: scaffolding-e2e
-          # Account-LEVEL pairing. Pairing takes a namespace set on the new
-          # device and an application scope on the holder, and only real nodes
-          # can say whether the link lands where the scope aimed it, whether a
-          # namespace gained afterwards binds the device on its own, whether a
-          # device that is a member of nothing ends up able to run the
-          # application, and whether each refusal lands on the arm the
-          # status mapping names rather than on the check before it.
+          # Account-level pairing: only real nodes can say whether the link
+          # lands where the application scope aimed it.
           - workflow: account-pairing-application-scope
             file: workflows/account-pairing-application-scope.yml
             app: scaffolding-e2e

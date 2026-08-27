@@ -2,38 +2,11 @@
 #
 # What `POST /admin-api/account/pair-complete` refuses, and with which status.
 #
-#     - name: Pairing refuses a bad payload and an unreachable scope
-#       type: script
-#       script: scripts/account-pair-refusal-statuses.sh
-#       target: local
-#       args: [ <holder>, <new-node>, <namespace-id>, <root-key>, <unbound-application> ]
+#     args: [ <holder>, <new-node>, <namespace-id>, <root-key>, <unbound-application> ]
 #
-# `<unbound-application>` must be an application the holder serves in no
-# namespace YET, which is what makes the scope resolve to nothing here. An
-# application whose namespace comes later does exactly as well as one that never
-# gets one, so a scenario can spend its second application on this and then go
-# on to use it.
-#
-# Asserted by STATUS, not by failure. Three of these used to be one `500` apiece,
-# which told a client nothing it could act on: retrying a mistyped confirmation
-# code is pointless, retrying a scope this node does not yet take part in is
-# exactly right, and neither is a broken node. A `200` is a security regression
-# and a `500` is the regression this mapping exists to prevent, so both fail the
-# run.
-#
-# Runs BEFORE the real pairing. It performs its own `pair-init` - idempotent, so
-# the pairing that follows mints the same device and reads out the same code,
-# even when it names more namespaces than this one did - and never completes one.
-#
-# Two refusals this cannot drive, deliberately:
-#   * `PairingNoScopeKey` (409). This node holds a scope key in every namespace it
-#     takes part in, and a namespace it does not take part in fails the identity
-#     check first - so the two 409s cannot both be reached from one node's state.
-#   * `PairingNotTheAccountHolder` (403) on this route. Reaching it needs a
-#     statement over the account THIS node's own root owns, and a node never
-#     publishes that root once it has adopted another account, so no caller can
-#     produce one. The same refusal is reachable on `relink`, which is where
-#     `account-relink-refusal-statuses.sh` drives it.
+# `<unbound-application>` must be one the holder serves in no namespace yet, so
+# the scope resolves to nothing. Asserted by status, not by failure: a 200 is a
+# security regression and a 500 is the regression this mapping prevents.
 
 set -eu
 

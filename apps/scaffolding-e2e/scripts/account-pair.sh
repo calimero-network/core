@@ -3,30 +3,12 @@
 # The account-level pairing exchange, over `POST /admin-api/account/pair-init`
 # and `POST /admin-api/account/pair-complete`.
 #
-#     - name: Pair the phone onto Alice's account
-#       type: script
-#       script: scripts/account-pair.sh
-#       target: local
-#       args: [ <new-node>, <holder>, <root-key>, <application-ids>, <namespace-id>... ]
+#     args: [ <new-node>, <holder>, <root-key>, <application-ids>, <namespace-id>... ]
 #
-# The namespaces are trailing and variadic because merobox resolves ONE
-# placeholder per argument: `{{a}},{{b}}` in a single arg is read as one
-# placeholder named `a}},{{b` and passed through verbatim.
-#
-# `<application-ids>` is comma-separated and `-` means every application, which
-# is what a caller who names none asks for. Both lists are the point of these
-# routes: the namespace set decides what the new device LISTENS on, the
-# application set decides where the holder PUBLISHES the link, and the two are
-# deliberately independent.
-#
-# Why a script rather than merobox's `account_pair` step. That step drives the
-# namespace-scoped routes, which were removed: they took one namespace from the
-# path and fanned the link out to every namespace regardless, so the caller named
-# a unit they had never heard of and got an outcome it did not decide.
-#
-# Exports nothing: a `script` step cannot, and it does not need to. Every value
-# minted here is readable afterwards from the new device's own
-# `GET /admin-api/identity`, which a `node_identity` step captures.
+# Namespaces are trailing and variadic because merobox resolves one placeholder
+# per argument. `<application-ids>` is comma-separated; `-` means every
+# application. The namespace set decides what the device listens on, the
+# application set decides where the holder publishes the link.
 
 set -eu
 

@@ -1839,13 +1839,9 @@ pub struct PairDeviceCompleteApiResponseData {
     /// the request carried, echoed so the operator can see what the certificate
     /// names.
     pub confirmation_code: String,
-    /// Hex-encoded borsh of the `AccountProof<DeviceCert>` this pairing minted.
-    ///
-    /// The device that was just certified needs this to present itself as a
-    /// device of the account — and cannot read it off the DAG, because doing so
-    /// requires being a member of a group the account speaks in, which a thin
-    /// client never is. Not a secret: a certificate is public and proves nothing
-    /// without the device key it names.
+    /// Hex-encoded borsh of the `AccountProof<DeviceCert>` this pairing minted, so
+    /// the device can present itself without reading the DAG it is not a member of.
+    /// Not a secret: it proves nothing without the device key it names.
     pub credential: String,
 }
 
@@ -1856,38 +1852,18 @@ pub struct PairDeviceCompleteApiResponse {
 }
 
 /// Adopt an existing account on this node and mint one device for it, across a
-/// set of namespaces.
-///
-/// Both halves of pairing were already account-wide
-/// in their credentials — the certificate is root-signed and the endorsement is
-/// node-level, so neither names a namespace — while the caller still had to name
-/// one, and the device ended up listening on that one topic while the holder's
-/// link fanned out across all of them.
-///
-/// The response is [`PairDeviceInitApiResponse`] unchanged: one device is minted
-/// for the whole set, so there is one id, one key pair and one code to read out
-/// however many namespaces it covers.
+/// set of namespaces. One device for the whole set, so the response carries one
+/// id, one key pair and one code however many namespaces it covers.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountPairInitApiRequest {
-    /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
-    ///
-    /// Named for the half it carries: an ed25519 private and public key are both
-    /// 32 bytes and both hex, so nothing but the name distinguishes them. The
-    /// private root never crosses this boundary - it leaves the node only via
-    /// `merod account export`, as a mnemonic.
+    /// Hex-encoded epoch-0 root **public** key (32 bytes). Named for the half it
+    /// carries: private and public are both 32 hex bytes, and the private root
+    /// leaves the node only via `merod account export`.
     pub account_root_public_key: String,
-    /// Hex-encoded ids of the namespaces to enroll into (32 bytes each).
-    ///
-    /// Named by the caller, and it has to be: this node is a member of nothing
-    /// and holds no scope key, so it can neither read the account's namespace set
-    /// off a DAG nor derive it. The device that already holds the account is the
-    /// only party that knows it.
-    ///
-    /// The set decides what this device *listens* on. It does not have to agree
-    /// with the applications the holder scopes `pair-complete` to: a binding
-    /// published where the device is not listening is picked up whenever it does
-    /// subscribe, and a subscription the holder never reaches costs nothing.
+    /// Hex-encoded namespace ids to enroll into (32 bytes each). The caller must
+    /// name them: this node is a member of nothing, so it can neither read the
+    /// account's namespace set off a DAG nor derive it.
     pub namespaces: Vec<String>,
 }
 
@@ -2095,27 +2071,15 @@ pub struct RevokeDeviceApiResponse {
     pub data: RevokeDeviceApiResponseData,
 }
 
-/// Repair or widen the reach of a device this account already certified.
-///
-/// Pairing bound the device wherever this node took part at the time, so a
-/// namespace created or joined afterwards has no binding for it and the paired
-/// device silently never sees that namespace. This re-runs the fan-out against
-/// the namespaces this node takes part in now.
-///
-/// The device is named in the path. Nothing else is needed: the certificate is
-/// already held here, root-signed and naming no namespace, so a fresh endorsement
-/// and a key wrap are all a namespace gained later is missing. The device does not
-/// have to be online.
+/// Repair or widen the reach of a device this account already certified, by
+/// re-running pairing's fan-out against the namespaces this node takes part in
+/// now. The device is named in the path and need not be online.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelinkDeviceApiRequest {
-    /// Applications to add to the device's stored scope, bs58-encoded.
-    ///
-    /// **Absent or empty changes nothing** and repairs against the scope already
-    /// stored, which is the request an operator makes to heal drift. Widening a
-    /// narrow scope to *every* application is deliberately not expressible: the
-    /// empty list already means "no change", and overloading it would make the
-    /// accidental request the widest one.
+    /// Applications to add to the stored scope, bs58-encoded. Empty repairs
+    /// without widening; it is not overloaded to mean "every application" so the
+    /// accidental request is not the widest one.
     #[serde(default)]
     pub applications: Vec<String>,
 }

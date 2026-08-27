@@ -1,42 +1,14 @@
-//! `PairDeviceInitRequest` handler — adopt an existing account on this node and
+//! `PairDeviceInitRequest` handler - adopt an existing account on this node and
 //! mint a device for it.
 //!
-//! The first half of pairing, and the half that runs on the *new* device. It
-//! produces the three values the account holder needs in order to certify this
-//! device — the `DeviceId`, the KEM public key, and the signing key — plus a
-//! signature over them and the confirmation code for the two humans to compare.
-//! It publishes no op.
+//! The first half of pairing, run on the *new* device. Mints the `DeviceId`, KEM
+//! key and signing key the holder needs in order to certify it, and publishes no
+//! op. One device across every namespace named, because the certificate covers
+//! the account rather than a scope.
 //!
-//! All three have to be minted here, which is what forces the exchange to be
-//! two-way: the id is `H(account ‖ nonce)` so it needs the account, while the
-//! certificate over it needs the root key, which lives on the other device.
-//!
-//! **One device across every namespace named, not one per namespace.** The
-//! certificate covers the account rather than a scope, so minting per namespace
-//! would hand the holder several ids to certify and several codes to read aloud
-//! for one machine. The code falls out shared for the same reason: it is a hash
-//! over material that is now minted once.
-//!
-//! **The caller has to name the namespaces.** This node is a member of nothing
-//! and holds no scope key, so it can neither read the account's namespace set off
-//! a DAG nor derive it; the holder is the only party that knows it. Taking a set
-//! is what closes the asymmetry the fan-out left behind - the link is published
-//! into every namespace the account speaks in, and a device listening on one of
-//! them observes one of them.
-//!
-//! **This node is deliberately not a member here.** A paired device is one
-//! device of an account that belongs to somebody else; membership stays with
-//! the account, which is the whole point of separating the two ids. So this
-//! handler uses the two membership-free primitives rather than the join flow:
-//! `get_or_create_namespace_identity` provisions a signing identity for a
-//! namespace this node may never have heard of (an unknown group has no parent
-//! row, so it resolves as its own root), and `subscribe_namespace` opens the
-//! gossip subscription. `join_namespace` would be wrong — it publishes
-//! `MemberJoinedAt`, which is exactly what a paired device must not do.
-//!
-//! **No scope key is required, unlike enrolling a fresh account.** A pairing
-//! device holds none; obtaining one is what the second half of the exchange is
-//! for. Since nothing is published here there is no encrypted op to gate on.
+//! This node is deliberately not a member: membership stays with the account, so
+//! this uses `get_or_create_namespace_identity` and `subscribe_namespace` rather
+//! than `join_namespace`, which would publish `MemberJoinedAt`.
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::PairingOffer;

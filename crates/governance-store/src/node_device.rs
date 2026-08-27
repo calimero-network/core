@@ -828,12 +828,9 @@ impl<'a> NodeDeviceRepository<'a> {
     /// a two-way exchange, and this is its first half - the half that produces the
     /// values the certificate will name.
     ///
-    /// **A set rather than one namespace**, because the certificate that follows
-    /// covers the account rather than a scope: minting per namespace would hand
-    /// the holder several ids to certify and several codes to read aloud for one
-    /// machine. The row is node-level already, so what the set decides is not how
-    /// many are minted but whether the stored one may be kept - it has to still
-    /// serve every namespace named, not merely the first that answers.
+    /// A set rather than one namespace: the certificate covers the account, so the
+    /// set decides whether the stored row may be kept - it must still serve every
+    /// namespace named, not merely the first that answers.
     ///
     /// Idempotent on the same terms as `ensure_enrolled`, and it applies the same
     /// rule to a stored row that names a different account.
@@ -1114,12 +1111,9 @@ impl<'a> NodeDeviceRepository<'a> {
 
     /// This node's device, unless it has been revoked somewhere.
     ///
-    /// One row serves every namespace while a tombstone is per-namespace, so a
-    /// device revoked anywhere is a device whose id is spent: re-enrolling mints a
-    /// fresh one rather than reusing it, and the enrolment slot is already
-    /// released on that basis. A reader that kept presenting the old id would name
-    /// a device no peer will admit and, for a PAIRED node, an adopted account it
-    /// no longer speaks for.
+    /// A device revoked anywhere has a spent id: one row serves every namespace
+    /// while a tombstone is per-namespace, so re-enrolling mints a fresh id and a
+    /// reader presenting the old one names a device no peer will admit.
     ///
     /// # Errors
     /// Propagates the store read failure.

@@ -1,20 +1,9 @@
 #!/bin/sh
 #
-# Shared helpers for the account-identity e2e scripts.
+# Shared helpers for the account-identity e2e scripts. Sourced, not executed.
 #
-# These talk to a node's admin API directly with curl rather than through
-# `meroctl`. That is not a shortcut: nothing else in the e2e suite invokes
-# meroctl - merobox drives nodes through its own API client - and the merod
-# image does not ship the CLI, so a `target: local` script has no meroctl to
-# call. The commands under test are thin wrappers over these same endpoints, so
-# exercising the endpoints exercises the same code paths.
-#
-# Sourced, not executed.
-
-# The host URL for a merobox-managed node container.
-#
-# merobox publishes each node's RPC port on an ephemeral host port, so the port
-# cannot be assumed from the node index - ask Docker what it actually bound.
+# Uses curl against the admin API rather than meroctl: the merod image ships no
+# CLI, so a `target: local` script has none to call.
 node_url() {
     _container="$1"
     _hostport=$(docker port "${_container}" 2528/tcp 2>/dev/null | head -1 | sed 's/.*://')
