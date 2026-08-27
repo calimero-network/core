@@ -172,11 +172,7 @@ mod tests {
         "https://apps.calimero.network".parse().expect("valid base")
     }
 
-    // The exact shape the registry serves. Verified against
-    // `packages/frontend/src/lib/api.ts` in the app-registry repo, whose
-    // artifact convention is `/artifacts/:package/:version/:package-:version.mpk`,
-    // and against `ENV_CONFIG.md`, whose GCS objects live at
-    // `{prefix}/{package}/{version}.mpk`.
+    // The shape the registry serves: `/artifacts/:package/:version/:package-:version.mpk`.
     #[test]
     fn builds_the_artifact_url_from_coordinates() {
         let coords = RegistryCoords::new("com.calimero.migration-suite", "2.0.0");

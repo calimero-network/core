@@ -88,10 +88,8 @@ impl NodeClient {
         let package = &manifest.package;
         let version = &manifest.app_version;
 
-        // A bare install names no application id, so the coordinates are the
-        // only promise made: another package's bundle signs just as validly, and
-        // an application id is version-stable, so a sibling release of the same
-        // package would pass every other check.
+        // The coordinates are the only promise a bare install makes: another
+        // package signs just as validly, and an id is stable across versions.
         if let Some(expected) = expected {
             if package != expected.package || version != expected.version {
                 bail!(

@@ -11230,7 +11230,8 @@ mod account_plane_apply {
 mod target_application_row_seeding {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
-    use calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE;
+    use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::GroupOp;
     use calimero_primitives::application::ApplicationSource;
@@ -11439,9 +11440,6 @@ mod target_application_row_seeding {
     /// that ladder come back empty and leave the inherited target unfetchable.
     #[test]
     fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
-        use calimero_app_downloader::registry::stored_coords;
-        use calimero_context_client::local_governance::{NamespaceOp, RootOp};
-
         let ns_id = [0x5A; 32];
         let sub_id = [0x5B; 32];
         let store = test_store();

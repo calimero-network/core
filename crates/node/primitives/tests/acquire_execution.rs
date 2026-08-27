@@ -253,11 +253,8 @@ async fn no_context_ends_the_walk_before_the_peer_source() {
     );
 }
 
-// The outcome the peer source owes its caller, not the route it took: downloading
-// the bytes and stopping leaves the joiner unable to execute, which is exactly
-// how a joined context sits at the zero root until sync times out. Raw wasm,
-// so the row must be bound under the id governance named, never a re-derived
-// one - that id folds in per-node source and metadata.
+// Downloading the bytes without binding the row leaves the joiner unable to
+// execute. Raw wasm binds under the id governance named, never a re-derived one.
 #[actix::test]
 async fn the_peer_source_leaves_the_application_installed() {
     let expected = common::blob_id_of(WASM).await;
@@ -284,10 +281,8 @@ async fn the_peer_source_leaves_the_application_installed() {
     assert!(node_client.has_blob(&expected).expect("lookup"));
 }
 
-// Nothing on the install or context-create path announces a provider record for
-// application bytecode, and a restart drops whatever was announced. A context
-// member holding the bytes must still be reached, or every dht-mode joiner runs
-// out of retries and its first execute dies on "not found in blobstore".
+// Nothing announces a provider record for application bytecode and a restart
+// drops what was announced, so a context member holding it must still be reached.
 #[actix::test]
 async fn a_context_member_that_never_announced_still_delivers_the_bytecode() {
     let expected = common::blob_id_of(WASM).await;

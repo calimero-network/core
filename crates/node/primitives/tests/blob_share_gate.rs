@@ -208,10 +208,8 @@ fn acquire(application_id: ApplicationId, bytecode: BlobId, context: &ContextId)
     }
 }
 
-// Sync phase 2 acquires a context's application bytecode through the node's one
-// configured source. Both halves matter: an http node must leave the peer that
-// would have served it untouched, and a dht node must still reach that peer.
-// A mode-blind fetch cannot satisfy both.
+// An http node must leave the serving peer untouched and a dht node must still
+// reach it - a mode-blind fetch cannot satisfy both.
 #[actix::test]
 async fn context_bytecode_is_acquired_only_from_the_configured_source() {
     let context = ContextId::from([0x11; 32]);
