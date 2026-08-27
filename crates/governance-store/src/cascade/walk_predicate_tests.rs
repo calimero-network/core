@@ -13,7 +13,7 @@ use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::Store;
 
 use super::walk_for_predicate;
@@ -32,15 +32,17 @@ fn group_id(byte: u8) -> ContextGroupId {
 
 fn meta_with_bytecode_id(bytecode_id: [u8; 32]) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: AccountId::from([0x01; 32]),
         owner_identity: AccountId::from([0x01; 32]),
         migration: None,
         auto_join: true,
-        package: Box::default(),
-        version: Box::default(),
     }
 }
 

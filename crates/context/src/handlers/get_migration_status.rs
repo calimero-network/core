@@ -257,21 +257,24 @@ mod tests {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
+    use calimero_store::key::GroupTarget;
     use calimero_store::Store;
 
     use super::{authorize_migration_status, collect_migration_cohort};
 
     fn meta(admin: PublicKey) -> GroupMetaValue {
         GroupMetaValue {
-            bytecode_id: [0x55; 32],
-            target_application_id: ApplicationId::from([0x66; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0x66; 32]),
+                bytecode_id: [0x55; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&admin),
             owner_identity: crate::test_support::account_for(&admin),
             migration: None,
             auto_join: true,
-            package: Box::default(),
-            version: Box::default(),
         }
     }
 

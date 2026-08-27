@@ -774,7 +774,7 @@ impl SyncManager {
         }
 
         let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
-        let application_id: [u8; 32] = *meta.target_application_id.as_ref();
+        let application_id: [u8; 32] = *meta.target.application_id.as_ref();
 
         for ctx_id in &context_ids {
             let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);

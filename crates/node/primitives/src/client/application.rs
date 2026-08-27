@@ -196,8 +196,8 @@ impl NodeClient {
                     // Only this application's groups: a foreign group's
                     // bytecode_id would otherwise be fetched + manifest-parsed
                     // just to be discarded by the package filter below.
-                    if meta.target_application_id == *application_id {
-                        let _ = candidates.insert(meta.bytecode_id);
+                    if meta.target.application_id == *application_id {
+                        let _ = candidates.insert(meta.target.bytecode_id);
                     }
                 }
             }

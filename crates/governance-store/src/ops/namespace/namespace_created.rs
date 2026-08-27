@@ -417,25 +417,13 @@ pub(crate) fn apply(
     //     exactly per the seed contract. (It is NOT preserving meaningful app
     //     bindings a seed set — the seed never sets any.)
     let meta = calimero_store::key::GroupMetaValue {
+        target: existing
+            .as_ref()
+            .map(|m| m.target.clone())
+            .unwrap_or_default(),
         admin_identity: founder,
         owner_identity: founder,
-        target_application_id: existing
-            .as_ref()
-            .map(|m| m.target_application_id)
-            .unwrap_or_else(|| calimero_primitives::application::ApplicationId::from([0u8; 32])),
-        bytecode_id: existing
-            .as_ref()
-            .map(|m| m.bytecode_id)
-            .unwrap_or([0u8; 32]),
         migration: existing.as_ref().and_then(|m| m.migration.clone()),
-        package: existing
-            .as_ref()
-            .map(|m| m.package.clone())
-            .unwrap_or_default(),
-        version: existing
-            .as_ref()
-            .map(|m| m.version.clone())
-            .unwrap_or_default(),
         created_at: existing.as_ref().map(|m| m.created_at).unwrap_or(0),
         auto_join: existing.as_ref().map(|m| m.auto_join).unwrap_or(true),
     };

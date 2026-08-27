@@ -44,6 +44,7 @@ pub(crate) fn adopt_pulled_group_key(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_client::local_governance::{
@@ -66,17 +67,17 @@ mod tests {
 
     fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
         GroupMetaValue {
-            bytecode_id: [0xBB; 32],
-            target_application_id: calimero_primitives::application::ApplicationId::from(
-                [0xCC; 32],
-            ),
+            target: GroupTarget {
+                application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+                bytecode_id: [0xBB; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,
             migration: None,
             auto_join: true,
-            package: Box::default(),
-            version: Box::default(),
         }
     }
 

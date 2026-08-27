@@ -4,6 +4,7 @@
 //! (same path as `ContextClient::apply_signed_group_op`).
 //! Real libp2p gossip on `group/<hex>` is covered by `calimero-network` (`tests/gossipsub_group_topic.rs`).
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use borsh::to_vec as borsh_to_vec;
@@ -77,15 +78,17 @@ fn dummy_member_removed(member: calimero_account::AccountId) -> GroupOp {
 
 fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
         migration: None,
         auto_join: true,
-        package: Box::default(),
-        version: Box::default(),
     }
 }
 
@@ -271,11 +274,11 @@ fn two_nodes_converge_on_target_application_and_migration() {
         .unwrap()
         .expect("meta b");
 
-    assert_eq!(meta_a.target_application_id, new_target);
-    assert_eq!(meta_a.bytecode_id, [0x11; 32]);
+    assert_eq!(meta_a.target.application_id, new_target);
+    assert_eq!(meta_a.target.bytecode_id, [0x11; 32]);
     assert_eq!(meta_a.migration, Some(b"v1-migration".to_vec()));
-    assert_eq!(meta_a.target_application_id, meta_b.target_application_id);
-    assert_eq!(meta_a.bytecode_id, meta_b.bytecode_id);
+    assert_eq!(meta_a.target.application_id, meta_b.target.application_id);
+    assert_eq!(meta_a.target.bytecode_id, meta_b.target.bytecode_id);
     assert_eq!(meta_a.migration, meta_b.migration);
 }
 

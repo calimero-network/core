@@ -2795,11 +2795,11 @@ fn namespace_created_same_founder_repairs_diverged_owner_identity() {
     );
     // All other fields are preserved from the pre-established meta.
     assert_eq!(
-        meta.bytecode_id, diverged.bytecode_id,
+        meta.target.bytecode_id, diverged.target.bytecode_id,
         "bytecode_id preserved across the owner repair"
     );
     assert_eq!(
-        meta.target_application_id, diverged.target_application_id,
+        meta.target.application_id, diverged.target.application_id,
         "target_application_id preserved across the owner repair"
     );
     assert_eq!(
@@ -4675,11 +4675,11 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
         .expect("sub meta written");
 
     assert_eq!(
-        sub_meta.bytecode_id, parent_meta.bytecode_id,
+        sub_meta.target.bytecode_id, parent_meta.target.bytecode_id,
         "subgroup must inherit parent's bytecode_id so cascade predicate matches"
     );
     assert_eq!(
-        sub_meta.target_application_id, parent_meta.target_application_id,
+        sub_meta.target.application_id, parent_meta.target.application_id,
         "subgroup must inherit parent's target_application_id"
     );
 }

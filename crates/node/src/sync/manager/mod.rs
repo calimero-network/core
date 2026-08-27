@@ -4037,18 +4037,18 @@ fn staged_bytecode_for(
     store: &calimero_store::Store,
     meta: &calimero_store::key::GroupMetaValue,
 ) -> Option<[u8; 32]> {
-    if meta.bytecode_id == [0u8; 32] {
+    if meta.target.bytecode_id == [0u8; 32] {
         return None;
     }
     let row_blob = store
         .handle()
         .get(&calimero_store::key::ApplicationMeta::new(
-            meta.target_application_id,
+            meta.target.application_id,
         ))
         .ok()
         .flatten()
         .map(|app| *app.bytecode.blob_id().as_ref())?;
-    (row_blob != meta.bytecode_id).then_some(meta.bytecode_id)
+    (row_blob != meta.target.bytecode_id).then_some(meta.target.bytecode_id)
 }
 
 /// One-load variant for `context_id` (group + meta resolved internally) —
@@ -4075,7 +4075,7 @@ pub(crate) fn pending_upgrade_staged_bytecode(
 ///   `ApplicationId = hash(package, signer)` is version-stable so the id
 ///   never moves; mirrors `maybe_lazy_upgrade`'s same-id condition. Keyed
 ///   off `meta.migration` + the per-context applied marker (NOT a raw
-///   `meta.bytecode_id` blob comparison): groups created before `bytecode_id` was
+///   `meta.target.bytecode_id` blob comparison): groups created before `bytecode_id` was
 ///   blob-derived hold a random `bytecode_id`, and a blob comparison would gate
 ///   their state sync forever.
 pub(crate) fn pending_upgrade_target_in(
@@ -4105,7 +4105,7 @@ pub(crate) fn pending_upgrade_info(
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    let target = meta.target_application_id;
+    let target = meta.target.application_id;
     // Only gate a context that is bound to a REAL application. A context with
     // no app yet (`current_app == ZERO`, e.g. a freshly-joined node still
     // bootstrapping its state) must be allowed to sync — gating it would
@@ -4128,7 +4128,7 @@ pub(crate) fn pending_upgrade_info(
     // they never gate.) "Applied" is the per-context activation marker.
     let _migration_present = meta.migration.as_ref()?;
     let applied = calimero_context::activation::activated_bytecode(store, context_id)
-        == Some(meta.bytecode_id);
+        == Some(meta.target.bytecode_id);
     (!applied).then(|| (target, staged_bytecode_for(store, &meta)))
 }
 
@@ -4228,6 +4228,7 @@ mod init_pop_gate_tests {
 
 #[cfg(test)]
 mod pending_upgrade_tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -4258,15 +4259,17 @@ mod pending_upgrade_tests {
         // which reads bytecode ids rather than principals.
         let admin = calimero_primitives::identity::AccountId::from([0x07; 32]);
         let meta = GroupMetaValue {
-            bytecode_id: [0x11; 32],
-            target_application_id: target,
+            target: GroupTarget {
+                application_id: target,
+                bytecode_id: [0x11; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,
             migration: migration.map(|m| m.as_bytes().to_vec()),
             auto_join: true,
-            package: Box::default(),
-            version: Box::default(),
         };
         MetaRepository::new(store)
             .save(&group_id, &meta)

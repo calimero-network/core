@@ -73,9 +73,9 @@ impl<'a> ContextRegistrationService<'a> {
         }
 
         if let Some(meta) = MetaRepository::new(self.store).load(&self.group_id)? {
-            if meta.target_application_id == ZERO_APPLICATION_ID {
+            if meta.target.application_id == ZERO_APPLICATION_ID {
                 let mut updated = meta;
-                updated.target_application_id = *application_id;
+                updated.target.application_id = *application_id;
                 MetaRepository::new(self.store).save(&self.group_id, &updated)?;
                 tracing::info!(
                     group_id = %hex::encode(self.group_id.to_bytes()),

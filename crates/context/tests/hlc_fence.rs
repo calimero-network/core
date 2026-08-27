@@ -7,6 +7,7 @@
 //! Then `delta_is_fenced` is called with various (producing_bytecode_id, delta_hlc)
 //! combinations and the result is asserted.
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_context::hlc_fence::{
@@ -55,15 +56,17 @@ fn meta_for(bytecode_id: [u8; 32]) -> GroupMetaValue {
     // id is honest here where a key would only look like one.
     let admin = calimero_account::AccountId::from([0x01; 32]);
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: ApplicationId::from([0xAA; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xAA; 32]),
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
         migration: None,
         auto_join: true,
-        package: Box::default(),
-        version: Box::default(),
     }
 }
 
@@ -258,7 +261,7 @@ fn does_not_fence_for_ungrouped_context() {
 // O3 loaded-reader divergence — the PRIMARY resolver branch.
 //
 // The tests above never write a `ContextMeta` row, so `loaded_reader_bytecode_id`
-// always lands on the `unwrap_or(meta.bytecode_id)` fallback — i.e. loaded == target.
+// always lands on the `unwrap_or(meta.target.bytecode_id)` fallback — i.e. loaded == target.
 // The fence the O3 fix exists for only bites when the locally-loaded reader is
 // BEHIND the replicated `GroupMeta.bytecode_id`: a node still on the v1 binary while
 // the governance target has advanced to v2. These tests install a `ContextMeta`
@@ -322,7 +325,7 @@ fn loaded_reader_resolves_loaded_application_not_group_target() {
 /// With the loaded reader on v1 and the target advanced to v2, an after-boundary
 /// delta produced under v2 cannot be read yet → `Buffer` (absorb, never drop),
 /// while a v1 delta is readable now → `Apply`. This is the divergence the fence
-/// exists for, and it is invisible to the `unwrap_or(meta.bytecode_id)` fallback.
+/// exists for, and it is invisible to the `unwrap_or(meta.target.bytecode_id)` fallback.
 #[test]
 fn fence_decision_buffers_v2_delta_for_v1_loaded_reader() {
     let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);

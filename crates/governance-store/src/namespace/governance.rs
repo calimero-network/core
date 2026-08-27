@@ -989,17 +989,19 @@ impl<'a> NamespaceGovernance<'a> {
         let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {
-                bytecode_id: [0u8; 32],
-                target_application_id: calimero_primitives::application::ApplicationId::from(
-                    [0u8; 32],
-                ),
+                target: calimero_store::key::GroupTarget {
+                    application_id: calimero_primitives::application::ApplicationId::from(
+                        [0u8; 32],
+                    ),
+                    bytecode_id: [0u8; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
                 created_at: 0,
                 admin_identity: placeholder_admin,
                 owner_identity: placeholder_admin,
                 migration: None,
                 auto_join: true,
-                package: Box::default(),
-                version: Box::default(),
             };
             MetaRepository::new(self.store).save(&gid, &meta)?;
         }

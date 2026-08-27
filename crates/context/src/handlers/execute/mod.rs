@@ -1567,7 +1567,7 @@ impl ContextManager {
                 let ladder = UpgradeLadderRepository::new(&datastore)
                     .load(&gid)
                     .unwrap_or_default();
-                Some((ladder, bound, meta.bytecode_id))
+                Some((ladder, bound, meta.target.bytecode_id))
             });
 
         let Some((ladder, bound, group_target)) = walk else {
@@ -1952,7 +1952,8 @@ pub(crate) fn bound_bytecode_for_context(
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    (meta.bytecode_id != [0u8; 32]).then_some((meta.bytecode_id, BoundBytecodeSource::GroupKey))
+    (meta.target.bytecode_id != [0u8; 32])
+        .then_some((meta.target.bytecode_id, BoundBytecodeSource::GroupKey))
 }
 
 impl ContextManager {
@@ -2772,6 +2773,7 @@ fn xcall_same_owning_group(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -2802,15 +2804,17 @@ mod tests {
     fn group_meta_with_bytecode_id(bytecode_id: [u8; 32]) -> GroupMetaValue {
         let dummy_pk = PublicKey::from([0xAB; 32]);
         GroupMetaValue {
-            bytecode_id,
-            target_application_id: ApplicationId::from([0xCC; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0xCC; 32]),
+                bytecode_id,
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&dummy_pk),
             owner_identity: crate::test_support::account_for(&dummy_pk),
             migration: None,
             auto_join: false,
-            package: Box::default(),
-            version: Box::default(),
         }
     }
 

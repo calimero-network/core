@@ -26,7 +26,7 @@ pub(crate) fn apply(
         .load(group_id)
         .ok()
         .flatten()
-        .map(|meta| meta.target_application_id);
+        .map(|meta| meta.target.application_id);
 
     ctx.settings()
         .set_target_application(signer, bytecode_id, target_application_id, coords)?;

@@ -152,15 +152,13 @@ pub(crate) fn apply(
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: creator,
             owner_identity: creator,
-            target_application_id: parent_meta.target_application_id,
-            bytecode_id: parent_meta.bytecode_id,
+            // One field, so the id cannot be inherited without the coordinates
+            // that address it - the subgroup has no ladder of its own to
+            // recover them from.
+            target: parent_meta.target.clone(),
             migration: None,
             created_at: 0,
             auto_join: false,
-            // Coordinates travel with the target they address: a subgroup
-            // inherits both, and has no ladder of its own to recover them from.
-            package: parent_meta.package.clone(),
-            version: parent_meta.version.clone(),
         };
         MetaRepository::new(store).save(&gid, &meta)?;
     } else {

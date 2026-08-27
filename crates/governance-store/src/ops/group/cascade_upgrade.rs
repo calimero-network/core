@@ -99,7 +99,7 @@ pub(crate) fn apply(
         .load(group_id)
         .ok()
         .flatten()
-        .map(|meta| meta.target_application_id);
+        .map(|meta| meta.target.application_id);
 
     // Semver strings for the per-descendant record: the empty strings this used
     // to write are what a receiver's completion banner renders. Shares the

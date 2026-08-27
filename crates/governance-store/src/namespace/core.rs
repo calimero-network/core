@@ -352,8 +352,8 @@ impl<'a> NamespaceRepository<'a> {
 
             let (application_id, bytecode_id) = match MetaRepository::new(self.store).load(&gid)? {
                 Some(meta) => (
-                    Some(*meta.target_application_id.as_ref()),
-                    Some(meta.bytecode_id),
+                    Some(*meta.target.application_id.as_ref()),
+                    Some(meta.target.bytecode_id),
                 ),
                 None => {
                     tracing::warn!(

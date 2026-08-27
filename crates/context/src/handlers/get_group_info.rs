@@ -106,8 +106,8 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
 
             Ok(GroupInfoResponse {
                 group_id,
-                bytecode_id: meta.bytecode_id.into(),
-                target_application_id: meta.target_application_id,
+                bytecode_id: meta.target.bytecode_id.into(),
+                target_application_id: meta.target.application_id,
                 member_count,
                 context_count,
                 active_upgrade,

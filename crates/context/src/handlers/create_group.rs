@@ -7,6 +7,7 @@ use calimero_context_config::types::{BytecodeId, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::key::GroupTarget;
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use rand::Rng;
@@ -132,7 +133,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     return ActorResponse::reply(Err(err));
                 }
             }
-            parent_meta.target_application_id
+            parent_meta.target.application_id
         } else {
             application_id
         };
@@ -189,18 +190,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
         };
         let reservation_meta = GroupMetaValue {
             // The reservation only holds the id slot; use the verified
-            // application-row blob (never the caller's still-unverified
-            // `requested_bytecode_id`) so a concurrent reader can't observe an
-            // unverified `bytecode_id`. The async body overwrites this with the
-            // final, verified `bytecode_id` on success.
-            bytecode_id: row_blob,
-            target_application_id: effective_application_id,
+            // application-row blob, never the caller's still-unverified
+            // `requested_bytecode_id`. The async body overwrites this with the
+            // final, verified target on success.
+            target: GroupTarget {
+                application_id: effective_application_id,
+                bytecode_id: row_blob,
+                package: app_package.clone(),
+                version: app_version.clone(),
+            },
             created_at: reservation_now,
             admin_identity: admin_account,
             owner_identity: admin_account,
             migration: None,
-            package: app_package.clone(),
-            version: app_version.clone(),
             auto_join: true,
         };
         if let Err(err) = MetaRepository::new(&self.datastore).save(&group_id, &reservation_meta) {
@@ -223,18 +225,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // second silent `unwrap_or(0)`. The final meta and the
                 // reservation it replaces then carry the same `created_at`.
                 let meta = GroupMetaValue {
-                    bytecode_id: bytecode_id.to_bytes(),
-                    target_application_id: effective_application_id,
+                    target: GroupTarget {
+                        application_id: effective_application_id,
+                        bytecode_id: bytecode_id.to_bytes(),
+                        package: app_package.clone(),
+                        version: app_version.clone(),
+                    },
                     created_at: reservation_now,
                     admin_identity: admin_account,
                     // Creator is the initial Owner. Transferable via
                     // `GroupOp::TransferOwnership`.
                     owner_identity: admin_account,
                     migration: None,
-                    auto_join: true,
-                    package: app_package.clone(),
-                    version: app_version.clone(),
-                };
+                    auto_join: true,};
 
                 // Write the group's local rows. If any write fails partway,
                 // unwind the rows already written before returning so a retry
@@ -679,6 +682,7 @@ async fn verify_requested_bytecode_id(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -715,15 +719,17 @@ mod tests {
             .save(
                 group,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xCC; 32]),
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: admin_account,
                     owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .expect("save meta");
@@ -865,15 +871,17 @@ mod tests {
             .save(
                 &group,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xCC; 32]),
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1,
                     admin_identity: crate::test_support::account_for(&admin),
                     owner_identity: crate::test_support::account_for(&admin),
                     migration: None,
                     auto_join: true,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .expect("save meta");

@@ -33,7 +33,7 @@ pub fn abort_group_migration(
 
     // The cascade predicate matches descendants on the root's `bytecode_id` (the
     // cascade's `from_bytecode_id`). Capture it before the root's meta is mutated.
-    let from_bytecode_id = root_meta.bytecode_id;
+    let from_bytecode_id = root_meta.target.bytecode_id;
 
     // Abort the requested root group first (preserving the original semantics).
     let mut aborted = abort_single_group(store, namespace_id, root_meta)?;
@@ -52,7 +52,7 @@ pub fn abort_group_migration(
         };
         // Mirror the cascade predicate: only descendants the cascade migration
         // actually applied to (same `bytecode_id` as the root's `from_bytecode_id`).
-        if descendant_meta.bytecode_id != from_bytecode_id {
+        if descendant_meta.target.bytecode_id != from_bytecode_id {
             continue;
         }
         if abort_single_group(store, &descendant_id, descendant_meta)? {
@@ -111,10 +111,10 @@ fn abort_single_group(
             .ok()
             .flatten()
             .map(|cm| cm.application.application_id())
-            .filter(|app_id| *app_id != meta.target_application_id)
+            .filter(|app_id| *app_id != meta.target.application_id)
     });
     if let Some(app_id) = pre_migration_app_id {
-        meta.target_application_id = app_id;
+        meta.target.application_id = app_id;
     }
     meta.migration = None;
     MetaRepository::new(store).save(group_id, &meta)?;
@@ -129,7 +129,7 @@ fn abort_single_group(
 
     info!(
         ?group_id,
-        target_app = %meta.target_application_id,
+        target_app = %meta.target.application_id,
         "migration logically aborted: target flipped back, pending migration dropped \
          (already-committed v2 contexts are NOT recalled)"
     );
@@ -163,6 +163,7 @@ impl Handler<AbortMigrationRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -202,15 +203,17 @@ mod tests {
     ) -> GroupMetaValue {
         let pk = PublicKey::from([0xAB; 32]);
         GroupMetaValue {
-            bytecode_id,
-            target_application_id: ApplicationId::from(target),
+            target: GroupTarget {
+                application_id: ApplicationId::from(target),
+                bytecode_id,
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&pk),
             owner_identity: crate::test_support::account_for(&pk),
             migration,
             auto_join: false,
-            package: Box::default(),
-            version: Box::default(),
         }
     }
 
@@ -288,7 +291,7 @@ mod tests {
             .unwrap()
             .expect("meta present");
         assert_eq!(
-            meta.target_application_id,
+            meta.target.application_id,
             ApplicationId::from(V1_APP),
             "target must flip back to the pre-migration v1 app id"
         );
@@ -345,7 +348,7 @@ mod tests {
             .unwrap()
             .expect("meta present");
         assert_eq!(
-            meta.target_application_id,
+            meta.target.application_id,
             ApplicationId::from(V1_APP),
             "target must flip back to the pre-migration v1 app id, not the v2 app \
              id of an already-migrated context"
@@ -436,7 +439,7 @@ mod tests {
         // Root is aborted.
         let root_meta = meta_repo.load(&root_id).unwrap().expect("root meta");
         assert_eq!(
-            root_meta.target_application_id,
+            root_meta.target.application_id,
             ApplicationId::from(V1_APP),
             "root target must flip back to v1"
         );
@@ -445,7 +448,7 @@ mod tests {
         // The DESCENDANT must ALSO be aborted by the same root abort.
         let child_meta = meta_repo.load(&child_id).unwrap().expect("child meta");
         assert_eq!(
-            child_meta.target_application_id,
+            child_meta.target.application_id,
             ApplicationId::from(V1_APP),
             "descendant target must ALSO flip back to v1 (cascade abort)"
         );
@@ -544,7 +547,7 @@ mod tests {
         // The cascade-matched descendant IS aborted.
         let matched_meta = meta_repo.load(&matched_id).unwrap().expect("matched meta");
         assert_eq!(
-            matched_meta.target_application_id,
+            matched_meta.target.application_id,
             ApplicationId::from(V1_APP),
             "cascade-matched descendant target must flip back to v1"
         );
@@ -561,7 +564,7 @@ mod tests {
             .unwrap()
             .expect("unrelated meta");
         assert_eq!(
-            unrelated_meta.target_application_id,
+            unrelated_meta.target.application_id,
             ApplicationId::from(OTHER_V2_APP),
             "unrelated descendant target must NOT be touched (cascade never matched it)"
         );
@@ -606,7 +609,7 @@ mod tests {
 
         let child_meta = meta_repo.load(&child_id).unwrap().expect("child meta");
         assert_eq!(
-            child_meta.target_application_id,
+            child_meta.target.application_id,
             ApplicationId::from(V1_APP),
             "descendant left untouched"
         );

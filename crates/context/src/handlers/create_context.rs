@@ -100,7 +100,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             .load(&group_id)
             .ok()
             .flatten()
-            .map(|m| m.bytecode_id)
+            .map(|m| m.target.bytecode_id)
             .filter(|k| *k != [0u8; 32])
             .map(calimero_primitives::blobs::BlobId::from)
             .filter(|b| self.node_client.has_blob(b).unwrap_or(false));
@@ -235,13 +235,13 @@ impl Prepared<'_> {
             );
         }
 
-        if effective_app_id != meta.target_application_id {
+        if effective_app_id != meta.target.application_id {
             warn!(
                 requested=?effective_app_id,
-                group_target=?meta.target_application_id,
+                group_target=?meta.target.application_id,
                 "overriding application_id with group target"
             );
-            effective_app_id = meta.target_application_id;
+            effective_app_id = meta.target.application_id;
         }
 
         let mut rng = rand::thread_rng();

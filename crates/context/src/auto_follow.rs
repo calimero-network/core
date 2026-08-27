@@ -872,7 +872,9 @@ mod tests {
         use calimero_primitives::context::{ContextId, GroupMemberRole};
         use calimero_primitives::identity::{PrivateKey, PublicKey};
         use calimero_store::db::InMemoryDB;
-        use calimero_store::key::{AutoFollowFlags, ContextLeftMarker, GroupMetaValue};
+        use calimero_store::key::{
+            AutoFollowFlags, ContextLeftMarker, GroupMetaValue, GroupTarget,
+        };
         use calimero_store::types::ContextLeftMarker as ContextLeftMarkerValue;
         use calimero_store::Store;
         use rand::rngs::OsRng;
@@ -893,15 +895,17 @@ mod tests {
 
         fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
             GroupMetaValue {
-                bytecode_id: [0xAA; 32],
-                target_application_id: ApplicationId::from([0xBB; 32]),
+                target: GroupTarget {
+                    application_id: ApplicationId::from([0xBB; 32]),
+                    bytecode_id: [0xAA; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
                 created_at: 1_700_000_000,
                 admin_identity: admin,
                 owner_identity: admin,
                 migration: None,
                 auto_join: true,
-                package: Box::default(),
-                version: Box::default(),
             }
         }
 

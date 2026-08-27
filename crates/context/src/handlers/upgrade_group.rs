@@ -223,7 +223,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 let mut meta = MetaRepository::new(&datastore)
                     .load(&group_id)?
                     .ok_or_else(|| eyre::eyre!("group not found"))?;
-                meta.target_application_id = target_application_id;
+                meta.target.application_id = target_application_id;
                 meta.migration = migration_bytes.clone();
                 MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
@@ -925,12 +925,12 @@ fn validate_upgrade(
     //    races a concurrent in-place install (installs bypass this actor);
     //    the worst case either way is a rejected retry or a no-op upgrade op,
     //    never state corruption, so the window is accepted.
-    if meta.target_application_id == *target_application_id {
+    if meta.target.application_id == *target_application_id {
         let target_blob = datastore
             .handle()
             .get(&key::ApplicationMeta::new(*target_application_id))?
             .map(|app| *app.bytecode.blob_id().as_ref());
-        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.bytecode_id);
+        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.target.bytecode_id);
         if bytecode_unchanged {
             bail!("group is already targeting this application");
         }
@@ -949,7 +949,7 @@ fn validate_upgrade(
     let handle = datastore.handle();
 
     let from_version = handle
-        .get(&key::ApplicationMeta::new(meta.target_application_id))?
+        .get(&key::ApplicationMeta::new(meta.target.application_id))?
         .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version));
 
     let to_version = handle
@@ -960,8 +960,8 @@ fn validate_upgrade(
         total_contexts: contexts.len(),
         from_version,
         to_version,
-        current_application_id: meta.target_application_id,
-        current_bytecode_id: meta.bytecode_id,
+        current_application_id: meta.target.application_id,
+        current_bytecode_id: meta.target.bytecode_id,
     })
 }
 
@@ -1384,7 +1384,7 @@ fn dispatch_cascade(
     // only the blob. Mirrors `validate_upgrade` rule 5; this duplicate
     // originally kept the id-only comparison and rejected every same-id
     // bundle cascade as "already targeting".
-    if meta.target_application_id == target_application_id {
+    if meta.target.application_id == target_application_id {
         let target_blob = {
             let handle = actor.datastore.handle();
             match handle.get(&key::ApplicationMeta::new(target_application_id)) {
@@ -1392,7 +1392,7 @@ fn dispatch_cascade(
                 Err(err) => return ActorResponse::reply(Err(err.into())),
             }
         };
-        if target_blob.is_none_or(|blob| blob == meta.bytecode_id) {
+        if target_blob.is_none_or(|blob| blob == meta.target.bytecode_id) {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "group is already targeting this application and no migration was requested"
             )));
@@ -1415,11 +1415,11 @@ fn dispatch_cascade(
     let target_blob_info = (app_meta.bytecode.blob_id(), app_meta.size);
     let to_version: String = String::from(app_meta.version.clone());
 
-    let from_bytecode_id = meta.bytecode_id;
+    let from_bytecode_id = meta.target.bytecode_id;
     let from_version = {
         let handle = actor.datastore.handle();
         handle
-            .get(&key::ApplicationMeta::new(meta.target_application_id))
+            .get(&key::ApplicationMeta::new(meta.target.application_id))
             .ok()
             .flatten()
             .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
@@ -1498,8 +1498,8 @@ fn dispatch_cascade(
     // the "old" schema source for the L1 identity-downgrade gate. The cascade
     // op rewrites every matched descendant from `from_bytecode_id` to the new app,
     // so a single gate check on the signed group's app pair covers the family.
-    let current_application_id = meta.target_application_id;
-    let current_bytecode_id_for_gate = meta.bytecode_id;
+    let current_application_id = meta.target.application_id;
+    let current_bytecode_id_for_gate = meta.target.bytecode_id;
 
     // Stamp the cascade_hlc ONCE at the initiator so every receiver
     // applies the same fence boundary (Task 3 apply handler stores this
@@ -1737,7 +1737,9 @@ mod tests {
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{BlobMeta, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+    use calimero_store::key::{
+        BlobMeta, GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue,
+    };
     use calimero_store::types::{ApplicationMeta, PackageInfo};
     use calimero_store::Store;
     use calimero_wasm_abi::embed::EmbeddedSchema;
@@ -1967,15 +1969,17 @@ mod tests {
             .save(
                 &group_id,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: current_app,
+                    target: GroupTarget {
+                        application_id: current_app,
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: crate::test_support::account_for(&signer),
                     owner_identity: crate::test_support::account_for(&signer),
                     migration: None,
                     auto_join: true,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .expect("save meta");

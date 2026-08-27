@@ -74,8 +74,8 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
         .load(&group_id)
         .ok()
         .flatten()?;
-    (meta.bytecode_id != [0u8; 32])
-        .then(|| activated_bytecode(store, context_id) == Some(meta.bytecode_id))
+    (meta.target.bytecode_id != [0u8; 32])
+        .then(|| activated_bytecode(store, context_id) == Some(meta.target.bytecode_id))
 }
 
 /// The next upgrade rung a context bound to `bound` must replay from the
@@ -150,6 +150,7 @@ pub fn reconcile_context_application(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_store::db::InMemoryDB;
@@ -296,15 +297,17 @@ mod tests {
             &calimero_primitives::identity::PublicKey::from([0x07; 32]),
         );
         let mut meta = GroupMetaValue {
-            bytecode_id: [0u8; 32],
-            target_application_id: ApplicationId::from([0xAA; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0xAA; 32]),
+                bytecode_id: [0u8; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 0,
             admin_identity: account,
             owner_identity: account,
             migration: None,
             auto_join: false,
-            package: Box::default(),
-            version: Box::default(),
         };
         let save = |meta: &GroupMetaValue| {
             calimero_governance_store::MetaRepository::new(&store)
@@ -315,7 +318,7 @@ mod tests {
         save(&meta);
         assert_eq!(activated_at_group_target(&store, &ctx), None);
 
-        meta.bytecode_id = [0x02; 32];
+        meta.target.bytecode_id = [0x02; 32];
         save(&meta);
         // Group has a target blob, context has no marker: not there yet.
         assert_eq!(activated_at_group_target(&store, &ctx), Some(false));

@@ -96,16 +96,16 @@ pub(super) fn maybe_lazy_upgrade(
     let activated = crate::activation::activated_bytecode(datastore, context_id);
 
     // 4. Compare current vs target application
-    if *current_application_id == meta.target_application_id {
+    if *current_application_id == meta.target.application_id {
         // IDs match — bundle ids are version-stable, so this is either a
         // pending migration or a pending code-only bytecode bump. One rule
         // covers both: the context is up to date iff its activation marker
         // equals the group's recorded target blob. A zero bytecode_id carries no
         // bytecode signal to compare against, so nothing can be detected.
-        if meta.bytecode_id == [0u8; 32] {
+        if meta.target.bytecode_id == [0u8; 32] {
             return None;
         }
-        if activated == Some(meta.bytecode_id) {
+        if activated == Some(meta.target.bytecode_id) {
             return None; // bytecode + migration current — context is up to date
         }
         // Fall through: activation (migration and/or bytecode swap) pending.
@@ -115,7 +115,7 @@ pub(super) fn maybe_lazy_upgrade(
         %context_id,
         ?group_id,
         %current_application_id,
-        target_app=%meta.target_application_id,
+        target_app=%meta.target.application_id,
         marker = activated.is_some(),
         "lazy upgrade triggered for context"
     );
@@ -133,7 +133,7 @@ pub(super) fn maybe_lazy_upgrade(
         // blocked hop strands the context on its real version instead of running
         // the target's bytecode on un-migrated state.
         None => match crate::hlc_fence::loaded_reader_bytecode_id(datastore, context_id) {
-            Ok(Some(current)) if current != meta.bytecode_id => {
+            Ok(Some(current)) if current != meta.target.bytecode_id => {
                 LazyUpgradeAction::Replay { bound: current }
             }
             // Current version unresolvable (no row), or it already equals the
@@ -145,13 +145,14 @@ pub(super) fn maybe_lazy_upgrade(
             // does NOT mean migrated. Returning None here would run the target
             // bytecode against un-migrated state.
             _ => LazyUpgradeAction::SingleJump {
-                target_application_id: meta.target_application_id,
+                target_application_id: meta.target.application_id,
                 migrate_method: meta
                     .migration
                     .as_ref()
                     .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
-                target_bytecode_id: meta.bytecode_id,
-                coords: stored_coords(&meta.package, &meta.version).map(|c| c.to_buf()),
+                target_bytecode_id: meta.target.bytecode_id,
+                coords: stored_coords(&meta.target.package, &meta.target.version)
+                    .map(|c| c.to_buf()),
             },
         },
     })
@@ -170,11 +171,12 @@ pub(super) fn resolve_producing_bytecode_id(
     };
     Ok(MetaRepository::new(datastore)
         .load(&gid)?
-        .map(|m| m.bytecode_id))
+        .map(|m| m.target.bytecode_id))
 }
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_app_downloader::registry::stored_coords;
@@ -216,15 +218,17 @@ mod tests {
             .save(
                 &gid,
                 &GroupMetaValue {
-                    bytecode_id: BYTECODE_ID_NEW,
-                    target_application_id: target_app(),
+                    target: GroupTarget {
+                        application_id: target_app(),
+                        bytecode_id: BYTECODE_ID_NEW,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: crate::test_support::account_for(&admin),
                     owner_identity: crate::test_support::account_for(&admin),
                     migration: Some(b"migrate_v2_to_v3".to_vec()),
                     auto_join: false,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -407,8 +411,12 @@ mod tests {
             .save(
                 &gid,
                 &GroupMetaValue {
-                    bytecode_id: BYTECODE_ID_OLD,
-                    target_application_id: target_app(),
+                    target: GroupTarget {
+                        application_id: target_app(),
+                        bytecode_id: BYTECODE_ID_OLD,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: crate::test_support::account_for(
                         &calimero_primitives::identity::PublicKey::from([0x07; 32]),
@@ -418,8 +426,6 @@ mod tests {
                     ),
                     migration: None,
                     auto_join: false,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -492,15 +498,17 @@ mod tests {
             .save(
                 &gid,
                 &GroupMetaValue {
-                    bytecode_id: BYTECODE_ID_OLD,
-                    target_application_id: target_app(),
+                    target: GroupTarget {
+                        application_id: target_app(),
+                        bytecode_id: BYTECODE_ID_OLD,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: account,
                     owner_identity: account,
                     migration: None,
                     auto_join: false,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .unwrap();

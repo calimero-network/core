@@ -40,6 +40,7 @@ use calimero_primitives::identity::PrivateKey;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::key::GroupTarget;
 use calimero_store::Store;
 use core::num::NonZeroU128;
 use rand::rngs::OsRng;
@@ -57,15 +58,17 @@ fn hlc(ns: u64) -> HybridTimestamp {
 
 fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
         migration: None,
         auto_join: true,
-        package: Box::default(),
-        version: Box::default(),
     }
 }
 

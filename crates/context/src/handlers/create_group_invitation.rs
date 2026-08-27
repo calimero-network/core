@@ -86,7 +86,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // joiners would write target_application_id = ZERO
                     // and compute_group_state_hash would diverge from
                     // the inviter's view persistently.
-                    application_id: Some(*meta.target_application_id.as_ref()),
+                    application_id: Some(*meta.target.application_id.as_ref()),
                     // Carry the real bytecode_id (already derived from
                     // blob_id(app_meta.bytecode) at create_group time)
                     // so the joiner's pre-populated GroupMetaValue
@@ -95,7 +95,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // CascadeUpgrade op the joiner
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
-                    bytecode_id: Some(meta.bytecode_id),
+                    bytecode_id: Some(meta.target.bytecode_id),
                 },
                 group_name,
             ))

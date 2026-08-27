@@ -230,7 +230,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
                 let config = if !context_client.has_context(&context_id)? {
                     let app_id = MetaRepository::new(&datastore).load(&group_id)?
-                        .map(|meta| meta.target_application_id)
+                        .map(|meta| meta.target.application_id)
                         .filter(|id| *id != zero_app);
 
                     // Read service_name from the dedicated context service name key,
@@ -499,6 +499,7 @@ mod tests {
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
+    use calimero_store::key::GroupTarget;
     use calimero_store::Store;
 
     use super::namespaces_to_sync;
@@ -520,15 +521,17 @@ mod tests {
             .save(
                 group,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: ApplicationId::from([0xCC; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xCC; 32]),
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: crate::test_support::account_for(&pk),
                     owner_identity: crate::test_support::account_for(&pk),
                     migration: None,
                     auto_join: true,
-                    package: Box::default(),
-                    version: Box::default(),
                 },
             )
             .expect("save meta");

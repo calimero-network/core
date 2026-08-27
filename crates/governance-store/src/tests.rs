@@ -7,7 +7,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_store::key::{GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
 use super::test_fixtures::{
@@ -30,8 +30,8 @@ fn save_load_delete_group_meta() {
 
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     let loaded = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(loaded.bytecode_id, meta.bytecode_id);
-    assert_eq!(loaded.target_application_id, meta.target_application_id);
+    assert_eq!(loaded.target.bytecode_id, meta.target.bytecode_id);
+    assert_eq!(loaded.target.application_id, meta.target.application_id);
 
     MetaRepository::new(&store).delete(&gid).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
@@ -178,8 +178,8 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
         )
         .unwrap();
     let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(meta.bytecode_id, [0xAB; 32]);
-    assert_eq!(meta.target_application_id, app_id);
+    assert_eq!(meta.target.bytecode_id, [0xAB; 32]);
+    assert_eq!(meta.target.application_id, app_id);
 
     MetadataRepository::new(&store)
         .set_group(
@@ -271,7 +271,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
         .unwrap();
 
     let mut meta = test_meta();
-    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.target.application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     // Pre-store context meta with zero app id to verify backfill path.
@@ -311,7 +311,8 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             .load(&gid)
             .unwrap()
             .unwrap()
-            .target_application_id,
+            .target
+            .application_id,
         app_id
     );
     let handle = store.handle();
@@ -2691,15 +2692,17 @@ fn auto_group_node_identity_is_admin_member() {
         .save(
             &auto_group_id,
             &GroupMetaValue {
-                bytecode_id: [0u8; 32],
-                target_application_id: ApplicationId::from([0xCC; 32]),
+                target: GroupTarget {
+                    application_id: ApplicationId::from([0xCC; 32]),
+                    bytecode_id: [0u8; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
                 created_at: 1_700_000_000,
                 admin_identity: node_account,
                 owner_identity: node_account,
                 migration: None,
                 auto_join: true,
-                package: Box::default(),
-                version: Box::default(),
             },
         )
         .unwrap();
@@ -8528,8 +8531,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
 
         // Root: signer is a direct admin, on `from_bytecode_id`.
         let mut root_meta = sample_meta_with_admin(admin);
-        root_meta.bytecode_id = from_bytecode_id;
-        root_meta.target_application_id = app_v1;
+        root_meta.target.bytecode_id = from_bytecode_id;
+        root_meta.target.application_id = app_v1;
         MetaRepository::new(&store).save(&root, &root_meta).unwrap();
         MembershipRepository::new(&store)
             .add_member(&root, &admin, GroupMemberRole::Admin)
@@ -8539,8 +8542,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
         // Left at the DEFAULT Restricted visibility, so the signer does NOT
         // inherit admin authority across the boundary.
         let mut d_meta = sample_meta_with_admin(other_admin);
-        d_meta.bytecode_id = from_bytecode_id;
-        d_meta.target_application_id = app_v1;
+        d_meta.target.bytecode_id = from_bytecode_id;
+        d_meta.target.application_id = app_v1;
         MetaRepository::new(&store)
             .save(&descendant, &d_meta)
             .unwrap();
@@ -8609,11 +8612,11 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             .unwrap()
             .expect("descendant meta");
         assert_eq!(
-            d.bytecode_id, to_bytecode_id,
+            d.target.bytecode_id, to_bytecode_id,
             "descendant must be cascaded to the new bytecode_id on the {label} replica"
         );
         assert_eq!(
-            d.target_application_id, app_v2,
+            d.target.application_id, app_v2,
             "descendant must point at the new target on the {label} replica"
         );
         // The sticky cascade fence must be stamped identically on both
@@ -8661,7 +8664,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
         let admin = enrol_member(&store, &root, &admin_pk);
         for gid in [&root, &descendant] {
             let mut meta = sample_meta_with_admin(admin);
-            meta.bytecode_id = from_bytecode_id;
+            meta.target.bytecode_id = from_bytecode_id;
             MetaRepository::new(&store).save(gid, &meta).unwrap();
         }
         MembershipRepository::new(&store)
@@ -8917,7 +8920,7 @@ mod apply_auth_at_cut {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta.bytecode_id, [0x5A; 32],
+            meta.target.bytecode_id, [0x5A; 32],
             "the mutation must actually land, not just be reported handled"
         );
     }
@@ -8948,7 +8951,7 @@ mod apply_auth_at_cut {
 
         let after = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            before.bytecode_id, after.bytecode_id,
+            before.target.bytecode_id, after.target.bytecode_id,
             "a rejected settings op must not mutate group meta"
         );
     }
@@ -9018,7 +9021,7 @@ mod apply_auth_at_cut {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_eq!(
-                meta.bytecode_id, [0x5A; 32],
+                meta.target.bytecode_id, [0x5A; 32],
                 "{label}: both replicas must converge on the same bytecode_id"
             );
         }
@@ -9238,7 +9241,7 @@ mod undecidable_authority_parks {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta.bytecode_id, [0x5A; 32],
+            meta.target.bytecode_id, [0x5A; 32],
             "a parked op must not mutate state — it has not been authorized yet"
         );
     }
@@ -9351,7 +9354,7 @@ mod undecidable_authority_parks {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_ne!(
-                meta.bytecode_id, [0x5A; 32],
+                meta.target.bytecode_id, [0x5A; 32],
                 "{label}: a parked op must leave state untouched"
             );
         }
@@ -10162,7 +10165,7 @@ mod parked_op_retries_to_success {
         // The park must be inert. Any residue here turns "retry later" into "never".
         let meta_after_park = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta_after_park.bytecode_id, [0x5A; 32],
+            meta_after_park.target.bytecode_id, [0x5A; 32],
             "a parked op must not half-apply"
         );
         assert_eq!(
@@ -10180,11 +10183,11 @@ mod parked_op_retries_to_success {
 
         let meta_after_retry = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta_after_retry.bytecode_id, [0x5A; 32],
+            meta_after_retry.target.bytecode_id, [0x5A; 32],
             "the retried op must actually take effect"
         );
         assert_eq!(
-            meta_after_retry.target_application_id,
+            meta_after_retry.target.application_id,
             ApplicationId::from([0x5B; 32]),
             "the retried op's full mutation must land, not just part of it"
         );
@@ -11253,8 +11256,8 @@ mod target_application_row_seeding {
 
         let ns_gid = ContextGroupId::from(ns_id);
         let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
-        parent_meta.package = "com.acme.app".into();
-        parent_meta.version = "2.0.0".into();
+        parent_meta.target.package = "com.acme.app".into();
+        parent_meta.target.version = "2.0.0".into();
         MetaRepository::new(&store)
             .save(&ns_gid, &parent_meta)
             .unwrap();
@@ -11281,11 +11284,11 @@ mod target_application_row_seeding {
             .unwrap()
             .expect("the subgroup must have a meta row");
         assert_eq!(
-            sub_meta.target_application_id, parent_meta.target_application_id,
+            sub_meta.target.application_id, parent_meta.target.application_id,
             "the subgroup inherits its parent's target"
         );
         assert_eq!(
-            stored_coords(&sub_meta.package, &sub_meta.version)
+            stored_coords(&sub_meta.target.package, &sub_meta.target.version)
                 .map(|c| (c.package.to_owned(), c.version.to_owned())),
             Some(("com.acme.app".to_owned(), "2.0.0".to_owned())),
             "an inherited target the subgroup cannot address is unfetchable"

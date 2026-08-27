@@ -49,7 +49,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
             let current_total =
                 MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u32;
 
-            Ok((meta.target_application_id, current_total))
+            Ok((meta.target.application_id, current_total))
         })();
 
         let (target_application_id, current_total) = match result {
