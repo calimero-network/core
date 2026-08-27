@@ -330,3 +330,27 @@ async fn a_bare_install_refuses_a_substituted_package() {
         "a refused install must leave no bytes behind"
     );
 }
+
+/// An application id is derived from (package, signer) and is therefore
+/// version-stable, so a sibling release of the SAME package - an older,
+/// vulnerable one, say - satisfies the signature, the package check and the
+/// derived id alike. Only the version the caller asked for separates them.
+#[tokio::test]
+async fn a_bare_install_refuses_a_substituted_version() {
+    let (bundle, _id) = common::minimal_signed_bundle_bytes(PACKAGE, "0.9.0");
+
+    let (url, server) = common::serve_once(bundle).await;
+    let (node_client, _data, _blobs) = node_pointed_at(&base_of(&url)).await;
+
+    let err = node_client
+        .install_by_coords(PACKAGE, VERSION)
+        .await
+        .expect_err("a substituted version must be refused");
+    let _ignored = server.await;
+
+    let err = err.to_string();
+    assert!(
+        err.contains("0.9.0") && err.contains(VERSION),
+        "error must name both versions, got: {err}"
+    );
+}

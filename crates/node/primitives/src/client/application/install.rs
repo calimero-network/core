@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::bundle;
 use calimero_app_downloader::app_source;
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE;
 use calimero_app_downloader::source::AppRequest;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
@@ -58,15 +59,15 @@ impl NodeClient {
     /// Install a `.mpk`. The signature is mandatory and every wasm artifact is
     /// digest-checked before any bytes are stored.
     ///
-    /// `expected_package` is the package the caller asked for, on the paths
-    /// that address an artifact by coordinates rather than by content.
+    /// `expected` is the coordinates the caller asked for, on the paths that
+    /// address an artifact by coordinates rather than by content.
     pub(super) async fn install_bundle(
         &self,
         bundle_data: Arc<[u8]>,
         blob_id: &BlobId,
         stored_size: u64,
         source: &ApplicationSource,
-        expected_package: Option<&str>,
+        expected: Option<RegistryCoords<'_>>,
     ) -> eyre::Result<ApplicationId> {
         // Every artifact, including the unnamed single-service one that gets no
         // blob of its own, so substituted bytes are refused before first execution.
@@ -88,11 +89,15 @@ impl NodeClient {
         let version = &manifest.app_version;
 
         // A bare install names no application id, so the coordinates are the
-        // only promise made: another package's bundle signs just as validly.
-        if let Some(expected) = expected_package {
-            if package != expected {
+        // only promise made: another package's bundle signs just as validly, and
+        // an application id is version-stable, so a sibling release of the same
+        // package would pass every other check.
+        if let Some(expected) = expected {
+            if package != expected.package || version != expected.version {
                 bail!(
-                    "registry artifact is package {package}, not the {expected} that was requested"
+                    "registry artifact is {package}@{version}, not the {}@{} that was requested",
+                    expected.package,
+                    expected.version
                 );
             }
         }
@@ -198,7 +203,7 @@ impl NodeClient {
         self.store_and_install_bundle(
             bundle_data,
             &PENDING_BLOB_SHARE_SOURCE.parse()?,
-            Some(package),
+            Some(RegistryCoords::new(package, version)),
         )
         .await
         .map(Some)
@@ -210,7 +215,7 @@ impl NodeClient {
         &self,
         bundle_data: Arc<[u8]>,
         source: &ApplicationSource,
-        expected_package: Option<&str>,
+        expected: Option<RegistryCoords<'_>>,
     ) -> eyre::Result<ApplicationId> {
         let cursor = Cursor::new(&bundle_data[..]);
         let (bundle_blob_id, stored_size) = self
@@ -225,13 +230,7 @@ impl NodeClient {
         );
 
         let installed = self
-            .install_bundle(
-                bundle_data,
-                &bundle_blob_id,
-                stored_size,
-                source,
-                expected_package,
-            )
+            .install_bundle(bundle_data, &bundle_blob_id, stored_size, source, expected)
             .await;
         self.release_blob_on_error(bundle_blob_id, installed).await
     }
