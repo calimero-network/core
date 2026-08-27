@@ -34,7 +34,7 @@ use zeroize::Zeroizing;
 
 use crate::NamespaceRepository;
 
-/// Serializes the generate-once in [`NodeDeviceRepository::ensure_account_root`],
+/// Serializes the generate-once in [`NodeDeviceRepository::provision_account_root`],
 /// for the same reason as the device mint below: two callers could both observe an
 /// absent row and both generate, and the second `put` would win — replacing the
 /// root that already certified this node's devices, which is unrecoverable.
@@ -339,7 +339,7 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
     // would let a read in the namespace that revoked this device destroy the device
     // it still holds in the others. Minting belongs to the enrolment path, which
     // knows which namespace it is enrolling into; a resolver only reports.
-    Ok(devices.ensure_account_root()?.account())
+    Ok(devices.require_account_root()?.account())
 }
 
 /// What a revocation of one device is about, resolved from the group's own
@@ -366,15 +366,55 @@ impl<'a> NodeDeviceRepository<'a> {
         Self { store }
     }
 
-    /// This node's account root, generating it once if absent.
+    /// This node's account root, or an error saying how to get one.
     ///
-    /// Idempotent, and the lock matters more here than anywhere else in this file:
-    /// replacing a root that has already certified devices cannot be undone, and
-    /// there is no second copy to recover from.
+    /// **Reads. Never mints.** This used to be `ensure_account_root`, which
+    /// generated a root when absent — from five call sites, one of them a
+    /// resolver. So a read could bring an identity into being as a side effect,
+    /// and the moment a node acquired an account depended on which request
+    /// arrived first.
+    ///
+    /// It also made a node that holds NO root impossible: root in cold storage,
+    /// this device enabled by a certificate the root signed elsewhere. That
+    /// posture is the whole reason the account/device split exists, and any lazy
+    /// mint silently defeats it.
+    ///
+    /// A root now comes from exactly two places — `merod init` (unless
+    /// `--no-account-root`) and `merod account import`. If neither has happened,
+    /// this is an error rather than a new key.
+    ///
+    /// Note a node can still name its account with no root at all: a certified
+    /// device row answers first in [`account_for_group`], which is what lets a
+    /// paired or certificate-enabled node work. This is only the fallback for
+    /// when there is no such row.
+    ///
+    /// # Errors
+    /// If this node holds no account root, or the store read fails.
+    pub fn require_account_root(&self) -> EyreResult<AccountRoot> {
+        self.account_root()?.ok_or_else(|| {
+            eyre::eyre!(
+                "this node holds no account root. Provision one with `merod init`, \
+                 import an existing one with `merod account import`, or — for a node \
+                 meant to hold none — enable its device with a certificate its \
+                 account root signed elsewhere"
+            )
+        })
+    }
+
+    /// Generate this node's account root, if it has none.
+    ///
+    /// The provisioning path, called from `merod init`. Idempotent, and the lock
+    /// matters more here than anywhere else in this file: replacing a root that
+    /// has already certified devices cannot be undone, and there is no second copy
+    /// to recover from.
+    ///
+    /// Everything that merely *needs* a root calls [`Self::require_account_root`]
+    /// instead. Minting is a deliberate act with a name, not a side effect of the
+    /// first read that wanted one.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
-    pub fn ensure_account_root(&self) -> EyreResult<AccountRoot> {
+    pub fn provision_account_root(&self) -> EyreResult<AccountRoot> {
         let _guard = ACCOUNT_ROOT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -481,7 +521,7 @@ impl<'a> NodeDeviceRepository<'a> {
         // account from the root being discarded.
         //
         // **Deliberately not holding `NODE_DEVICE_MINT_LOCK` here.**
-        // `ensure_enrolled` takes that lock and then calls `ensure_account_root`,
+        // `ensure_enrolled` takes that lock and then calls `require_account_root`,
         // which takes this one, so acquiring them in the opposite order is an ABBA
         // deadlock. Serializing against a concurrent enrolment is not worth it
         // anyway: this runs from a CLI that opens the datastore directly, which
@@ -650,7 +690,7 @@ impl<'a> NodeDeviceRepository<'a> {
         // recompute it without the row below. The row is a read cache, not the
         // source of truth — and it has to exist anyway, because a paired device's
         // genesis belongs to another node's root and cannot be derived here at all.
-        let genesis = self.ensure_account_root()?.genesis();
+        let genesis = self.require_account_root()?.genesis();
         self.enroll_locked(namespace, genesis)
     }
 
@@ -843,7 +883,7 @@ impl<'a> NodeDeviceRepository<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{test_group_id, test_store};
+    use crate::test_fixtures::{test_group_id, test_store, test_store_without_account_root};
     use crate::AccountBindingRepository;
     use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
@@ -1100,13 +1140,18 @@ mod tests {
     fn the_account_root_is_generated_once_and_survives_reads() {
         // Replacing a root that has already certified devices is unrecoverable —
         // there is no second copy — so generate-once is the whole contract.
-        let store = test_store();
+        //
+        // Starting root-free is the point: this has to watch the FIRST provision
+        // create one. "Survives reads" used to mean a read would not mint a second
+        // root; now no read mints at all, and what remains to prove is that
+        // provisioning twice keeps the first.
+        let store = test_store_without_account_root();
         let repo = NodeDeviceRepository::new(&store);
 
         assert!(repo.account_root().expect("read").is_none());
 
-        let first = repo.ensure_account_root().expect("generate");
-        let second = repo.ensure_account_root().expect("generate");
+        let first = repo.provision_account_root().expect("generate");
+        let second = repo.provision_account_root().expect("generate");
         assert_eq!(first.public_key(), second.public_key());
         assert_eq!(
             repo.account_root()
@@ -1124,7 +1169,7 @@ mod tests {
         // same answer in every namespace this root speaks in.
         let store = test_store();
         let root = NodeDeviceRepository::new(&store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
 
         assert_eq!(
@@ -1163,13 +1208,13 @@ mod tests {
     fn restoring_a_backup_over_an_untouched_root_needs_no_force() {
         let store = test_store();
         let repo = NodeDeviceRepository::new(&store);
-        let provisioned = repo.ensure_account_root().expect("generate");
+        let provisioned = repo.provision_account_root().expect("generate");
         let provisioned_pk = provisioned.public_key();
 
         // A backup taken from the node whose disk was lost.
         let backup_store = test_store();
         let backup = NodeDeviceRepository::new(&backup_store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
         let restored_pk = backup.public_key();
         assert_ne!(provisioned_pk, restored_pk);
@@ -1201,14 +1246,14 @@ mod tests {
         let store = test_store();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
-        let original = repo.ensure_account_root().expect("generate");
+        let original = repo.provision_account_root().expect("generate");
         let original_pk = original.public_key();
         // What makes replacing it costly: a certificate that would be orphaned.
         repo.ensure_enrolled(&ns).expect("enrol under the root");
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
-                .ensure_account_root()
+                .provision_account_root()
                 .expect("generate")
                 .to_mnemonic()
                 .expect("export"),
@@ -1258,7 +1303,7 @@ mod tests {
     fn an_exported_root_recovers_the_same_account() {
         let original_store = test_store();
         let original = NodeDeviceRepository::new(&original_store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
         let before = original.account();
         let backup = original.to_mnemonic().expect("export");
@@ -1271,7 +1316,11 @@ mod tests {
 
         // The disk is gone. A fresh store shares nothing with the old one.
         drop(original);
-        let recovered_store = test_store();
+        // Root-free deliberately: the assert below is what proves the recovered
+        // account came from the phrase rather than from a root already sitting
+        // there. `restoring_a_backup_over_an_untouched_root_needs_no_force` covers
+        // the other shape, a restore onto a node that has its own.
+        let recovered_store = test_store_without_account_root();
         assert!(
             NodeDeviceRepository::new(&recovered_store)
                 .account_root()
@@ -1333,7 +1382,7 @@ mod tests {
 
         // Enrol under this node's own root, and LINK it: an unlinked row yields
         // anyway, so only a linked one exercises the refusal.
-        let discarded = repo.ensure_account_root().expect("generate");
+        let discarded = repo.provision_account_root().expect("generate");
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
         let cert = calimero_account::DeviceCert::sign(
             discarded.signing_key(),
@@ -1358,7 +1407,7 @@ mod tests {
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
-                .ensure_account_root()
+                .provision_account_root()
                 .expect("generate")
                 .to_mnemonic()
                 .expect("export"),
@@ -1412,7 +1461,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let root = repo.ensure_account_root().expect("generate");
+        let root = repo.provision_account_root().expect("generate");
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
 
         // Round-tripped through the mnemonic, because that is how an operator
@@ -1447,7 +1496,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let _discarded = repo.ensure_account_root().expect("generate");
+        let _discarded = repo.provision_account_root().expect("generate");
 
         // Adopted into an account this node's root does not own, as pairing does.
         let elsewhere = AccountGenesis::new(root(3));
@@ -1457,7 +1506,7 @@ mod tests {
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
-                .ensure_account_root()
+                .provision_account_root()
                 .expect("generate")
                 .to_mnemonic()
                 .expect("export"),
@@ -1508,7 +1557,7 @@ mod tests {
     fn a_retyped_backup_survives_ragged_whitespace() {
         let store = test_store();
         let root = NodeDeviceRepository::new(&store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
         let backup = root.to_mnemonic().expect("export");
         let ragged = backup
@@ -1831,7 +1880,11 @@ mod tests {
         // Ejecting a device is an admin's job and needs no account of their own.
         // Requiring a root here refused the whole admin path on any node that had
         // enrolled nowhere itself.
-        let store = test_store();
+        //
+        // This is now the guard that `revocation_target` never reaches for
+        // `require_account_root`: on a `--no-account-root` node that call would
+        // error, and the admin path would break exactly as it once did.
+        let store = test_store_without_account_root();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
         assert!(repo.account_root().expect("read").is_none());
@@ -1915,7 +1968,7 @@ mod tests {
             .expect("the credential must be admissible");
 
         // This node has a root of its own — it just is not alice's.
-        let _own_root = repo.ensure_account_root().expect("generate");
+        let _own_root = repo.provision_account_root().expect("generate");
 
         let target = repo
             .revocation_target(&ns, paired.device())
@@ -2062,7 +2115,7 @@ mod tests {
         );
 
         let right = calimero_account::DeviceCert::sign(
-            repo.ensure_account_root().expect("root").signing_key(),
+            repo.provision_account_root().expect("root").signing_key(),
             enrolled.account,
             enrolled.device(),
             &namespace_identity.public_key(),
@@ -2135,5 +2188,81 @@ mod tests {
         let mut want = vec![mine, paired];
         want.sort_unstable();
         assert_eq!(listed, want);
+    }
+
+    /// A node with no root and no device row has no account, and says so.
+    ///
+    /// This is the state `--no-account-root` puts a node in before its device is
+    /// enabled. It used to be unreachable: the resolver minted a root and
+    /// answered, so "this node holds no account" was a state the code repaired
+    /// instead of reporting.
+    #[test]
+    fn naming_an_account_without_a_root_or_a_device_is_an_error() {
+        let store = test_store_without_account_root();
+        let ns = test_group_id();
+
+        let err = account_for_group(&store, &ns)
+            .expect_err("a node with neither a root nor a device has no account to name");
+        let msg = err.to_string();
+        assert!(msg.contains("no account root"), "{msg}");
+        // The message has to say how to get out of the state, not just that you
+        // are in it.
+        assert!(msg.contains("merod init"), "{msg}");
+        assert!(msg.contains("merod account import"), "{msg}");
+
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .account_root()
+                .expect("read")
+                .is_none(),
+            "and asking must not have minted one — that is the whole point",
+        );
+    }
+
+    /// A root-free node CAN name its account, once its device is certified.
+    ///
+    /// The device row answers before the root fallback, which is what makes the
+    /// `--no-account-root` posture usable rather than merely permitted: the
+    /// account belongs to a root held somewhere else, and this node adopted a
+    /// device under it.
+    #[test]
+    fn a_certified_device_names_its_account_with_no_root_present() {
+        let store = test_store_without_account_root();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        // Adopting an account whose root lives elsewhere needs no root here — the
+        // genesis carries only its PUBLIC half.
+        let elsewhere = AccountGenesis::new(root(9));
+        let adopted = repo
+            .ensure_enrolled_into(&ns, elsewhere)
+            .expect("adopt an account rooted on another machine");
+
+        assert_eq!(
+            account_for_group(&store, &ns).expect("resolve"),
+            elsewhere.account_id(),
+            "the device row answers, so no root is needed to name the account",
+        );
+        assert_eq!(adopted.account, elsewhere.account_id());
+        assert!(
+            repo.account_root().expect("read").is_none(),
+            "and none was minted along the way",
+        );
+    }
+
+    /// Self-enrolment is the one thing a root-free node cannot do.
+    ///
+    /// It has to certify its own device, and the root is what signs that. Erroring
+    /// is the honest answer: such a node gets its device from a certificate signed
+    /// elsewhere instead.
+    #[test]
+    fn self_enrolment_without_a_root_is_refused() {
+        let store = test_store_without_account_root();
+        let ns = test_group_id();
+
+        let err = NodeDeviceRepository::new(&store)
+            .ensure_enrolled(&ns)
+            .expect_err("a node with no root cannot certify its own device");
+        assert!(err.to_string().contains("no account root"), "{err}");
     }
 }
