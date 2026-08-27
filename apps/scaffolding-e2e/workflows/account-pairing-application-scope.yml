@@ -157,7 +157,7 @@ steps:
   - name: Install app A (the bundle) on node-1
     type: install_application
     node: account-scope-node-1
-    path: dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
     dev: true
     outputs:
       app_a: applicationId
@@ -165,13 +165,13 @@ steps:
   - name: Install app A (the bundle) on node-3
     type: install_application
     node: account-scope-node-3
-    path: dist/com.calimero.scaffolding-e2e-multi-0.1.0.mpk
+    path: ../../dist/com.calimero.scaffolding-e2e-multi-0.0.0.mpk
     dev: true
 
   - name: Install app B (the raw wasm) on node-1
     type: install_application
     node: account-scope-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_b: applicationId
@@ -179,7 +179,7 @@ steps:
   - name: Install app B (the raw wasm) on node-3
     type: install_application
     node: account-scope-node-3
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
 
   - name: Two applications, not one installed twice

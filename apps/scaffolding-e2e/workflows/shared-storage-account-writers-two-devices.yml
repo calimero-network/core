@@ -262,7 +262,7 @@ steps:
   - name: Install application on shared-account-node-3
     type: install_application
     node: shared-account-node-3
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
 
   # Scoped to every application, which is what naming none means and is all this
