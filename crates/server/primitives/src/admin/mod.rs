@@ -519,6 +519,20 @@ impl AliasKind for ApplicationId {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateDeviceIdAlias {
+    pub device_id: DeviceId,
+}
+
+impl AliasKind for DeviceId {
+    type Value = CreateDeviceIdAlias;
+
+    fn from_value(data: Self::Value) -> Self {
+        data.device_id
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateAliasResponse {
     pub data: Empty,
 }
@@ -2866,6 +2880,31 @@ pub struct SetSubgroupVisibilityApiResponse {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_device_id_alias_request_round_trips_through_json() {
+        let device_id = DeviceId::from([0x11; 32]);
+        let json = serde_json::json!({
+            "alias": "laptop",
+            "deviceId": device_id.to_string(),
+        });
+
+        let req: CreateAliasRequest<DeviceId> =
+            serde_json::from_value(json).expect("valid device id must deserialize");
+        assert_eq!(req.alias.as_str(), "laptop");
+        assert_eq!(DeviceId::from_value(req.value), device_id);
+    }
+
+    #[test]
+    fn create_device_id_alias_request_rejects_invalid_device_id() {
+        // Wrong width: valid hex, but not 32 bytes.
+        let short = serde_json::json!({"alias": "laptop", "deviceId": "aa"});
+        assert!(serde_json::from_value::<CreateAliasRequest<DeviceId>>(short).is_err());
+
+        // Right width, non-hex characters.
+        let non_hex = serde_json::json!({"alias": "laptop", "deviceId": "g".repeat(64)});
+        assert!(serde_json::from_value::<CreateAliasRequest<DeviceId>>(non_hex).is_err());
+    }
 
     #[test]
     fn join_response_ignores_a_governance_op_from_an_older_node() {
