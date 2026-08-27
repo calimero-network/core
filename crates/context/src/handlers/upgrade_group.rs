@@ -1,4 +1,4 @@
-use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,9 @@ use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::GroupMigrationPayload;
 use calimero_primitives::hash::Hash;
@@ -16,8 +18,12 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::types::ApplicationMeta;
 use calimero_wasm_abi::downgrade::identity_downgrades;
-use calimero_wasm_abi::embed::{read_embedded_state_schema_versioned, EmbeddedSchema};
+use calimero_wasm_abi::embed::{
+    read_embedded_state_schema, read_embedded_state_schema_versioned, EmbeddedSchema,
+};
 use calimero_wasm_abi::schema::Manifest;
+
+use crate::migration_plan::{plan_upgrade, UpgradeAction};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
@@ -422,9 +428,6 @@ pub(crate) async fn blob_max_state_version(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
 ) -> Option<u32> {
-    use calimero_primitives::blobs::BlobId;
-    use calimero_wasm_abi::embed::read_embedded_state_schema;
-
     let blob_id = BlobId::from(blob);
     let services = node_client.bundle_service_names(&blob_id).await.ok()??;
     let mut max_sv = None;
@@ -463,8 +466,6 @@ async fn resolve_blob_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
 ) -> EmbeddedSchema {
-    use calimero_primitives::blobs::BlobId;
-
     let Ok(Some(bytes)) = node_client
         .application_bytes_from_blob(&BlobId::from(blob), None)
         .await
@@ -583,8 +584,6 @@ pub(crate) fn select_intermediate_rungs(
     to_sv: u32,
     candidates: &[ChainCandidate],
 ) -> eyre::Result<Vec<&ChainCandidate>> {
-    use std::collections::BTreeMap;
-
     let mut best: BTreeMap<u32, &ChainCandidate> = BTreeMap::new();
     for cand in candidates {
         if cand.state_version <= from_sv || cand.state_version >= to_sv {
@@ -662,8 +661,6 @@ fn decide_service_upgrade(
     target_abi: Option<&Manifest>,
     force_code_only: bool,
 ) -> eyre::Result<Option<String>> {
-    use crate::migration_plan::{plan_upgrade, UpgradeAction};
-
     match plan_upgrade(current_abi, target_abi) {
         Ok(UpgradeAction::CodeOnly) => Ok(None),
         Ok(UpgradeAction::Migrate { method, from, to }) => {
@@ -722,9 +719,6 @@ pub(crate) async fn resolve_upgrade_from_abis(
     target_blob: [u8; 32],
     force_code_only: bool,
 ) -> eyre::Result<Option<MigrationParams>> {
-    use calimero_primitives::blobs::BlobId;
-    use calimero_wasm_abi::embed::read_embedded_state_schema;
-
     let target_blob_id = BlobId::from(target_blob);
     let services = node_client
         .bundle_service_names(&target_blob_id)
@@ -1736,12 +1730,21 @@ fn spawn_propagator_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{registry_coords, select_intermediate_rungs, ChainCandidate};
+    use std::sync::Arc;
+
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::blobs::BlobId;
-    use calimero_store::key::BlobMeta;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{BlobMeta, GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
     use calimero_store::types::{ApplicationMeta, PackageInfo};
+    use calimero_store::Store;
     use calimero_wasm_abi::embed::EmbeddedSchema;
+
+    use super::{registry_coords, select_intermediate_rungs, ChainCandidate};
 
     fn app_meta(package: &str, version: &str, source: &str) -> ApplicationMeta {
         ApplicationMeta::new(
@@ -1955,16 +1958,6 @@ mod tests {
         // is refused rather than emitting a second racing op pair. This pins
         // the guard that makes that work: with an InProgress record present,
         // `validate_upgrade` bails.
-        use std::sync::Arc;
-
-        use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::GroupMemberRole;
-        use calimero_primitives::identity::PublicKey;
-        use calimero_store::db::InMemoryDB;
-        use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
-        use calimero_store::Store;
-
-        use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group_id = gid(0xA0);

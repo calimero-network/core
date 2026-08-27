@@ -193,9 +193,17 @@ pub(super) fn resolve_producing_bytecode_id(
 mod tests {
     use std::sync::Arc;
 
+    use calimero_app_downloader::registry::stored_coords;
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{
+        apply_local_signed_group_op, MembershipRepository, UpgradeLadderRepository,
+    };
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
+    use calimero_store::types::{ApplicationMeta as ApplicationMetaValue, ContextMeta};
 
     use super::*;
 
@@ -268,7 +276,6 @@ mod tests {
         blob: [u8; 32],
         coords: (&str, &str),
     ) {
-        use calimero_store::types::{ApplicationMeta as ApplicationMetaValue, ContextMeta};
         let mut handle = store.handle();
         handle
             .put(
@@ -373,11 +380,6 @@ mod tests {
         bytecode_id: [u8; 32],
         coords: (&str, &str),
     ) {
-        use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
-        use calimero_governance_store::{apply_local_signed_group_op, MembershipRepository};
-        use calimero_primitives::context::GroupMemberRole;
-        use calimero_primitives::identity::PrivateKey;
-
         let admin_sk = PrivateKey::random(&mut rand::rngs::OsRng);
         let admin = crate::test_support::enrol(store, &gid, &admin_sk.public_key());
         MembershipRepository::new(store)
@@ -405,9 +407,6 @@ mod tests {
     /// which is why the row cannot be the coordinate carrier for the target.
     #[test]
     fn an_installed_member_still_reads_the_new_targets_coordinates() {
-        use calimero_app_downloader::registry::stored_coords;
-        use calimero_governance_store::UpgradeLadderRepository;
-
         let store = store();
         let ctx = ContextId::from([0x56; 32]);
         let gid = ContextGroupId::from([0x64; 32]);

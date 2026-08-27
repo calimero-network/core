@@ -2,6 +2,7 @@
 //! and reaches the bytecode through the one resolver - never re-deriving the
 //! id, and never fetching the source some other node happened to record.
 
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -332,8 +333,6 @@ async fn bootstrap_writes_a_stub_when_no_row_exists() {
 /// A stand-in registry that refuses every request and counts what it saw.
 /// Refusing is enough: what is under test is whether it was dialled at all.
 fn refusing_registry() -> (url::Url, Arc<AtomicUsize>) {
-    use std::io::{Read, Write};
-
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let base = format!("http://{}", listener.local_addr().expect("local addr"))
         .parse()

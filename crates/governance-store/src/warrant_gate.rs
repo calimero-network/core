@@ -135,8 +135,6 @@ pub fn check_delegated_delta(
         return Err(WarrantRefusal::ExecutorMayNotAuthor.into());
     }
 
-    // Read-only: does the ledger still admit this nonce? The write is
-    // `spend_warrant_nonce`, after the apply.
     let _admitted = next_nonce_state(store, context_id, warrant)?;
     Ok(())
 }

@@ -154,8 +154,6 @@ fn world(nonce: u64) -> World {
             .expect("add the member");
     }
 
-    // The grant. Without it every check below refuses, which is what
-    // `a_delta_is_refused_when_the_relay_holds_no_grant` pins.
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &group,

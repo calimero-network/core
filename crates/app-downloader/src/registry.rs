@@ -6,24 +6,13 @@ use eyre::OptionExt;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-/// Marker written as an application's source when no fetchable location exists,
-/// so the join and upgrade paths both read "peers only" from the source alone.
+/// Marker for an application source with no fetchable location; join and upgrade read it as "peers only".
 pub const PENDING_BLOB_SHARE_SOURCE: &str = "calimero://pending-blob-share";
 
-/// Path prefix the registry serves raw bundle blobs under. `/api/artifacts/...`
-/// is the same handler; `/artifacts/...` is the documented rewrite.
-const ARTIFACT_PREFIX: &str = "artifacts";
-
-/// Artifact extension the registry serves. Bundles are the distribution unit.
-const ARTIFACT_EXTENSION: &str = "mpk";
-
-/// What the raw-wasm install path stamps when it has no manifest to read from.
-/// It looks like a coordinate pair, so `stored_coords` must reject it by name.
-const PLACEHOLDER_COORDS: (&str, &str) = ("unknown", "0.0.0");
-
-/// Max bytes in one coordinate. Package and version are manifest fields, so a
-/// bound costs nothing real and keeps a hostile op from minting a huge URL.
-const MAX_COORD_LEN: usize = 128;
+const ARTIFACT_PREFIX: &str = "artifacts"; // `/api/artifacts/...` handler; `/artifacts/...` is the documented rewrite
+const ARTIFACT_EXTENSION: &str = "mpk"; // bundles are the distribution unit
+const PLACEHOLDER_COORDS: (&str, &str) = ("unknown", "0.0.0"); // stamped when raw-wasm install has no manifest; stored_coords must reject it by name
+const MAX_COORD_LEN: usize = 128; // bounds a hostile op's URL
 
 /// Which single source this node uses for application bundles. `Http` nodes
 /// neither fetch from nor serve to peers; `Dht` nodes do both.

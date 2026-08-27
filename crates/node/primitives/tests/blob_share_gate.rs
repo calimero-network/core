@@ -21,9 +21,7 @@ mod common;
 
 const USER_DATA: &[u8] = b"a user's blob, nothing to do with any application";
 
-/// Bytecode a peer would serve for the row below. Raw wasm, so the install
-/// adopts the id governance named instead of deriving one.
-const WASM: &[u8] = b"raw wasm, not a bundle";
+const WASM: &[u8] = b"raw wasm, not a bundle"; // raw install adopts the governance-named id rather than deriving one
 
 /// A network that accepts every announce and counts them.
 struct AnnounceCounter {

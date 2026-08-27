@@ -100,8 +100,6 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
             bail!("blob id mismatch: expected {bytecode_id}, got {stored}");
         }
 
-        // The fetch only downloads; this install is what makes the bytes an
-        // executable application.
         let source = self.recorded_source(application_id)?;
         self.install_or_release(req, application_id, stored, &bytes, &source)
             .await?;

@@ -3,20 +3,10 @@
 
 use eyre::bail;
 
-/// Maximum redirects to follow when downloading an application.
-const MAX_REDIRECTS: usize = 10;
-
-/// Total request timeout (connect + transfer). Generous so large `.mpk` bundles
-/// over slow links still succeed, but bounded so a slow host can't hold the
-/// install open indefinitely (slowloris).
-const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// Connect timeout for an artifact fetch.
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Maximum size of a fetched application artifact. Bounds memory so a hostile
-/// host can't OOM the node with an unbounded (or Content-Length-lying) body.
-/// Generous headroom for real bundles.
+const MAX_REDIRECTS: usize = 10; // hop cap for a downloaded application
+const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300); // generous for large bundles, bounded against a slowloris host
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15); // connect timeout for an artifact fetch
+/// Maximum size of a fetched application artifact; bounds memory against a hostile or lying `Content-Length`.
 pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The one artifact client. Its target is always the operator's own configured
