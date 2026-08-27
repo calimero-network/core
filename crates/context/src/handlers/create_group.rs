@@ -445,22 +445,21 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // guard at runtime in every build profile: if the `Err` is a
                             // no-peers error, treat it as SUCCESS — skip the rollback and
                             // do NOT return `Err`, because the local apply is known-good.
-                            if calimero_network_primitives::client::is_no_peers_subscribed_error(&e)
-                            {
+                            let no_peers =
+                                calimero_network_primitives::client::is_no_peers_subscribed_error(
+                                    &e,
+                                );
+                            if no_peers {
                                 warn!(
                                     ?group_id,
                                     "no-peers surfaced as Err from apply-first publish \
                                      (contract drift); genesis was applied locally — NOT \
                                      rolling back"
                                 );
-                                info!(
-                                    ?group_id,
-                                    ?parent_group_id,
-                                    %admin_identity,
-                                    "group created (genesis applied locally; publish degraded \
-                                     to no-peers)"
-                                );
-                                return Ok(CreateGroupResponse { group_id });
+                                // Falls through to the shared tail rather than
+                                // returning: the genesis applied, so what that tail
+                                // does - carrying this account's devices into the
+                                // namespace - is owed here too.
                             }
 
                             // FATAL for namespace-ROOT creation (#2474): the genesis op
@@ -533,24 +532,50 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             // `genesis_apply_failure_leaves_namespace_head_unadvanced`
                             // test in governance-store for the pinned assertion.)
                             //
-                            rollback_local_group_rows(
-                                &datastore,
-                                &group_id,
-                                &admin_account,
-                                Some(key_id),
-                                name_written,
-                            );
-                            return Err(eyre::eyre!(
-                                "failed to apply NamespaceCreated genesis on namespace DAG; \
-                                 aborting namespace-root creation and rolling back local \
-                                 root rows so a retry with the same group id succeeds \
-                                 (genesis must be atomic with root creation, #2474): {e}"
-                            ));
+                            if !no_peers {
+                                rollback_local_group_rows(
+                                    &datastore,
+                                    &group_id,
+                                    &admin_account,
+                                    Some(key_id),
+                                    name_written,
+                                );
+                                return Err(eyre::eyre!(
+                                    "failed to apply NamespaceCreated genesis on namespace \
+                                     DAG; aborting namespace-root creation and rolling back \
+                                     local root rows so a retry with the same group id \
+                                     succeeds (the genesis must be atomic with root \
+                                     creation): {e}"
+                                ));
+                            }
                         }
                     }
                 }
 
-                info!(?group_id, ?parent_group_id, %admin_identity, "group created");
+                // Every device this account already certified belongs in the
+                // namespace this creation just gained. The certificate names no
+                // namespace, so a fresh endorsement and a key wrap are all that is
+                // missing - and the creator is a member at the cut its own genesis
+                // established, which is what makes that endorsement admissible.
+                //
+                // After the genesis, never before: the binding rows a link's endorser
+                // is resolved through are written by that genesis, so a link published
+                // earlier could not be authorized at all.
+                let _carried = calimero_governance_store::bind_known_devices(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &namespace_id,
+                    &signer_sk,
+                )
+                .await;
+
+                info!(
+                    ?group_id,
+                    ?parent_group_id,
+                    %admin_identity,
+                    "group created"
+                );
 
                 Ok(CreateGroupResponse { group_id })
             }
@@ -676,11 +701,12 @@ async fn verify_requested_bytecode_id(
 mod tests {
     use std::sync::Arc;
 
+    use calimero_context_client::group::CreateGroupRequest;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_store::{
-        now_millis, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-        MetadataRepository,
+        now_millis, AccountBindingRepository, CapabilitiesRepository, GroupKeyring,
+        MembershipRepository, MetaRepository, MetadataRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
@@ -688,9 +714,13 @@ mod tests {
     use calimero_primitives::metadata::MetadataRecord;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
-    use calimero_store::Store;
+    use calimero_store::{key, types, Store};
 
     use super::rollback_local_group_rows;
+    use crate::test_support::{actor, certify_device};
+
+    const APP: [u8; 32] = [0xC1; 32];
+    const GROUP: [u8; 32] = [0xC2; 32];
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -878,5 +908,61 @@ mod tests {
         );
 
         assert!(MetaRepository::new(&store).load(&group).unwrap().is_none());
+    }
+
+    /// The application row a creation resolves its bytecode through.
+    fn install_application(store: &Store, application: ApplicationId) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ApplicationMeta::new(application),
+                &types::ApplicationMeta::new(
+                    key::BlobMeta::new([0x01; 32].into()),
+                    1024,
+                    "file://test.wasm".into(),
+                    vec![].into(),
+                    key::BlobMeta::new([0x02; 32].into()),
+                    types::PackageInfo {
+                        package: "com.test.app".into(),
+                        version: "1.0.0".into(),
+                        signer_id: "test".into(),
+                        state_version: 0,
+                    },
+                ),
+            )
+            .expect("install the application");
+    }
+
+    /// A namespace this node creates is a namespace it has just gained, and the
+    /// devices it already certified belong there. Without the auto-bind the
+    /// creation succeeds and the paired device silently never sees the group.
+    #[actix::test]
+    async fn creating_a_namespace_carries_this_accounts_devices_into_it() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        let device = certify_device(&store, 0xC3, &[]);
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: ApplicationId::from(APP),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        assert!(
+            AccountBindingRepository::new(&store)
+                .is_device_linked(&created.group_id, device)
+                .expect("read the bindings"),
+            "the device this account already certified has to be bound in the \
+             namespace the creation just gained"
+        );
     }
 }

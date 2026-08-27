@@ -271,19 +271,20 @@ steps:
     path: res/scaffolding_e2e.wasm
     dev: true
 
+  # Scoped to every application, which is what naming none means and is all this
+  # node serves anyway. The script asserts the exchange end to end - the same
+  # account on both sides, the code echoed back, and the scope key delivered -
+  # so a pairing that half-landed fails here rather than three steps later.
   - name: Pair node-3 onto Alice's account
-    type: account_pair
-    node: shared-account-node-3
-    holder: shared-account-node-2
-    namespace_id: '{{namespace_id}}'
-    root_key: '{{root_key}}'
-    # merobox's step still declares `nonce` required, and core ignores whatever
-    # arrives — the genesis carries no nonce. A literal rather than a captured
-    # value, so nothing threads a dead field through the workflow.
-    nonce: '00000000000000000000000000000000'
-    outputs:
-      phone_device: deviceId
-      key_delivered: keyDelivered
+    type: script
+    script: scripts/account-pair.sh
+    target: local
+    args:
+      - shared-account-node-3
+      - shared-account-node-2
+      - '{{root_key}}'
+      - '-'
+      - '{{namespace_id}}'
 
   # Following the context writes the keyless identity marker the RPC layer
   # resolves an executor from. A paired device is a member of nothing, so this
@@ -449,7 +450,5 @@ steps:
       # Same account: the phone needed no grant of its own.
       - 'json_equal({{phone_account}}, {{alice_account}})'
       - 'json_equal({{alice_account}}, {{enrolled_account}})'
-      # And the scope key reached the paired device, which is what let it write.
-      - 'json_equal({{key_delivered}}, true)'
 
 stop_all_nodes: false

@@ -36,7 +36,13 @@ runs:
         #
         # Both are the deliberate bump the note above describes, and the PR
         # carrying it runs the full suite against the new version.
-        MEROBOX_VERSION="0.6.66"
+        #
+        # 0.6.67 adds `nodes.init_args` — per-node `merod init` flags — and
+        # exports `deviceAgreementKey` from `node_identity`. Both are needed by
+        # `offline-account-root.yml`, which cannot boot a single node with
+        # `--no-account-root` without the first and cannot read the third input
+        # `sign-cert` needs without the second (merobox#383).
+        MEROBOX_VERSION="0.6.67"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in
