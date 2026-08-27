@@ -296,6 +296,27 @@ jobs:
           - workflow: delegated-authorship
             file: workflows/delegated-authorship.yml
             app: scaffolding-e2e
+          # A node holding NO account root joins and writes, under a certificate
+          # its root signed on another machine — the cold-storage posture the
+          # account/device split exists for (#3430).
+          #
+          # NOT ENABLED YET, and deliberately so rather than forgotten. The
+          # scenario needs two things from merobox that the pinned version does
+          # not have (calimero-network/merobox#383):
+          #
+          #   * `nodes.init_args` — to boot exactly one node with
+          #     `--no-account-root`. `merod init` is otherwise built literally,
+          #     with `--auth-mode` the only flag a workflow can influence.
+          #   * `deviceAgreementKey` exported by `node_identity` — the third
+          #     input `account sign-cert` needs, added to the API in #3672 and
+          #     not yet surfaced as a step output.
+          #
+          # Enabling it is this entry uncommented plus a MEROBOX_VERSION bump in
+          # `.github/actions/setup-merobox`. Until then the scenario would fail
+          # on an unknown `init_args` key rather than on anything it tests.
+          # - workflow: offline-account-root
+          #   file: workflows/offline-account-root.yml
+          #   app: scaffolding-e2e
           # #3333: after two nodes concurrently add distinct SortedSet elements,
           # membership (`contains`)/`len` converge but ORDERED reads (`iter`)
           # may not. Runs on a merod:local built from this branch (carrying the
