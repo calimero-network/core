@@ -245,6 +245,45 @@ steps:
 
   # `expect` here, not just hash convergence: hashes can agree milliseconds
   # before a pending delta finishes applying.
+
+  # Expiry is checked only on the relay side (`perform_intent`), never by a peer
+  # at apply - wall-clock there is node-dependent and would stop authorization
+  # converging. Isolated so `not_after` is the only thing that can refuse this.
+  - name: The author mints a warrant that expires almost immediately
+    type: sign_warrant
+    context_id: '{{context_id}}'
+    executor: '{{relay_account}}'
+    method: set
+    args:
+      key: delegated
+      value: this-one-should-never-land
+    device_secret: '{{author_secret}}'
+    credential: '{{author_credential}}'
+    nonce: 2
+    valid_for: 1
+    outputs:
+      # `<exported name>: <field on the response>` - the opposite of how it
+      # reads; backwards fails at capture, not at use.
+      expiring_warrant: warrant
+
+  - name: Let it go stale
+    type: wait
+    seconds: 4
+    message: Waiting out the warrant's 1s validity
+
+  - name: The expired warrant is refused
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: this-one-should-never-land
+    warrant: '{{expiring_warrant}}'
+    author_proof: '{{author_credential}}'
+    expected_failure: true
+    expected_error: expired
+
   - name: The delegated write reaches the other node
     type: wait_for_sync
     context_id: '{{context_id}}'
