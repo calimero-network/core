@@ -315,7 +315,10 @@ steps:
     nonce: 2
     valid_for: 1
     outputs:
-      warrant: expiring_warrant
+      # `<exported name>: <field on the response>`, which is the opposite of what
+      # it reads like. Getting it backwards fails at capture with the field list in
+      # the message, not at use with an unresolved `{{...}}`.
+      expiring_warrant: warrant
 
   - name: Let it go stale
     type: wait
