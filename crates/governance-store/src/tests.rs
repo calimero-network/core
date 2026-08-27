@@ -10304,7 +10304,7 @@ mod account_plane_apply {
         let _admin = group_with_admin(&store, &gid, &admin_sk);
 
         let devices = crate::NodeDeviceRepository::new(&store);
-        let root = devices.ensure_account_root().unwrap();
+        let root = devices.provision_account_root().unwrap();
         let account = root.account();
         let device = DeviceId::mint(account, [7u8; 16]);
         let cert = DeviceCert::sign(
@@ -10357,7 +10357,7 @@ mod account_plane_apply {
         let admin_sk = key(1);
         group_with_admin(&store, &gid, &admin_sk);
         let devices = crate::NodeDeviceRepository::new(&store);
-        let _own = devices.ensure_account_root().unwrap();
+        let _own = devices.provision_account_root().unwrap();
 
         let stranger_root = key(9);
         let genesis = AccountGenesis::new(stranger_root.public_key());

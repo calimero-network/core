@@ -176,7 +176,11 @@ mod tests {
     #[test]
     fn an_enrolled_node_reports_the_device_it_speaks_as() {
         let store = a_node_taking_part_somewhere();
-        let held = NodeDeviceRepository::new(&store)
+        let devices = NodeDeviceRepository::new(&store);
+        let _root = devices
+            .provision_account_root()
+            .expect("a node that ran `merod init` holds a root");
+        let held = devices
             .ensure_enrolled(&NS.into())
             .expect("mint this node's device");
 
@@ -197,7 +201,7 @@ mod tests {
     fn a_node_whose_own_device_was_revoked_falls_back_to_its_own_account_root() {
         let store = a_node_taking_part_somewhere();
         let devices = NodeDeviceRepository::new(&store);
-        let own_root = devices.ensure_account_root().expect("root").account();
+        let own_root = devices.provision_account_root().expect("root").account();
 
         // Paired INTO somebody else's account, which is what makes the fallback
         // observable: the adopted account and this node's own root differ.

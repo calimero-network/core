@@ -140,7 +140,7 @@ mod tests {
         namespaces.note_participation(&ns(NS_A)).expect("join A");
         namespaces.note_participation(&ns(NS_B)).expect("join B");
         let root = NodeDeviceRepository::new(&store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("mint a root");
         (store, root)
     }

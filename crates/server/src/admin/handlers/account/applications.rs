@@ -111,7 +111,7 @@ mod tests {
     fn seeded_account() -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         NodeDeviceRepository::new(&store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("mint a root");
         store
     }

@@ -2669,7 +2669,7 @@ mod tests {
         // genesis carries only its PUBLIC half.
         let elsewhere = AccountGenesis::new(root(9));
         let adopted = repo
-            .ensure_enrolled_into(&ns, elsewhere)
+            .ensure_enrolled_into(&[ns], elsewhere)
             .expect("adopt an account rooted on another machine");
 
         assert_eq!(
@@ -2698,6 +2698,7 @@ mod tests {
             .ensure_enrolled(&ns)
             .expect_err("a node with no root cannot certify its own device");
         assert!(err.to_string().contains("no account root"), "{err}");
+    }
     /// One `pair-init` across several namespaces mints one device, not one per
     /// namespace: the certificate that follows covers the account rather than a
     /// scope, so a device per namespace would hand the holder several ids to

@@ -51,7 +51,7 @@ fn resolve_target(
     // the genesis is the content address of that root, so a node that paired INTO
     // somebody else's account holds no root that could have signed the
     // certificate it would be re-publishing.
-    let account = devices.ensure_account_root()?.account();
+    let account = devices.require_account_root()?.account();
     require_this_node_holds(store, account)?;
 
     let Some(mut cached) = devices.device_cert(device)? else {
@@ -171,7 +171,11 @@ mod tests {
         let _identity = namespaces
             .participate_in(&NS.into())
             .expect("take part in the namespace");
-        let _held = NodeDeviceRepository::new(&store)
+        let devices = NodeDeviceRepository::new(&store);
+        let _root = devices
+            .provision_account_root()
+            .expect("a node that ran `merod init` holds a root");
+        let _held = devices
             .ensure_enrolled(&NS.into())
             .expect("mint this node's own device");
         store

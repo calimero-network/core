@@ -111,7 +111,7 @@ pub fn certify_device(
 ) -> calimero_account::DeviceId {
     let devices = calimero_governance_store::NodeDeviceRepository::new(store);
     let root = devices
-        .ensure_account_root()
+        .provision_account_root()
         .expect("this node's account root");
     let device = calimero_account::DeviceId::from([seed; 32]);
     let proof = calimero_account::AccountProof {

@@ -767,7 +767,7 @@ mod tests {
 
         assert!(require_this_node_holds(&store, adopted.account).is_ok());
 
-        let own = repo.ensure_account_root().expect("generate").account();
+        let own = repo.provision_account_root().expect("generate").account();
         let refused = require_this_node_holds(&store, own)
             .expect_err("the adopted row does not name this node's own account");
         assert!(matches!(
