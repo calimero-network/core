@@ -208,7 +208,7 @@ mod tests {
         let ns = ContextGroupId::from([9u8; 32]);
         let genesis = AccountGenesis::new(root_sk.public_key());
         NodeDeviceRepository::new(&store)
-            .ensure_enrolled_into(&ns, genesis)
+            .ensure_enrolled_into(&[ns], genesis)
             .expect("adopt an account rooted elsewhere");
         (store, ns)
     }

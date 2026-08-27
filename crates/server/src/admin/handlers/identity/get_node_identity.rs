@@ -33,8 +33,7 @@ use crate::AdminState;
 /// name a device no peer will admit and - for a paired node - an adopted account
 /// it no longer speaks for. So this falls back to the node's own root, which is
 /// the only account it can still honestly claim.
-pub(crate) type NodeIdentityParts =
-    (AccountId, PublicKey, Option<DeviceId>, Option<KemPublicKey>);
+pub(crate) type NodeIdentityParts = (AccountId, PublicKey, Option<DeviceId>, Option<KemPublicKey>);
 
 pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityParts>> {
     let devices = NodeDeviceRepository::new(store);
