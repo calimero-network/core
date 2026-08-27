@@ -1,8 +1,8 @@
 //! Back up and restore this node's account root.
 //!
 //! The account root is the one key that can certify a replacement device after
-//! every existing device is lost. It is generated on first use and written to the
-//! node's own store, so until this command existed the recovery property the
+//! every existing device is lost. `merod init` provisions it into the node's own
+//! store (unless `--no-account-root`), so until this command existed the recovery property the
 //! account model is built around was structurally available but not deliverable:
 //! the key survives a namespace-identity rotation and does not survive losing the
 //! disk, which is the case the whole story is about.
@@ -466,7 +466,7 @@ impl ExportCommand {
 
         let store = open_store(root_args).await?;
         let repo = NodeDeviceRepository::new(&store);
-        // Deliberately NOT `ensure_account_root`: generating one here would report
+        // Deliberately NOT `provision_account_root`: minting one here would report
         // a brand-new key as this node's backup, and the operator would keep it as
         // if it meant something.
         let Some(root) = repo
@@ -689,7 +689,7 @@ async fn resolve_root(
         }
         None => {
             let store = open_store(root_args).await?;
-            // Not `ensure_account_root`: minting one here would sign with a key
+            // Not `provision_account_root`: minting one here would sign with a key
             // that owns nothing, and the result would verify against itself while
             // authorising nothing anywhere.
             NodeDeviceRepository::new(&store)
