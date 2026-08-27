@@ -17,8 +17,8 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x4A` is taken
-// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4B`**.
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x4B` is taken
+// except `0x25` and `0x2B` (retired, below); **the next free byte is `0x4C`**.
 //
 // The constants themselves are declared beside the key types they belong to
 // rather than all in this block, which is why a ledger is needed at all: two
@@ -2452,6 +2452,61 @@ impl NodeDeviceIdentity {
     }
 }
 
+/// Prefix for [`NodeDeviceCertificate`].
+pub const NODE_DEVICE_CERTIFICATE_PREFIX: u8 = 0x4B;
+
+/// A device certificate this node's account root signed **elsewhere** — a
+/// **singleton**, like the device row it belongs to.
+///
+/// # Why this is its own row rather than a field on `NodeDeviceIdentityValue`
+///
+/// That value is borsh, and borsh is not self-describing: an existing row is
+/// exactly three 32-byte fields, so a struct expecting one more byte fails to
+/// decode every row already on disk. There is no version tag to branch on and no
+/// length to compare against. A separate row costs one prefix and needs no
+/// migration — absent means "no imported certificate", which is precisely the
+/// state every node is in today.
+///
+/// Absence is therefore load-bearing, not merely tolerated: a node that holds an
+/// account root signs its own certificate and never reads this, and only a
+/// root-free node presents a stored one.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceCertificate(Key<(GroupPrefix,)>);
+
+impl NodeDeviceCertificate {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Key(GenericArray::from([NODE_DEVICE_CERTIFICATE_PREFIX])))
+    }
+}
+
+impl Default for NodeDeviceCertificate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsKeyParts for NodeDeviceCertificate {
+    type Components = (GroupPrefix,);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for NodeDeviceCertificate {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 impl Default for NodeDeviceIdentity {
     fn default() -> Self {
         Self::new()
@@ -2588,6 +2643,21 @@ pub struct NodeDeviceIdentityValue {
     pub device_id: [u8; 32],
     /// X25519 secret matching the certificate's `kem_pk`.
     pub kem_secret: [u8; 32],
+}
+
+/// The encoded `AccountProof<DeviceCert>` a holder signed for this node's device.
+///
+/// Stored opaquely, as the exact bytes `merod account sign-cert` printed, for the
+/// same reason the certificate is self-certifying on the wire: it carries its own
+/// genesis and root-key chain, so a verifier needs nothing this row could add.
+/// Decoding it here to store it structurally would mean re-encoding it to present
+/// it, and a round trip that is not byte-exact produces a proof whose signature no
+/// longer checks — with the failure surfacing at a peer, as a refused join.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct NodeDeviceCertificateValue {
+    /// Borsh-encoded `AccountProof<DeviceCert>`, verbatim as it arrived.
+    pub proof: Vec<u8>,
 }
 
 /// Redacted by hand, never derived. `kem_secret` is the only thing that can
@@ -3406,6 +3476,7 @@ mod tests {
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_KEY", GROUP_ACCOUNT_KEY_PREFIX),
             ("NODE_DEVICE_IDENTITY", NODE_DEVICE_IDENTITY_PREFIX),
+            ("NODE_DEVICE_CERTIFICATE", NODE_DEVICE_CERTIFICATE_PREFIX),
             ("NODE_ACCOUNT_ROOT", NODE_ACCOUNT_ROOT_PREFIX),
             ("GROUP_ACCOUNT_ENDORSER", GROUP_ACCOUNT_ENDORSER_PREFIX),
             (

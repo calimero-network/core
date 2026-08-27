@@ -137,6 +137,21 @@ pub struct InitCommand {
     #[arg(long)]
     pub no_account_root: bool,
 
+    /// Hex-encoded epoch-0 root **public** key of the account this node's device
+    /// belongs to. Only meaningful with `--no-account-root`.
+    ///
+    /// Mints this node's device row under that account, so the three values a
+    /// certificate is signed over — device id, signing key, agreement key — exist
+    /// before anyone certifies them. Read them back with `meroctl account show`,
+    /// certify them wherever the root lives (`merod account sign-cert --from`), and
+    /// bring the result back with `merod account import-cert`.
+    ///
+    /// The **public** half only. Supplying it grants nothing: it is hashed into the
+    /// account id and travels in every genesis, and the device stays inert until a
+    /// certificate signed by the matching private root arrives.
+    #[arg(long, value_name = "HEX", requires = "no_account_root")]
+    pub account_root: Option<String>,
+
     /// List of bootstrap nodes
     #[clap(long, value_name = "ADDR")]
     pub boot_nodes: Vec<Multiaddr>,
@@ -564,6 +579,31 @@ impl InitCommand {
                 "Initialized with no account root; this node's device must be \
                  enabled by a certificate signed elsewhere",
             );
+            // The device row, if the operator named the account it belongs to.
+            // Minted here for the same reason the root is: so there is a namable
+            // moment when this node acquired an identity, rather than one that
+            // depends on which request arrived first.
+            if let Some(hex_pk) = self.account_root.as_deref() {
+                let raw: [u8; 32] = hex::decode(hex_pk.trim())
+                    .wrap_err("--account-root is not hex")?
+                    .try_into()
+                    .map_err(|_| {
+                        eyre::eyre!("--account-root must be 32 bytes, i.e. 64 hex characters")
+                    })?;
+                let genesis = calimero_account::AccountGenesis::new(
+                    calimero_primitives::identity::PublicKey::from(raw),
+                );
+                let device = NodeDeviceRepository::new(&store)
+                    .adopt_account(genesis)
+                    .wrap_err("could not mint this node's device for that account")?;
+                info!(
+                    account = %device.account,
+                    device = %device.device(),
+                    "Minted this node's device under an account rooted elsewhere; \
+                     certify it with `merod account sign-cert` and bring it back with \
+                     `merod account import-cert`",
+                );
+            }
         } else {
             let account_root = NodeDeviceRepository::new(&store)
                 .provision_account_root()
