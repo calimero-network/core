@@ -281,6 +281,14 @@ jobs:
               cp -f "$f" "$LOGDIR/$(basename "$f")"
           done
 
+          # A green http lane proves nothing on its own: the node logs an
+          # acquisition whether the registry or a peer served it. Ask the fixture.
+          if [ "$MODE" = http ] && [ "$wf_exit" -eq 0 ] \
+              && ! docker logs fixture-registry 2>&1 | grep -q 'GET /artifacts/'; then
+              echo "::error::${WORKFLOW} fetched nothing from fixture-registry; it did not use the http registry"
+              wf_exit=1
+          fi
+
           exit "$wf_exit"
 
       - name: Upload docker logs
