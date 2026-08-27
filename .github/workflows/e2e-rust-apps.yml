@@ -335,9 +335,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `image: merod:local-dht` is for scenarios that install on every node
-        # (nothing to fetch, so the registry gate below cannot apply) and for the
-        # three that ARE the peer route's coverage. Everything else runs http.
+        # A node needs bytecode only to run a context, not to join a group. So
+        # `image: merod:local-dht` is for the three scenarios that ARE the peer
+        # route's coverage; `registry_fetch: "false"` is for the ones that never
+        # run a context at all. Everything else fetches, on http.
         include:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml
@@ -423,12 +424,18 @@ jobs:
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-leave-member
             file: workflows/group-leave-member.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-leave-namespace
             file: workflows/group-leave-namespace.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: group-kick-and-rejoin-keyshare
             file: workflows/group-kick-and-rejoin-keyshare.yml
             app: scaffolding-e2e
@@ -485,9 +492,12 @@ jobs:
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-list-subgroups-restricted-hidden
             file: workflows/group-list-subgroups-restricted-hidden.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: member-removed-multi-context-convergence
             file: workflows/member-removed-multi-context-convergence.yml
             app: scaffolding-e2e
@@ -507,9 +517,12 @@ jobs:
           # `apply_group_op_mutations`; this e2e needs a more
           # surgical partition primitive (e.g. iptables-level drop
           # on a specific peer pair) to be deterministic.
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: group-reparent
             file: workflows/group-reparent.yml
             app: scaffolding-e2e
