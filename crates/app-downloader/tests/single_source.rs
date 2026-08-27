@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use calimero_app_downloader::port::{ApplicationStore, InstalledApplication};
 use calimero_app_downloader::registry::{RegistryConfig, RegistryCoords, RegistryMode};
 use calimero_app_downloader::source::dht::PeerBlobs;
-use calimero_app_downloader::source::Bytes;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
@@ -64,7 +63,7 @@ impl PeerBlobs for RecordingPeers {
         &self,
         _bytecode_id: &BlobId,
         _context_id: &ContextId,
-    ) -> eyre::Result<Option<Bytes>> {
+    ) -> eyre::Result<Option<std::sync::Arc<[u8]>>> {
         let _previous = self.requests.fetch_add(1, Ordering::SeqCst);
         Ok(Some(Arc::from(BYTES)))
     }

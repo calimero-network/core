@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use calimero_app_downloader::source::dht::{DhtRegistry, PeerBlobs};
 use calimero_app_downloader::source::http::HttpRegistry;
-use calimero_app_downloader::source::{AppRequest, AppSource, Bytes};
+use calimero_app_downloader::source::{AppRequest, AppSource};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -91,18 +91,15 @@ async fn http_source_returns_none_on_404() {
 }
 
 /// A base no artifact URL can be built from is a misconfiguration the operator
-/// has to see, not an absence - `Ok(None)` would read as "nothing published".
-#[tokio::test]
-async fn http_source_refuses_a_base_it_cannot_address() {
+/// has to see, and it is the same on every fetch - so it is refused when the
+/// source is built, not once a download is already in flight.
+#[test]
+fn http_source_refuses_a_base_it_cannot_address() {
     let base: Url = "mailto:ops@example.com".parse().expect("valid");
-    let err = HttpRegistry::new(base)
-        .expect("client")
-        .fetch(&req(None))
-        .await
-        .expect_err("an unaddressable base must not read as absent");
+    let err = HttpRegistry::new(base).expect_err("an unaddressable base must not build a source");
     assert!(
-        err.to_string().contains("base_url"),
-        "error must name the misconfigured base, got: {err}"
+        err.to_string().contains("mailto"),
+        "error must name the refused scheme, got: {err}"
     );
 }
 
@@ -117,7 +114,7 @@ impl PeerBlobs for NeverAsked {
         &self,
         _bytecode_id: &BlobId,
         _context_id: &ContextId,
-    ) -> eyre::Result<Option<Bytes>> {
+    ) -> eyre::Result<Option<std::sync::Arc<[u8]>>> {
         unreachable!("the peer route must not reach a peer without a context")
     }
 }

@@ -16,10 +16,6 @@ use crate::source::http::HttpRegistry;
 pub mod dht;
 pub mod http;
 
-/// Bundle bytes as every route hands them over, shared so the install path can
-/// hold them without copying.
-pub type Bytes = Arc<[u8]>;
-
 /// What a source is asked for. The coordinates are the route; `bytecode_id` is
 /// the authority the downloader verifies whatever arrives against.
 #[derive(Clone, Copy, Debug)]
@@ -38,7 +34,7 @@ pub struct AppRequest<'a> {
 pub trait AppSource: Debug + Send + Sync + 'static {
     /// Unverified bundle bytes for this request; `Ok(None)` = the source had
     /// none yet (retryable), `Err` = real fault. Verification is download()'s.
-    async fn fetch(&self, req: &AppRequest<'_>) -> eyre::Result<Option<Bytes>>;
+    async fn fetch(&self, req: &AppRequest<'_>) -> eyre::Result<Option<Arc<[u8]>>>;
 }
 
 /// The one source this node resolves applications from. There is no second

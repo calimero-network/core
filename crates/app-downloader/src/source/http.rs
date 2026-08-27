@@ -1,5 +1,7 @@
 //! The registry route: one GET against the node's own configured base.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use eyre::bail;
 use reqwest::{Client, StatusCode, Url};
@@ -7,7 +9,7 @@ use tracing::info;
 
 use crate::http::{read_body_capped, registry_client, MAX_ARTIFACT_BYTES};
 use crate::registry::RegistryCoords;
-use crate::source::{AppRequest, AppSource, Bytes};
+use crate::source::{AppRequest, AppSource};
 
 /// The node's own configured registry, addressed by `package@version`.
 #[derive(Clone, Debug)]
@@ -17,8 +19,14 @@ pub struct HttpRegistry {
 }
 
 impl HttpRegistry {
-    /// Fails only when the HTTP client itself cannot be built.
+    /// The scheme is `base`'s and never varies per fetch, so it is checked here.
     pub fn new(base: Url) -> eyre::Result<Self> {
+        if !matches!(base.scheme(), "http" | "https") {
+            bail!(
+                "unsupported registry URL scheme '{}'; only http and https are allowed",
+                base.scheme()
+            );
+        }
         Ok(Self {
             base,
             client: registry_client()?,
@@ -28,7 +36,7 @@ impl HttpRegistry {
 
 #[async_trait]
 impl AppSource for HttpRegistry {
-    async fn fetch(&self, req: &AppRequest<'_>) -> eyre::Result<Option<Bytes>> {
+    async fn fetch(&self, req: &AppRequest<'_>) -> eyre::Result<Option<Arc<[u8]>>> {
         // Unaddressable is a rejection, not an absence: reporting it as
         // "nothing published" would describe a fetch that never ran.
         let coords = RegistryCoords::new(req.package, req.version);
@@ -42,12 +50,6 @@ impl AppSource for HttpRegistry {
                 req.version
             );
         };
-        if !matches!(url.scheme(), "http" | "https") {
-            bail!(
-                "unsupported registry URL scheme '{}'; only http and https are allowed",
-                url.scheme()
-            );
-        }
         info!(%url, application_id = ?req.application_id, "fetching application from registry");
 
         // No host guard, redirects included: `url` is this node's own
@@ -60,12 +62,6 @@ impl AppSource for HttpRegistry {
         if !response.status().is_success() {
             bail!("registry returned HTTP {} for {url}", response.status());
         }
-        if let Some(len) = response.content_length() {
-            if len > MAX_ARTIFACT_BYTES {
-                bail!("registry artifact too large: {len} bytes exceeds {MAX_ARTIFACT_BYTES}");
-            }
-        }
-
         let bytes = read_body_capped(response, MAX_ARTIFACT_BYTES).await?;
         Ok(Some(bytes.into()))
     }

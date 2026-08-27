@@ -6,9 +6,7 @@ use std::sync::Arc;
 
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
 use calimero_app_downloader::source::dht::PeerBlobs;
-use calimero_app_downloader::{
-    app_source, AppRequest, ApplicationDownloader, DownloadError, Outcome,
-};
+use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_store::db::InMemoryDB;
@@ -57,7 +55,7 @@ async fn download(
     node_client: &calimero_node_primitives::client::NodeClient,
     base: &Url,
     req: &AppRequest<'_>,
-) -> Result<Outcome, DownloadError> {
+) -> eyre::Result<Outcome> {
     let source = app_source(
         &RegistryConfig::new(RegistryMode::Http, Some(base.clone())),
         NoPeers,

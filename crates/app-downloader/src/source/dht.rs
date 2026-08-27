@@ -2,12 +2,14 @@
 
 use std::fmt::Debug;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use tracing::debug;
 
-use crate::source::{AppRequest, AppSource, Bytes};
+use crate::source::{AppRequest, AppSource};
 
 /// The peer route's one capability. Deliberately not part of
 /// [`ApplicationStore`](crate::port::ApplicationStore): an http node builds no
@@ -20,7 +22,7 @@ pub trait PeerBlobs: Debug + Send + Sync + 'static {
         &self,
         bytecode_id: &BlobId,
         context_id: &ContextId,
-    ) -> eyre::Result<Option<Bytes>>;
+    ) -> eyre::Result<Option<Arc<[u8]>>>;
 }
 
 /// Peers, reached through the node's own blob share.
@@ -37,7 +39,7 @@ impl<P> DhtRegistry<P> {
 
 #[async_trait]
 impl<P: PeerBlobs> AppSource for DhtRegistry<P> {
-    async fn fetch(&self, req: &AppRequest<'_>) -> eyre::Result<Option<Bytes>> {
+    async fn fetch(&self, req: &AppRequest<'_>) -> eyre::Result<Option<Arc<[u8]>>> {
         // A context is required: this route authorizes by context membership
         // and has nothing to ask without one.
         let (Some(bytecode_id), Some(context_id)) = (req.bytecode_id, req.context_id) else {

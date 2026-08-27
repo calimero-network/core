@@ -12,7 +12,7 @@ pub mod source;
 
 mod downloader;
 
-pub use downloader::{ApplicationDownloader, DownloadError, Outcome};
+pub use downloader::{ApplicationDownloader, Outcome};
 pub use port::{ApplicationStore, InstalledApplication};
 pub use registry::{RegistryConfig, RegistryCoords, RegistryCoordsBuf, RegistryMode};
 pub use source::{app_source, AppRequest, AppSource};

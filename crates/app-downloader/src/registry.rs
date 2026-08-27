@@ -90,11 +90,6 @@ impl RegistryCoordsBuf {
     pub fn new(package: String, version: String) -> Self {
         Self { package, version }
     }
-
-    #[must_use]
-    pub fn coords(&self) -> RegistryCoords<'_> {
-        RegistryCoords::new(&self.package, &self.version)
-    }
 }
 
 impl<'a> RegistryCoords<'a> {
