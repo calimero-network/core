@@ -652,13 +652,8 @@ jobs:
 
           gh pr create -f || true
 
-  # Opens the pull request that moves every app in the fleet onto this release.
-  #
-  # Placed after `release-binaries`, not alongside `prepare`, and that ordering
-  # matters: the tag exists seconds into the release commit's run, but its
-  # binaries land roughly forty minutes later. A bump pull request opened at
-  # trigger time announces a version whose merod image nobody can pull yet, and
-  # the consumer's own e2e would fail trying.
+  # Opens the fleet bump PRs. After `release-binaries`, not alongside `prepare`:
+  # the tag exists in seconds but its binaries land ~40 minutes later.
   fleet-bump:
     name: Open SDK bump PRs
     if: needs.prepare.outputs.binary_release == 'true'

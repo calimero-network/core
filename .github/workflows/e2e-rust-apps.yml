@@ -344,12 +344,8 @@ jobs:
           - workflow: frozen-rga-convergence
             file: workflows/frozen-rga-convergence.yml
             app: scaffolding-e2e
-          # A member holding no node writes through a relay that runs the method
-          # for it. The only scenario in which a delta's author is not its signer,
-          # so it is the only one that exercises the delegated envelope, the
-          # at-cut authorship grant and the warrant nonce ledger on real nodes.
-          # The author is a key rather than a container, which is why its half
-          # runs from a script — see workflows/delegated-authorship.yml.
+          # The only scenario where a delta's author is not its signer - the sole
+          # real-node coverage of the delegated envelope and warrant nonce ledger.
           - workflow: delegated-authorship
             file: workflows/delegated-authorship.yml
             app: scaffolding-e2e

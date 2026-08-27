@@ -1,30 +1,20 @@
 #!/usr/bin/env bash
 #
 # Rewrite a consumer repository's pinned Calimero dependency versions, in place.
-#
-# This script edits files and does NOTHING else: no git, no pull request, no
-# knowledge of GitHub. That separation is the point. The workflow that calls it
-# is only reachable by cutting a release, but this is runnable by hand against
-# any local checkout — which is the only honest way to see what a bump would do
-# before it lands as ten pull requests.
+# Edits files only - no git, no pull requests; runnable by hand to preview a bump.
 #
 #   bump-fleet.sh --surface cargo --version 0.11.0-rc.26 --dir ../mero-design --no-lock --dry-run
 #   bump-fleet.sh --surface npm --pkg @calimero-network/mero-ui=1.5.1 --dir ../mero-meet --no-lock --dry-run
 #
 # Exit status is the contract with the caller:
 #
-#   0  files changed — open a pull request
-#   3  not applicable — this repository has nothing this surface touches
-#   4  already at the requested version — nothing to do
-#   1  something is wrong — do NOT open a pull request
+#   0  files changed - open a pull request
+#   3  not applicable - this repository has nothing this surface touches
+#   4  already at the requested version - nothing to do
+#   1  something is wrong - do NOT open a pull request
 #
-# 3 and 4 are deliberately distinct from 0 and from each other. A fleet where
-# "nothing happened" and "this repo does not participate" look identical is a
-# fleet where a repo can silently fall out of the rollout and nobody notices.
-#
-# Portability: this runs on the macOS bash 3.2 a developer has and on the
-# ubuntu-latest bash a runner has. No mapfile, no associative arrays, no GNU-only
-# sed. Rewrites go through perl, which behaves the same in both places.
+# Portability: macOS bash 3.2 and ubuntu runners - no mapfile, no associative
+# arrays, no GNU-only sed; rewrites go through perl.
 
 set -euo pipefail
 
@@ -40,17 +30,8 @@ die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*" >&2; }
 head_note() { printf '%s\n' "$*" >&2; }
 
-# Every path this script means to change, repo-relative, one per line. The
-# caller stages exactly these and nothing else.
-#
-# This exists because `git add -A` is wrong here. A package manager run as a
-# side effect of a bump will happily write files of its own — pnpm's
-# minimum-release-age gate creates a pnpm-workspace.yaml carrying only a
-# `minimumReleaseAgeExclude` when the version being installed was published
-# minutes ago, and a repository that had no workspace file then acquires one
-# with no `packages:` key, which makes its own `pnpm install` die with
-# "packages field missing or empty". Committing whatever happens to be in the
-# tree turns a dependency bump into an unrelated broken config.
+# Not `git add -A`: package managers write files of their own as side effects
+# (e.g. pnpm's minimum-release-age workspace file), and those must not ride a bump.
 CHANGED=""
 record_change() {
   case " $CHANGED " in
@@ -60,7 +41,7 @@ record_change() {
 }
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -86,10 +67,8 @@ done
 # has reached the top of the repository.
 DIR=$(cd "$DIR" && pwd -P)
 
-# --dry-run finishes by throwing the edits away with `git checkout`, which would
-# take any unrelated work in the tree with them. Refuse rather than gamble with
-# someone's uncommitted afternoon. Untracked files are ignored — nothing here
-# removes those.
+# --dry-run reverts tracked files via `git checkout`, which would also revert
+# unrelated work - so refuse on a dirty tree. Untracked files are ignored.
 if [ "$DRY_RUN" -eq 1 ]; then
   if ! ( cd "$DIR" && git rev-parse --git-dir >/dev/null 2>&1 ); then
     die "--dry-run needs '$DIR' to be a git checkout (it reverts by checking out)"
@@ -100,22 +79,9 @@ Commit or stash them first — the revert at the end cannot tell them from ours.
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# cargo
-# ---------------------------------------------------------------------------
-#
-# Three separate edits live in logic/Cargo.toml, and a naive rewrite of the
-# first match gets one of the three:
-#
-#   [dependencies]      calimero-sdk / calimero-storage / calimero-storage-macros
-#                       / calimero-wasm-abi, each { git = ".../core", tag = "..." }
-#   [dev-dependencies]  a SECOND calimero-storage line, features = ["testing"]
-#   [package.metadata.calimero]
-#                       min-runtime-version — the floor a node checks before it
-#                       will accept the bundle at all. Not decoration.
-#
-# The git URL is spelled ".../core" in most repos and ".../core.git" in merraria
-# and mero-blocks, so the matcher tolerates both.
+# Three matches live in Cargo.toml: [dependencies], a second calimero-storage
+# line under [dev-dependencies], and [package.metadata.calimero] min-runtime-version.
+# The git URL is spelled with and without .git across repos; match both.
 
 bump_cargo() {
   local manifest="$DIR/logic/Cargo.toml"
@@ -151,10 +117,8 @@ bump_cargo() {
     s{^(\s*min-runtime-version\s*=\s*")[^"]*(")}{$1$ENV{NEW}$2};
   ' "$manifest"
 
-  # Verify by re-reading, not by trusting the rewrite. Checking for a literal
-  # occurrence of the old string would be wrong: comments legitimately mention
-  # older versions, and a stale sentence is not a reason to abort a release.
-  # What matters is that no core dependency still carries a different tag.
+  # Verify by re-reading: comments legitimately mention old versions, so the check
+  # is that no core dependency still carries a different tag.
   local stale
   stale=$(NEW="$VERSION" perl -ne '
     if (m{git\s*=\s*"https://github\.com/calimero-network/core(?:\.git)?"}
@@ -172,10 +136,8 @@ $stale"
   [ "$rewritten" -gt 0 ] || die "rewrote no dependency lines — the manifest is not shaped as expected"
   note "$rewritten dependency line(s) now pin $VERSION"
 
-  # min-runtime-version has to move WITH the tag. It trailed by one release
-  # across six repos after the rc.24 bump because it was edited by hand and the
-  # hand forgot. If the key exists it must now agree; if it does not exist,
-  # say so rather than silently shipping a bundle with no floor.
+  # min-runtime-version must move with the tag: if the key exists it must agree;
+  # if it does not exist, say so rather than shipping a bundle with no floor.
   if grep -q 'min-runtime-version' "$manifest"; then
     local floor
     floor=$(perl -ne 'if (m{^\s*min-runtime-version\s*=\s*"([^"]*)"}) { print "$1\n"; exit }' "$manifest")
@@ -194,30 +156,16 @@ $stale"
 
   command -v cargo >/dev/null 2>&1 || die "cargo is not installed; re-run with --no-lock to edit the manifest only"
 
-  # deploy-bundle.yml reads the resolved core revision out of Cargo.lock and
-  # records it on the published release. A stale lockfile makes that provenance
-  # line name the wrong commit, so the lock is part of the bump, not an
-  # afterthought.
+  # deploy-bundle.yml records the resolved core revision from Cargo.lock on the
+  # published release, so the lock is part of the bump.
   note "refreshing logic/Cargo.lock"
   ( cd "$DIR/logic" && cargo generate-lockfile --quiet )
   record_change "logic/Cargo.lock"
 }
 
-# ---------------------------------------------------------------------------
-# tauri
-# ---------------------------------------------------------------------------
-#
-# The desktop app does not depend on the SDK as a library — it ships a merod
-# BINARY. merod-config.json names the version, apps/desktop/src-tauri/build.rs
-# embeds it as MEROD_CONFIG_VERSION at compile time, and the app downloads that
-# merod at runtime. So a core release means two things here: bundle the new
-# merod, and cut a new desktop version that ships it.
-#
-# The app version lives in two files and they have already drifted apart —
-# apps/desktop/package.json said 0.0.85 while src-tauri/tauri.conf.json, which
-# is what actually stamps the built bundle, still said 0.0.84. Rather than trust
-# either one, take the higher of the two and move both to it, which heals the
-# drift on the next release instead of widening it.
+# The desktop app ships a merod BINARY (merod-config.json names the version,
+# src-tauri/build.rs embeds it), so a core release means: bundle the new merod
+# and cut a new desktop version that ships it.
 
 # Highest of two dotted versions, compared numerically field by field. Not
 # `sort -V`: that is a GNU extension this has to run without on macOS.
@@ -293,17 +241,8 @@ bump_tauri() {
   note "desktop app $top -> $next"
 }
 
-# ---------------------------------------------------------------------------
-# npm
-# ---------------------------------------------------------------------------
-#
-# Layouts differ and there is no table of them here on purpose. A table of "this
-# repo keeps its frontend at app/, that one at apps/desktop/" is a thing that
-# drifts silently. Instead: find every package.json that actually declares the
-# dependency, and for each, walk up to the nearest lockfile to find the install
-# root. That covers the standalone app/ repos, the pnpm workspaces (tauri-app,
-# app-registry, mero-issue-tracker), and anything added later, without being
-# told about any of them.
+# No layout table - it would drift. Find every package.json that declares the
+# dependency and walk up to the nearest lockfile for its install root.
 
 find_lock_root() {
   local d="$1"
@@ -356,9 +295,8 @@ bump_npm() {
         continue
       fi
 
-      # Keep whatever range operator the repo chose. Rewriting "^1.4.0" as
-      # "1.5.1" quietly converts a tracking range into a hard pin, and the
-      # repo never sees another patch release again.
+      # Keep the repo's range operator: rewriting "^1.4.0" as "1.5.1" converts a
+      # tracking range into a hard pin.
       local prefix
       prefix=$(printf '%s' "$current" | sed 's/[0-9].*$//')
       local current_digits
@@ -371,10 +309,8 @@ bump_npm() {
           continue ;;
       esac
 
-      # A major jump is a migration, not a bump. mero-js is at 13 while most of
-      # the fleet is on 7; opening that as an automatic pull request produces a
-      # PR that cannot pass CI, every release, forever. Report it and move on.
-      # --allow-major is for when someone is deliberately doing the migration.
+      # A major jump is a migration, not a bump - report and move on.
+      # --allow-major is for a deliberate migration.
       if [ "$current_major" != "$new_major" ] && [ "$ALLOW_MAJOR" -eq 0 ]; then
         note "$rel: $name $current -> $ver crosses a major — skipped (use --allow-major)"
         skipped_major="$skipped_major $name:$current->$ver"
@@ -430,29 +366,14 @@ bump_npm() {
   done
 
   for root in $roots; do
-    # $DIR is absolute, so a nested root strips to "app", "apps/desktop", and so
-    # on. A root that IS $DIR — the repository that keeps its lockfile at the top
-    # level — strips to itself, because there is no "$DIR/" prefix to remove. The
-    # recorded path then stayed absolute, and `git add --pathspec-from-file`,
-    # which reads paths as repository-relative, failed the whole bump with
-    #
-    #   fatal: pathspec 'home/runner/work/.../pnpm-lock.yaml' did not match any files
-    #
-    # tauri-app, app-registry and mero-issue-tracker are all shaped that way.
+    # Recorded paths must be repo-relative for `git add --pathspec-from-file`;
+    # a lockfile root that IS $DIR strips to itself, not to an absolute path.
     local rel="${root#$DIR}"; rel="${rel#/}"
     local lock="${rel:+$rel/}pnpm-lock.yaml"
 
     note "refreshing $lock"
-    # --lockfile-only resolves and writes the lock without materialising
-    # node_modules. --ignore-scripts because nothing here should run a
-    # dependency's install hook on a release runner.
-    #
-    # Captured rather than streamed, but replayed in full on failure. pnpm
-    # writes its diagnostics to stdout, so discarding it outright hides the
-    # single most likely failure in this script behind a bare non-zero exit —
-    # including the useful case where the requested version simply is not
-    # published yet, which reads as "the tooling is broken" if you cannot see
-    # ERR_PNPM_NO_MATCHING_VERSION.
+    # Captured but replayed in full on failure: pnpm's diagnostics (e.g.
+    # ERR_PNPM_NO_MATCHING_VERSION) go to stdout and must stay visible.
     if ! ( cd "$root" && pnpm install --lockfile-only --ignore-scripts ) \
         > "$TMPDIR_RUN/pnpm.log" 2>&1; then
       note "pnpm failed refreshing $lock:"
@@ -465,12 +386,8 @@ bump_npm() {
 
 TMPDIR_RUN=$(mktemp -d)
 
-# The --dry-run revert lives here rather than at the end of the happy path. A
-# dry run that dies partway — an unpublished version, a manifest this script
-# will not interpret — would otherwise leave the checkout modified, and the
-# clean-tree guard above then refuses to run again until someone tidies up by
-# hand. The guard proved the tree was clean before any edit, so reverting
-# everything tracked is safe on any exit path.
+# Revert on every exit path, not just the happy one: a dry run dying partway
+# would leave the tree dirty and the clean-tree guard stuck.
 cleanup() {
   status=$?
   rm -rf "$TMPDIR_RUN"
@@ -496,9 +413,8 @@ case "$SURFACE" in
   *) die "--surface must be cargo, npm or tauri (got '$SURFACE')" ;;
 esac
 
-# Hand the caller the exact set of paths to stage. Anything else the tooling
-# left behind is deliberately not listed, and the caller reports it rather than
-# committing it.
+# Hand the caller exactly the paths to stage; anything else the tooling left
+# behind is reported, not committed.
 if [ -n "${CHANGED_FILES_OUT:-}" ]; then
   : > "$CHANGED_FILES_OUT"
   for f in $CHANGED; do printf '%s\n' "$f" >> "$CHANGED_FILES_OUT"; done

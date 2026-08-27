@@ -178,10 +178,8 @@ steps:
       - identity: '{{identity_node3}}'
         role: Member
 
-  # Explicit, because merobox no longer installs it during the join (merobox
-  # #369). Joining without the app is core's job — sync fetches the context's
-  # blob from a peer and installs it. CREATING a context is not: it names an
-  # application the node must already hold, so node-2 needs its own copy.
+  # Explicit: merobox no longer installs the app during a join, and creating
+  # a context names an application the node must already hold.
   - name: Install the application on node-2, which is about to create a context
     type: install_application
     node: e2e-node-2

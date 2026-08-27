@@ -277,7 +277,7 @@ steps:
   #     initialized-node rules in `select_protocol` route this to
   #     `HashComparison` or a sibling (`LevelWise` /
   #     `SubtreePrefetch`) — all three drive the same wire
-  #     authorization apply path that this PR redesigns. ---
+  #     authorization apply path. ---
 
   - name: Heal node-2's partition
     type: script

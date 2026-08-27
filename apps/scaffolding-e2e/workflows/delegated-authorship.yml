@@ -103,9 +103,7 @@ steps:
     node: delegated-node-2
     context_id: '{{context_id}}'
 
-  # No `expect` here, and that is not an omission: nothing has been written yet,
-  # so there is no materialized value to wait on. This only has to establish that
-  # node-2 is in the context before the delegated write happens.
+  # No `expect` here: nothing has been written yet, so there is nothing to wait on.
   - name: Both nodes are in the context before anything is delegated
     type: wait_for_sync
     context_id: '{{context_id}}'
@@ -117,33 +115,12 @@ steps:
     trigger_sync: true
 
   # --- The delegated write ---
-  #
-  # Steps, not a shell script. The script this replaces existed only because
-  # merobox had no way to hold a signing key or spend a warrant; `sign_warrant`
-  # and `perform_intent` (merobox #373) do both. The script also could not export
-  # custom `outputs:` — a `script` step only sets `script_output_local`, which the
-  # next one overwrites — so every value it minted for the next stage went through
-  # a temp file, and the assertions lived in shell rather than where a reader can
-  # see them.
-  #
-  # The author's key material is minted live on every run — see below. An earlier
-  # version of this file froze it as a fixture, which passed while exercising
-  # nothing about how a credential is produced.
 
-  # No membership step: the author is node-2's own account, already a member from
-  # its namespace join. What delegated authorship turns on is not that the account
-  # is new — it is that the DEVICE signing the warrant is in no group's binding
-  # rows, and the one minted below never joins anything.
+  # No membership step: the signing device sits in no group's binding rows,
+  # even though the account itself already joined via the namespace invite.
   #
-  # Minted by real `merod`, not supplied as a fixture. A frozen credential never
-  # runs `account sign-cert`, so a change in how a credential is PRODUCED would
-  # keep passing — which is exactly what the previous version of this file did,
-  # having replaced the shell script that used to mint one.
-  #
-  # The node is stopped for it: without `--from`, `sign-cert` reads the account
-  # root from the datastore and RocksDB's lock is exclusive. The admin API is not
-  # an alternative and never will be — the root private key deliberately never
-  # crosses it, leaving a node only via `account export`, as a mnemonic.
+  # The node must be stopped for this: `sign-cert` needs the account root from
+  # the datastore, whose lock is exclusive, and the admin API never exposes it.
 
   - name: Stop node-2 so its account root can be read
     type: stop_node
@@ -184,9 +161,8 @@ steps:
     outputs:
       relay_account: accountId
 
-  # Minted once and presented three times below: refused, accepted, refused. Same
-  # bytes each time, which is what makes the middle one evidence about the grant
-  # rather than about the warrant.
+  # Minted once, presented three times below (refused, accepted, refused) — same
+  # bytes each time, so only the grant can explain the different verdicts.
   - name: The author mints one warrant
     type: sign_warrant
     context_id: '{{context_id}}'
@@ -207,16 +183,10 @@ steps:
     statements:
       - "is_set({{author_account}})"
 
-  # DAR-11: refused at the API, never published as a delta peers would drop.
+  # Refused at the API, never published as a delta peers would drop.
   #
-  # `expected_error` is not decoration — without it a node that never started
-  # satisfies this assertion too. It names the endpoint's own reason, which is
-  # what makes this step distinguish "the relay holds no grant" from every other
-  # way a request can fail, including the replay refusal below.
-  #
-  # That specificity needed #3647: `calimero-client` used to replace every 403
-  # body with a fixed token hint, so both refusals here read identically and the
-  # assertion could only say "some 403 happened".
+  # `expected_error` matters: without it, a node that never started would also
+  # satisfy this assertion.
   - name: Refused before the relay is granted authorship
     type: perform_intent
     node: delegated-node-1
@@ -230,9 +200,7 @@ steps:
     expected_failure: true
     expected_error: CAN_AUTHOR_ON_BEHALF
 
-  # Bit 9, so 512 on its own — authorship and nothing else, which is the posture
-  # the capability exists to make possible. Implied by neither membership nor
-  # admin, which the step above is what proves.
+  # Bit 9 = 512: authorship alone, granted by neither membership nor admin.
   - name: Grant the relay CAN_AUTHOR_ON_BEHALF
     type: set_member_capabilities
     node: delegated-node-1
@@ -253,19 +221,13 @@ steps:
     outputs:
       intent_root: rootHash
 
-  # A 2xx is not enough. This assertion exists because that gap already hid a
-  # bug: the endpoint reported `deltaId: null` for an intent that had advanced no
-  # state, and the run sailed past it to fail four steps later on a value that was
-  # never written.
   - name: The intent advanced state
     type: assert
     statements:
       - "is_set({{intent_root}})"
 
-  # And it is single-use. The signature is still perfectly valid: replay is not
-  # forgery, which is why the nonce ledger has to exist and why the envelope check
-  # cannot be what stops it.
-  #
+  # Same warrant, single-use: the signature is still valid, so only the nonce
+  # ledger stops the replay.
   - name: The spent warrant is refused a second time
     type: perform_intent
     node: delegated-node-1
@@ -280,16 +242,9 @@ steps:
     expected_error: nonce
 
   # --- The half a relay cannot fake ---
-  #
-  # Everything above happened on the relay. This is what proves the network took
-  # it: node-2 verified an envelope whose author is not its signer, authorized it
-  # at the cut, spent the nonce, and applied it.
-  # `expect` is what makes this a barrier rather than a hope. Converging on a
-  # state hash only proves the nodes agree on a claim ABOUT state — a hash can be
-  # published ahead of the state behind it, and even truthful hashes agree
-  # milliseconds before a pending delta finishes applying. Waiting on the read
-  # itself cannot pass early, which matters more here than anywhere: a delegated
-  # delta is the one thing a peer might verify, authorize, and then still refuse.
+
+  # `expect` here, not just hash convergence: hashes can agree milliseconds
+  # before a pending delta finishes applying.
   - name: The delegated write reaches the other node
     type: wait_for_sync
     context_id: '{{context_id}}'
@@ -316,11 +271,8 @@ steps:
     outputs:
       delegated_value: result
 
-  # The ENVELOPE, not the value. `outputs: <name>: result` captures merobox's
-  # whole result object, so the captured value is `{"output": ...}` and comparing
-  # it to a bare string never matches. `result.output` would capture the value
-  # itself; every other scenario in this suite spells it the way it is spelled
-  # here, and this comment exists because the bare-string form looks correct.
+  # `outputs: result` captures the whole envelope `{"output": ...}`, not the
+  # bare value — assert against that shape, not a bare string.
   - name: Assert the member's write is present on the peer
     type: json_assert
     statements:

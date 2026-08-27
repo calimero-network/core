@@ -172,9 +172,6 @@ jobs:
             apps/scaffolding-e2e/res/*.wasm
           retention-days: 1
 
-      # Every fuzzy scenario installs from these now (not the raw wasm
-      # above); a separate artifact because dist/ sits outside apps/ and
-      # would otherwise collide with the apps/-relative extraction path.
       - name: Upload build bundles
         uses: actions/upload-artifact@v7
         with:

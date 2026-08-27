@@ -6,7 +6,7 @@ description: >
 
   With `AutoFollowFlags::default() = { contexts: true, subgroups: false }`
   and the `emit_auto_follow_set_if_enabled` helper firing from every
-  `MemberAdded` apply path (added in this PR), when `add_group_members`
+  `MemberAdded` apply path, when `add_group_members`
   applies on node-2 it ALREADY produces a synthesised
   `AutoFollowSet { contexts: true }` event. That event runs through
   `handle_auto_follow_enabled`, which enumerates existing contexts in

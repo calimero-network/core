@@ -247,7 +247,7 @@ steps:
   # process the corresponding `ContextRegistered` governance op or
   # (b) the bounded wait window to expire cleanly.
   #
-  # Pre-fix (this PR), the materialisation wait short-circuits when
+  # Pre-fix, the materialisation wait short-circuits when
   # `get_group_for_context` returns `None` — i.e. when the namespace
   # governance op hasn't propagated yet — and the inbound stream is
   # closed as the WARN `inbound stream for unknown context, closing
@@ -268,8 +268,7 @@ steps:
   #   - node-1's own owned-identity registration order (the immediate
   #     post-create sync attempt currently fails with `no owned
   #     identities found` until the local identity stabilises)
-  # Both are separate issues from the responder-side wait this PR
-  # fixes. Phase 5 here verifies only the responder behaviour; the
+  # Both are separate issues from the responder-side wait fixed here. Phase 5 here verifies only the responder behaviour; the
   # `wait` step gives the inbound stream's 10 s materialisation
   # window enough time to play out plus a small slack.
   #

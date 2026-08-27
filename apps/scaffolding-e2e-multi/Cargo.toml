@@ -17,9 +17,8 @@ package = "com.calimero.scaffolding-e2e-multi"
 name = "Scaffolding E2E Multi-Service"
 min-runtime-version = "0.0.0"
 
-# Both services build from scaffolding-e2e's wasm under two names: what they
-# exercise in merod is multi-service install + service_name selection, not
-# two different programs.
+# Both services reuse scaffolding-e2e's wasm; under test is multi-service
+# install + service_name selection, not two different programs.
 [[package.metadata.calimero.services]]
 name = "store-a"
 crate = "scaffolding-e2e"
