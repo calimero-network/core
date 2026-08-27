@@ -311,14 +311,24 @@ Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx)
 ## Running Local Nodes
 
 ```bash
-# Initialize and run first node
-merod --node node1 init --server-port 2428 --swarm-port 2528
+# Initialize and run first node. `--mdns` only matters once a second node has to
+# find it — see below — but it is set here so the pair works as written.
+merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
 merod --node node1 run
 
-# Second node connecting to first
-merod --node node2 init --server-port 2429 --swarm-port 2529
-merod --node node2 config --swarm-addrs /ip4/127.0.0.1/tcp/2528
+# Second node connecting to first. BOTH need `--mdns`: it is off by default since
+# #3620, and two nodes with no bootstrap peer and no rendezvous have NO other way
+# to find each other. The failure is indirect — the join reports a key-delivery
+# timeout, not "no peer" — so it reads as a broken join rather than as discovery.
+merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
 merod --node node2 run
+
+# Or an explicit bootstrap, which needs node1's PEER ID — a bare
+# /ip4/../tcp/.. is rejected at startup ("Failed to parse peer id from addr").
+# Read it from a running node1:
+#   curl -s localhost:2428/admin-api/network/status | jq -r .localPeerId
+merod --node node2 init --server-port 2429 --swarm-port 2529 \
+  --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
 
 # Debug logging
 RUST_LOG=debug merod --node node1 run

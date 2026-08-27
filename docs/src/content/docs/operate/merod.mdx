@@ -176,6 +176,25 @@ mints certificates but needs a running node holding the root, so a thin client �
 phone, a script, anything that runs no application and joins no group — had no way to
 obtain the credential it needs to present itself.
 
+<Aside type="caution" title="A certificate establishes identity, and only identity">
+It proves this device speaks for that account. It does **not** make the device able
+to use anything, and two things still have to come from a peer:
+
+- **Which namespaces and apps to join.** A device is a member of nothing, so it
+  cannot read the account's namespace set off any DAG — there is no replicated
+  account-to-namespaces directory, by design. Today that list is supplied
+  explicitly, at `pair-init` or out of band.
+- **The scope key for each namespace.** The certificate confers *authority*, not
+  *readability*. Without key delivery the link lands and the device still cannot
+  decrypt anything.
+
+So an offline-certified device can prove it belongs to the account and still be
+unable to open a single app until a peer tells it what to join and hands over the
+keys. If you are restoring from a recovery phrase alone, the phrase proves who you
+are and nothing tells you what you are a member of — that has to come from a node
+you run, or from a service that keeps the list for you.
+</Aside>
+
 There are **two independent choices**, which is why the flag list looks larger than the
 number of real modes.
 
