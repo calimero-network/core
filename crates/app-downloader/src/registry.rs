@@ -38,8 +38,9 @@ impl FromStr for RegistryMode {
     }
 }
 
-/// `[registry]` config. Absent means resolution is off and P2P blob share
-/// stays the only transport - the behavior that predates this section.
+/// `[registry]` config. An absent section is `http` with no `base_url`: it
+/// resolves nothing and, not being `dht`, serves no bytecode to peers either.
+/// `merod init` always writes one; an in-place upgrade has to add it.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct RegistryConfig {

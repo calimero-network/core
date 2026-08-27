@@ -76,8 +76,9 @@ pub struct ConfigFile {
     #[serde(default)]
     pub dag_compaction: DagCompactionConfig,
 
-    /// Where this node pulls application bytecode from (`[registry]`). Absent
-    /// section leaves peer-to-peer blob share as the only transport.
+    /// Where this node pulls application bytecode from (`[registry]`). An absent
+    /// section is `http` with no `base_url`, which resolves nothing and serves
+    /// nothing - `merod init` writes the section, an upgraded node must add it.
     #[serde(default)]
     pub registry: calimero_app_downloader::registry::RegistryConfig,
 }
