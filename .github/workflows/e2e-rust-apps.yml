@@ -353,6 +353,11 @@ jobs:
           - workflow: account-facts-cross-namespace
             file: workflows/account-facts-cross-namespace.yml
             app: scaffolding-e2e
+          # Account-level pairing: only real nodes can say whether the link
+          # lands where the application scope aimed it.
+          - workflow: account-pairing-application-scope
+            file: workflows/account-pairing-application-scope.yml
+            app: scaffolding-e2e
           - workflow: account-root-backup-restore
             file: workflows/account-root-backup-restore.yml
             app: scaffolding-e2e

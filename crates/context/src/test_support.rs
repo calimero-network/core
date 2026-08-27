@@ -1,3 +1,5 @@
+//! Fixtures the context crate's tests share.
+//!
 //! Enrolling a signing key so tests can name the account it speaks for.
 //!
 //! Governance rows name accounts, and an account is a one-way hash of a root
@@ -10,7 +12,8 @@
 //! nothing to do with what is under test.
 //!
 //! Available outside `cfg(test)` so the integration suites in `tests/` can use
-//! it too; it writes only test rows and is never called from a handler.
+//! them too; they write only test rows and are never called from a handler. The
+//! actor harness below is the exception: it needs the dev-dependencies.
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -88,4 +91,157 @@ pub fn enrol(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicKey) -> 
         .apply_link(namespace, &genesis, &[], &cert)
         .expect("record the binding");
     account
+}
+
+/// A second device of this node's account, certified by its root exactly as
+/// `pair_device_complete` would, and scoped to `applications` (empty is every
+/// application).
+///
+/// The id is `seed` repeated rather than minted, so the store's key-ordered scan
+/// visits these devices in a known order.
+///
+/// # Panics
+///
+/// Panics if the root cannot be resolved or the certificate cannot be signed,
+/// which in a test means the fixture is wrong rather than the code under test.
+pub fn certify_device(
+    store: &Store,
+    seed: u8,
+    applications: &[calimero_primitives::application::ApplicationId],
+) -> calimero_account::DeviceId {
+    let devices = calimero_governance_store::NodeDeviceRepository::new(store);
+    let root = devices
+        .provision_account_root()
+        .expect("this node's account root");
+    let device = calimero_account::DeviceId::from([seed; 32]);
+    let proof = calimero_account::AccountProof {
+        genesis: root.genesis(),
+        chain: vec![],
+        statement: calimero_account::DeviceCert::sign(
+            root.signing_key(),
+            root.account(),
+            device,
+            &PrivateKey::from([seed; 32]).public_key(),
+            &calimero_account::KemPublicKey::from([seed ^ 0xFF; 32]),
+            0,
+            0,
+        )
+        .expect("the account root signs its own device cert"),
+    };
+    devices
+        .remember_device_cert(&proof, applications)
+        .expect("remember the device");
+    device
+}
+
+/// A live [`ContextManager`](crate::ContextManager) over a caller-supplied
+/// store, for handler logic that only an actor can reach.
+///
+/// The whole of the missing piece is the network: the node fixture leaves its
+/// recipient unbound, and an unbound recipient queues rather than declines, so a
+/// handler that subscribes or publishes never returns without an actor in front
+/// of it. Everything else is
+/// [`calimero_node_primitives::test_fixtures::node_client_over`].
+#[cfg(test)]
+pub(crate) mod actor {
+    use actix::{Actor, Addr, Context, Handler};
+    use calimero_context_client::client::ContextClient;
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_node_primitives::test_fixtures::node_client_over;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+    use crate::ContextManager;
+
+    /// Answers the three commands the pairing and governance paths issue, and
+    /// records the topics. Any other command is dropped, which fails the
+    /// caller's `rx.await` rather than hanging it: add the variant when a path
+    /// under test starts issuing one.
+    struct StubNetwork {
+        subscribed: UnboundedSender<String>,
+    }
+
+    impl Actor for StubNetwork {
+        type Context = Context<Self>;
+    }
+
+    impl Handler<NetworkMessage> for StubNetwork {
+        type Result = ();
+
+        fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+            match msg {
+                NetworkMessage::Subscribe { request, outcome } => {
+                    let _ignored = self.subscribed.send(request.0.to_string());
+                    let _ignored = outcome.send(Ok(request.0));
+                }
+                NetworkMessage::MeshPeerCount { outcome, .. } => {
+                    let _ignored = outcome.send(0);
+                }
+                NetworkMessage::Publish { outcome, .. } => {
+                    let _ignored = outcome.send(Ok(MessageId(b"stub".to_vec())));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A started `ContextManager` and the store it reads. Seed the store, send
+    /// the request, then assert on the rows the handler wrote.
+    pub(crate) struct Harness {
+        pub manager: Addr<ContextManager>,
+        subscribed: UnboundedReceiver<String>,
+        // The blob filesystem and the node's data root outlive the manager.
+        _dirs: (TempDir, TempDir),
+        _network: Addr<StubNetwork>,
+    }
+
+    impl Harness {
+        /// Every topic subscribed so far, in the order the handler asked for
+        /// them.
+        pub(crate) fn subscribed(&mut self) -> Vec<String> {
+            let mut topics = Vec::new();
+            while let Ok(topic) = self.subscribed.try_recv() {
+                topics.push(topic);
+            }
+            topics
+        }
+    }
+
+    /// Start a manager over `store`.
+    pub(crate) async fn over(store: Store) -> Harness {
+        let (subscribed_tx, subscribed) = unbounded_channel();
+        let network = LazyRecipient::<NetworkMessage>::new();
+        let recipient = network.clone();
+        let stub = StubNetwork::create(move |ctx| {
+            assert!(recipient.init(ctx), "network recipient init");
+            StubNetwork {
+                subscribed: subscribed_tx,
+            }
+        });
+
+        let (node_client, data_dir, blob_dir) =
+            node_client_over(store.clone(), NetworkClient::new(network)).await;
+
+        // Wired rather than left unbound: a handler that routes back through the
+        // client (the join path applies its catch-up ops that way) would
+        // otherwise queue against nobody.
+        let context = LazyRecipient::new();
+        let recipient = context.clone();
+        let context_client = ContextClient::new(store.clone(), node_client.clone(), context);
+        let manager = ContextManager::new(store, node_client, context_client, None);
+        let manager = ContextManager::create(move |ctx| {
+            assert!(recipient.init(ctx), "context recipient init");
+            manager
+        });
+
+        Harness {
+            manager,
+            subscribed,
+            _dirs: (data_dir, blob_dir),
+            _network: stub,
+        }
+    }
 }

@@ -21,9 +21,7 @@ use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-mod common;
-
-use common::{hex_lower, node_client, pack_entries};
+use calimero_node_primitives::test_fixtures::{hex_lower, node_client, pack_entries};
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
@@ -179,7 +177,7 @@ fn services_sharing_one_artifact_cost_one_copy() {
     let bundle = many_services_one_artifact(&dir, &wasm);
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (node, _data, _blobs) = runtime.block_on(node_client());
+    let (node, _store, _data, _blobs) = runtime.block_on(node_client());
     let (blob_id, _) = runtime
         .block_on(node.add_blob(
             Cursor::new(bundle.as_slice()),
@@ -258,7 +256,7 @@ fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> 
 
 fn install_elapsed(bundle: Vec<u8>) -> Duration {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (node, _data, _blobs) = runtime.block_on(node_client());
+    let (node, _store, _data, _blobs) = runtime.block_on(node_client());
     let (blob_id, _) = runtime
         .block_on(node.add_blob(
             Cursor::new(bundle.as_slice()),

@@ -4,6 +4,7 @@ use super::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
@@ -290,11 +291,18 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             &permissions,
             &PublicKey::from([0x36; 32]),
             &context,
-            &app_id
+            &app_id,
+            &BlobId::from([0x37; 32]),
         )
         .is_err());
     service
-        .register(&permissions, &creator_pk, &context, &app_id)
+        .register(
+            &permissions,
+            &creator_pk,
+            &context,
+            &app_id,
+            &BlobId::from([0x37; 32]),
+        )
         .unwrap();
     assert_eq!(get_group_for_context(&store, &context).unwrap(), Some(gid));
     assert_eq!(
@@ -400,12 +408,90 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
     let service = ContextRegistrationService::new(&store, gid);
     let permissions = PermissionChecker::new(&store, gid);
     service
-        .register(&permissions, &creator_pk, &context, &incoming_app_id)
+        .register(
+            &permissions,
+            &creator_pk,
+            &context,
+            &incoming_app_id,
+            &BlobId::from([0x45; 32]),
+        )
         .unwrap();
 
     let handle = store.handle();
     let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
     assert_eq!(ctx_meta.application.application_id(), existing_app_id);
+}
+
+/// A group whose meta was seeded with zeros - every node that gained the
+/// namespace by key delivery rather than by invitation - with a member able to
+/// register a context in it.
+fn group_with_zeroed_meta(store: &Store, bytecode_id: [u8; 32]) -> (ContextGroupId, PublicKey) {
+    let gid = test_group_id();
+    let (creator_pk, creator) = enrolled(store, &gid, 0x51);
+
+    MembershipRepository::new(store)
+        .add_member(&gid, &creator, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            &gid,
+            &creator,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
+        )
+        .unwrap();
+
+    let mut meta = test_meta();
+    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.bytecode_id = bytecode_id;
+    MetaRepository::new(store).save(&gid, &meta).unwrap();
+
+    (gid, creator_pk)
+}
+
+/// The op carries the creator's `app_meta.bytecode` blob - the same value an
+/// invitation carries as `bytecode_id` - so a node that never saw an invitation
+/// ends up with the group's target blob rather than a permanent zero.
+#[test]
+fn context_registered_heals_a_zeroed_bytecode_id() {
+    let store = test_store();
+    let (gid, creator_pk) = group_with_zeroed_meta(&store, [0u8; 32]);
+    let app_id = ApplicationId::from([0x52; 32]);
+    let blob_id = BlobId::from([0x53; 32]);
+
+    ContextRegistrationService::new(&store, gid)
+        .register(
+            &PermissionChecker::new(&store, gid),
+            &creator_pk,
+            &ContextId::from([0x54; 32]),
+            &app_id,
+            &blob_id,
+        )
+        .unwrap();
+
+    let healed = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    assert_eq!(healed.target_application_id, app_id);
+    assert_eq!(healed.bytecode_id, [0x53; 32]);
+}
+
+/// A group already pinned to a blob - by its own create, an invitation, or an
+/// upgrade - keeps it. The heal fills a hole; it never re-targets a group.
+#[test]
+fn context_registered_leaves_a_set_bytecode_id_alone() {
+    let store = test_store();
+    let (gid, creator_pk) = group_with_zeroed_meta(&store, [0xBB; 32]);
+
+    ContextRegistrationService::new(&store, gid)
+        .register(
+            &PermissionChecker::new(&store, gid),
+            &creator_pk,
+            &ContextId::from([0x54; 32]),
+            &ApplicationId::from([0x52; 32]),
+            &BlobId::from([0x53; 32]),
+        )
+        .unwrap();
+
+    let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    assert_eq!(meta.bytecode_id, [0xBB; 32]);
 }
 
 /// Re-applying the same op (e.g. a node's own published op coming back via
@@ -10203,6 +10289,114 @@ mod account_plane_apply {
             .into_iter()
             .filter(|b| b.account == account)
             .collect()
+    }
+
+    /// The second write point of the certificate cache, and the one that covers a
+    /// multi-holder account: another device of this same account certified a
+    /// third, and this node learns of it only by folding the link. The replicated
+    /// binding drops the root signature, so without this the device could never be
+    /// carried into a namespace gained later.
+    #[test]
+    fn a_link_this_accounts_own_root_signed_is_remembered_where_it_applies() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.provision_account_root().unwrap();
+        let account = root.account();
+        let device = DeviceId::mint(account, [7u8; 16]);
+        let cert = DeviceCert::sign(
+            root.signing_key(),
+            account,
+            device,
+            &key(5).public_key(),
+            &KemPublicKey::from([5u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        // The account has to be a member before a device of it may link, and the
+        // endorser has to be one too - the admin is both here.
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis: root.genesis(),
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        let held = devices
+            .device_cert(device)
+            .unwrap()
+            .expect("a device of this node's own account must be remembered");
+        assert_eq!(held.proof.statement, cert, "the root signature included");
+        assert!(
+            held.applications.is_empty(),
+            "the wire carries no scope, so the widest one is the only honest guess"
+        );
+    }
+
+    /// And only for this node's own account: a stranger's device is somebody
+    /// else's to extend, and this node holds no root that could certify it.
+    #[test]
+    fn a_link_for_another_account_is_not_remembered_here() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let _own = devices.provision_account_root().unwrap();
+
+        let stranger_root = key(9);
+        let genesis = AccountGenesis::new(stranger_root.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [8u8; 16]);
+        let cert = DeviceCert::sign(
+            &stranger_root,
+            account,
+            device,
+            &key(6).public_key(),
+            &KemPublicKey::from([6u8; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .unwrap();
+
+        sign_apply_local_group_op_borsh(
+            &store,
+            &gid,
+            &admin_sk,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: calimero_account::AccountMemberEndorsement::sign(&admin_sk, account)
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            live_for(&store, &gid, account).len(),
+            1,
+            "the link itself must land - only the cache is scoped to our own account"
+        );
+        assert!(devices.device_cert(device).unwrap().is_none());
     }
 
     #[test]

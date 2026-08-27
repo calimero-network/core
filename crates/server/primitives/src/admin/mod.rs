@@ -1773,55 +1773,6 @@ impl Validate for RetryGroupUpgradeApiRequest {
     }
 }
 
-/// Adopt an existing account on this node and mint a device for it.
-///
-/// Carries a caller-supplied value, because the account being joined is not
-/// this node's to derive: the root key comes from the device that already
-/// holds it.
-///
-/// Nothing here is a credential. A genesis is public data, and naming somebody
-/// else's account gains a caller nothing: the device is inert until its
-/// certificate is signed by the account root, which only the holder has.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairDeviceInitApiRequest {
-    /// Hex-encoded epoch-0 root **public** key of the account to join (32 bytes).
-    ///
-    /// The whole genesis, now that it is `{version, root_sign_pk}` — so this is
-    /// the only thing that has to travel between the two devices.
-    ///
-    /// Named for the half it carries. An ed25519 private and public key are both
-    /// 32 bytes and both hex, so neither the type nor the length distinguishes
-    /// them; the old name (`accountRootKey`) left the reader nothing to go on
-    /// about a field where confusing the two would be catastrophic. The private
-    /// root never crosses this boundary at all — it leaves the node only via
-    /// `merod account export`, as a mnemonic, and the holder signs the paired
-    /// device's certificate locally.
-    #[serde(alias = "accountRootKey")]
-    pub account_root_public_key: String,
-}
-
-impl Validate for PairDeviceInitApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-
-        if self.account_root_public_key.len() != 64 {
-            errors.push(ValidationError::InvalidLength {
-                field: "accountRootPublicKey",
-                expected: 64,
-                actual: self.account_root_public_key.len(),
-            });
-        } else if hex::decode(&self.account_root_public_key).is_err() {
-            errors.push(ValidationError::InvalidHexEncoding {
-                field: "accountRootPublicKey",
-                reason: "not valid hex".to_owned(),
-            });
-        }
-
-        errors
-    }
-}
-
 /// What the pairing device minted, for the account holder to certify.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1870,71 +1821,6 @@ pub struct PairDeviceInitApiResponse {
     pub data: PairDeviceInitApiResponseData,
 }
 
-/// Certify a device another node minted, link it, and deliver the scope key.
-///
-/// Every field is what that node's pair-init returned. None is a secret: the
-/// certificate this mints is what makes the device real, and only this side
-/// holds the account root that signs it.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairDeviceCompleteApiRequest {
-    /// Hex-encoded `DeviceId` the other node minted (32 bytes).
-    pub device_id: String,
-    /// Hex-encoded X25519 agreement key to wrap the scope key under (32 bytes).
-    pub kem_public_key: String,
-    /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
-    pub sign_public_key: String,
-    /// Hex-encoded Ed25519 signature (64 bytes) from that node's pair-init.
-    ///
-    /// Not optional: without it the three values above are only claims by the
-    /// sender, and certifying them would make attacker-supplied keys a trusted
-    /// device of this account.
-    pub statement: String,
-    /// The confirmation code the account holder was read from the pairing
-    /// device, e.g. `7BC0-DAAC-CCB4-84A4`. Grouping and case are ignored.
-    ///
-    /// Required so the comparison cannot be skipped: this side derives the code
-    /// for the key material that actually arrived and refuses a mismatch. Its
-    /// value depends on the code reaching the operator independently of the
-    /// payload — carried beside the keys, it proves nothing.
-    pub confirmation_code: String,
-}
-
-impl Validate for PairDeviceCompleteApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        // 64 hex chars for each 32-byte key, 128 for the 64-byte signature.
-        // The confirmation code is free-form here (grouping and case are
-        // normalized at the point of comparison, which is the only place that
-        // can say whether it is *right*); an empty one is refused up front.
-        if self.confirmation_code.trim().is_empty() {
-            errors.push(ValidationError::EmptyField {
-                field: "confirmationCode",
-            });
-        }
-        for (field, value, expected) in [
-            ("deviceId", &self.device_id, 64),
-            ("kemPublicKey", &self.kem_public_key, 64),
-            ("signPublicKey", &self.sign_public_key, 64),
-            ("statement", &self.statement, 128),
-        ] {
-            if value.len() != expected {
-                errors.push(ValidationError::InvalidLength {
-                    field,
-                    expected,
-                    actual: value.len(),
-                });
-            } else if hex::decode(value).is_err() {
-                errors.push(ValidationError::InvalidHexEncoding {
-                    field,
-                    reason: "not valid hex".to_owned(),
-                });
-            }
-        }
-        errors
-    }
-}
-
 /// What pairing established.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1953,13 +1839,9 @@ pub struct PairDeviceCompleteApiResponseData {
     /// the request carried, echoed so the operator can see what the certificate
     /// names.
     pub confirmation_code: String,
-    /// Hex-encoded borsh of the `AccountProof<DeviceCert>` this pairing minted.
-    ///
-    /// The device that was just certified needs this to present itself as a
-    /// device of the account — and cannot read it off the DAG, because doing so
-    /// requires being a member of a group the account speaks in, which a thin
-    /// client never is. Not a secret: a certificate is public and proves nothing
-    /// without the device key it names.
+    /// Hex-encoded borsh of the `AccountProof<DeviceCert>` this pairing minted, so
+    /// the device can present itself without reading the DAG it is not a member of.
+    /// Not a secret: it proves nothing without the device key it names.
     pub credential: String,
 }
 
@@ -1967,6 +1849,112 @@ pub struct PairDeviceCompleteApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct PairDeviceCompleteApiResponse {
     pub data: PairDeviceCompleteApiResponseData,
+}
+
+/// Adopt an existing account on this node and mint one device for it, across a
+/// set of namespaces. One device for the whole set, so the response carries one
+/// id, one key pair and one code however many namespaces it covers.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPairInitApiRequest {
+    /// Hex-encoded epoch-0 root **public** key (32 bytes). Named for the half it
+    /// carries: private and public are both 32 hex bytes, and the private root
+    /// leaves the node only via `merod account export`.
+    pub account_root_public_key: String,
+    /// Hex-encoded namespace ids to enroll into (32 bytes each). The caller must
+    /// name them: this node is a member of nothing, so it can neither read the
+    /// account's namespace set off a DAG nor derive it.
+    pub namespaces: Vec<String>,
+}
+
+impl Validate for AccountPairInitApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        if let Some(e) =
+            validate_hex_string(&self.account_root_public_key, "accountRootPublicKey", 32)
+        {
+            errors.push(e);
+        }
+        // Refused here rather than deeper, where "enroll into nothing" is a
+        // device that is certified and then listens on no topic at all.
+        if self.namespaces.is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "namespaces",
+            });
+        }
+        errors.extend(
+            self.namespaces
+                .iter()
+                .filter_map(|id| validate_hex_string(id, "namespaces[]", 32)),
+        );
+
+        errors
+    }
+}
+
+/// Certify a device another node minted, link it, and deliver the scope keys —
+/// scoped by application rather than by namespace.
+///
+/// Every field but `applications` is what that node's `pair-init` returned, and
+/// the response is [`PairDeviceCompleteApiResponse`] unchanged.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPairCompleteApiRequest {
+    /// Hex-encoded `DeviceId` the other node minted (32 bytes).
+    pub device_id: String,
+    /// Hex-encoded X25519 agreement key to wrap the scope keys under (32 bytes).
+    pub kem_public_key: String,
+    /// Hex-encoded Ed25519 key that device signs its ops with (32 bytes).
+    pub sign_public_key: String,
+    /// Hex-encoded Ed25519 signature (64 bytes) from that node's pair-init.
+    ///
+    /// Not optional: without it the three values above are only claims by the
+    /// sender, and certifying them would make attacker-supplied keys a trusted
+    /// device of this account.
+    pub statement: String,
+    /// The confirmation code the account holder was read from the pairing
+    /// device, e.g. `7BC0-DAAC-CCB4-84A4`. Grouping and case are ignored.
+    ///
+    /// One code covers the whole pairing, because one device was minted for it.
+    pub confirmation_code: String,
+    /// Which applications this device may speak for. Absent or empty means all.
+    ///
+    /// A person can answer "which apps may this device use"; they cannot answer
+    /// "which namespaces", because a namespace is an implementation unit they
+    /// never named. So the scope is chosen here and resolved to namespaces on the
+    /// node, through the same lookup `GET /namespaces/for-application/:id` reads.
+    #[serde(default)]
+    pub applications: Vec<String>,
+}
+
+impl Validate for AccountPairCompleteApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        // The confirmation code is free-form here (grouping and case are
+        // normalized at the point of comparison, which is the only place that can
+        // say whether it is *right*); an empty one is refused up front.
+        //
+        // `applications` gets no check: an application id is bs58, not hex, and
+        // the handler's parse is the only thing that can say whether one names an
+        // application at all. An empty list is the valid "all of them".
+        if self.confirmation_code.trim().is_empty() {
+            errors.push(ValidationError::EmptyField {
+                field: "confirmationCode",
+            });
+        }
+        for (field, value, expected) in [
+            ("deviceId", &self.device_id, 32),
+            ("kemPublicKey", &self.kem_public_key, 32),
+            ("signPublicKey", &self.sign_public_key, 32),
+            ("statement", &self.statement, 64),
+        ] {
+            if let Some(e) = validate_hex_string(value, field, expected) {
+                errors.push(e);
+            }
+        }
+        errors
+    }
 }
 
 /// Withdraw a device from an account, terminally.
@@ -2081,6 +2069,122 @@ pub struct RevocationOutcomeApiEntry {
 #[serde(rename_all = "camelCase")]
 pub struct RevokeDeviceApiResponse {
     pub data: RevokeDeviceApiResponseData,
+}
+
+/// Repair or widen the reach of a device this account already certified, by
+/// re-running pairing's fan-out against the namespaces this node takes part in
+/// now. The device is named in the path and need not be online.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkDeviceApiRequest {
+    /// Applications to add to the stored scope, bs58-encoded. Empty repairs
+    /// without widening; it is not overloaded to mean "every application" so the
+    /// accidental request is not the widest one.
+    #[serde(default)]
+    pub applications: Vec<String>,
+}
+
+impl Validate for RelinkDeviceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        // `applications` gets no check here, exactly as on `pair-complete`: an
+        // application id is bs58, not hex, so the handler's parse is the only thing
+        // that can say whether one names an application at all.
+        Vec::new()
+    }
+}
+
+/// What the relink repaired, and what it left alone.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkDeviceApiResponseData {
+    /// Hex-encoded `AccountId` the device speaks for.
+    pub account_id: String,
+    /// Hex-encoded `DeviceId` that was repaired.
+    pub device_id: String,
+    /// The device's scope after the request, bs58-encoded. Empty means every
+    /// application, which is what a pairing that named none asked for.
+    pub applications: Vec<String>,
+    /// Namespaces the link was published into by this call.
+    ///
+    /// Reported per namespace for the same reason `revokedIn` is: publication is
+    /// per-DAG, so which namespaces a device actually reached is a state the
+    /// caller has to be able to see.
+    pub linked_in: Vec<RelinkOutcomeApiEntry>,
+    /// Namespaces nothing was published into, and why.
+    pub skipped: Vec<RelinkSkipApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkOutcomeApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// Whether the scope key was wrapped and published for the device here.
+    ///
+    /// `false` means the link landed and the delivery did not - the link is what
+    /// confers authority, and the device's own sync pull re-requests the key.
+    pub key_delivered: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkSkipApiEntry {
+    /// Hex-encoded namespace id.
+    pub namespace_id: String,
+    /// Why nothing was published there. One of `outOfScope`, `alreadyBound`,
+    /// `noScopeKey`, `revoked`, `ownDevice`, `failed`.
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkDeviceApiResponse {
+    pub data: RelinkDeviceApiResponseData,
+}
+
+/// One device of this account, joined from the node-local certificate cache and
+/// the live bindings of every namespace this node takes part in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeviceApiEntry {
+    pub device_id: DeviceId,
+    pub signing_key: PublicKey,
+    /// Set only on the device this node itself presents.
+    pub is_self: bool,
+    pub revoked: bool,
+    /// Applications this device may speak for. **Empty means every
+    /// application** - the same convention `KnownDeviceCert` stores. Absent for
+    /// a device this node has no cached certificate for (bound before the cache
+    /// existed, or certified by another holder).
+    pub applications: Vec<ApplicationId>,
+    /// Hex-encoded ids of the namespaces currently holding a live binding for
+    /// this device. Empty for a certified device not yet bound anywhere.
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDevicesApiResponse {
+    pub devices: Vec<AccountDeviceApiEntry>,
+}
+
+/// One application this account speaks in, derived from the namespaces this
+/// node takes part in that target it.
+///
+/// **Known limitation:** an application installed with no namespace yet is
+/// invisible here - it has no cross-device meaning until a namespace exists.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountApplicationApiEntry {
+    pub application_id: ApplicationId,
+    /// Hex-encoded ids of the namespaces targeting this application.
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountApplicationsApiResponse {
+    pub applications: Vec<AccountApplicationApiEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3011,6 +3115,197 @@ mod tests {
             )),
             "odd-length hex nonce must be rejected, got {errors:?}"
         );
+    }
+
+    fn pair_init_req(namespaces: Vec<String>) -> AccountPairInitApiRequest {
+        AccountPairInitApiRequest {
+            account_root_public_key: hex::encode([0x11; 32]),
+            namespaces,
+        }
+    }
+
+    fn pair_complete_req() -> AccountPairCompleteApiRequest {
+        AccountPairCompleteApiRequest {
+            device_id: hex::encode([0x44; 32]),
+            kem_public_key: hex::encode([0x55; 32]),
+            sign_public_key: hex::encode([0x66; 32]),
+            statement: hex::encode([0x77; 64]),
+            confirmation_code: "7BC0-DAAC-CCB4-84A4".to_owned(),
+            applications: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn account_pair_init_accepts_a_set_of_namespaces() {
+        let errors =
+            pair_init_req(vec![hex::encode([0x22; 32]), hex::encode([0x33; 32])]).validate();
+        assert!(
+            errors.is_empty(),
+            "a well-formed set must validate, got {errors:?}"
+        );
+    }
+
+    /// Naming none is the one case nothing downstream can recover from: the device
+    /// is certified and then listens on no topic at all.
+    #[test]
+    fn account_pair_init_refuses_an_empty_namespace_set() {
+        let errors = pair_init_req(Vec::new()).validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::EmptyField {
+                    field: "namespaces"
+                }
+            )),
+            "an empty namespace set must be refused, got {errors:?}"
+        );
+    }
+
+    /// Every entry is checked, not just the first. The handler decodes all of
+    /// them, so a set that validates on its head and fails on its tail would be
+    /// refused half way through minting.
+    #[test]
+    fn account_pair_init_checks_every_namespace_in_the_set() {
+        let errors = pair_init_req(vec![
+            hex::encode([0x22; 32]),
+            hex::encode([0x33; 16]),
+            "zz".repeat(32),
+        ])
+        .validate();
+
+        assert_eq!(
+            errors.len(),
+            2,
+            "both malformed entries must be reported, got {errors:?}"
+        );
+        assert!(errors.iter().all(|e| matches!(
+            e,
+            ValidationError::InvalidLength {
+                field: "namespaces[]",
+                ..
+            } | ValidationError::InvalidHexEncoding {
+                field: "namespaces[]",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn account_pair_init_refuses_a_root_key_of_the_wrong_width() {
+        let errors = AccountPairInitApiRequest {
+            account_root_public_key: hex::encode([0x11; 31]),
+            namespaces: vec![hex::encode([0x22; 32])],
+        }
+        .validate();
+
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidLength {
+                    field: "accountRootPublicKey",
+                    expected: 64,
+                    ..
+                }
+            )),
+            "a 31-byte root key must be refused, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn account_pair_complete_accepts_what_pair_init_returned() {
+        let errors = pair_complete_req().validate();
+        assert!(
+            errors.is_empty(),
+            "the minted payload must validate, got {errors:?}"
+        );
+    }
+
+    /// The statement is 64 bytes and the three keys 32, and the width is the only
+    /// thing that tells them apart - so a value put in the wrong field has to be
+    /// refused here rather than decoded into something the certificate names.
+    #[test]
+    fn account_pair_complete_pins_each_field_to_its_own_width() {
+        // Every field gets the other's width at once, which also pins that the
+        // errors accumulate rather than stop at the first.
+        let key = hex::encode([0x88; 32]);
+        let statement = hex::encode([0x88; 64]);
+        let mut req = pair_complete_req();
+        req.device_id = statement.clone();
+        req.kem_public_key = statement.clone();
+        req.sign_public_key = statement;
+        req.statement = key;
+
+        let errors = req.validate();
+        for (field, expected) in [
+            ("deviceId", 64),
+            ("kemPublicKey", 64),
+            ("signPublicKey", 64),
+            ("statement", 128),
+        ] {
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    ValidationError::InvalidLength { field: f, expected: x, .. }
+                        if *f == field && *x == expected
+                )),
+                "{field} at the wrong width must be refused, got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_pair_complete_refuses_a_blank_confirmation_code() {
+        let mut req = pair_complete_req();
+        req.confirmation_code = "   ".to_owned();
+
+        let errors = req.validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::EmptyField {
+                    field: "confirmationCode"
+                }
+            )),
+            "a code of nothing but whitespace must be refused, got {errors:?}"
+        );
+    }
+
+    /// Absent means all, so the field has to decode to an empty list rather than
+    /// fail. The node reads that empty list as every namespace it takes part in -
+    /// see `resolve_scope` beside the pairing handler.
+    #[test]
+    fn account_pair_complete_omitting_applications_means_all_of_them() {
+        let json = serde_json::json!({
+            "deviceId": hex::encode([0x44; 32]),
+            "kemPublicKey": hex::encode([0x55; 32]),
+            "signPublicKey": hex::encode([0x66; 32]),
+            "statement": hex::encode([0x77; 64]),
+            "confirmationCode": "7BC0-DAAC-CCB4-84A4",
+        });
+
+        let req: AccountPairCompleteApiRequest =
+            serde_json::from_value(json).expect("a request naming no application must parse");
+
+        assert!(req.applications.is_empty());
+        assert!(req.validate().is_empty());
+    }
+
+    /// A named application narrows the fan-out, and its id is bs58 rather than
+    /// hex - so validation has to let it through for the handler's parse to be the
+    /// thing that judges it.
+    #[test]
+    fn account_pair_complete_carries_a_named_application_through_validation() {
+        let application = ApplicationId::from([0x99; 32]).to_string();
+        let mut req = pair_complete_req();
+        req.applications = vec![application.clone()];
+
+        let errors = req.validate();
+        assert!(
+            errors.is_empty(),
+            "a bs58 application id is not this layer's to judge, got {errors:?}"
+        );
+        let json = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(json["applications"][0], application);
     }
 }
 

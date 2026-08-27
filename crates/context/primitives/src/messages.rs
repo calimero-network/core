@@ -19,14 +19,15 @@ use crate::group::{
     JoinContextRequest, JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest,
     LeaveGroupRequest, LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
-    PairDeviceCompleteRequest, PairDeviceInitRequest, RemoveGroupMembersRequest,
-    ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
+    RemoveGroupMembersRequest, ResyncContextRequest, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -509,6 +510,10 @@ pub enum ContextMessage {
     RevokeDevice {
         request: RevokeDeviceRequest,
         outcome: oneshot::Sender<<RevokeDeviceRequest as Message>::Result>,
+    },
+    RelinkDevice {
+        request: RelinkDeviceRequest,
+        outcome: oneshot::Sender<<RelinkDeviceRequest as Message>::Result>,
     },
     RotateGroupKey {
         request: RotateGroupKeyRequest,
