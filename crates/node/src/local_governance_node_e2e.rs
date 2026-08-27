@@ -21,7 +21,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
