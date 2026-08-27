@@ -87,6 +87,8 @@ fn meta(
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     }
 }
 

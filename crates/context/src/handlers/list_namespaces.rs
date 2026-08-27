@@ -122,6 +122,8 @@ mod tests {
             owner_identity: calimero_account::AccountId::from([0x01; 32]),
             migration: None,
             auto_join: true,
+            package: Box::default(),
+            version: Box::default(),
         }
     }
 
@@ -208,6 +210,8 @@ mod tests {
             owner_identity: crate::test_support::account_for(&node_identity_pk),
             migration: None,
             auto_join: true,
+            package: Box::default(),
+            version: Box::default(),
         };
 
         MetaRepository::new(&store)

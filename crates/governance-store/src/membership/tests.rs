@@ -1636,6 +1636,8 @@ fn the_bootstrap_inviter_hint_is_admitted_only_before_an_admin_exists() {
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     };
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
@@ -1665,6 +1667,8 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     };
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
@@ -1693,6 +1697,8 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     };
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     MembershipRepository::new(&store)
@@ -1822,6 +1828,8 @@ fn trusted_anchors_includes_owner_distinct_from_legacy_admin() {
         owner_identity: new_owner,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     };
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
@@ -1947,6 +1955,8 @@ fn trusted_anchors_mixed_roles() {
         owner_identity: owner,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     };
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     MembershipRepository::new(&store)
@@ -2463,6 +2473,8 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
         owner_identity: owner,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     };
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     MembershipRepository::new(&store)

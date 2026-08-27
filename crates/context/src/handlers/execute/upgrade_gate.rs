@@ -3,6 +3,7 @@
 //! rejected mid-upgrade, the lazy-on-access migration trigger, and the
 //! producing-`bytecode_id` resolver. Extracted from the execute handler.
 
+use calimero_app_downloader::registry::{stored_coords, RegistryCoordsBuf};
 use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -53,7 +54,7 @@ pub(super) enum LazyUpgradeAction {
         target_application_id: ApplicationId,
         migrate_method: Option<String>,
         target_bytecode_id: [u8; 32],
-        coords: Option<(String, String)>,
+        coords: Option<RegistryCoordsBuf>,
     },
     /// Context has an activation marker: replay the group's upgrade ladder
     /// from that bound blob, each hop's method resolved from the two
@@ -150,27 +151,10 @@ pub(super) fn maybe_lazy_upgrade(
                     .as_ref()
                     .and_then(|bytes| String::from_utf8(bytes.clone()).ok()),
                 target_bytecode_id: meta.bytecode_id,
-                coords: ladder_coords(datastore, &group_id, meta.bytecode_id),
+                coords: stored_coords(&meta.package, &meta.version).map(|c| c.to_buf()),
             },
         },
     })
-}
-
-/// The registry coordinates for one bytecode blob, from the group's upgrade
-/// ladder: a bundle's application id is version-stable, so only the per-rung
-/// record names a single published version.
-fn ladder_coords(
-    store: &Store,
-    group_id: &calimero_context_config::types::ContextGroupId,
-    bytecode_id: [u8; 32],
-) -> Option<(String, String)> {
-    let rung = calimero_governance_store::UpgradeLadderRepository::new(store)
-        .load(group_id)
-        .ok()?
-        .into_iter()
-        .rev()
-        .find(|rung| rung.bytecode_id == bytecode_id)?;
-    Some((rung.package, rung.version))
 }
 
 /// The blob-derived bytecode id the sender executes under (`GroupMeta.bytecode_id`
@@ -239,6 +223,8 @@ mod tests {
                     owner_identity: crate::test_support::account_for(&admin),
                     migration: Some(b"migrate_v2_to_v3".to_vec()),
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -432,6 +418,8 @@ mod tests {
                     ),
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -511,6 +499,8 @@ mod tests {
                     owner_identity: account,
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -524,7 +514,7 @@ mod tests {
             panic!("a context with no row must single-jump");
         };
         assert_eq!(
-            coords.as_ref().map(|(p, v)| (p.as_str(), v.as_str())),
+            coords.as_ref().map(|c| (&*c.package, &*c.version)),
             Some(("com.acme.app", "2.0.0"))
         );
     }

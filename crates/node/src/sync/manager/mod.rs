@@ -4265,6 +4265,8 @@ mod pending_upgrade_tests {
             owner_identity: admin,
             migration: migration.map(|m| m.as_bytes().to_vec()),
             auto_join: true,
+            package: Box::default(),
+            version: Box::default(),
         };
         MetaRepository::new(store)
             .save(&group_id, &meta)

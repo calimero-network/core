@@ -2698,6 +2698,8 @@ fn auto_group_node_identity_is_admin_member() {
                 owner_identity: node_account,
                 migration: None,
                 auto_join: true,
+                package: Box::default(),
+                version: Box::default(),
             },
         )
         .unwrap();

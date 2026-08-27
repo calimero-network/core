@@ -165,6 +165,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         migration: None,
                         created_at: 0,
                         auto_join: true,
+                        // Seed row: the real coordinates arrive with governance.
+                        package: Box::default(),
+                        version: Box::default(),
                     };
                     MetaRepository::new(&datastore).save(&group_id, &meta)?;
 

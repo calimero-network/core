@@ -1974,6 +1974,8 @@ mod tests {
                     owner_identity: crate::test_support::account_for(&signer),
                     migration: None,
                     auto_join: true,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .expect("save meta");

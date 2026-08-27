@@ -1899,6 +1899,8 @@ mod tests {
                     owner_identity: account,
                     migration: Some(b"migrate_v1_to_v2".to_vec()),
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .expect("save group meta");

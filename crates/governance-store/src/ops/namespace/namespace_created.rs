@@ -428,6 +428,14 @@ pub(crate) fn apply(
             .map(|m| m.bytecode_id)
             .unwrap_or([0u8; 32]),
         migration: existing.as_ref().and_then(|m| m.migration.clone()),
+        package: existing
+            .as_ref()
+            .map(|m| m.package.clone())
+            .unwrap_or_default(),
+        version: existing
+            .as_ref()
+            .map(|m| m.version.clone())
+            .unwrap_or_default(),
         created_at: existing.as_ref().map(|m| m.created_at).unwrap_or(0),
         auto_join: existing.as_ref().map(|m| m.auto_join).unwrap_or(true),
     };

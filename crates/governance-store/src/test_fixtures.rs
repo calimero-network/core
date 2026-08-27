@@ -153,6 +153,8 @@ pub(super) fn test_meta() -> GroupMetaValue {
         owner_identity: AccountId::from([0x01; 32]),
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     }
 }
 
@@ -167,6 +169,8 @@ pub(super) fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     }
 }
 

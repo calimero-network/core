@@ -260,6 +260,8 @@ mod tests {
             owner_identity: node_account,
             migration: None,
             auto_join: true,
+            package: Box::default(),
+            version: Box::default(),
         };
         MetaRepository::new(store)
             .save(&namespace_id, &meta)
@@ -316,6 +318,8 @@ mod tests {
             owner_identity: calimero_primitives::identity::AccountId::from([0x33; 32]),
             migration: None,
             auto_join: true,
+            package: Box::default(),
+            version: Box::default(),
         };
         MetaRepository::new(&store)
             .save(&ns_b, &meta)

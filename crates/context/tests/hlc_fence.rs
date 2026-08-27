@@ -62,6 +62,8 @@ fn meta_for(bytecode_id: [u8; 32]) -> GroupMetaValue {
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     }
 }
 

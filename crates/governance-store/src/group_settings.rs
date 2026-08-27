@@ -100,6 +100,8 @@ impl<'a> GroupSettingsService<'a> {
         let mut meta = self.load_required_meta()?;
         meta.bytecode_id = *bytecode_id;
         meta.target_application_id = *target_application_id;
+        meta.package = coords.package.into();
+        meta.version = coords.version.into();
         // Append the ladder rung BEFORE advancing meta. This is the one capture
         // point for the upgrade ladder a behind context replays rung by rung,
         // and the ordering matters when the two writes can't be atomic: a

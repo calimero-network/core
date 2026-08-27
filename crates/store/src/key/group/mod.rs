@@ -1200,6 +1200,12 @@ pub struct GroupMetaValue {
     pub migration: Option<Vec<u8>>,
     /// When true, joining members auto-subscribe to all visible contexts.
     pub auto_join: bool,
+    /// The target's registry coordinates, written with it: a bundle's
+    /// application id is version-stable, so the id alone cannot address a
+    /// release. Empty on a group whose target was never addressable - read
+    /// both halves through `stored_coords`, never one alone.
+    pub package: Box<str>,
+    pub version: Box<str>,
 }
 
 /// Per-member opt-in flags that drive the auto-follow handler.
@@ -3515,6 +3521,8 @@ mod tests {
                 owner_identity: AccountId::from([0xCC; 32]),
                 migration: None,
                 auto_join: true,
+                package: "com.acme.app".into(),
+                version: "1.0.0".into(),
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -3538,6 +3546,8 @@ mod tests {
                 owner_identity: AccountId::from([0x33; 32]),
                 migration: None,
                 auto_join: true,
+                package: "com.acme.app".into(),
+                version: "1.0.0".into(),
             };
 
             // Re-create the old layout: the policy tag sat between

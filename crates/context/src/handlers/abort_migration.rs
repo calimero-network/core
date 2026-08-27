@@ -209,6 +209,8 @@ mod tests {
             owner_identity: crate::test_support::account_for(&pk),
             migration,
             auto_join: false,
+            package: Box::default(),
+            version: Box::default(),
         }
     }
 

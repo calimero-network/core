@@ -1559,6 +1559,8 @@ mod tests {
             owner_identity: crate::test_support::account_for(&admin),
             migration: None,
             auto_join: false,
+            package: Box::default(),
+            version: Box::default(),
         }
     }
 

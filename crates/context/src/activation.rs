@@ -303,6 +303,8 @@ mod tests {
             owner_identity: account,
             migration: None,
             auto_join: false,
+            package: Box::default(),
+            version: Box::default(),
         };
         let save = |meta: &GroupMetaValue| {
             calimero_governance_store::MetaRepository::new(&store)

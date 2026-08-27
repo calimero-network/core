@@ -8,6 +8,7 @@ use std::time::Instant;
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
+use calimero_app_downloader::registry::RegistryCoordsBuf;
 use calimero_app_downloader::{AppRequest, Outcome as AcquireOutcome};
 use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
@@ -1592,7 +1593,7 @@ impl ContextManager {
 
         let rung_bytecode_id = rung.bytecode_id;
         let rung_application_id = rung.application_id;
-        let rung_coords = Some((rung.package, rung.version));
+        let rung_coords = Some(RegistryCoordsBuf::new(rung.package, rung.version));
 
         info!(
             %context_id,
@@ -1900,14 +1901,14 @@ async fn ensure_blob_local(
     context_id: &ContextId,
     application_id: ApplicationId,
     bytecode_id: [u8; 32],
-    coords: Option<(String, String)>,
+    coords: Option<RegistryCoordsBuf>,
 ) -> bool {
     let bytecode_id = calimero_primitives::blobs::BlobId::from(bytecode_id);
-    // A blob no ladder rung names has no coordinates to send. The registry
+    // A target with no recorded coordinates has none to send. The registry
     // route refuses the unaddressable request; the peer route ignores them.
-    let (package, version) = coords.as_ref().map_or(("", ""), |(package, version)| {
-        (package.as_str(), version.as_str())
-    });
+    let (package, version) = coords
+        .as_ref()
+        .map_or(("", ""), |coords| (&*coords.package, &*coords.version));
     let outcome = node_client
         .acquire_bytecode(&AppRequest {
             bytecode_id: Some(bytecode_id),
@@ -2808,6 +2809,8 @@ mod tests {
             owner_identity: crate::test_support::account_for(&dummy_pk),
             migration: None,
             auto_join: false,
+            package: Box::default(),
+            version: Box::default(),
         }
     }
 

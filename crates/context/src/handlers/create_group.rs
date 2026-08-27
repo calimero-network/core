@@ -156,6 +156,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // + manifest package matches the row's package).
         let row_blob = *app_meta.bytecode.blob_id().as_ref();
         let app_package = app_meta.package.clone();
+        let app_version = app_meta.version.clone();
         let requested_bytecode_id = bytecode_id;
 
         let datastore = self.datastore.clone();
@@ -198,6 +199,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
             admin_identity: admin_account,
             owner_identity: admin_account,
             migration: None,
+            package: app_package.clone(),
+            version: app_version.clone(),
             auto_join: true,
         };
         if let Err(err) = MetaRepository::new(&self.datastore).save(&group_id, &reservation_meta) {
@@ -229,6 +232,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
+                    package: app_package.clone(),
+                    version: app_version.clone(),
                 };
 
                 // Write the group's local rows. If any write fails partway,
@@ -717,6 +722,8 @@ mod tests {
                     owner_identity: admin_account,
                     migration: None,
                     auto_join: true,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .expect("save meta");
@@ -865,6 +872,8 @@ mod tests {
                     owner_identity: crate::test_support::account_for(&admin),
                     migration: None,
                     auto_join: true,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .expect("save meta");

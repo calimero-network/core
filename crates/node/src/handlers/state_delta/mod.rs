@@ -2519,6 +2519,8 @@ mod tests {
                         owner_identity: dummy_pk,
                         migration: None,
                         auto_join: false,
+                        package: Box::default(),
+                        version: Box::default(),
                     },
                 )
                 .expect("save group meta");

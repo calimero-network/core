@@ -3400,6 +3400,8 @@ mod tests {
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -3470,6 +3472,8 @@ mod tests {
                     owner_identity: calimero_primitives::identity::AccountId::from([0x08; 32]),
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -3538,6 +3542,8 @@ mod tests {
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -3582,6 +3588,8 @@ mod tests {
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();
@@ -3630,6 +3638,8 @@ mod tests {
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     migration: None,
                     auto_join: false,
+                    package: Box::default(),
+                    version: Box::default(),
                 },
             )
             .unwrap();

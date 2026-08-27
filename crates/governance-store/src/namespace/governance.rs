@@ -998,6 +998,8 @@ impl<'a> NamespaceGovernance<'a> {
                 owner_identity: placeholder_admin,
                 migration: None,
                 auto_join: true,
+                package: Box::default(),
+                version: Box::default(),
             };
             MetaRepository::new(self.store).save(&gid, &meta)?;
         }

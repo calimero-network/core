@@ -227,6 +227,8 @@ pub async fn join_namespace(
             migration: None,
             created_at: 0,
             auto_join: true,
+            package: Box::default(),
+            version: Box::default(),
         };
         MetaRepository::new(store)
             .save(&group_id, &meta)

@@ -45,6 +45,8 @@ fn meta_with_bytecode_id(bytecode_id: [u8; 32]) -> GroupMetaValue {
         owner_identity: AccountId::from([0x01; 32]),
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     }
 }
 

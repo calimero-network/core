@@ -84,6 +84,8 @@ fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
         owner_identity: admin,
         migration: None,
         auto_join: true,
+        package: Box::default(),
+        version: Box::default(),
     }
 }
 
