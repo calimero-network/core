@@ -11235,4 +11235,60 @@ mod target_application_row_seeding {
             "an unmatched cascade must seed nothing"
         );
     }
+
+    /// A subgroup inherits its parent's target application, so it must inherit the
+    /// coordinates that address it. The subgroup has no upgrade ladder of its own -
+    /// no upgrade op has ever applied to it - so coordinates recovered by scanning
+    /// that ladder come back empty and leave the inherited target unfetchable.
+    #[test]
+    fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
+        use calimero_app_downloader::registry::stored_coords;
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+        let ns_id = [0x5A; 32];
+        let sub_id = [0x5B; 32];
+        let store = test_store();
+        let ((admin_sk, _admin_pk), admin_account) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+
+        let ns_gid = ContextGroupId::from(ns_id);
+        let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        parent_meta.package = "com.acme.app".into();
+        parent_meta.version = "2.0.0".into();
+        MetaRepository::new(&store)
+            .save(&ns_gid, &parent_meta)
+            .unwrap();
+
+        let op = SignedNamespaceOp::sign(
+            &admin_sk,
+            ns_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: admin_account,
+                group_id: sub_id.into(),
+                parent_id: ns_id.into(),
+                restricted: false,
+            }),
+        )
+        .unwrap();
+        NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .unwrap();
+
+        let sub_meta = MetaRepository::new(&store)
+            .load(&ContextGroupId::from(sub_id))
+            .unwrap()
+            .expect("the subgroup must have a meta row");
+        assert_eq!(
+            sub_meta.target_application_id, parent_meta.target_application_id,
+            "the subgroup inherits its parent's target"
+        );
+        assert_eq!(
+            stored_coords(&sub_meta.package, &sub_meta.version)
+                .map(|c| (c.package.to_owned(), c.version.to_owned())),
+            Some(("com.acme.app".to_owned(), "2.0.0".to_owned())),
+            "an inherited target the subgroup cannot address is unfetchable"
+        );
+    }
 }
