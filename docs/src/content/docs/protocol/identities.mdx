@@ -20,7 +20,7 @@ Every node has an Ed25519 keypair used only by the network layer. Its public key
 
 ## Member identity — authoring operations
 
-Authority lives in the **member identity**: a single Ed25519 keypair per node, generated on first use and persisted. It is the `author` on every operation and the key that signs an operation's `id` (see [Operations & the DAG](/protocol/operations/)). Membership, roles, and capabilities (defined in [Governance](/protocol/governance/)) are expressed in terms of the **account** this key writes as, not the key itself.
+Authority lives in the **member identity**: a single Ed25519 keypair per node, provisioned at `merod init` and persisted. (A node initialised before that was the case mints it on its first namespace join instead — the key is the same either way, only the moment differs.) It is the `author` on every operation and the key that signs an operation's `id` (see [Operations & the DAG](/protocol/operations/)). Membership, roles, and capabilities (defined in [Governance](/protocol/governance/)) are expressed in terms of the **account** this key writes as, not the key itself.
 
 One key, not one per namespace. It is recorded as the node's device signing key, and a device is one installation rather than one installation per scope. A key that varied by namespace would also have bought nothing: it is published in every namespace's device binding, so it correlates a node across namespaces exactly as a shared one does.
 

@@ -102,8 +102,9 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
             Ok(None) => {
                 return ApiError {
                     status_code: StatusCode::NOT_FOUND,
-                    message: "this node holds an account root but no signing identity yet; \
-                          one is provisioned when it first joins a namespace"
+                    message: "this node holds an account root but no signing identity. \
+                          `merod init` provisions one; a node initialised before that \
+                          did so mints it on its first namespace join"
                         .to_owned(),
                 }
                 .into_response();
