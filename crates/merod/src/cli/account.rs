@@ -37,6 +37,8 @@ pub struct AccountCommand {
 enum AccountSubcommands {
     /// Print an account's id and root PUBLIC key, revealing no secret
     Root(RootCommand),
+    /// Print this node's device id and public keys — what `sign-cert` certifies
+    Device(DeviceCommand),
     /// Print this node's account root as a 24-word recovery phrase
     Export(ExportCommand),
     /// Restore an account root from a recovery phrase
@@ -119,6 +121,7 @@ impl AccountCommand {
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         match self.action {
             AccountSubcommands::Root(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::Device(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Export(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Import(cmd) => cmd.run(root_args).await,
             AccountSubcommands::RevokeProof(cmd) => cmd.run(root_args).await,
@@ -906,6 +909,57 @@ mod tests {
             "the account id must be the content address of the printed public key",
         );
     }
+
+    /// The three values `account device` prints must be the ones a certificate is
+    /// signed over — and they must agree with what the store holds.
+    ///
+    /// Printing a plausible-but-wrong key here is the worst failure this command
+    /// has: the operator certifies it, the certificate verifies as a signature,
+    /// and a peer then refuses the binding. Nothing local points at the cause.
+    #[test]
+    fn the_printed_device_values_come_from_the_store() {
+        use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+        use calimero_store::config::StoreConfig;
+        use calimero_store::Store;
+        use calimero_store_rocksdb::RocksDB;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("data")).expect("utf8 path");
+        let store = Store::open::<RocksDB>(&StoreConfig::new(path)).expect("open");
+
+        // What `merod init --no-account-root --account-root <pk>` leaves behind.
+        let root_pk = PrivateKey::from([4u8; 32]).public_key();
+        let genesis = calimero_account::AccountGenesis::new(root_pk);
+        let device = NodeDeviceRepository::new(&store)
+            .adopt_account(genesis)
+            .expect("adopt");
+        let signing_key = NamespaceRepository::new(&store)
+            .provision_node_identity()
+            .expect("provision");
+
+        // The command reads exactly these, so assert the store agrees with itself
+        // rather than re-deriving anything: a second derivation could be wrong in
+        // the same way as the first.
+        let reread = NodeDeviceRepository::new(&store)
+            .get()
+            .expect("read")
+            .expect("device present");
+
+        assert_eq!(reread.device(), device.device());
+        assert_eq!(reread.account, genesis.account_id());
+        assert_eq!(
+            reread.kem_public_key().as_bytes(),
+            device.kem_public_key().as_bytes(),
+        );
+        assert_eq!(
+            NamespaceRepository::new(&store)
+                .node_identity()
+                .expect("read")
+                .expect("present")
+                .public_key,
+            signing_key,
+        );
+    }
 }
 
 /// Adopt a device certificate this account's root signed somewhere else.
@@ -1053,6 +1107,82 @@ impl RootCommand {
              and travels in every genesis. The private root leaves a node only via \
              `merod account export`."
         );
+        Ok(())
+    }
+}
+
+/// Report this node's device: the three values a certificate is signed over.
+///
+/// `merod account sign-cert` is offline by design — with `--from` it opens no
+/// store and contacts no node. Its **inputs** were not: the only way to learn
+/// what to certify was `GET /admin-api/identity`, which needs a *running* node.
+/// That is exactly the machine the cold-storage posture says should not be
+/// required, so an operator with a stopped node and a root on another machine
+/// could not assemble a `sign-cert` invocation at all.
+///
+/// Reads the datastore directly, so the node must be **stopped** — RocksDB's lock
+/// is exclusive, as for `export` and `import`.
+///
+/// Nothing here is secret. All three are published in this device's binding: the
+/// id names a replica, the signing key is what op signatures verify against, and
+/// the agreement key is what wrapped scope keys are addressed to. The secrets that
+/// match the latter two are reachable from no command and no route.
+#[derive(Debug, Parser)]
+pub struct DeviceCommand {}
+
+impl DeviceCommand {
+    #[expect(
+        clippy::print_stdout,
+        reason = "these are the values an operator pastes into `sign-cert`, so they \
+                  go to stdout for piping rather than through a formatter"
+    )]
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let store = open_store(root_args).await?;
+
+        let device = NodeDeviceRepository::new(&store)
+            .get()
+            .wrap_err("could not read this node's device row")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has no device yet. One is minted by `merod init \
+                     --no-account-root --account-root <HEX>`, or the first time the \
+                     node takes part in a namespace"
+                )
+            })?;
+
+        // The signing key lives beside the device rather than in its row: it is
+        // the key ops verify against, and it is provisioned at init.
+        let signing_key = calimero_governance_store::NamespaceRepository::new(&store)
+            .node_identity()
+            .wrap_err("could not read this node's signing identity")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has a device but no signing identity, which should not \
+                     happen: `merod init` provisions one. A node initialised before \
+                     that mints it on its first namespace join"
+                )
+            })?
+            .public_key;
+
+        println!("Account:       {}", device.account);
+        println!("Device:        {}", hex::encode(device.device().as_bytes()));
+        println!(
+            "Signing key:   {}",
+            hex::encode(AsRef::<[u8; 32]>::as_ref(&signing_key))
+        );
+        println!(
+            "Agreement key: {}",
+            hex::encode(device.kem_public_key().as_bytes())
+        );
+        println!();
+        println!(
+            "Certify this device wherever its account root lives:\n\n  merod account \
+             sign-cert --device {} --sign-pk {} --kem-pk {} --from <phrase-file>\n",
+            hex::encode(device.device().as_bytes()),
+            hex::encode(AsRef::<[u8; 32]>::as_ref(&signing_key)),
+            hex::encode(device.kem_public_key().as_bytes()),
+        );
+        println!("Then bring the result back with `merod account import-cert`.");
         Ok(())
     }
 }
