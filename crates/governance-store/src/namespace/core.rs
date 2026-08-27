@@ -644,6 +644,52 @@ impl<'a> NamespaceRepository<'a> {
         self.note_participation(namespace_id)
     }
 
+    /// Mint this node's signing keypair now, if it has none.
+    ///
+    /// Takes no namespace, unlike [`Self::participate_in`], because there is no
+    /// namespace yet — this runs at `merod init`, before the node has joined
+    /// anything. It writes the keypair only, never a participation marker: the
+    /// two are separate questions, and claiming participation in nothing would
+    /// put this node into `participating_namespaces` for a namespace it has never
+    /// seen.
+    ///
+    /// # Why init needs this at all
+    ///
+    /// The keypair was minted lazily, on first join. That is invisible for an
+    /// ordinary node, which signs its own device certificate at that same moment.
+    /// It is fatal for a node whose account root lives elsewhere: the certificate
+    /// has to be signed over this key BEFORE the join, by a root this node does
+    /// not hold — and the key did not exist until the join it was meant to
+    /// enable. Two of the three values `merod account sign-cert` needs existed at
+    /// cold start and the third did not.
+    ///
+    /// Safe for every node, not just that one: [`Self::participate_in`] notes
+    /// participation and then reads the existing keypair, so a key provisioned
+    /// here is *reused* at first join rather than replaced — which
+    /// [`Self::store_identity`] would refuse outright.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn provision_node_identity(&self) -> EyreResult<PublicKey> {
+        if let Some(existing) = self.node_identity()? {
+            return Ok(existing.public_key);
+        }
+
+        let private_key = PrivateKey::random(&mut OsRng);
+        let public_key = private_key.public_key();
+
+        let mut handle = self.store.handle();
+        handle.put(
+            &NodeIdentity::new(),
+            &NodeIdentityValue {
+                public_key: *public_key,
+                private_key: *private_key.as_bytes(),
+            },
+        )?;
+
+        Ok(public_key)
+    }
+
     /// The key this node signs with, regardless of scope.
     ///
     /// [`Self::identity`] gates the same key on participation, because its
