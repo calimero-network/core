@@ -400,15 +400,11 @@ struct EmitRung {
     bytecode_id: [u8; 32],
     size: u64,
     migration: Option<MigrationParams>,
-    /// This rung's own coordinates: an intermediate is a different release of
-    /// the same package, so the target's version would name the wrong bytes.
-    coords: RegistryCoordsBuf,
+    coords: RegistryCoordsBuf, // this rung's own: an intermediate is another release
 }
 
-/// The coordinates an emitted op must carry, for every path that emits one. A
-/// row the registry cannot address is refused here rather than signed onto an
-/// immutable op no receiver resolves. Gates on the row's raw version, which a
-/// registry path never needs to be semver.
+/// The coordinates an emitted op must carry. An unaddressable row is refused
+/// here rather than signed onto an immutable op no receiver can resolve.
 pub fn registry_coords(meta: &ApplicationMeta) -> eyre::Result<RegistryCoords<'_>> {
     stored_coords(&meta.package, &meta.version).ok_or_else(|| {
         eyre::eyre!(
@@ -1762,10 +1758,8 @@ mod tests {
         )
     }
 
-    /// A row written before coordinates existed pairs the `unknown`/`0.0.0`
-    /// placeholder with a publisher-supplied URL. Signing that pair onto an
-    /// immutable op would aim every receiver at a URL nobody published, so the
-    /// upgrade is refused instead.
+    /// A pre-coordinates row pairs the `unknown`/`0.0.0` placeholder with a
+    /// publisher URL; signing that on would aim receivers at nothing.
     #[test]
     fn placeholder_coordinates_never_reach_the_wire() {
         const URL: &str = "https://apps.calimero.network/artifacts/kv/1.0.0/kv-1.0.0.mpk";

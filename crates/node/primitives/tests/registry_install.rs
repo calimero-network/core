@@ -1,6 +1,5 @@
-//! The registry source, driven through the downloader's one entry point: the
-//! bytes must verify against the blob id governance named, and the row must
-//! land under the application id governance named.
+//! The registry source through the downloader's one entry point: bytes verify
+//! against the blob id governance named, and the row lands under its app id.
 
 use std::sync::Arc;
 
@@ -180,9 +179,8 @@ async fn absent_coordinates_are_written_as_absent() {
     assert!(row.version.is_empty(), "got version {:?}", row.version);
 }
 
-/// A bundle that verifies byte-for-byte but names a different application must
-/// leave nothing behind: no bytes, and no row under the id it does name - that
-/// row is another application's, and pointing it at a released blob breaks it.
+/// A bundle that verifies but names another application must leave nothing:
+/// that row belongs to someone else, and a released blob would break it.
 #[tokio::test]
 async fn a_failed_bind_writes_no_row_and_releases_every_blob() {
     let (bundle, derived_id) = common::signed_bundle_bytes(PACKAGE, VERSION, &["alpha", "beta"]);
@@ -294,9 +292,8 @@ async fn a_bare_install_reports_unpublished_coordinates_as_absent() {
     let _ignored = server.await;
 }
 
-/// A bare install has no id to check the artifact against, so the coordinates
-/// are the only promise the registry made. A signed bundle for some other
-/// package still satisfies its own signature - it must not install here.
+/// A bare install has no id to check against, so the coordinates are the only
+/// promise made - another package's bundle signs just as validly.
 #[tokio::test]
 async fn a_bare_install_refuses_a_substituted_package() {
     let (bundle, substituted_id) =
@@ -329,10 +326,8 @@ async fn a_bare_install_refuses_a_substituted_package() {
     );
 }
 
-/// An application id is derived from (package, signer) and is therefore
-/// version-stable, so a sibling release of the SAME package - an older,
-/// vulnerable one, say - satisfies the signature, the package check and the
-/// derived id alike. Only the version the caller asked for separates them.
+/// An id is derived from (package, signer) and so is version-stable: a sibling
+/// release passes signature, package and id alike. Only the version separates them.
 #[tokio::test]
 async fn a_bare_install_refuses_a_substituted_version() {
     let (bundle, _id) = common::minimal_signed_bundle_bytes(PACKAGE, "0.9.0");

@@ -11,9 +11,8 @@ use tracing::debug;
 
 use crate::source::{AppRequest, AppSource};
 
-/// The peer route's one capability. Deliberately not part of
-/// [`ApplicationStore`](crate::port::ApplicationStore): an http node builds no
-/// [`DhtRegistry`], so it holds no handle that could reach a peer at all.
+/// The peer route's one capability, kept out of `ApplicationStore` so an http
+/// node holds no handle that could reach a peer at all.
 #[async_trait]
 pub trait PeerBlobs: Debug + Send + Sync + 'static {
     /// Fetch from peers, authorized by context membership, storing what

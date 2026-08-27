@@ -82,12 +82,8 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
 /// group's ladder, or `None` when it is already at the group's current
 /// bytecode. The LAST occurrence of `bound` positions the context (an
 /// A→B→A re-pin means the group currently sits at the later A). A bound
-/// blob the ladder never recorded (the creation version) starts from the
-/// first rung.
-///
-/// A hop the ladder cannot name is no hop: every op that advances
-/// `GroupMeta.bytecode_id` appends its rung first, so a ladder with nothing
-/// past `bound` means the group has not moved past it either.
+/// blob the ladder never recorded (the creation version) starts from the first
+/// rung; a ladder with nothing past `bound` means the group has not moved.
 pub fn next_rung(
     ladder: &[LadderRung],
     bound: [u8; 32],

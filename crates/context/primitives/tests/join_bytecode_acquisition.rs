@@ -1,6 +1,5 @@
-//! The join bootstrap binds a context to the application id governance named
-//! and reaches the bytecode through the one resolver - never re-deriving the
-//! id, and never fetching the source some other node happened to record.
+//! The join bootstrap binds to the id governance named and reaches bytecode
+//! through the one resolver - never re-deriving, never another node's source.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -240,10 +239,8 @@ impl Joiner {
     }
 }
 
-/// A raw-wasm id folds in the installing node's own source and metadata, so a
-/// joiner that re-derives it can never reproduce the id governance named. The
-/// bootstrap must therefore adopt that id, and must not turn a source it
-/// cannot reach into a hard failure that strands the joiner forever.
+/// A raw-wasm id folds in the installer's own source, so a joiner must adopt
+/// the id governance named - and an unreachable source must not strand it.
 #[actix::test]
 async fn bootstrap_keeps_the_row_under_the_governance_named_id() {
     let joiner = Joiner::dht().await;
@@ -352,10 +349,8 @@ fn refusing_registry() -> (url::Url, Arc<AtomicUsize>) {
     (base, hits)
 }
 
-/// The join seam: an application whose coordinates governance carried must be
-/// reached through this node's OWN registry, and through nothing else. The op
-/// and the row each pass their own unit tests - only a bootstrap that runs both
-/// catches the pair going missing between them.
+/// The join seam: coordinates governance carried must resolve through this
+/// node's own registry. Only a test spanning op and row catches them going missing.
 #[actix::test]
 async fn bootstrap_asks_the_registry_when_the_row_names_coordinates() {
     let (base, hits) = refusing_registry();

@@ -11222,11 +11222,8 @@ mod account_plane_apply {
 // An upgrade op seeds the row for the application it targets.
 // -----------------------------------------------------------------------
 
-/// A raw-wasm upgrade names a NEW application id, and a peer holding no row for
-/// it was stranded: the lazy migrate bailed with "application with id ... not
-/// found", so activation was never recorded and the state-sync gate stayed
-/// armed forever - at warn level only, so silently. The apply seeds the row the
-/// migrate binds the fetched bytes to.
+/// A raw-wasm upgrade names a new application id; a peer holding no row for it
+/// stranded silently. The apply seeds the row the migrate binds its bytes to.
 mod target_application_row_seeding {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
@@ -11434,10 +11431,8 @@ mod target_application_row_seeding {
         );
     }
 
-    /// A subgroup inherits its parent's target application, so it must inherit the
-    /// coordinates that address it. The subgroup has no upgrade ladder of its own -
-    /// no upgrade op has ever applied to it - so coordinates recovered by scanning
-    /// that ladder come back empty and leave the inherited target unfetchable.
+    /// A subgroup inherits its parent's target, so it must inherit the coordinates
+    /// too - it has no ladder of its own to recover them from.
     #[test]
     fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
         let ns_id = [0x5A; 32];

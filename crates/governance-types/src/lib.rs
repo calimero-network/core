@@ -169,13 +169,8 @@ id_newtype! {
 /// `CascadeTargetApplicationSet` / `CascadeGroupMigrationSet`, which renumbers
 /// every later variant, and added `to_state_version` to `CascadeUpgrade` so a
 /// non-initiator's upgrade record can carry the target ABI state version the
-/// rollup compares against.
-///
-/// v11: `TargetApplicationSet`, `CascadeUpgrade` and `ContextRegistered` gained
-/// mandatory `package`/`version`, so a receiver resolves the application from
-/// its own registry instead of depending on the publisher staying online. Adding
-/// fields to existing variants changes their content hash, so a peer on v10 must
-/// reject rather than mis-decode.
+/// rollup compares against. v11 added mandatory coordinates to three variants,
+/// changing their content hash, so a v10 peer must reject rather than mis-decode.
 pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 11;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
@@ -368,11 +363,8 @@ pub enum GroupOp {
     },
     /// Default capability bitmask for new members.
     DefaultCapabilitiesSet { capabilities: MemberCapabilities },
-    /// Update target application and bytecode id in group metadata.
-    ///
-    /// `package`/`version` let a receiver resolve the artifact from its OWN
-    /// registry. Every application is a signed `.mpk` whose manifest carries
-    /// both, so an app without coordinates cannot exist.
+    /// Update target application and bytecode id. Coordinates let a receiver
+    /// resolve from its own registry; every signed `.mpk` manifest carries both.
     TargetApplicationSet {
         bytecode_id: BytecodeId,
         target_application_id: ApplicationId,
@@ -387,12 +379,8 @@ pub enum GroupOp {
         /// Where the registering node installed the application from. Recorded
         /// on the receiver's application stub; only `http(s)` is fetchable.
         source: String,
-        /// Which service from the application bundle this context runs.
-        /// None for single-service applications.
-        service_name: Option<String>,
-        /// The application's registry coordinates, resolved against the JOINER's
-        /// own registry.
-        package: String,
+        service_name: Option<String>, // None for single-service applications
+        package: String,              // coordinates, resolved against the JOINER's registry
         version: String,
     },
     /// Unregister a context from this group.
@@ -503,9 +491,7 @@ pub enum GroupOp {
         to_state_version: u32,
         migration: Option<Vec<u8>>,
         cascade_hlc: HybridTimestamp,
-        /// Target's registry coordinates, resolved against each receiver's own
-        /// registry.
-        package: String,
+        package: String, // coordinates, resolved against each receiver's registry
         version: String,
     },
     /// Carrier for a forward-secrecy key rotation that follows a self-leave.

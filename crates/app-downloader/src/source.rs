@@ -20,14 +20,11 @@ pub mod http;
 /// the authority the downloader verifies whatever arrives against.
 #[derive(Clone, Copy, Debug)]
 pub struct AppRequest<'a> {
-    /// The id governance named. Absent on a bare install by coordinates,
-    /// where the verified manifest is what decides the id.
-    pub application_id: Option<ApplicationId>,
+    pub application_id: Option<ApplicationId>, // absent on a bare install: the manifest decides
     pub package: &'a str,
     pub version: &'a str,
     pub bytecode_id: Option<BlobId>,
-    /// Required by the dht source, which authorizes by context membership.
-    pub context_id: Option<&'a ContextId>,
+    pub context_id: Option<&'a ContextId>, // the dht source authorizes by membership
 }
 
 #[async_trait]

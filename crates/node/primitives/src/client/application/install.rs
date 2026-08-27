@@ -59,8 +59,7 @@ impl NodeClient {
     /// Install a `.mpk`. The signature is mandatory and every wasm artifact is
     /// digest-checked before any bytes are stored.
     ///
-    /// `expected` is the coordinates the caller asked for, on the paths that
-    /// address an artifact by coordinates rather than by content.
+    /// `expected` is what the caller asked for, on coordinate-addressed paths.
     pub(super) async fn install_bundle(
         &self,
         bundle_data: Arc<[u8]>,
@@ -140,9 +139,8 @@ impl NodeClient {
         )
     }
 
-    /// Install a signed `.mpk` from disk. Nothing else is an application: the
-    /// id is derived from the manifest's (package, signer), so a payload with no
-    /// manifest has no id every node can re-derive.
+    /// Install a signed `.mpk` from disk. The id derives from the manifest's
+    /// (package, signer), so a payload without one has no re-derivable id.
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,
@@ -171,11 +169,8 @@ impl NodeClient {
             .await
     }
 
-    /// Install `package@version` from the one source this node is configured
-    /// with. `Ok(None)` means the source has nothing published there yet.
-    ///
-    /// Nothing here names an application id: the verified manifest decides it,
-    /// which is why the requested package has to be checked against it.
+    /// Install `package@version` from this node's one source; `Ok(None)` means
+    /// nothing published there. The manifest decides the id, so it is checked.
     pub async fn install_by_coords(
         &self,
         package: &str,

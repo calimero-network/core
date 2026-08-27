@@ -7608,10 +7608,8 @@ fn context_registered_stub_records_only_fetchable_sources() {
     }
 }
 
-/// The join seam. Coordinates a `ContextRegistered` op carries must survive
-/// onto the joiner's stub row - that row is what the fetch path reads back.
-/// The op and the row each pass their own unit tests, so only a test spanning
-/// both can catch the coordinates going missing between them.
+/// Coordinates a `ContextRegistered` op carries must survive onto the stub row
+/// the fetch path reads back; only a test spanning both catches the loss.
 #[test]
 fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
     use calimero_app_downloader::registry::stored_coords;

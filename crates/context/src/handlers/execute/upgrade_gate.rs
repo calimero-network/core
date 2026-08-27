@@ -392,9 +392,8 @@ mod tests {
         apply_local_signed_group_op(store, &op).expect("apply TargetApplicationSet");
     }
 
-    /// The bundle-upgrade seam. A bundle's application id is version-stable, so
-    /// a member already running the previous version keeps its row untouched -
-    /// which is why the row cannot be the coordinate carrier for the target.
+    /// A bundle's id is version-stable, so a member on the previous version keeps
+    /// its row - which is why the row cannot carry the target's coordinates.
     #[test]
     fn an_installed_member_still_reads_the_new_targets_coordinates() {
         let store = store();

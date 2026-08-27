@@ -1175,17 +1175,14 @@ pub struct GroupOpHeadValue {
     pub dag_heads: Vec<[u8; 32]>,
 }
 
-/// The application a group runs, with the coordinates that address it. One
-/// field so a path that copies a target - a subgroup inheriting its parent's -
-/// cannot take the id and leave the release it names behind.
+/// The application a group runs, with the coordinates addressing it. One field,
+/// so copying a target cannot take the id and leave the release behind.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupTarget {
     pub application_id: ApplicationId,
     pub bytecode_id: [u8; 32],
-    /// Empty on a target that was never addressable (a cold-start seed, before
-    /// governance names one). Read both halves through `stored_coords`.
-    pub package: Box<str>,
+    pub package: Box<str>, // empty until governance names one; read via `stored_coords`
     pub version: Box<str>,
 }
 
@@ -1316,11 +1313,8 @@ pub struct GroupUpgradeValue {
     pub to_state_version: u32,
 }
 
-/// One rung of a group's upgrade ladder: the bytecode blob (`bytecode_id`), the
-/// application id an upgrade op targeted, and that release's registry
-/// coordinates - carried per rung because a bundle's application id is
-/// version-stable and so names every rung equally. Stored in
-/// causal-application order inside [`UpgradeLadderValue`].
+/// One rung of a group's upgrade ladder, in causal order. Coordinates are per
+/// rung because a bundle's application id is stable across every release.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct LadderRung {

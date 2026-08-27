@@ -1865,9 +1865,8 @@ async fn test_bundle_validation_valid_package_names() {
     }
 }
 
-/// Raw wasm is not an application: only a signed `.mpk` carries the manifest
-/// whose (package, signer) every node re-derives the same id from. The name is
-/// not the check - both spellings of the same bytes must be refused.
+/// Raw wasm is not an application: only a signed `.mpk` carries a re-derivable
+/// id. The filename is not the check, so both spellings must be refused.
 #[tokio::test]
 async fn a_raw_wasm_payload_is_refused() {
     let temp_dir = TempDir::new().unwrap();

@@ -76,9 +76,8 @@ pub struct ConfigFile {
     #[serde(default)]
     pub dag_compaction: DagCompactionConfig,
 
-    /// Where this node pulls application bytecode from (`[registry]`). An absent
-    /// section is `http` with no `base_url`, which resolves nothing and serves
-    /// nothing - `merod init` writes the section, an upgraded node must add it.
+    /// Where bytecode comes from. An absent section is `http` with no `base_url`,
+    /// resolving and serving nothing; `merod init` writes it, an upgrade must add it.
     #[serde(default)]
     pub registry: calimero_app_downloader::registry::RegistryConfig,
 }

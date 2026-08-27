@@ -14,11 +14,8 @@ use serde::{Deserialize, Serialize};
 pub struct Empty;
 
 // -------------------------------------------- Application API --------------------------------------------
-/// Install by registry coordinates. There is no URL: the node fetches from the
-/// one source its own `[registry]` names, which is what keeps this unforgeable.
-///
-/// `deny_unknown_fields` so a pre-coordinates body carrying `url` is refused
-/// outright, never served from the registry while its URL is dropped.
+/// Install by coordinates: no URL, so the node can only fetch from its own
+/// `[registry]`. `deny_unknown_fields` refuses a stale body carrying `url`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallApplicationRequest {

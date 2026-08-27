@@ -1,7 +1,5 @@
-//! Fixtures shared by the bundle integration tests.
-//!
-//! Each `tests/*.rs` file is its own crate, so a helper only some of them
-//! call via `mod common;` still reads as dead code to the others.
+//! Fixtures shared by the bundle integration tests. Each `tests/*.rs` is its
+//! own crate, so a helper only some of them call reads as dead code elsewhere.
 #![allow(dead_code)]
 
 use std::fs;
@@ -83,9 +81,7 @@ pub const FAKE_PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7E
 /// peer leg so a test can drive each without a network.
 pub enum PeerBehavior {
     Serves(Vec<u8>),
-    /// Holds the blob and is subscribed to the context, but never announced a
-    /// provider record - what every application bytecode blob looks like.
-    ServesUnannounced(Vec<u8>),
+    ServesUnannounced(Vec<u8>), // holds it, never announced - every bytecode blob
     NoProviders,
     QueryFails,
 }
@@ -93,9 +89,7 @@ pub enum PeerBehavior {
 pub struct FakePeer {
     pub peer_id: PeerId,
     pub behavior: PeerBehavior,
-    /// Every blob query this peer was asked, so a route that must not run can
-    /// be pinned at zero rather than inferred from its result.
-    pub queries: Arc<AtomicUsize>,
+    pub queries: Arc<AtomicUsize>, // pinned at zero when a route must not run
 }
 
 impl Actor for FakePeer {
@@ -226,9 +220,8 @@ pub async fn blob_id_of(bytes: &[u8]) -> BlobId {
     blob_id
 }
 
-/// Pack a `.mpk` from an explicit list of tar entries, so a test can ship a
-/// decoy or duplicate entry the way a hostile mirror would. Generic over the
-/// path so a test can also ship one no `str` can hold.
+/// Pack a `.mpk` from explicit tar entries, so a test can ship a decoy the way
+/// a hostile mirror would. Generic over the path to allow non-`str` ones.
 pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[u8])]) -> Vec<u8> {
     let path = dir.path().join(name);
     let encoder = GzEncoder::new(fs::File::create(&path).unwrap(), Compression::default());
@@ -245,10 +238,8 @@ pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[
     fs::read(&path).unwrap()
 }
 
-/// Create a test NodeClient with temporary directories.
-///
-/// `datastore` lets a caller inject a custom Store; `None` defaults to
-/// `InMemoryDB` (no file I/O, faster tests).
+/// A test NodeClient with temporary directories. `datastore` injects a custom
+/// Store; `None` defaults to `InMemoryDB`.
 pub async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempDir, TempDir) {
     create_test_node_client_with(datastore, NetworkClient::new(LazyRecipient::new())).await
 }

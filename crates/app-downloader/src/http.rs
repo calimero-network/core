@@ -9,9 +9,8 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Maximum size of a fetched application artifact; bounds memory against a hostile or lying `Content-Length`.
 pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// The one artifact client. Its target is always the operator's own configured
-/// registry, which is routinely private or air-gapped and redirects to storage,
-/// so only the scheme and the hop cap are enforced on a redirect.
+/// The one artifact client. Its target is the operator's own registry - often
+/// private - so redirects enforce only the scheme and the hop cap.
 pub fn registry_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)

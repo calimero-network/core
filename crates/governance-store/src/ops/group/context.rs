@@ -272,9 +272,8 @@ pub(crate) fn application_version(store: &Store, id: &ApplicationId) -> String {
         .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
 }
 
-/// Give the lazy migrate an id to bind the target's fetched bytes to; without a
-/// row it bails and the state-sync gate stays armed forever. An existing row is
-/// the local install and may be ahead of this op, so it is never overwritten.
+/// Give the lazy migrate a row to bind fetched bytes to, or it bails and the
+/// sync gate stays armed. An existing row may be ahead, so it is never overwritten.
 pub(crate) fn seed_target_application_row(
     store: &Store,
     target_application_id: &ApplicationId,

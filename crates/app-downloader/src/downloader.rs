@@ -15,13 +15,9 @@ use crate::source::{AppRequest, AppSource};
 /// What a download left behind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome {
-    /// The row already named these bytes and they were already local.
-    AlreadyInstalled,
-    /// The bytes are now local and bound to the application row.
-    Installed,
-    /// The source had nothing yet. Never a fault: the caller keeps the version
-    /// it runs and retries on next access.
-    Unavailable,
+    AlreadyInstalled, // the row already named these bytes, and they were local
+    Installed,        // now local and bound to the application row
+    Unavailable,      // the source had nothing yet; never a fault, callers retry
 }
 
 /// Resolves a `bytecode_id` a group named into an installed, executable
@@ -37,16 +33,8 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
         Self { store, source }
     }
 
-    /// Acquire the bytecode `req` names from the one source this node is
-    /// configured with.
-    ///
-    /// On [`Outcome::AlreadyInstalled`] and [`Outcome::Installed`] the
-    /// application row for `req.application_id` names `req.bytecode_id` and
-    /// that blob is local - the application is installed and executable.
-    /// `Unavailable` means the source had no bytes yet, which callers retry on
-    /// next access rather than treat as a failure.
-    /// `Err` is a real fault: the bytes did not verify, the bundle would not
-    /// install, or storage failed.
+    /// Acquire what `req` names from this node's one configured source. On
+    /// either installed outcome the row names the blob and it is local.
     pub async fn download(&self, req: &AppRequest<'_>) -> eyre::Result<Outcome> {
         let Some(application_id) = req.application_id else {
             bail!(

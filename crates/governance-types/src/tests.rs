@@ -2047,8 +2047,7 @@ fn v10_target_application_set_bytes_are_rejected_not_misparsed() {
     // signature.
     #[derive(::borsh::BorshSerialize)]
     struct V10TargetApplicationSet {
-        /// `GroupOp` ordinal 7; the variant carried no coordinates in v10.
-        discriminant: u8,
+        discriminant: u8, // `GroupOp` ordinal 7; v10 carried no coordinates
         bytecode_id: [u8; 32],
         target_application_id: [u8; 32],
     }

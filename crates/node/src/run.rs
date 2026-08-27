@@ -154,8 +154,7 @@ pub struct NodeConfig {
     /// Resolved per-execution VM resource limits from the `[runtime.limits]`
     /// config section (unset fields fall back to `VMLimits::default`).
     pub vm_limits: calimero_runtime::logic::VMLimits,
-    /// Resolved `[registry]` settings, threaded onto the `NodeClient`.
-    pub registry: calimero_app_downloader::registry::RegistryConfig,
+    pub registry: calimero_app_downloader::registry::RegistryConfig, // threaded onto NodeClient
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
     /// never enable in production. Sourced from `merod run --mock-tee` and

@@ -1,7 +1,5 @@
-//! What this node hands a peer, and where it goes for an application itself.
-//! An http node resolves applications from its registry, so it neither serves
-//! nor announces application bytecode and never asks a peer for it - while
-//! user-data blob sharing, a different subsystem, stays open in both modes.
+//! An http node neither serves, announces, nor requests application bytecode.
+//! User-data blob sharing is a different subsystem and stays open in both modes.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -174,9 +172,8 @@ async fn a_node_with_no_applications_shares_everything() {
         .expect("gate read"));
 }
 
-/// The shape sync phase 2 finds: a row naming bytecode this node does not hold.
-/// The app was built locally, so it carries no coordinates - the case where a
-/// mode-blind fetch would quietly fall through to whatever peer answered.
+/// A row naming bytecode this node lacks, built locally so it carries no
+/// coordinates - where a mode-blind fetch falls through to any peer.
 async fn node_missing_its_bytecode(
     network: NetworkClient,
 ) -> (

@@ -77,9 +77,8 @@ mod tests {
         );
     }
 
-    /// The dangerous shape: an old client sends all four legacy fields, so
-    /// `package` is present and the body would otherwise deserialize - a 200
-    /// that installed from the registry while ignoring the URL it named.
+    /// The dangerous shape: an old client sends every legacy field, so the body
+    /// would otherwise deserialize and install while ignoring the URL it named.
     #[test]
     fn a_full_legacy_request_is_refused_rather_than_reinterpreted() {
         let err = parse(

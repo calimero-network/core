@@ -20,13 +20,8 @@ use super::bundle;
 use crate::client::NodeClient;
 
 impl NodeClient {
-    /// Acquire the bytecode `req` names from the one source this node is
-    /// configured with.
-    ///
-    /// On any outcome other than [`Outcome::Unavailable`] the application row
-    /// for `req.application_id` names `req.bytecode_id` and that blob is local.
-    /// Never errors: a fault is reported as `Unavailable`, which callers treat
-    /// as "keep the current version, retry later".
+    /// Acquire what `req` names from this node's one configured source. Never
+    /// errors - a fault reports `Unavailable`, meaning keep the current version.
     pub async fn acquire_bytecode(&self, req: &AppRequest<'_>) -> Outcome {
         let source = match app_source(&self.registry_config(), self.clone()) {
             Ok(source) => source,

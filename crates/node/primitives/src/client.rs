@@ -219,9 +219,7 @@ pub struct NodeClient {
     /// (NodeManager event handler) and readers (concurrent publishers)
     /// see the same map without an actor mailbox round-trip.
     known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
-    /// This node's `[registry]` settings, consulted by `acquire_bytecode`
-    /// before any peer fetch. Default (disabled) unless startup sets it.
-    registry: calimero_app_downloader::registry::RegistryConfig,
+    registry: calimero_app_downloader::registry::RegistryConfig, // the one source
 }
 
 impl NodeClient {

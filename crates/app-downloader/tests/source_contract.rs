@@ -90,9 +90,8 @@ async fn http_source_returns_none_on_404() {
     assert!(fetched.is_none());
 }
 
-/// A base no artifact URL can be built from is a misconfiguration the operator
-/// has to see, and it is the same on every fetch - so it is refused when the
-/// source is built, not once a download is already in flight.
+/// An unusable base is the same on every fetch, so it is refused when the
+/// source is built rather than once a download is in flight.
 #[test]
 fn http_source_refuses_a_base_it_cannot_address() {
     let base: Url = "mailto:ops@example.com".parse().expect("valid");
@@ -130,9 +129,8 @@ async fn dht_source_requires_a_context() {
     assert!(fetched.is_none());
 }
 
-/// Every application is a signed bundle whose manifest names it, so an empty
-/// coordinate is a caller bug. Reporting it as "not published" would describe
-/// a fetch that never ran.
+/// An empty coordinate is a caller bug; reporting it as "not published" would
+/// describe a fetch that never ran.
 #[tokio::test]
 async fn an_empty_coordinate_is_a_rejection_not_an_absence() {
     let (base, _server) = serve_once(b"never fetched".to_vec()).await;
@@ -153,8 +151,7 @@ async fn an_empty_coordinate_is_a_rejection_not_an_absence() {
 }
 
 /// A coordinate that cannot become a path segment is a rejection, not an
-/// absence: answering `Ok(None)` would let the caller report "not published"
-/// about a fetch that never happened.
+/// absence - `Ok(None)` would describe a fetch that never happened.
 #[tokio::test]
 async fn a_rejected_coordinate_names_itself_in_the_error() {
     let (base, _server) = serve_once(b"never fetched".to_vec()).await;

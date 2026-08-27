@@ -33,11 +33,8 @@ impl SyncManager {
             .bytecode)
     }
 
-    /// Acquire a context's application bytecode from the ONE source this node
-    /// is configured with - never from peers behind an operator's back.
-    ///
-    /// `false` is "the source had nothing yet", never a fault: the caller skips
-    /// what it was staging and the next access retries.
+    /// Acquire a context's bytecode from this node's one source, never from
+    /// peers behind an operator's back. `false` is "nothing yet", not a fault.
     pub(super) async fn acquire_context_bytecode(
         &self,
         context: &calimero_primitives::context::Context,

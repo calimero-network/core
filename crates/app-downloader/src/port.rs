@@ -16,12 +16,8 @@ pub struct InstalledApplication {
     pub source: String,
 }
 
-/// Everything [`ApplicationDownloader`](crate::ApplicationDownloader) needs
-/// from the node.
-///
-/// One trait with one implementation, and it exists only to keep this crate a
-/// leaf: the node client depends on the downloader, so the downloader cannot
-/// name the node client back. Do not grow it into a general node facade.
+/// What the downloader needs from the node. One impl; it exists only to keep
+/// this crate a leaf, so do not grow it into a general node facade.
 #[async_trait]
 pub trait ApplicationStore {
     /// Whether these bytes are already in the local blobstore.

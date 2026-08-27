@@ -38,9 +38,8 @@ impl FromStr for RegistryMode {
     }
 }
 
-/// `[registry]` config. An absent section is `http` with no `base_url`: it
-/// resolves nothing and, not being `dht`, serves no bytecode to peers either.
-/// `merod init` always writes one; an in-place upgrade has to add it.
+/// `[registry]` config. An absent section is `http` with no `base_url`, which
+/// resolves nothing and serves nothing; `merod init` always writes one.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct RegistryConfig {
@@ -145,10 +144,8 @@ fn is_safe_coord(coord: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// The coordinates a stored application row carries, for the fetch paths that
-/// read one back. The wire always names both halves, but a row is written
-/// before its install completes and its version parses as semver or not at all,
-/// so a row - unlike an op - can still be unaddressable.
+/// The coordinates a stored row carries. Unlike an op, a row is written before
+/// its install completes, so it can still be unaddressable.
 #[must_use]
 pub fn stored_coords<'a>(package: &'a str, version: &'a str) -> Option<RegistryCoords<'a>> {
     if package.is_empty() || version.is_empty() || (package, version) == PLACEHOLDER_COORDS {
