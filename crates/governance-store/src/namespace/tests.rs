@@ -7687,3 +7687,73 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
     );
     assert_eq!(registered.source.as_ref(), SOURCE);
 }
+
+/// A key provisioned at init must be REUSED at first join, not replaced.
+///
+/// This is the assumption the cold-start fix rests on. `store_identity` refuses to
+/// replace a *different* key — deliberately, because one node signs with one key —
+/// so if `participate_in` minted a fresh keypair instead of finding this one, every
+/// first join on every node would fail outright. That is a much worse bug than the
+/// one being fixed, which is why it gets its own test rather than being assumed.
+#[test]
+fn a_preprovisioned_signing_key_survives_the_first_join() {
+    let store = test_store();
+    let repo = NamespaceRepository::new(&store);
+    let ns = test_group_id();
+
+    let provisioned = repo.provision_node_identity().expect("provision at init");
+
+    let (_, joined_pk, _) = repo
+        .participate_in(&ns)
+        .expect("first join must not refuse");
+
+    assert_eq!(
+        joined_pk, provisioned,
+        "the join must reuse the provisioned key, not mint a second one",
+    );
+    assert_eq!(
+        repo.node_identity()
+            .expect("read")
+            .expect("present")
+            .public_key,
+        provisioned,
+        "and the stored key is still the provisioned one",
+    );
+}
+
+/// Provisioning is idempotent: a second call returns the first key.
+///
+/// `merod init` is re-runnable, and a second keypair would silently change what
+/// every namespace signs with.
+#[test]
+fn provisioning_the_signing_key_twice_keeps_the_first() {
+    let store = test_store();
+    let repo = NamespaceRepository::new(&store);
+
+    let first = repo.provision_node_identity().expect("first");
+    let second = repo.provision_node_identity().expect("second");
+
+    assert_eq!(first, second);
+}
+
+/// Provisioning must NOT claim participation in anything.
+///
+/// The keypair and the participation marker answer different questions, and
+/// `participating_namespaces` is what the node walks to decide where to sync. A
+/// marker written at init would enlist the node in a namespace it has never seen.
+#[test]
+fn provisioning_the_signing_key_joins_nothing() {
+    let store = test_store();
+    let repo = NamespaceRepository::new(&store);
+    let ns = test_group_id();
+
+    let _ = repo.provision_node_identity().expect("provision");
+
+    assert!(
+        !repo.participates_in(&ns).expect("query"),
+        "provisioning a key must not enlist the node anywhere",
+    );
+    // The namespace-gated reader still answers None: "who am I here" is not yet a
+    // question this node can answer, even though it has a key.
+    assert!(repo.identity_record(&ns).expect("read").is_none());
+}
