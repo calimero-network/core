@@ -732,9 +732,11 @@ jobs:
           - workflow: bundle-invitation
             file: workflows/bundle-invitation-test.yml
             app: kv-store
+          # Single node, and it installs the app itself - nothing to acquire.
           - workflow: kv-store-simple
             file: workflows/simple-store.yml
             app: kv-store
+            registry_fetch: "false"
           - workflow: kv-store-workflow-example
             file: workflows/workflow-example.yml
             app: kv-store
