@@ -115,7 +115,10 @@ steps:
     node: offline-root-node-2
     allow_running: true
     files:
-      /tmp/phrase.txt: >-
+      # Under /app/data because that is the node's data directory, and it is the
+      # only path merobox mounts into the container — anything else is written on
+      # the host where the container cannot see it, and the step says so.
+      /app/data/phrase.txt: >-
         legal winner thank year wave sausage worth useful legal winner thank year
         wave sausage worth useful legal winner thank year wave sausage worth title
     args:
@@ -128,7 +131,7 @@ steps:
       - --kem-pk
       - '{{kem_pk_2}}'
       - --from
-      - /tmp/phrase.txt
+      - /app/data/phrase.txt
     capture:
       credential_2: '^([0-9a-f]{100,})$'
     outputs:
