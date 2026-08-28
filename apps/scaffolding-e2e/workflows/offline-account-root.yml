@@ -36,14 +36,15 @@ nodes:
   # fixed phrase below — `merod account root --from` prints it, and it is public
   # by construction: hashed into the account id and carried in every genesis.
   #
-  # Base58 here on purpose. It is what `merod account root` prints, so this file
-  # exercises the encoding an operator actually copies rather than the one that
-  # happened to be convenient.
+  # Hex, which is what `merod account root` prints, so this file exercises the
+  # encoding an operator actually copies. It was base58 for the same reason until
+  # every id became hex; the bytes are unchanged, so the account asserted below is
+  # the same one.
   init_args:
     offline-root-node-2:
       - --no-account-root
       - --account-root
-      - D2RGSD4paRbDANmHeUC2L9Ljaon7vXy6HzaNeHnoQ7Tg
+      - b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb
 
 steps:
   - name: Login on offline-root-node-1

@@ -35,12 +35,8 @@ pub struct ContextIds {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_ids: Vec<ContextId>,
     /// Groups to observe for group-keyed events (membership, migration).
-    /// Hex-encoded, matching the group/namespace admin API's id representation.
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        with = "calimero_primitives::hash::hex_repr::vec"
-    )]
+    /// Hex-encoded, like every id — see `Hash`'s `Display`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_ids: Vec<Hash>,
 }
 

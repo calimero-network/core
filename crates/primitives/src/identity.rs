@@ -159,13 +159,13 @@ impl fmt::Display for PublicKey {
 
 impl From<PublicKey> for String {
     fn from(id: PublicKey) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
 impl From<&PublicKey> for String {
     fn from(id: &PublicKey) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
@@ -364,24 +364,38 @@ impl AsRef<[u8; 32]> for DeviceId {
 
 /// A member named either by the ACCOUNT it is, or by a KEY it signs with.
 ///
-/// The two cannot be confused: an account is 64 hex characters, and bs58 over
-/// 32 bytes is at most 44.
+/// A key is written `key:<hex>`; an account is bare hex.
+///
+/// The prefix exists because the two used to be told apart by their *encoding* —
+/// an account was 64 hex characters and bs58 over 32 bytes reached at most 44, so
+/// `from_str` tried account first and fell through to key. Once every id became
+/// hex that fallback could never be reached: both spellings are 64 hex characters,
+/// so every key would have parsed as an account. On `POST /groups/:id/members`
+/// that is not a parse error but a **different member added, silently**.
+///
+/// Account stays bare because that is what every caller already sends and what an
+/// account id looks like everywhere else. Only the ambiguous case is tagged, and a
+/// caller still sending a bare base58 key now fails loudly rather than being
+/// misread.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemberIdentity {
     Account(AccountId),
     Key(PublicKey),
 }
 
-/// A string was neither a 64-hex account id nor a bs58 public key.
+/// A string was neither a bare 64-hex account id nor a `key:`-tagged public key.
 #[derive(Clone, Copy, Debug, Error)]
-#[error("expected a 64-hex account id or a bs58 public key")]
+#[error("expected a 64-hex account id, or a public key written `key:<64-hex>`")]
 pub struct InvalidMemberIdentity;
+
+/// The tag that marks a member named by key rather than by account.
+pub const MEMBER_KEY_PREFIX: &str = "key:";
 
 impl fmt::Display for MemberIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Account(account) => fmt::Display::fmt(account, f),
-            Self::Key(key) => fmt::Display::fmt(key, f),
+            Self::Key(key) => write!(f, "{MEMBER_KEY_PREFIX}{key}"),
         }
     }
 }
@@ -390,10 +404,17 @@ impl FromStr for MemberIdentity {
     type Err = InvalidMemberIdentity;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // The tag decides, not the encoding. Falling through from one parse to the
+        // other is what broke when both became hex: the first branch always won.
+        if let Some(key) = s.strip_prefix(MEMBER_KEY_PREFIX) {
+            return key
+                .parse()
+                .map(Self::Key)
+                .map_err(|_: InvalidPublicKey| InvalidMemberIdentity);
+        }
         s.parse()
             .map(Self::Account)
-            .or_else(|_| s.parse().map(Self::Key))
-            .map_err(|_: InvalidPublicKey| InvalidMemberIdentity)
+            .map_err(|_: IdParseError| InvalidMemberIdentity)
     }
 }
 
@@ -487,32 +508,61 @@ mod tests {
             MemberIdentity::Account(account)
         );
         assert_eq!(
-            key.to_string().parse::<MemberIdentity>().unwrap(),
+            format!("key:{key}").parse::<MemberIdentity>().unwrap(),
             MemberIdentity::Key(key)
         );
+        // And Display round-trips, which is what `Serialize` relies on.
+        assert_eq!(MemberIdentity::Key(key).to_string(), format!("key:{key}"));
         assert!("not-an-id".parse::<MemberIdentity>().is_err());
     }
 
+    /// The tag decides which member is named — the encoding no longer can.
+    ///
+    /// This replaces a pin asserting the opposite: that an account was 64 hex
+    /// characters and a key's bs58 could not reach that length, so the two were
+    /// distinguishable by shape. Once every id became hex, **the same 32 bytes
+    /// produce the same string for both**, and `from_str`'s account-first
+    /// fallthrough would have made every key parse as an account.
+    ///
+    /// That is not a parse error. On `POST /groups/:id/members` it is a different
+    /// member added successfully, with nothing reported — which is why the
+    /// discriminator had to become explicit rather than incidental.
     #[test]
-    fn member_identity_encodings_do_not_collide() {
-        // Whatever the 32 bytes are, the hex form is 64 characters and the
-        // bs58 form cannot reach that length.
+    fn the_tag_distinguishes_a_key_from_an_account() {
         for byte in [0x00_u8, 0x01, 0x7f, 0xff] {
             let bytes = [byte; 32];
-            let hex = AccountId::from(bytes).to_string();
-            let bs58 = PublicKey::from(bytes).to_string();
+            let account = AccountId::from(bytes);
+            let key = PublicKey::from(bytes);
 
-            assert_eq!(hex.len(), 64);
-            assert!(bs58.len() < 64);
+            // The very collision the old scheme relied on not existing.
+            assert_eq!(
+                account.to_string(),
+                key.to_string(),
+                "the same bytes now render identically, so shape cannot decide",
+            );
+
             assert!(matches!(
-                hex.parse::<MemberIdentity>().unwrap(),
+                account.to_string().parse::<MemberIdentity>().unwrap(),
                 MemberIdentity::Account(_)
             ));
             assert!(matches!(
-                bs58.parse::<MemberIdentity>().unwrap(),
+                format!("key:{key}").parse::<MemberIdentity>().unwrap(),
                 MemberIdentity::Key(_)
             ));
         }
+    }
+
+    /// A key sent the old way must fail loudly, not be read as an account.
+    #[test]
+    fn an_untagged_base58_key_is_refused() {
+        // What a caller on the previous format would send.
+        assert!(
+            "11111111111111111111111111111112"
+                .parse::<MemberIdentity>()
+                .is_err(),
+            "an untagged base58 key must be refused rather than silently \
+             becoming some other account",
+        );
     }
 
     #[test]

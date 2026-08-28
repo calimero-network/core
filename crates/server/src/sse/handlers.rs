@@ -66,9 +66,10 @@ use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner};
 /// embedded username/password). All node-owner requests share one principal —
 /// they are the same human — so they may freely reuse each other's sessions.
 ///
-/// Both sentinels contain characters (`-`, `<`, `>`) outside the base58 alphabet
+/// Both sentinels contain characters (`-`, `<`, `>`) outside the hex alphabet
 /// that `PublicKey::to_string()` emits, so they can never collide with a real
-/// key-derived principal.
+/// key-derived principal. (They were outside base58 before, and are outside the
+/// smaller hex alphabet too — the guarantee only got easier to keep.)
 const NODE_OWNER_PRINCIPAL: &str = "node-owner";
 
 /// Sentinel for a request that reached an auth-guarded service without any
