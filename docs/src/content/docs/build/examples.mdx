@@ -275,7 +275,7 @@ would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
 |--------|--------------|
 | `upload_file(name, blob_id, size, mime_type)` | Mint a `file_<n>` id, `env::blob_announce_to_context(...)` the blob, store the record, emit `FileUploaded`. |
 | `delete_file(file_id)` | Remove the metadata record (the underlying blob is not deleted), emit `FileDeleted`. |
-| `get_file(id)` / `get_blob_id_b58(id)` | Fetch a record / just its `BlobId` for download. |
+| `get_file(id)` / `get_blob_id_hex(id)` | Fetch a record / just its `BlobId` for download. |
 | `list_files()` / `search_files(query)` | All records / case-insensitive name search. |
 | `get_total_files_size()` / `get_stats()` | Sum of file sizes / a formatted summary. |
 

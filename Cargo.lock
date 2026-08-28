@@ -2009,9 +2009,9 @@ dependencies = [
 name = "collaborative-editor"
 version = "0.0.0"
 dependencies = [
- "bs58",
  "calimero-sdk",
  "calimero-storage",
+ "hex",
 ]
 
 [[package]]
@@ -7084,7 +7084,6 @@ dependencies = [
 name = "private-data"
 version = "0.0.0"
 dependencies = [
- "bs58",
  "calimero-sdk",
  "calimero-storage",
  "hex",
@@ -8119,7 +8118,6 @@ dependencies = [
 name = "scaffolding-e2e"
 version = "0.0.0"
 dependencies = [
- "bs58",
  "calimero-sdk",
  "calimero-storage",
  "hex",
