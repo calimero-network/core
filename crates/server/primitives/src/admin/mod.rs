@@ -1442,13 +1442,17 @@ pub struct GroupMemberApiInput {
     /// The member's ACCOUNT - what every other verb on this resource names and
     /// what the listing returns.
     ///
-    /// A KEY is accepted too, written `key:<64-hex>`; it is resolved to its
-    /// account on apply, and refused if bound to none.
+    /// A KEY is accepted too, spelled identically — both are 32 bytes and both
+    /// render as 64 hex, so this field cannot say which it carries and does not
+    /// try. The node resolves it on apply: bytes matching a signing key bound in
+    /// this namespace name that key's account; anything else is taken as an
+    /// account as given.
     ///
-    /// The tag is required because an account and a key are both 64 hex
-    /// characters now. They used to be told apart by encoding alone — hex versus
-    /// bs58 — and an untagged key would parse as an account, which on this verb
-    /// is not an error but a different member added, silently.
+    /// So a key that is not bound here reads as an account and adds a member
+    /// nothing will match. That is the cost of one encoding, and it is the same
+    /// shape as the existing rule below — an account is never checked for
+    /// existence, because naming one this node has not converged on yet is the
+    /// point.
     ///
     /// An ACCOUNT is taken as given - no local existence check. That asymmetry
     /// is the point: an account this node has not converged on yet is exactly
@@ -3137,7 +3141,7 @@ mod tests {
     fn ownership_req(nonce: &str) -> IssueOwnershipProofApiRequest {
         IssueOwnershipProofApiRequest {
             audience: "mdma.cloud".into(),
-            context_id: "11111111111111111111111111111111".into(),
+            context_id: "0000000000000000000000000000000000000000000000000000000000000000".into(),
             subject: "subject-xyz".into(),
             nonce: nonce.into(),
             expires_at_ms: 1,
@@ -3472,7 +3476,7 @@ mod naming_back_compat_tests {
     // contract; without it every existing caller breaks on a pure rename.
     #[test]
     fn create_group_request_still_accepts_the_legacy_camel_case_alias() {
-        let json = r#"{"appKey":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let json = r#"{"appKey":"aabb","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
         let req: CreateGroupApiRequest =
             serde_json::from_str(json).expect("legacy appKey must still deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
@@ -3480,7 +3484,7 @@ mod naming_back_compat_tests {
 
     #[test]
     fn create_group_request_accepts_the_new_field() {
-        let json = r#"{"bytecodeId":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let json = r#"{"bytecodeId":"aabb","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
         let req: CreateGroupApiRequest =
             serde_json::from_str(json).expect("bytecodeId must deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
@@ -3537,7 +3541,7 @@ mod naming_back_compat_tests {
 
     #[test]
     fn create_namespace_request_accepts_the_new_field() {
-        let json = r#"{"bytecodeId":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let json = r#"{"bytecodeId":"aabb","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
         let req: CreateNamespaceApiRequest =
             serde_json::from_str(json).expect("bytecodeId must deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
@@ -3545,7 +3549,7 @@ mod naming_back_compat_tests {
 
     #[test]
     fn create_namespace_request_still_accepts_the_legacy_camel_case_alias() {
-        let json = r#"{"appKey":"aabb","applicationId":"11111111111111111111111111111111"}"#;
+        let json = r#"{"appKey":"aabb","applicationId":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
         let req: CreateNamespaceApiRequest =
             serde_json::from_str(json).expect("legacy appKey must still deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));

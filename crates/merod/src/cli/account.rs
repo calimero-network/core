@@ -726,7 +726,12 @@ async fn resolve_root(
 /// # Errors
 /// If the value is not 64 hex characters.
 fn parse_key(raw: &str, arg: &str) -> EyreResult<[u8; 32]> {
-    let bytes = hex::decode(raw.trim()).map_err(|_ignored| eyre::eyre!("--{arg} is not hex"))?;
+    let bytes = hex::decode(raw.trim()).map_err(|_ignored| {
+        eyre::eyre!(
+            "--{arg} is not hex. It is 64 hex characters, which is how both \
+             `merod account device` and `meroctl account show` print it"
+        )
+    })?;
     bytes
         .try_into()
         .map_err(|_ignored| eyre::eyre!("--{arg} is not 32 bytes (64 hex characters)"))

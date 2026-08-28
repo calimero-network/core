@@ -242,7 +242,7 @@ async fn add_group_members() {
             GID,
             AddGroupMembersApiRequest {
                 members: vec![GroupMemberApiInput {
-                    identity: MemberIdentity::Key(PublicKey::from([0u8; 32])),
+                    identity: MemberIdentity::from(PublicKey::from([0u8; 32])),
                     role: GroupMemberRole::Member,
                 }],
             },

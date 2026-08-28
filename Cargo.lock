@@ -1442,7 +1442,6 @@ name = "calimero-primitives"
 version = "0.0.0"
 dependencies = [
  "borsh",
- "bs58",
  "calimero-git-hooks",
  "calimero-primitives",
  "calimero-wasm-abi",

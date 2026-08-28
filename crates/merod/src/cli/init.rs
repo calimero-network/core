@@ -650,8 +650,12 @@ impl InitCommand {
 /// If the value is not 64 hex characters.
 fn parse_account_root_pk(given: &str) -> EyreResult<calimero_primitives::identity::PublicKey> {
     let given = given.trim();
-    let bytes = hex::decode(given)
-        .map_err(|_ignored| eyre::eyre!("--account-root is not hex; it is 64 hex characters"))?;
+    let bytes = hex::decode(given).map_err(|_ignored| {
+        eyre::eyre!(
+            "--account-root is not hex. It is 64 hex characters, which is how both \
+             `merod account root` and `meroctl account show` print it"
+        )
+    })?;
     let raw: [u8; 32] = bytes.try_into().map_err(|_ignored| {
         eyre::eyre!("--account-root must be 32 bytes, i.e. 64 hex characters")
     })?;

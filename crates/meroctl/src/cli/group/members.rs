@@ -107,7 +107,7 @@ pub struct AddMembersCommand {
 
     #[clap(
         name = "IDENTITY",
-        help = "Account (64 hex), or public key as key:<64 hex>, of the member to add"
+        help = "The member to add: 64 hex naming either its account or a key it signs with"
     )]
     pub identity: MemberIdentity,
 

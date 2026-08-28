@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn context_only_subscribe_parses() {
         match parse_payload(
-            r#"{"id":"1","method":"subscribe","params":{"contextIds":["11111111111111111111111111111111"]}}"#,
+            r#"{"id":"1","method":"subscribe","params":{"contextIds":["0000000000000000000000000000000000000000000000000000000000000000"]}}"#,
         ) {
             RequestPayload::Subscribe(ids) => {
                 assert_eq!(ids.context_ids.len(), 1);
