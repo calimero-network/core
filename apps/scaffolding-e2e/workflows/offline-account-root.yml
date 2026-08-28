@@ -233,7 +233,12 @@ steps:
       method: get
       args:
         key: offline-root
-      equals: written-under-an-imported-cert
+      # The ENVELOPE, not the value. A `call` result is `{"output": ...}`, so a bare
+      # string never matches and the gate reports "sync verification failed" while
+      # printing both nodes holding the right value — which reads as a propagation
+      # bug rather than a comparison one. Same shape as `json_assert` needs.
+      equals:
+        output: written-under-an-imported-cert
 
   - name: Node-1 reads back what the root-free node wrote
     type: call
