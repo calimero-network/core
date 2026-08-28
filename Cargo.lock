@@ -1075,7 +1075,6 @@ dependencies = [
  "actix",
  "async-trait",
  "borsh",
- "bs58",
  "calimero-account",
  "calimero-authz",
  "calimero-context-client",
@@ -1442,7 +1441,6 @@ name = "calimero-primitives"
 version = "0.0.0"
 dependencies = [
  "borsh",
- "bs58",
  "calimero-git-hooks",
  "calimero-primitives",
  "calimero-wasm-abi",

@@ -1792,7 +1792,7 @@ impl DeltaStore {
             let sample = remaining
                 .keys()
                 .take(3)
-                .map(|id| Hash::from(*id).to_base58())
+                .map(|id| Hash::from(*id).to_string())
                 .collect::<Vec<_>>()
                 .join(",");
 
@@ -1852,7 +1852,7 @@ impl DeltaStore {
                     Err(e) => warn!(
                         ?e,
                         context_id = %self.applier.context_id,
-                        delta_id = %Hash::from(delta_id).to_base58(),
+                        delta_id = %Hash::from(delta_id),
                         "Failed to re-drive a persisted-but-unapplied delta on load"
                     ),
                 }

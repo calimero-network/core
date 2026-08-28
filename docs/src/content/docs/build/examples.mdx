@@ -267,7 +267,7 @@ pub struct FileShareState {
 plain struct with a **hand-rolled `Mergeable`** that treats each record as an
 atomic last-writer-wins value, using `uploaded_at` as the tiebreaker — a derive
 would have forced every field into its own CRDT wrapper. `blob_id` is the SDK's
-`BlobId` newtype, which serializes to a base58 string over the wire.
+`BlobId` newtype, which serializes to a hex string over the wire.
 
 **Key methods:**
 

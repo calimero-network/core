@@ -716,34 +716,25 @@ async fn resolve_root(
 }
 
 /// Parse a 32-byte hex key, naming the argument it rejected.
-/// Parse a 32-byte key given as **either** hex or base58.
+/// Parse a 32-byte key as hex.
 ///
-/// Both, because the two legitimate sources disagree and an operator has no way to
-/// know which they are holding. `GET /admin-api/identity` renders the device's
-/// signing key with `PublicKey`'s own `Display`, which is base58, while
-/// hex-encoding the device id and agreement key beside it. `merod account device`
-/// prints all three as hex. So the same key reaches a caller in two spellings
-/// depending on where they read it, and requiring one made the documented flow
-/// fail on a copy-paste with "--sign-pk is not hex".
+/// Hex only. This accepted base58 as well while `GET /admin-api/identity` still
+/// rendered the signing key that way and hex-encoded the two beside it. Now that
+/// every id is hex, accepting base58 would hide a caller left on the old spelling
+/// rather than telling them.
 ///
-/// This mirrors `--account-root`, which took the same fix for the same reason.
+/// # Errors
+/// If the value is not 64 hex characters.
 fn parse_key(raw: &str, arg: &str) -> EyreResult<[u8; 32]> {
-    let raw = raw.trim();
-
-    if let Ok(bytes) = hex::decode(raw) {
-        return bytes.try_into().map_err(|_ignored| {
-            eyre::eyre!("--{arg} is hex but not 32 bytes (64 hex characters)")
-        });
-    }
-
-    let key: calimero_primitives::identity::PublicKey = raw.parse().map_err(|_ignored| {
+    let bytes = hex::decode(raw.trim()).map_err(|_ignored| {
         eyre::eyre!(
-            "--{arg} is neither 64 hex characters nor a base58 key. Both spellings are \
-             in circulation: `merod account device` prints hex, `meroctl account show` \
-             prints the signing key base58"
+            "--{arg} is not hex. It is 64 hex characters, which is how both \
+             `merod account device` and `meroctl account show` print it"
         )
     })?;
-    Ok(*AsRef::<[u8; 32]>::as_ref(&key))
+    bytes
+        .try_into()
+        .map_err(|_ignored| eyre::eyre!("--{arg} is not 32 bytes (64 hex characters)"))
 }
 
 /// Parse a hex `DeviceId`.
@@ -867,52 +858,44 @@ mod tests {
         assert_eq!(device, DeviceId::from([0x42; 32]));
     }
 
-    /// A context is written in base58 and an account in hex, and the two are
-    /// not interchangeable even though both are 32 bytes.
+    /// Every id is hex, and the encoding no longer tells them apart.
     ///
-    /// This is a regression pin, not a hypothetical: `account warrant` parsed
-    /// `--context` as hex, which every hand-run happened to survive because a
-    /// hand-typed id came from a hex dump. It failed the moment a real context
-    /// id — base58, as every API and CLI surface prints one — reached it, and
-    /// only an end-to-end run found that. The assertion below is the same
-    /// check, for a hundredth of the wall clock.
+    /// This replaces a pin asserting the opposite — that a context was base58 and
+    /// an account hex, so the two could not interchange. That difference used to
+    /// do free validation: `account warrant` once parsed `--context` as hex, and
+    /// it failed loudly the moment a real base58 context id reached it.
+    ///
+    /// **Unifying on hex gives that up, deliberately.** A context id now parses
+    /// cleanly where an account id is expected, and vice versa — both are 32
+    /// bytes in the same spelling. The trade is made because the previous scheme
+    /// had a worse failure in the other direction: base58's alphabet contains
+    /// every hex digit except `0`, so a hex value handed to a base58 parser was
+    /// often *valid* and decoded to the wrong 32 bytes silently.
+    ///
+    /// What still separates the two is the type system inside Rust, and semantic
+    /// checks at the edges — "does this context exist" rather than "is this
+    /// shaped like a context". Anything taking both as strings has to validate
+    /// meaning, because spelling no longer will.
     #[test]
-    fn a_context_id_is_base58_and_an_account_id_is_hex() {
+    fn every_id_is_hex_and_encoding_no_longer_distinguishes_them() {
         use calimero_primitives::context::ContextId;
 
         let bytes: [u8; 32] = core::array::from_fn(|i| i as u8);
         let context = ContextId::from(bytes);
-
-        let base58 = context.to_string();
         let hex = hex::encode(bytes);
-        assert_ne!(
-            base58, hex,
-            "the two spellings must differ to be confusable"
-        );
 
-        // The spelling a context prints is the spelling it parses.
-        assert_eq!(
-            base58.parse::<ContextId>().expect("base58 must parse"),
-            context
-        );
-
-        // And the hex spelling is NOT accepted as a context. Were it accepted,
-        // the two would silently interchange and the bug this pins would be
-        // invisible rather than loud.
-        assert!(
-            hex.parse::<ContextId>().is_err(),
-            "hex must not parse as a context id, or nothing distinguishes the two"
-        );
-
-        // The account side, mirrored: hex parses, base58 does not.
+        assert_eq!(context.to_string(), hex, "a context prints as hex");
+        assert_eq!(hex.parse::<ContextId>().expect("parses"), context);
         assert!(
             hex.parse::<calimero_account::AccountId>().is_ok(),
-            "an account id is hex"
+            "and the same string is a valid account id — the encoding stopped \
+             being a type check, which is the cost of one spelling",
         );
-        assert!(
-            base58.parse::<calimero_account::AccountId>().is_err(),
-            "base58 must not parse as an account id"
-        );
+
+        // Base58 is refused everywhere now, so a caller still on the old form is
+        // told rather than silently misread.
+        let old_base58 = "11111111111111111111111111111112";
+        assert!(old_base58.parse::<ContextId>().is_err());
     }
 
     /// The two lines `account root` prints must describe the same account.

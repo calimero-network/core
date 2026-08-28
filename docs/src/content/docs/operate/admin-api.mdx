@@ -264,7 +264,7 @@ the path parameter — these are reproduced exactly as routed below.
 | POST | `/admin-api/groups/:group_id/reparent` | Re-parent a group. |
 | GET | `/admin-api/groups/:group_id/subgroups` | List subgroups. |
 | GET | `/admin-api/groups/:group_id/members` | List group members. |
-| POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account. A bs58 public key is still accepted from older callers. |
+| POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account, or by key written `key:<64-hex>`. Every id is hex, so the tag is what tells the two apart — an untagged key is read as an account. |
 | POST | `/admin-api/groups/:group_id/members/remove` | Remove group members. |
 | POST | `/admin-api/groups/:group_id/leave` | Leave a group. |
 | PUT | `/admin-api/groups/:group_id/members/:identity/role` | Update a member's role. |

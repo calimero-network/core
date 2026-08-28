@@ -2167,6 +2167,11 @@ fn enumerate_all_groups_multiple_groups_with_members() {
 /// using base58 (via `Repr<ApplicationId>`), not hex.  Before the fix,
 /// `hex::decode` was called on a base58 string, producing
 /// "Invalid character 'g' at position 1" errors at runtime.
+///
+/// Still base58 on purpose, while every `calimero-primitives` id is now hex.
+/// `Repr` belongs to `calimero-context-config`, which speaks external
+/// contract chains' conventions rather than ours — the same category as a
+/// libp2p `PeerId` or a `did:key`. Those did not move and are not meant to.
 #[test]
 fn extract_application_id_decodes_base58() {
     // Repr<[u8; 32]> serialises as base58 (canonical `Repr` serialization for the id field).
