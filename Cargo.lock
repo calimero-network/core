@@ -1075,7 +1075,6 @@ dependencies = [
  "actix",
  "async-trait",
  "borsh",
- "bs58",
  "calimero-account",
  "calimero-authz",
  "calimero-context-client",
