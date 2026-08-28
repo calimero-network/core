@@ -250,8 +250,22 @@ pub struct WarrantCommand {
     nonce: u64,
 
     /// Seconds from now that the warrant stays spendable.
-    #[arg(long, default_value_t = 300)]
+    ///
+    /// Read against this machine's clock when the command runs, so two mintings
+    /// never share a deadline. Use `--not-after` where the exact value matters.
+    #[arg(long, default_value_t = 300, conflicts_with = "not_after")]
     valid_for: u64,
+
+    /// Absolute deadline, unix seconds — the alternative to `--valid-for`.
+    ///
+    /// Exists so a warrant can be reproduced exactly. Every other input to the
+    /// signature is pinned by a flag; the deadline was the one field taken from
+    /// the clock, which made two mintings of "the same" warrant differ here and,
+    /// because the signature covers it, in the signature too. Given this, a
+    /// second implementation can be diffed against this one byte for byte
+    /// instead of inferred to agree from a node accepting its output.
+    #[arg(long, value_name = "UNIX_SECONDS")]
+    not_after: Option<u64>,
 
     /// The device's signing secret, 64 hex chars. Signs the warrant; never sent.
     #[arg(long, value_name = "HEX")]
@@ -298,10 +312,12 @@ impl WarrantCommand {
             serde_json::from_str(&self.args).wrap_err("--args is not valid JSON")?;
         let args_bytes = serde_json::to_vec(&args).wrap_err("--args could not be re-encoded")?;
 
-        let not_after = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-            .saturating_add(self.valid_for);
+        let not_after = self.not_after.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+                .saturating_add(self.valid_for)
+        });
 
         let warrant = calimero_account::Warrant::sign(
             &secret,
@@ -1004,6 +1020,74 @@ mod tests {
     fn a_short_hex_key_says_so() {
         let err = super::parse_key(&hex::encode([1u8; 16]), "kem-pk").expect_err("must refuse");
         assert!(err.to_string().contains("32 bytes"), "{err}");
+    }
+
+    /// `--not-after` and `--valid-for` cannot both be given.
+    ///
+    /// They set one field two ways, and letting either silently win would make a
+    /// reproducible mint depend on flag order.
+    #[test]
+    fn an_absolute_deadline_conflicts_with_a_relative_one() {
+        let err = WarrantCommand::try_parse_from([
+            "warrant",
+            "--context",
+            &"11".repeat(32),
+            "--method",
+            "set",
+            "--executor",
+            &"22".repeat(32),
+            "--nonce",
+            "1",
+            "--device-secret",
+            &"33".repeat(32),
+            "--credential",
+            "aa",
+            "--valid-for",
+            "300",
+            "--not-after",
+            "1800000000",
+        ])
+        .expect_err("both deadlines must be refused");
+
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "{err}"
+        );
+    }
+
+    /// `--not-after` alone parses, despite `--valid-for` carrying a default.
+    ///
+    /// This pins clap rather than the code above: `conflicts_with` fires on a
+    /// *provided* argument, and a defaulted one is not provided. Were that ever
+    /// untrue the new flag could not be used without also passing the flag it
+    /// exists to replace, so it is worth an assertion rather than a comment.
+    #[test]
+    fn an_absolute_deadline_alone_is_accepted() {
+        let cmd = WarrantCommand::try_parse_from([
+            "warrant",
+            "--context",
+            &"11".repeat(32),
+            "--method",
+            "set",
+            "--executor",
+            &"22".repeat(32),
+            "--nonce",
+            "1",
+            "--device-secret",
+            &"33".repeat(32),
+            "--credential",
+            "aa",
+            "--not-after",
+            "1800000000",
+        ])
+        .expect("an absolute deadline on its own must parse");
+
+        assert_eq!(cmd.not_after, Some(1_800_000_000));
+        assert_eq!(
+            cmd.valid_for, 300,
+            "the unused relative flag keeps its default"
+        );
     }
 }
 
