@@ -75,9 +75,9 @@ pub enum EditorEvent {
 
 // === HELPER FUNCTIONS ===
 
-/// Convert identity bytes to base58 string
+/// Convert identity bytes to the 64-hex string every Calimero id uses.
 fn encode_identity(identity: &[u8; 32]) -> String {
-    bs58::encode(identity).into_string()
+    hex::encode(identity)
 }
 
 // === APPLICATION LOGIC ===
