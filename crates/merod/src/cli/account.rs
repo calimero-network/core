@@ -716,11 +716,34 @@ async fn resolve_root(
 }
 
 /// Parse a 32-byte hex key, naming the argument it rejected.
+/// Parse a 32-byte key given as **either** hex or base58.
+///
+/// Both, because the two legitimate sources disagree and an operator has no way to
+/// know which they are holding. `GET /admin-api/identity` renders the device's
+/// signing key with `PublicKey`'s own `Display`, which is base58, while
+/// hex-encoding the device id and agreement key beside it. `merod account device`
+/// prints all three as hex. So the same key reaches a caller in two spellings
+/// depending on where they read it, and requiring one made the documented flow
+/// fail on a copy-paste with "--sign-pk is not hex".
+///
+/// This mirrors `--account-root`, which took the same fix for the same reason.
 fn parse_key(raw: &str, arg: &str) -> EyreResult<[u8; 32]> {
-    let bytes = hex::decode(raw.trim()).wrap_err_with(|| format!("--{arg} is not hex"))?;
-    bytes
-        .try_into()
-        .map_err(|_ignored| eyre::eyre!("--{arg} is not 32 bytes (64 hex characters)"))
+    let raw = raw.trim();
+
+    if let Ok(bytes) = hex::decode(raw) {
+        return bytes.try_into().map_err(|_ignored| {
+            eyre::eyre!("--{arg} is hex but not 32 bytes (64 hex characters)")
+        });
+    }
+
+    let key: calimero_primitives::identity::PublicKey = raw.parse().map_err(|_ignored| {
+        eyre::eyre!(
+            "--{arg} is neither 64 hex characters nor a base58 key. Both spellings are \
+             in circulation: `merod account device` prints hex, `meroctl account show` \
+             prints the signing key base58"
+        )
+    })?;
+    Ok(*AsRef::<[u8; 32]>::as_ref(&key))
 }
 
 /// Parse a hex `DeviceId`.
@@ -959,6 +982,45 @@ mod tests {
                 .public_key,
             signing_key,
         );
+    }
+
+    /// `sign-cert`'s key arguments must accept both spellings in circulation.
+    ///
+    /// `GET /admin-api/identity` renders the signing key base58 — `PublicKey`'s own
+    /// Display — while hex-encoding the device id and agreement key beside it.
+    /// `merod account device` prints all three hex. So a caller pasting from the
+    /// API supplies base58 for one argument and hex for the others, which is
+    /// exactly what the offline-root e2e did before this.
+    #[test]
+    fn sign_cert_keys_accept_hex_and_base58() {
+        let key = PrivateKey::from([6u8; 32]).public_key();
+        let raw = *AsRef::<[u8; 32]>::as_ref(&key);
+
+        assert_eq!(
+            super::parse_key(&hex::encode(raw), "sign-pk").expect("hex"),
+            raw
+        );
+        assert_eq!(
+            super::parse_key(&key.to_string(), "sign-pk").expect("base58"),
+            raw,
+            "base58 is what the identity endpoint prints for this key",
+        );
+    }
+
+    /// A rejection must name both spellings and where each comes from.
+    #[test]
+    fn a_bad_key_says_which_spellings_are_accepted() {
+        let err = super::parse_key("not-a-key", "sign-pk").expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("merod account device"), "{msg}");
+        assert!(msg.contains("meroctl account show"), "{msg}");
+    }
+
+    /// Hex of the wrong length is a distinct mistake from a wrong encoding.
+    #[test]
+    fn a_short_hex_key_says_so() {
+        let err = super::parse_key(&hex::encode([1u8; 16]), "kem-pk").expect_err("must refuse");
+        assert!(err.to_string().contains("32 bytes"), "{err}");
     }
 }
 
