@@ -398,28 +398,6 @@ impl NodeClient {
                                 continue;
                             }
 
-                            // Advertise it: this node now holds the bytes, so
-                            // it can serve them to the next asker.
-                            //
-                            // Without this every fetcher stays dependent on the
-                            // single originating node — a conversation where one
-                            // peer shared an image has exactly one provider for
-                            // it no matter how many peers have since downloaded
-                            // it, so the origin going offline takes the image
-                            // with it. Best-effort: failing to advertise does
-                            // not make the bytes we just fetched any less valid.
-                            if let Err(err) = self
-                                .announce_blob_to_network(blob_id, context_id, data.len() as u64)
-                                .await
-                            {
-                                tracing::debug!(
-                                    blob_id = %blob_id,
-                                    context_id = %context_id,
-                                    %err,
-                                    "Fetched blob stored but not advertised"
-                                );
-                            }
-
                             // Return the newly stored blob as a stream
                             return self.blob_manager.get_blob_stream(*blob_id);
                         }
