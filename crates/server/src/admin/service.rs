@@ -10,6 +10,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
+use calimero_governance_store::MembershipError;
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
@@ -666,8 +667,76 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     })
 }
 
+/// The status a membership refusal answers with, or `None` if it is this node's
+/// fault rather than the caller's.
+///
+/// Every one of these was a `500 {"error":"Internal server error"}` before, and
+/// that is the wrong answer to all but the last group: the gate did its job, the
+/// request was understood and deliberately refused. A client told `500` cannot
+/// tell "you are not allowed" from "the node fell over", so it can neither
+/// explain the refusal to a person nor decide whether a retry is pointless.
+///
+/// Matched exhaustively on purpose: a new variant must be classified here rather
+/// than silently inheriting the generic 500 through a `_` arm.
+fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
+    use MembershipError as Refusal;
+
+    Some(match err {
+        // The caller lacks the authority, and no change of state on their part
+        // will help — only being granted it will.
+        Refusal::NotAdmin { .. }
+        | Refusal::NotMember { .. }
+        | Refusal::SelfLeaveOnly
+        | Refusal::AutoFollowAuthFailed
+        | Refusal::OnlyOwnerCanTransfer(_)
+        | Refusal::OnlyOwnerCanDelete(_)
+        | Refusal::OwnerImmuneFromRemoval(_)
+        | Refusal::OwnerCannotSelfLeave(_)
+        | Refusal::TeeVerifierNotMember
+        | Refusal::ReadOnlyTeeViaAttestationOnly
+        | Refusal::TeeRoleMustBeReadOnly
+        | Refusal::TeeAdmissionWrongNamespace { .. }
+        | Refusal::TeeCredentialNotTheAttestedKey { .. } => StatusCode::FORBIDDEN,
+
+        // Well-formed and permitted, but it conflicts with how the group looks
+        // right now. Escalating privileges does not help; changing the group
+        // does — transfer ownership first, issue a fresh invitation, re-add the
+        // member.
+        Refusal::LastAdmin
+        | Refusal::LastAdminDemotion
+        | Refusal::RemovedFromGroup { .. }
+        | Refusal::ReentryBlocked { .. }
+        | Refusal::InvitationAlreadyConsumed { .. }
+        | Refusal::OwnerOwnsSubgroup(_)
+        | Refusal::TransferTargetNotAdmin { .. }
+        | Refusal::TransferTargetNotMember(_)
+        | Refusal::MemberNotDirect(_)
+        | Refusal::NoTeeAdmissionPolicy => StatusCode::CONFLICT,
+
+        Refusal::UnknownGroup(_) | Refusal::MemberNotFound { .. } => StatusCode::NOT_FOUND,
+
+        // Genuinely this node's problem: a row that exists with no value, or a
+        // parent chain that will not terminate. Fall through to the generic 500,
+        // which also keeps their messages (they name internal rows) out of the
+        // response.
+        Refusal::MissingMemberValue { .. } | Refusal::DepthExceeded(_) => return None,
+    })
+}
+
 #[must_use]
 pub fn parse_api_error(err: Report) -> ApiError {
+    // A membership refusal: the governance gate understood the request and said
+    // no. Which "no" it is decides what the caller should do next, so map it
+    // rather than flattening the whole family into the generic 500 below.
+    if let Some(status_code) = err
+        .downcast_ref::<MembershipError>()
+        .and_then(membership_refusal_status)
+    {
+        return ApiError {
+            status_code,
+            message: err.to_string(),
+        };
+    }
     // A membership-gate rejection ("node is not a member of group X") is a
     // legitimate client-side precondition, not a server fault. Surface it as a
     // typed 403 with its (safe, intended) message instead of letting it fall
@@ -938,6 +1007,73 @@ mod parse_api_error_tests {
     use axum::http::StatusCode;
 
     use super::{parse_api_error, ApiError};
+
+    use calimero_governance_store::MembershipError;
+
+    /// The bug this arm exists for. A member who is admin of a *subgroup* but
+    /// not of the namespace root is refused by `require_admin` — correctly —
+    /// and the caller was told `500 {"error":"Internal server error"}`. A UI
+    /// cannot distinguish that from the node falling over, so it cannot say
+    /// "you are not allowed" and cannot decide whether to retry.
+    #[test]
+    fn not_admin_maps_to_403_with_the_reason() {
+        let err = MembershipError::NotAdmin {
+            group_id: "channel-subgroup".to_owned(),
+            identity: "namespace-admin".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("is not an admin"),
+            "the refusal's own words are what tell a client what to fix; got: {}",
+            api.message
+        );
+    }
+
+    #[test]
+    fn not_member_maps_to_403() {
+        let err = MembershipError::NotMember {
+            group_id: "g".to_owned(),
+            identity: "i".to_owned(),
+        };
+        assert_eq!(
+            parse_api_error(err.into()).status_code,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// "You may not" and "not while the group looks like this" are different
+    /// answers. Removing the last admin is refused no matter who asks, so it is
+    /// a conflict with state, not an authorization failure — a client that
+    /// retries after escalating privileges is wasting its time.
+    #[test]
+    fn last_admin_maps_to_409_not_403() {
+        let api = parse_api_error(MembershipError::LastAdmin.into());
+        assert_eq!(api.status_code, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn unknown_group_maps_to_404() {
+        let err = MembershipError::UnknownGroup("g".to_owned());
+        assert_eq!(
+            parse_api_error(err.into()).status_code,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// Store corruption is the one family here that really IS this node's
+    /// fault, and it must keep answering 500 — and must NOT echo its message,
+    /// which names internal rows.
+    #[test]
+    fn store_corruption_stays_500_and_stays_quiet() {
+        let err = MembershipError::MissingMemberValue {
+            group_id: "g".to_owned(),
+            account: "a".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api.message, "Internal server error");
+    }
 
     #[test]
     fn not_a_group_member_maps_to_403_with_message() {
