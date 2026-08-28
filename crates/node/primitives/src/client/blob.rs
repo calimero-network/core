@@ -3,6 +3,9 @@ use std::sync::Arc;
 use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
+use calimero_primitives::events::{
+    BlobEvent, BlobEventPayload, BlobReadyPayload, BlobUnavailablePayload, NodeEvent,
+};
 use calimero_primitives::{
     blobs::{BlobId, BlobInfo, BlobMetadata},
     common::DIGEST_SIZE,
@@ -105,6 +108,20 @@ impl BlobManager {
     }
 }
 
+/// What [`NodeClient::ensure_blob`] found when asked for a blob.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlobFetchState {
+    /// Already held locally; read it with `get_blob` and it will not touch the
+    /// network.
+    Local,
+    /// Not local. A background fetch has just been started; its outcome arrives
+    /// as a [`NodeEvent::Blob`].
+    Started,
+    /// Not local, and a fetch started by an earlier caller is still running.
+    /// Same event, no second fetch.
+    AlreadyFetching,
+}
+
 impl NodeClient {
     // todo! maybe this should be an actor method?
     // todo! so we can cache the blob in case it's
@@ -123,6 +140,87 @@ impl NodeClient {
 
     /// Get blob from local storage or network if context_id is provided
     /// Returns a streaming Blob that can be used to read the data
+    /// Start fetching `blob_id` in the background if it is not already local,
+    /// and report what happened without waiting for it.
+    ///
+    /// # Why this exists
+    ///
+    /// `get_blob` blocks until discovery finishes, and discovery is a DHT
+    /// lookup across up to six attempts. A caller that has to answer an HTTP
+    /// request in the meantime has no good option: wait (and hold the request,
+    /// and the connection, for as long as the network takes) or give up (and
+    /// never fetch the blob at all). Waiting is what produced images that spun
+    /// forever — the request never answered, so the client never even reached
+    /// its error path.
+    ///
+    /// So the two halves are split. Ask here, get an immediate answer about
+    /// whether the bytes are ready, and learn about the rest through
+    /// [`NodeEvent::Blob`]. The bytes are served by a later `get_blob` once the
+    /// fetch lands, which then finds them locally and returns at once.
+    ///
+    /// Concurrent asks for the same blob are deduped: the first starts a fetch,
+    /// the rest are told one is already running. They all observe the same
+    /// event when it settles.
+    pub fn ensure_blob(&self, blob_id: BlobId, context_id: ContextId) -> BlobFetchState {
+        if self.has_blob(&blob_id).unwrap_or(false) {
+            return BlobFetchState::Local;
+        }
+
+        // `insert` returns false when the blob is already in the set, which is
+        // the dedupe: exactly one caller wins and starts the fetch.
+        if !self.in_flight_blob_fetches.insert(blob_id) {
+            return BlobFetchState::AlreadyFetching;
+        }
+
+        let client = self.clone();
+        drop(tokio::spawn(async move {
+            let outcome = client.get_blob(&blob_id, Some(&context_id)).await;
+
+            // Clear the in-flight marker BEFORE emitting, so a client that
+            // re-requests the instant it sees the event is not told a fetch is
+            // still running.
+            let _removed = client.in_flight_blob_fetches.remove(&blob_id);
+
+            let payload = match outcome {
+                Ok(Some(_blob)) => {
+                    let size = client
+                        .get_blob_info(blob_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map_or(0, |meta| meta.size);
+                    tracing::info!(%blob_id, %context_id, size, "Background blob fetch ready");
+                    BlobEventPayload::BlobReady(BlobReadyPayload { size })
+                }
+                Ok(None) => {
+                    tracing::info!(%blob_id, %context_id, "Background blob fetch found no provider");
+                    BlobEventPayload::BlobUnavailable(BlobUnavailablePayload {
+                        reason: "no provider for this blob was reachable".to_owned(),
+                    })
+                }
+                Err(err) => {
+                    tracing::warn!(%blob_id, %context_id, %err, "Background blob fetch failed");
+                    BlobEventPayload::BlobUnavailable(BlobUnavailablePayload {
+                        reason: err.to_string(),
+                    })
+                }
+            };
+
+            // A send failure here means nothing is listening, which is normal
+            // and not worth escalating — the bytes are stored either way and
+            // the next request finds them.
+            if let Err(err) = client.send_event(NodeEvent::Blob(BlobEvent {
+                blob_id,
+                context_id,
+                payload,
+            })) {
+                tracing::debug!(%blob_id, %err, "no subscriber for blob event");
+            }
+        }));
+
+        BlobFetchState::Started
+    }
+
     pub async fn get_blob<'a>(
         &'a self,
         blob_id: &'a BlobId,
@@ -147,6 +245,11 @@ impl NodeClient {
             // stays missing. The blob record is usually available within a few
             // hundred ms on a warm cluster; a flat multi-second wait otherwise
             // dominates time-to-first-byte even when both peers are local.
+            // How long one DHT lookup may take before we stop waiting on it.
+            // Generous next to a warm-cluster lookup (a few hundred ms) and far
+            // below kad's own query timeout, which is what previously decided
+            // how long a caller waited.
+            const BLOB_QUERY_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
             const MAX_RETRIES: usize = 6;
             const INITIAL_RETRY_DELAY: core::time::Duration =
                 core::time::Duration::from_millis(100);
@@ -172,13 +275,38 @@ impl NodeClient {
                     "Attempting network discovery"
                 );
 
-                let peers = match self
-                    .network_client
-                    .query_blob(*blob_id, Some(*context_id))
-                    .await
-                {
-                    Ok(peers) => peers,
-                    Err(e) => {
+                // Bound the DHT query. `NetworkClient::query_blob` awaits a
+                // oneshot that is only resolved when kad reports the query
+                // progressed, so a query that never terminates parks this task
+                // for as long as the process lives. That is not hypothetical:
+                // it is what left images spinning forever in a chat client —
+                // the HTTP request never answered, so the fetch never settled
+                // and no error path ever ran. A caller can recover from "not
+                // found"; it cannot recover from silence.
+                //
+                // A timeout is treated exactly like an empty result: back off
+                // and try again, and if the attempts run out, report the blob
+                // as undiscoverable rather than as an error. It may genuinely
+                // be somewhere — we just did not find it in the time we were
+                // willing to spend.
+                let query = self.network_client.query_blob(*blob_id, Some(*context_id));
+                let peers = match tokio::time::timeout(BLOB_QUERY_TIMEOUT, query).await {
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            blob_id = %blob_id,
+                            context_id = %context_id,
+                            attempt,
+                            timeout_secs = BLOB_QUERY_TIMEOUT.as_secs(),
+                            "DHT query timed out"
+                        );
+                        if attempt < MAX_RETRIES {
+                            tokio::time::sleep(backoff(attempt)).await;
+                            continue;
+                        }
+                        return Ok(None);
+                    }
+                    Ok(Ok(peers)) => peers,
+                    Ok(Err(e)) => {
                         tracing::warn!(
                             blob_id = %blob_id,
                             context_id = %context_id,
@@ -190,7 +318,19 @@ impl NodeClient {
                             tokio::time::sleep(backoff(attempt)).await;
                             continue;
                         }
-                        return Err(e);
+                        // A failed lookup is "we could not find it", not "this
+                        // node is broken". Returning `Err` here made the admin
+                        // API answer 500 for a blob that simply has no reachable
+                        // provider — indistinguishable, to a client, from the
+                        // node falling over. `Ok(None)` is the honest answer and
+                        // the handler turns it into a 404.
+                        tracing::warn!(
+                            blob_id = %blob_id,
+                            context_id = %context_id,
+                            error = %e,
+                            "DHT query failed on the final attempt; reporting not found"
+                        );
+                        return Ok(None);
                     }
                 };
 
@@ -256,6 +396,28 @@ impl NodeClient {
                                     "Downloaded blob ID mismatch"
                                 );
                                 continue;
+                            }
+
+                            // Advertise it: this node now holds the bytes, so
+                            // it can serve them to the next asker.
+                            //
+                            // Without this every fetcher stays dependent on the
+                            // single originating node — a conversation where one
+                            // peer shared an image has exactly one provider for
+                            // it no matter how many peers have since downloaded
+                            // it, so the origin going offline takes the image
+                            // with it. Best-effort: failing to advertise does
+                            // not make the bytes we just fetched any less valid.
+                            if let Err(err) = self
+                                .announce_blob_to_network(blob_id, context_id, data.len() as u64)
+                                .await
+                            {
+                                tracing::debug!(
+                                    blob_id = %blob_id,
+                                    context_id = %context_id,
+                                    %err,
+                                    "Fetched blob stored but not advertised"
+                                );
                             }
 
                             // Return the newly stored blob as a stream

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::blobs::BlobId;
 use crate::context::{ContextId, GroupMemberRole};
 use crate::hash::Hash;
 use crate::identity::PublicKey;
@@ -15,6 +16,56 @@ pub enum NodeEvent {
     /// A namespace migration changed phase. Keyed by `groupId` like
     /// [`GroupMembershipEvent`]; the payload tags are disjoint from that enum's.
     GroupMigration(GroupMigrationEvent),
+    /// A blob this node was fetching in the background settled. Keyed by
+    /// `blobId`, which no other variant carries, so `untagged` can tell it
+    /// apart even though it also names a `contextId`.
+    Blob(BlobEvent),
+}
+
+/// The outcome of a background blob fetch.
+///
+/// `GET /admin-api/blobs/:id` answers `202` when the bytes are not held
+/// locally, and starts a discovery in the background rather than making the
+/// caller wait out a DHT query it cannot bound. This event is how the caller
+/// learns the fetch finished — without it a client has nothing to wait on and
+/// is forced back to polling.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobEvent {
+    pub blob_id: BlobId,
+    /// The context the blob was discovered through — the same one the request
+    /// named. Blob records are keyed by `(context, blob)`, so a blob is only
+    /// ever ready *with respect to* a context.
+    pub context_id: ContextId,
+    #[serde(flatten)]
+    pub payload: BlobEventPayload,
+}
+
+/// Tagged like [`ContextEventPayload`], with tags disjoint from every other
+/// payload enum so the `untagged` [`NodeEvent`] stays unambiguous.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "PascalCase")]
+pub enum BlobEventPayload {
+    /// The bytes are now held locally; re-request and it will answer `200`.
+    BlobReady(BlobReadyPayload),
+    /// The fetch settled without the bytes. A retry may still succeed — a
+    /// provider can appear later — so this is not a permanent verdict.
+    BlobUnavailable(BlobUnavailablePayload),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobReadyPayload {
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobUnavailablePayload {
+    /// Why it did not arrive, for a client that wants to say something better
+    /// than "failed". Not machine-readable on purpose: the only action a client
+    /// can take is retry-or-give-up, and that does not depend on the reason.
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -634,5 +685,58 @@ mod tests {
         let v = serde_json::to_value(&payload).expect("serialize");
         assert!(v["data"].get("state").is_none());
         assert_eq!(v["data"]["removed"], true);
+    }
+}
+
+#[cfg(test)]
+mod blob_event_tests {
+    use super::*;
+
+    /// `NodeEvent` is `untagged`, so a new variant is only safe if serde can
+    /// tell it from the others by shape alone. `BlobEvent` carries `blobId`,
+    /// which nothing else does — this pins that down, because the failure mode
+    /// is silent: a mis-deserialised event becomes the WRONG variant rather
+    /// than an error.
+    #[test]
+    fn blob_ready_round_trips_as_a_blob_event() {
+        let event = NodeEvent::Blob(BlobEvent {
+            blob_id: BlobId::from([1_u8; 32]),
+            context_id: ContextId::from([2_u8; 32]),
+            payload: BlobEventPayload::BlobReady(BlobReadyPayload { size: 200_046 }),
+        });
+
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("\"blobId\""), "got: {json}");
+        assert!(json.contains("\"BlobReady\""), "got: {json}");
+
+        match serde_json::from_str::<NodeEvent>(&json).expect("deserialize") {
+            NodeEvent::Blob(BlobEvent { payload, .. }) => match payload {
+                BlobEventPayload::BlobReady(p) => assert_eq!(p.size, 200_046),
+                other => panic!("wrong payload: {other:?}"),
+            },
+            other => panic!("a blob event deserialized as another variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blob_unavailable_round_trips_and_keeps_its_reason() {
+        let event = NodeEvent::Blob(BlobEvent {
+            blob_id: BlobId::from([3_u8; 32]),
+            context_id: ContextId::from([4_u8; 32]),
+            payload: BlobEventPayload::BlobUnavailable(BlobUnavailablePayload {
+                reason: "no providers responded".to_owned(),
+            }),
+        });
+
+        let json = serde_json::to_string(&event).expect("serialize");
+        match serde_json::from_str::<NodeEvent>(&json).expect("deserialize") {
+            NodeEvent::Blob(BlobEvent { payload, .. }) => match payload {
+                BlobEventPayload::BlobUnavailable(p) => {
+                    assert_eq!(p.reason, "no providers responded");
+                }
+                other => panic!("wrong payload: {other:?}"),
+            },
+            other => panic!("a blob event deserialized as another variant: {other:?}"),
+        }
     }
 }

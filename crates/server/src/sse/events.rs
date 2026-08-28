@@ -102,6 +102,13 @@ pub async fn handle_node_events(
                 NodeEvent::Context(event)
             }
             NodeEvent::Context(_) => continue,
+            // A background blob fetch settled. Routed by the context it was
+            // discovered through, so it reaches exactly the subscribers already
+            // watching that conversation — the ones with an image waiting on it.
+            NodeEvent::Blob(event) if subscriptions.contains(&event.context_id) => {
+                NodeEvent::Blob(event)
+            }
+            NodeEvent::Blob(_) => continue,
             NodeEvent::GroupMembership(event) if group_subscriptions.contains(&event.group_id) => {
                 NodeEvent::GroupMembership(event)
             }

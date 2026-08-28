@@ -9,12 +9,13 @@ use calimero_crypto::SharedKey;
 use calimero_governance_types::SignedNamespaceOp;
 use calimero_network_primitives::client::{is_no_peers_subscribed_error, NetworkClient};
 use calimero_network_primitives::config::GOSSIPSUB_MESH_N_LOW;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::NodeEvent;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::TopicHash;
@@ -219,6 +220,15 @@ pub struct NodeClient {
     /// (NodeManager event handler) and readers (concurrent publishers)
     /// see the same map without an actor mailbox round-trip.
     known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
+    /// Blobs currently being fetched in the background by
+    /// [`ensure_blob`](Self::ensure_blob).
+    ///
+    /// A conversation full of images asks for the same blob once per rendered
+    /// message, and a virtualised list asks again on every scroll. Without this
+    /// each ask would start its own discovery, and they would all wait on the
+    /// same DHT the first one is already querying. Deduped here so N requests
+    /// cost one fetch.
+    in_flight_blob_fetches: Arc<DashSet<BlobId>>,
 }
 
 impl NodeClient {
@@ -247,6 +257,7 @@ impl NodeClient {
             sync_client,
             local_delta_tx,
             known_subscribers: Arc::new(DashMap::new()),
+            in_flight_blob_fetches: Arc::new(DashSet::new()),
         }
     }
 

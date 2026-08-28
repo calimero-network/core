@@ -455,6 +455,9 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
         // migration events by group_id.
         let route = match &event {
             NodeEvent::Context(context_event) => EventRoute::Context(context_event.context_id),
+            // Same id-space as a context event: a blob is only ever ready with
+            // respect to the context it was found through.
+            NodeEvent::Blob(blob_event) => EventRoute::Context(blob_event.context_id),
             NodeEvent::GroupMembership(membership_event) => EventRoute::Group {
                 id: membership_event.group_id,
                 admin_only: false,

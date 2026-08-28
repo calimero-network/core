@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::{Path, Query};
 use axum::http::response::Builder;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
@@ -299,6 +299,52 @@ pub async fn download_handler(
         None
     };
 
+    // `?lazy=true` opts into not waiting.
+    //
+    // The default has to stay synchronous: this endpoint's answer to "fetch a
+    // blob from a peer" is the bytes, and merobox's `download_blob` step, the
+    // mero-js SDK and meroctl all read it that way. Answering `202` by default
+    // would break every one of them, so a caller that can handle "not yet"
+    // says so.
+    //
+    // What changed for everyone is that the synchronous path is now BOUNDED
+    // (see `BLOB_QUERY_TIMEOUT` in the node client). It used to wait on a DHT
+    // query with no timeout, so a wedged lookup held the request until the
+    // process died — which is what left images spinning in a chat client: the
+    // response never came, so the fetch never settled and the client's own
+    // error path never ran either.
+    let lazy = params
+        .get("lazy")
+        .is_some_and(|v| matches!(v.as_str(), "true" | "1"));
+
+    if lazy {
+        // Read locally ONLY — `None` for the context, so this cannot reach the
+        // network and cannot block.
+        if matches!(state.node_client.get_blob(&blob_id, None).await, Ok(None)) {
+            let Some(context_id) = context_id else {
+                return ApiError {
+                    status_code: StatusCode::NOT_FOUND,
+                    message:
+                        "Blob not found locally, and no context was given to discover it through"
+                            .to_owned(),
+                }
+                .into_response();
+            };
+
+            let fetch_state = state.node_client.ensure_blob(blob_id, context_id);
+            info!(%blob_id, %context_id, ?fetch_state, "Blob not local; fetching in background");
+
+            return (
+                StatusCode::ACCEPTED,
+                [(header::CONTENT_TYPE, "application/json")],
+                format!(
+                    r#"{{"status":"fetching","blobId":"{blob_id}","contextId":"{context_id}"}}"#
+                ),
+            )
+                .into_response();
+        }
+    }
+
     let blob_result = state
         .node_client
         .get_blob(&blob_id, context_id.as_ref())
@@ -352,9 +398,11 @@ pub async fn download_handler(
                     .into_response()
                 })
         }
+        // Handled above — a local miss either starts a background fetch (202)
+        // or, with no context to search, answers 404.
         Ok(None) => ApiError {
             status_code: StatusCode::NOT_FOUND,
-            message: "Blob not found locally or in network".to_owned(),
+            message: "Blob not found".to_owned(),
         }
         .into_response(),
         Err(err) => {
