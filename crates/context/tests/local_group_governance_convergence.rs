@@ -781,11 +781,29 @@ fn recursive_invite_joins_all_descendant_groups() {
     assert_eq!(descendants.len(), 3); // child_a, child_b, grandchild
 
     // Recursive invite for ns_id (covers all 4 groups including ns_id itself)
+    // Asks for a year on purpose: the ceiling must hold for a caller reaching
+    // the minting function directly, not only for one coming through the API.
     let invitations = calimero_governance_store::NamespaceRepository::new(&store)
         .create_recursive_invitations(&ns_id, &admin_sk, 365 * 24 * 3600, 1, &[])
         .unwrap();
 
     assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (_gid, signed) in &invitations {
+        let granted = signed
+            .invitation
+            .expiration_timestamp
+            .saturating_sub(now_secs);
+        assert!(
+            granted <= calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS,
+            "a year was requested and {granted}s granted; the ceiling is not enforced \
+             where invitations are actually minted"
+        );
+    }
 
     // Joiner publishes MemberJoinedAt for each invitation (expiration is set,
     // so joined_at must be provided; use 1 which is safely before any future expiry).

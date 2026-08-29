@@ -331,7 +331,13 @@ impl<'a> NamespaceRepository<'a> {
             .as_secs();
         // Saturate to avoid overflowing into a past/wrapped expiration when a
         // caller passes a very large `expiration_secs`.
-        let expiration = now_secs.saturating_add(expiration_secs);
+        // Clamped here, at the minting site, rather than only in the API
+        // handlers: this is a public function and anything that reaches it is
+        // minting a real bearer credential. A ceiling enforced only at the edge
+        // is one an internal caller silently steps around.
+        let expiration = now_secs.saturating_add(
+            expiration_secs.min(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS),
+        );
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {

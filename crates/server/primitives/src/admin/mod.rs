@@ -2217,6 +2217,52 @@ pub struct AccountApplicationsApiResponse {
     pub applications: Vec<AccountApplicationApiEntry>,
 }
 
+/// A join the joiner signed but cannot publish, handed to a node the inviter
+/// named as an admitter.
+///
+/// The joiner may hold no node at all — an account, a key, an offline device
+/// certificate, and nowhere to publish from. This is how such a joiner gets its
+/// membership op onto the DAG.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdmitJoinApiRequest {
+    /// The invitation being claimed. Must name this node in its `admitters`,
+    /// and must otherwise verify — being designated is permission to carry a
+    /// valid claim, not to skip checking it.
+    pub invitation: calimero_context_config::types::SignedGroupOpenInvitation,
+    /// The joiner's `SignedNamespaceOp`, borsh-encoded and hex.
+    ///
+    /// Already signed, and signed by the joiner's **device key** — every peer
+    /// checks `signer == credential.statement.sign_pk` when applying a join. An
+    /// admitter therefore cannot author this, only carry it, and cannot alter
+    /// who joined, which group, or with what role.
+    pub signed_op: String,
+}
+
+impl Validate for AdmitJoinApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.signed_op.trim().is_empty() {
+            errors.push(ValidationError::EmptyField { field: "signedOp" });
+        }
+        errors
+    }
+}
+
+/// What the admitter did with it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdmitJoinApiResponseData {
+    /// Whether the op reached the namespace topic.
+    ///
+    /// Not "joined": membership lands when peers apply the op, which this node
+    /// neither performs nor waits for. Reporting a join here would report
+    /// something this endpoint cannot observe.
+    pub published: bool,
+}
+
+pub type AdmitJoinApiResponse = AdmitJoinApiResponseData;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInvitationApiRequest {

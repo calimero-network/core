@@ -573,6 +573,68 @@ pub struct SignedOpenInvitation {
 }
 
 /// An open invitation payload for joining a context group.
+/// Longest an invitation may be valid for, and the default when none is asked
+/// for: **24 hours**.
+///
+/// An invitation is a bearer credential. Anyone holding it can redeem it, and
+/// until admission is direct it is broadcast on the namespace topic in
+/// cleartext, so "anyone holding it" is wider than the inviter intends. The
+/// default was a *year*, which meant a single leak stayed redeemable for a year
+/// and that any address hint shipped alongside it had long since gone stale.
+///
+/// A ceiling rather than a default: a caller asking for longer is clamped, not
+/// obeyed. A default alone protects only the callers who never pass a value,
+/// Where an admitter can be reached, and over which transport.
+///
+/// Two, because a claim arrives by two different routes and they are not
+/// interchangeable. A joining **node** dials libp2p; a **keyholder with no
+/// node** — the case direct admission exists for — has no swarm to dial from and
+/// reaches the admitter over HTTPS. An untyped string could not tell them apart,
+/// and a joiner would have to guess by inspecting the text.
+///
+/// Unsigned, like the rest of the hints: a wrong endpoint costs a failed
+/// connection, because the admitting node still has to appear in the *signed*
+/// `admitters` list for its admission to count. It can misdirect where you
+/// knock, never who may answer.
+///
+/// Best-effort by nature. An address recorded when the invitation was minted may
+/// have moved by the time it is used — which is survivable now that an
+/// invitation lives at most [`MAX_INVITATION_VALIDITY_SECS`], and was not when
+/// they lasted a year.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmitterEndpoint {
+    /// A libp2p multiaddr including the peer id, e.g.
+    /// `/ip4/10.0.0.1/tcp/2528/p2p/12D3KooW...`. For a joiner that runs a node.
+    ///
+    /// Carries the peer id because a joiner cannot resolve one: the
+    /// identity-to-peer map is in-memory and lost on restart, and a joiner that
+    /// has synced nothing has no entry for anybody.
+    Multiaddr(String),
+    /// An `https://` base URL serving the admin API. For a joiner that holds
+    /// only a key.
+    ///
+    /// The stable option: a hosted or TEE admitter keeps its URL across the
+    /// restarts and re-addressing that invalidate a multiaddr.
+    Url(String),
+}
+
+impl AdmitterEndpoint {
+    /// The account this endpoint claims to reach.
+    ///
+    /// Returns nothing on its own — deliberately. An endpoint is a hint, and the
+    /// authority to admit comes from the *signed* `admitters` list, checked
+    /// against the account the admitter proves it holds. Resolving a hint to an
+    /// account here would invite treating the hint as the answer.
+    #[must_use]
+    pub const fn is_dialable_by_a_node(&self) -> bool {
+        matches!(self, Self::Multiaddr(_))
+    }
+}
+
+/// and those are not the ones that make an invitation dangerous.
+pub const MAX_INVITATION_VALIDITY_SECS: u64 = 24 * 60 * 60;
+
 /// Created and signed by a group admin.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct GroupInvitationFromAdmin {
@@ -700,7 +762,7 @@ pub struct SignedGroupOpenInvitation {
     /// to be in the signed list for its admission to count. It can misdirect
     /// where you knock, never who may answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub admitter_hints: Vec<String>,
+    pub admitter_hints: Vec<AdmitterEndpoint>,
     /// Application ID for the group (unsigned bootstrap field).
     /// `None` for backwards compatibility with invitations created before
     /// this field was added; joiners fall back to zero when absent.
