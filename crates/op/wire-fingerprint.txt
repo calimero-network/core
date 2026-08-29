@@ -1,0 +1,74 @@
+# Calimero replicated wire surface — GENERATED, DO NOT EDIT BY HAND.
+#
+# Regenerate with UPDATE_WIRE_FINGERPRINT=1 and the crate's test command; the
+# failing assertion prints the exact one.
+#
+# APPENDING a variant at the END of an enum is wire-COMPATIBLE: an old node
+# fails to decode the new tag and rejects the op, but every op it already
+# understands still decodes identically.
+#
+# INSERTING, REMOVING, REORDERING or RETYPING anything below is a HARD BREAK:
+# borsh discriminants are bare positional u8s, so every later variant silently
+# renumbers and an old peer decodes the WRONG variant rather than erroring.
+# That is the rc.7/rc.8 NamespaceGovOpValue incident — a fleet that reported
+# 'joined' while replicating nothing. If you must do it, bump the schema
+# version constant in the same commit and plan a coordinated rollout.
+fingerprint blake3=f51f2a1a7bc51b2a
+
+surface calimero-op
+
+struct Op
+  0 id: [u8; 32]
+  1 scope: ScopeId
+  2 parents: Vec<[u8; 32]>
+  3 authorship: Authorship
+  4 hlc: HybridTimestamp
+  5 payload: OpPayload
+  6 expected_scope_root: [u8; 32]
+  7 signature: [u8; 64]
+
+struct Authorship
+  0 account: AccountId
+  1 device: DeviceId
+  2 device_key: PublicKey
+
+struct ScopeId
+  0 0: [u8; 32]
+
+enum OpPayload
+  0 Put(entity: Id, value: Vec<u8>)
+  1 Delete(entity: Id)
+  2 SetWriters(object: Id, writers: BTreeMap<AccountId, OpMask>)
+  3 MemberAdded(group: ContextGroupId, member: AccountId, role: GroupMemberRole)
+  4 MemberRemoved(group: ContextGroupId, member: AccountId)
+  5 AdminChanged(new_admin: AccountId)
+  6 PolicyUpdated(policy_bytes: Vec<u8>)
+  7 SubgroupCreated(child: ScopeId, parent: ScopeId, restricted: bool, admin: AccountId)
+  8 SubgroupReparented(child: ScopeId, new_parent: ScopeId)
+  9 SubgroupDeleted(scope: ScopeId)
+  10 SubgroupVisibilitySet(scope: ScopeId, restricted: bool)
+  11 DefaultCapabilitiesSet(group: ContextGroupId, capabilities: MemberCapabilities)
+  12 MemberCapabilitySet(group: ContextGroupId, member: AccountId, capabilities: MemberCapabilities)
+  13 Noop
+  14 DeviceLinked(genesis: AccountGenesis, chain: Vec<RootKeyHandoff>, cert: DeviceCert)
+  15 DeviceRevoked(account: AccountId, device: DeviceId)
+  16 AccountKeysRotated(handoff: RootKeyHandoff)
+  17 MemberJoinedWithDevice(group: ContextGroupId, member: AccountId, role: GroupMemberRole, genesis: AccountGenesis, chain: Vec<RootKeyHandoff>, cert: DeviceCert)
+  18 Opaque(group: ContextGroupId)
+
+leaf AccountGenesis len=33 blake3=79efc4eb5e34fb06
+leaf DeviceCert len=200 blake3=bb7c84c0d6cc4368
+leaf RootKeyHandoff len=132 blake3=ff46c07437cfbd6e
+leaf HybridTimestamp::zero len=24 blake3=ffc587cc36ab1393
+leaf MemberCapabilities::empty len=4 blake3=ec2bd03bf86b935f
+leaf OpMask::default len=1 blake3=448bd8dd9624154a
+leaf Id len=32 blake3=2ada83c1819a5372
+leaf GroupMemberRole::Admin len=1 blake3=2d3adedff11b61f1
+leaf GroupMemberRole::Member len=1 blake3=48fc721fbbc172e0
+leaf GroupMemberRole::ReadOnly len=1 blake3=ab13bedf42e84bae
+leaf GroupMemberRole::ReadOnlyTee len=1 blake3=e1e0e81d6ea39b0c
+leaf AccountId len=32 blake3=2ada83c1819a5372
+leaf DeviceId len=32 blake3=2ada83c1819a5372
+leaf PublicKey len=32 blake3=2ada83c1819a5372
+leaf ContextGroupId len=32 blake3=2ada83c1819a5372
+leaf ScopeId len=32 blake3=2ada83c1819a5372

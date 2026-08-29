@@ -17,3 +17,4 @@ mod op;
 mod payload;
 mod scope;
 mod wire;
+mod wire_fingerprint;

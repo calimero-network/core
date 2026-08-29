@@ -1,0 +1,16 @@
+[package]
+name = "calimero-wire-descriptor"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+# Test-support only: this crate is a dev-dependency of the crates that own a
+# replicated wire type. It is never linked into a shipped binary, which is why
+# it may carry filesystem/snapshot machinery a `publish = true` data crate
+# should not.
+publish = false
+
+[dependencies]
+blake3.workspace = true

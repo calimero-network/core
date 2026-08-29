@@ -31,3 +31,4 @@ calimero-storage.workspace = true
 calimero-account.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 rand.workspace = true
+calimero-wire-descriptor.workspace = true
