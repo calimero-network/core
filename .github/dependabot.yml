@@ -1,6 +1,20 @@
 version: 2
 updates:
   # Rust crates (workspace root).
+  #
+  # Patch and minor land as ONE grouped PR; majors get one PR each.
+  #
+  # Grouping everything, majors included, produced a single unreviewable PR of 83
+  # crates spanning hashing, signing, key derivation, the web stack and the on-disk
+  # format (#3656). It could not be landed or even compiled: cargo refuses a package
+  # whose `rust-version` exceeds the toolchain, so it failed before building, and
+  # behind that sat an axum path-syntax change that compiles clean and then 404s.
+  # A sweep that can only be merged all-or-nothing is one nobody can review, and it
+  # blocks the routine patches riding along with it.
+  #
+  # `update-types` here bounds the GROUP, not what dependabot proposes: a major
+  # falls outside the group and opens on its own, which is the reviewable unit for
+  # a breaking change.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
@@ -9,6 +23,7 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # GitHub Actions — also keeps the SHA-pinned `uses:` refs current.
   - package-ecosystem: github-actions
