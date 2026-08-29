@@ -19,6 +19,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         CreateGroupInvitationRequest {
             group_id,
             expiration_timestamp,
+            admitters,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -67,7 +68,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 expiration_timestamp,
                 invitation_nonce,
                 invited_role: 1, // Member
-                admitters: Vec::new(),
+                admitters,
             };
 
             let invitation_bytes = borsh::to_vec(&invitation)

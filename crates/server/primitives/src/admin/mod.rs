@@ -2261,7 +2261,16 @@ pub struct AdmitJoinApiResponseData {
     pub published: bool,
 }
 
-pub type AdmitJoinApiResponse = AdmitJoinApiResponseData;
+/// The response as it goes over the wire, envelope included.
+///
+/// `ApiResponse` serialises the payload under `data`, so a client that
+/// deserialises into the payload struct alone looks for `published` at the top
+/// level and fails. Matches `JoinNamespaceApiResponse`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdmitJoinApiResponse {
+    pub data: AdmitJoinApiResponseData,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

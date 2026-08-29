@@ -151,6 +151,7 @@ pub async fn handler(
         .create_group_invitation(CreateGroupInvitationRequest {
             group_id: namespace_id,
             expiration_timestamp: req.expiration_timestamp,
+            admitters,
         })
         .await
         .map_err(parse_api_error);

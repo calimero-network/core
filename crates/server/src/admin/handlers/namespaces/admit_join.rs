@@ -20,7 +20,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::{AdmitJoinApiRequest, AdmitJoinApiResponse};
+use calimero_server_primitives::admin::{AdmitJoinApiRequest, AdmitJoinApiResponseData};
 use reqwest::StatusCode;
 use tracing::info;
 
@@ -169,7 +169,7 @@ pub async fn handler(
     info!(namespace_id=%namespace_id_str, "admitted a joiner's signed join op");
 
     ApiResponse {
-        payload: AdmitJoinApiResponse { published: true },
+        payload: AdmitJoinApiResponseData { published: true },
     }
     .into_response()
 }
