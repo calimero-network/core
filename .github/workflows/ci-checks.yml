@@ -137,8 +137,8 @@ jobs:
       - name: Cargo deny
         if: ${{ !cancelled() }}
         run: |
-          # Pin cargo-deny to 0.19.9: parses modern (CVSS 4.0) advisories and builds
-          # on Rust 1.88.0. 0.16.3 could not load the current advisory DB.
+          # Pin cargo-deny to 0.19.9 so an upstream release cannot red CI on its own
+          # schedule: it parses modern (CVSS 4.0) advisories, which 0.16.3 could not.
           cargo install cargo-deny --version 0.19.9 --locked
           cargo deny check advisories bans licenses sources
 

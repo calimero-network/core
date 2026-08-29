@@ -3,7 +3,7 @@
 Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically. (See the [documentation site](docs/) — source under `docs/src/content/docs/`, published to <https://calimero-network.github.io/core/> — for the authoritative definition.)
 
 - **Type**: Rust monorepo (Cargo workspace)
-- **Stack**: Rust 1.88.0, wasmer (WASM), libp2p (P2P), RocksDB
+- **Stack**: Rust 1.98.0, wasmer (WASM), libp2p (P2P), RocksDB
 - **Sub-package AGENTS.md**: See [crates/](crates/AGENTS.md), [apps/](apps/AGENTS.md), [tools/](tools/AGENTS.md)
 
 ## Two layers of docs: WHAT vs WHY

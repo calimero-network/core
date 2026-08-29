@@ -94,6 +94,12 @@ mod tests {
 
     use super::*;
 
+    #[expect(
+        dead_code,
+        reason = "Never constructed: the fields exist so the `Validate` derive is \
+                  expanded against this mix of length/range/email rules, which is \
+                  what the tests below exercise."
+    )]
     #[derive(Debug, Deserialize, Validate)]
     struct TestInput {
         #[validate(length(min = 3, max = 50))]

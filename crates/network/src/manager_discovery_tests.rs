@@ -372,8 +372,13 @@ async fn rejected_cookie_self_heals_through_the_real_handler() {
     let global_ns = Namespace::from_static("/calimero/devnet/global");
     let (_overlay_topic, overlay_key) = overlay_topic_and_key(0x66);
 
-    let (mut member, member_peer) =
-        build_registered_member(&mut server, server_peer, &server_addr, &[global_ns.clone()]).await;
+    let (mut member, member_peer) = build_registered_member(
+        &mut server,
+        server_peer,
+        &server_addr,
+        std::slice::from_ref(&global_ns),
+    )
+    .await;
 
     let mut manager = build_manager().await;
     manager

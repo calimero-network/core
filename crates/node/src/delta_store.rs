@@ -1231,7 +1231,7 @@ pub(crate) fn load_rotation_log_direct(
             }
         }
         // Canonical order so resolution is insertion-order invariant.
-        entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+        entries.sort_by_key(|a| a.delta_id);
         return Ok(Some(RotationLog {
             snapshot: None,
             entries,

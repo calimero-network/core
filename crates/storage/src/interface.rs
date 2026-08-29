@@ -509,7 +509,7 @@ impl<S: StorageAdaptor> Interface<S> {
             .map(|(_delta_id, entry)| entry)
             .collect();
         // Canonical order so resolution is insertion-order invariant.
-        entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+        entries.sort_by_key(|a| a.delta_id);
         Some(crate::rotation_log::RotationLog {
             snapshot: None,
             entries,
