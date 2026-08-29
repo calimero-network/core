@@ -48,6 +48,7 @@ fn sign_invitation(
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
         invited_role,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_sig = admin_sk
@@ -59,6 +60,7 @@ fn sign_invitation(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 
@@ -313,6 +315,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
+        admitters: Vec::new(),
     };
 
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -324,6 +327,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     };
 
     let ns_op = SignedNamespaceOp::sign(
@@ -778,7 +782,7 @@ fn recursive_invite_joins_all_descendant_groups() {
 
     // Recursive invite for ns_id (covers all 4 groups including ns_id itself)
     let invitations = calimero_governance_store::NamespaceRepository::new(&store)
-        .create_recursive_invitations(&ns_id, &admin_sk, 365 * 24 * 3600, 1)
+        .create_recursive_invitations(&ns_id, &admin_sk, 365 * 24 * 3600, 1, &[])
         .unwrap();
 
     assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
@@ -2121,6 +2125,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_hash = Sha256::digest(&inv_bytes);
@@ -2131,6 +2136,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     };
 
     let ns_op = SignedNamespaceOp::sign(

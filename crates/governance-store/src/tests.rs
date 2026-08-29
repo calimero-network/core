@@ -4119,6 +4119,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -4128,6 +4129,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -5396,6 +5398,7 @@ fn signed_invitation_for(
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: 1,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -5405,6 +5408,7 @@ fn signed_invitation_for(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 

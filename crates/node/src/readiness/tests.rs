@@ -646,10 +646,12 @@ fn test_invitation() -> SignedGroupOpenInvitation {
             expiration_timestamp: 0,
             invitation_nonce: [2u8; 32],
             invited_role: 1,
+            admitters: Vec::new(),
         },
         inviter_signature: String::new(),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 

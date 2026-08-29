@@ -62,6 +62,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 expiration_timestamp,
                 invitation_nonce,
                 invited_role: 1, // Member
+                admitters: Vec::new(),
             };
 
             let invitation_bytes = borsh::to_vec(&invitation)
@@ -96,6 +97,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
                     bytecode_id: Some(meta.bytecode_id),
+                    admitter_hints: Vec::new(),
                 },
                 group_name,
             ))

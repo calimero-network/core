@@ -2226,6 +2226,18 @@ pub struct CreateGroupInvitationApiRequest {
     pub expiration_timestamp: Option<u64>,
     #[serde(default)]
     pub recursive: Option<bool>,
+    /// Accounts permitted to admit a claim of this invitation, 64 hex each.
+    ///
+    /// Empty or absent keeps the existing behaviour: the joiner announces
+    /// itself on the namespace topic and any ready peer may admit it.
+    ///
+    /// Naming admitters means the joiner presents the invitation to one of them
+    /// directly instead. Worth doing because the broadcast path staples the
+    /// whole invitation to a readiness beacon, and those go out on the namespace
+    /// topic as plain borsh to any peer that subscribes — so an invitation that
+    /// travels that way is readable by more than its intended holder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitters: Vec<String>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {

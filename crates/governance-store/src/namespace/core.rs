@@ -295,6 +295,7 @@ impl<'a> NamespaceRepository<'a> {
         inviter_sk: &PrivateKey,
         expiration_secs: u64,
         invited_role: u8,
+        admitters: &[calimero_account::AccountId],
     ) -> EyreResult<
         Vec<(
             ContextGroupId,
@@ -342,6 +343,7 @@ impl<'a> NamespaceRepository<'a> {
                 expiration_timestamp: expiration,
                 invitation_nonce,
                 invited_role,
+                admitters: admitters.to_vec(),
             };
 
             let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -372,6 +374,7 @@ impl<'a> NamespaceRepository<'a> {
                 inviter_account: Some(inviter_account),
                 application_id,
                 bytecode_id,
+                admitter_hints: Vec::new(),
             };
 
             result.push((gid, signed));

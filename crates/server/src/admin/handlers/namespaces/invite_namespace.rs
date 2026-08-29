@@ -45,6 +45,25 @@ pub async fn handler(
 
     let expiration_secs = req.expiration_timestamp.unwrap_or(365 * 24 * 3600);
 
+    // Parsed before anything is signed: an admitter the caller cannot spell is
+    // a restriction that would silently not apply, and an invitation restricted
+    // to nobody reachable is worse than an unrestricted one.
+    let admitters = match req
+        .admitters
+        .iter()
+        .map(|a| a.parse::<calimero_account::AccountId>())
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(list) => list,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "admitters must each be 64 hex characters (32 bytes)".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     if req.recursive.unwrap_or(false) {
         // The node signs as itself, with the one key it holds.
         let (node_pk, signing_key) =
@@ -94,6 +113,7 @@ pub async fn handler(
             &inviter_sk,
             expiration_secs,
             1,
+            &admitters,
         ) {
             Ok(entries) => entries,
             Err(err) => return parse_api_error(err).into_response(),

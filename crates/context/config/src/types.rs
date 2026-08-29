@@ -591,6 +591,28 @@ pub struct GroupInvitationFromAdmin {
     /// cannot escalate. Defaults to 1 (Member) for backward compat.
     #[serde(default = "default_invited_role")]
     pub invited_role: u8,
+    /// Accounts permitted to admit a claim of this invitation.
+    ///
+    /// Empty means the legacy path: the joiner announces itself on the
+    /// namespace topic and any `*Ready` peer may admit it. That is how every
+    /// invitation minted before this field worked, and it is why this is a
+    /// widening rather than a migration.
+    ///
+    /// Non-empty names the only nodes a claim may be presented to, and the
+    /// joiner reaches one of them directly instead of broadcasting. The reason
+    /// to bother: admission by broadcast staples the whole invitation to a
+    /// readiness beacon, and beacons go out on the namespace topic as plain
+    /// borsh, to any peer that cares to subscribe.
+    ///
+    /// **Signed**, which is the entire point. An unsigned list is one an
+    /// attacker rewrites to a node of its choosing, which buys nothing.
+    ///
+    /// Accounts rather than `PeerId`s: an account survives the node re-keying,
+    /// and governance names accounts everywhere else. Where to *reach* them is a
+    /// separate, unsigned question — see
+    /// [`SignedGroupOpenInvitation::admitter_hints`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitters: Vec<calimero_account::AccountId>,
 }
 
 fn default_invited_role() -> u8 {
@@ -664,6 +686,21 @@ pub struct SignedGroupOpenInvitation {
     /// existed and costs only a slower cold start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inviter_account: Option<calimero_account::AccountId>,
+    /// Where to reach the accounts in
+    /// [`GroupInvitationFromAdmin::admitters`] (unsigned bootstrap field).
+    ///
+    /// Outside the signature deliberately, beside the other hints. An account
+    /// is reached through a `PeerId`, and the identity-to-peer map is held in
+    /// memory and lost on restart — so a joiner that has synced nothing has no
+    /// way to resolve one. Shipping the hint is what makes the signed list
+    /// usable at all.
+    ///
+    /// Unsigned is safe here in a way it would not be for `admitters` itself:
+    /// a wrong hint costs a failed dial, because the admitting node still has
+    /// to be in the signed list for its admission to count. It can misdirect
+    /// where you knock, never who may answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitter_hints: Vec<String>,
     /// Application ID for the group (unsigned bootstrap field).
     /// `None` for backwards compatibility with invitations created before
     /// this field was added; joiners fall back to zero when absent.
@@ -806,11 +843,13 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_owned(),
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
+            admitter_hints: Vec::new(),
         };
 
         // Round-tripping unchanged JSON is what pins the wire name; swapping in
@@ -839,11 +878,13 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_owned(),
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
+            admitter_hints: Vec::new(),
         };
 
         let json = serde_json::to_string(&signed).expect("serialize");
@@ -867,11 +908,13 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_owned(),
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x66; 32]),
+            admitter_hints: Vec::new(),
         };
 
         let mut value = serde_json::to_value(&signed).expect("serialize");
