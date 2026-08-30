@@ -84,7 +84,10 @@ pub fn get_all_auth_data_types() -> HashMap<String, Value> {
 #[macro_export]
 macro_rules! register_auth_data_type {
     ($auth_type:expr) => {
-        #[ctor::ctor]
+        // `unsafe` is ctor 1.0's acknowledgement that this runs before `main`,
+        // outside any runtime the program has set up. Registration only pushes
+        // into a lock-guarded global, which is why it is sound here.
+        #[ctor::ctor(unsafe)]
         fn register_this_auth_data_type() {
             $crate::providers::core::provider_data_registry::register_auth_data_type(Box::new(
                 $auth_type,

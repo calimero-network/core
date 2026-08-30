@@ -11,10 +11,9 @@ use cached_path::Options;
 use eyre::bail;
 use eyre::OptionExt;
 use reqwest::blocking::Client as ReqwestClient;
+use reqwest::header::AUTHORIZATION;
 use reqwest::redirect::Policy;
 use reqwest::Url;
-use reqwest_compat::blocking::Client as ReqwestCompatClient;
-use reqwest_compat::header::AUTHORIZATION;
 
 const USER_AGENT: &str = "calimero-auth-build";
 const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
@@ -94,7 +93,7 @@ fn try_main() -> eyre::Result<()> {
     let frontend_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
-        let mut builder = ReqwestCompatClient::builder().user_agent(USER_AGENT);
+        let mut builder = ReqwestClient::builder().user_agent(USER_AGENT);
 
         if let Some(token) = token {
             let headers = [(AUTHORIZATION, format!("Bearer {token}").try_into()?)].into_iter();

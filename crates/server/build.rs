@@ -125,18 +125,18 @@ fn try_main() -> eyre::Result<()> {
     let webui_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
-        let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
+        let mut builder = reqwest::blocking::Client::builder().user_agent(USER_AGENT);
 
-        let mut headers = reqwest_compat::header::HeaderMap::new();
+        let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
-            reqwest_compat::header::ACCEPT,
-            reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/octet-stream"),
         );
 
         if let Some(token) = token {
             if src.starts_with("https://api.github.com/") {
                 let token_header = format!("Bearer {token}").try_into()?;
-                headers.insert(reqwest_compat::header::AUTHORIZATION, token_header);
+                headers.insert(reqwest::header::AUTHORIZATION, token_header);
             }
         }
 
