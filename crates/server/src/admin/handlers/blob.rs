@@ -317,32 +317,29 @@ pub async fn download_handler(
         .get("lazy")
         .is_some_and(|v| matches!(v.as_str(), "true" | "1"));
 
-    if lazy {
-        // Read locally ONLY — `None` for the context, so this cannot reach the
-        // network and cannot block.
-        if matches!(state.node_client.get_blob(&blob_id, None).await, Ok(None)) {
-            let Some(context_id) = context_id else {
-                return ApiError {
-                    status_code: StatusCode::NOT_FOUND,
-                    message:
-                        "Blob not found locally, and no context was given to discover it through"
-                            .to_owned(),
-                }
-                .into_response();
-            };
+    // `has_blob` rather than a local `get_blob`: this only needs to know whether
+    // the bytes are here, and `get_blob` would build a stream just to drop it —
+    // then the serving path below opens the same blob a second time. Both resolve
+    // the same metadata row, so the answer is identical and this one is cheaper.
+    if lazy && !state.node_client.has_blob(&blob_id).unwrap_or(false) {
+        let Some(context_id) = context_id else {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Blob not found locally, and no context was given to discover it through"
+                    .to_owned(),
+            }
+            .into_response();
+        };
 
-            let fetch_state = state.node_client.ensure_blob(blob_id, context_id);
-            info!(%blob_id, %context_id, ?fetch_state, "Blob not local; fetching in background");
+        let fetch_state = state.node_client.ensure_blob(blob_id, context_id);
+        info!(%blob_id, %context_id, ?fetch_state, "Blob not local; fetching in background");
 
-            return (
-                StatusCode::ACCEPTED,
-                [(header::CONTENT_TYPE, "application/json")],
-                format!(
-                    r#"{{"status":"fetching","blobId":"{blob_id}","contextId":"{context_id}"}}"#
-                ),
-            )
-                .into_response();
-        }
+        return (
+            StatusCode::ACCEPTED,
+            [(header::CONTENT_TYPE, "application/json")],
+            format!(r#"{{"status":"fetching","blobId":"{blob_id}","contextId":"{context_id}"}}"#),
+        )
+            .into_response();
     }
 
     let blob_result = state
