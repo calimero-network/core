@@ -3,8 +3,20 @@
 //!
 //! Two backends, deliberately: the in-memory DB is the abstraction floor (no
 //! I/O, so what remains is codec and dispatch), and RocksDB on a tmpdir is the
-//! cost a node actually pays. The gap between them is the I/O budget of every
-//! storage read in the tree.
+//! dispatch-plus-warm-cache cost a node pays on top of that floor. It is NOT a
+//! cold-disk-seek number: the default block cache is 128 MiB
+//! (`DEFAULT_BLOCK_CACHE_SIZE`, `crates/store/impl/rocksdb/src/lib.rs:76`),
+//! and the largest working set benchmarked here (`n = 10_000`, ~176 bytes/row
+//! including key+value+RocksDB's own per-entry overhead) is on the order of
+//! 2 MB — three orders of magnitude under the cache, so every `get_hit` after
+//! the first touch is a cache hit. The measured gap (RocksDB ~3.4x the
+//! in-memory floor at `n = 10_000`) is consistent with FFI call and
+//! column-family dispatch overhead on a warm cache; it says nothing about
+//! disk I/O. To actually measure disk-backed reads, either grow `n` well past
+//! the point where the working set exceeds 128 MiB, shrink the bench's own
+//! `set_block_cache` so eviction happens at these sizes, or read RocksDB's
+//! `rocksdb.block.cache.hit` / `rocksdb.block.cache.miss` statistics
+//! directly — none of which this bench does today.
 //!
 //! `read_then_put` is the merge-path pattern — read the existing value, write
 //! a new one under the same key — which is what a delta apply does per entity.
@@ -18,9 +30,12 @@
 //! `get_hit`/`get_miss` read from within the same group, so those two ids keep
 //! measuring exactly the database size their group id claims.
 //!
-//! What would change a decision: `get_hit` on RocksDB that climbs with `n`
-//! points at compaction/SST growth rather than at anything in `crates/storage`,
-//! and moves the investigation a layer down.
+//! What would change a decision: at these sizes the whole column family fits
+//! in the block cache, so a `get_hit` that climbs with `n` cannot be
+//! compaction/SST-growth pressure (that needs the cache exceeded first, which
+//! none of the benchmarked `n` do) — it would instead point at per-entry
+//! dispatch cost scaling with database size, worth chasing in
+//! `crates/store`'s own code before looking a layer down.
 
 use std::hint::black_box;
 
