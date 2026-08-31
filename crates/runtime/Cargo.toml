@@ -48,6 +48,7 @@ name = "demo"
 [dev-dependencies]
 assert-json-diff.workspace = true
 tracing-subscriber.workspace = true
+criterion.workspace = true
 eyre.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
@@ -58,3 +59,29 @@ wat.workspace = true
 
 [features]
 profiling = ["wasmer-compiler-cranelift"]
+
+# A crate that gains a [[bench]] needs `bench = false` on its [lib], [[bin]]
+# and [[test]] targets, or `cargo bench -p calimero-runtime` (no --bench
+# filter) hands those to libtest, which rejects criterion's own CLI flags.
+[lib]
+bench = false
+
+[[test]]
+name = "chat_wall"
+bench = false
+
+[[test]]
+name = "cost_is_flat"
+bench = false
+
+[[test]]
+name = "crdt_conformance"
+bench = false
+
+[[test]]
+name = "tracing_logs"
+bench = false
+
+[[bench]]
+name = "engine"
+harness = false

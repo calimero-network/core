@@ -1491,6 +1491,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-storage",
  "calimero-sys",
+ "criterion",
  "ed25519-dalek",
  "eyre",
  "fragile",
