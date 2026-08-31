@@ -232,9 +232,12 @@ fn lww_register_set(n: usize) {
 ///
 /// Keeping the outer key fixed reuses the SAME inner map (SAME id) for all
 /// `n` inserts — the inner map is minted once, not `n` times — which removes
-/// the recurring random-id source and reproduces exactly. It is also the
-/// more representative shape: "one document, many fields" is the normal
-/// nested-map access pattern, not "one document per field".
+/// the recurring random-id source. That alone was not quite enough for exact
+/// reproducibility (see `build_nested_map`'s comment for the second fix,
+/// making the OUTER map's own id deterministic too); with both fixes this
+/// reproduces exactly. It is also the more representative shape: "one
+/// document, many fields" is the normal nested-map access pattern, not "one
+/// document per field".
 fn nested_map_insert(n: usize) {
     build_nested_map(n);
 }
@@ -251,9 +254,54 @@ fn nested_map_get(n: usize) {
 fn build_nested_map(
     n: usize,
 ) -> Root<UnorderedMap<String, UnorderedMap<String, String, MainStorage>, MainStorage>> {
-    let mut map = Root::new(
-        UnorderedMap::<String, UnorderedMap<String, String, MainStorage>, MainStorage>::new,
-    );
+    // Both the outer map AND the seed step below use `new_with_field_name`
+    // (a DETERMINISTIC id) rather than `new()`/`new_internal()` (a random
+    // one). Both were needed — see the seed comment for why.
+    let mut map = Root::new(|| {
+        UnorderedMap::<String, UnorderedMap<String, String, MainStorage>, MainStorage>::new_with_field_name("outer")
+    });
+    // Seed the outer entry with an EMPTY inner map before any `insert_nested`
+    // call, so the one-time nested-collection re-key (below) happens with
+    // nothing to relocate, rather than folding it into the cost of the
+    // FIRST `inner0` insert.
+    //
+    // `insert_nested`'s own "outer key absent" branch mints the inner map
+    // via `UnorderedMap::new_internal()` (a random id) and then, on
+    // write-back, `rekey_nested_value` reassigns it the deterministic id the
+    // outer entry expects — relocating every entry the inner map holds AT
+    // THAT MOMENT through the child trie under the TARGET id
+    // (`reassign_deterministic_id_keyed`'s clear-then-reinsert, see
+    // `unordered_map.rs`). That target id is
+    // `compute_collection_id(Some(outer_entry_id), "__nested_map", ..)` — it
+    // depends on `outer_entry_id`, which depends on the OUTER map's own id.
+    //
+    // Getting this fully deterministic took two fixes, found in this order:
+    //
+    // 1. Seed with an EMPTY inner map (this function, first version) so the
+    //    one-time relocation moves zero entries instead of the `inner0`
+    //    entry. This alone reduced but did NOT eliminate the wobble
+    //    (measured: `rows_removed` 11..13 -> 5..6, `rows_written` still
+    //    wobbling 287..288) — expected, since (2) below was still random.
+    // 2. Seed the inner map itself with `new_with_field_name` (a
+    //    deterministic id) instead of plain `new()`. This alone, with the
+    //    OUTER map still random, did NOT fully fix it either — the wobble
+    //    persisted, because the relocation's TARGET id still depended on
+    //    the outer map's random id, not the inner map's pre-rekey id.
+    //
+    // Only fixing BOTH — outer map AND seed inner map deterministic —
+    // removed every random input from the whole chain: 20 separate
+    // fresh-process runs of the real `storage-cost` binary (not just an
+    // in-process loop) now report byte-identical rows_read/written/removed
+    // at every size. Every subsequent `insert_nested` call finds the outer
+    // key already present with the inner map's id already correct, so
+    // `rekey_nested_value`'s `old_id == new_id` fast path skips the
+    // relocation entirely from then on — the one-time seed cost does not
+    // scale with `n`.
+    map.insert(
+        "outer".to_owned(),
+        UnorderedMap::<String, String, MainStorage>::new_with_field_name("seed"),
+    )
+    .expect("seed insert should succeed");
     for i in 0..n {
         map.insert_nested("outer".to_owned(), format!("inner{i}"), "value".to_owned())
             .expect("insert_nested should succeed");
@@ -325,7 +373,12 @@ pub fn all() -> Vec<Workload> {
         ("unordered_map_get", ConstantPerCall, 0, unordered_map_get),
         // Walks the whole trie, so its node count follows the random id
         // distribution. Measured spread over seven runs: 10.5% at n=10,
-        // under 3% at every larger size.
+        // under 3% at every larger size. NOTE (task 9): this task's snapshot
+        // regeneration moved `vector_get_nth`'s committed rows (e.g. 40->42
+        // at n=10) as a side effect of running the whole binary again —
+        // `vector_get_nth` itself is unchanged, the new numbers are a fresh
+        // draw from the same random-id-dependent distribution described
+        // above, and the delta is well inside the declared 25% tolerance.
         ("vector_get_nth", KnownLinearInN, 25, vector_get_nth),
         // `insert_str` linearises the document once per call, then does `n`
         // flat `UnorderedMap` inserts — see `rga_insert`'s doc comment for why
@@ -333,22 +386,28 @@ pub fn all() -> Vec<Workload> {
         // `insert(pos, c)` loop, which is real but unrelated `O(n^2)`.
         ("rga_insert", FlatPerEntry, 0, rga_insert),
         // No positional read exists on `ReplicatedGrowableArray`; every read
-        // linearises the whole document. Same shape and tolerance as
-        // `vector_get_nth`, one step further along the same wall — see
-        // `rga_get_nth`'s doc comment.
-        ("rga_get_nth", KnownLinearInN, 25, rga_get_nth),
+        // linearises the whole document — same SHAPE as `vector_get_nth`
+        // (KnownLinearInN), one step further along the same wall (see
+        // `rga_get_nth`'s doc comment), but NOT the same tolerance.
+        // `vector_get_nth`'s 25% comes from real child-trie bucket
+        // randomness (measured 10.5% spread at n=10). `get_text()`'s
+        // linearisation walks `self.chars.entries()` and sorts in memory —
+        // no trie-bucket lookup is involved, so it is not subject to that
+        // randomness at all. Measured: exactly `2n` rows_read at every size,
+        // zero spread across seven runs. Tolerance is 0.
+        ("rga_get_nth", KnownLinearInN, 0, rga_get_nth),
         ("lww_register_set", FlatPerEntry, 0, lww_register_set),
-        // Reusing one outer key (see `nested_map_insert`'s doc comment) makes
-        // `rows_written` reproduce exactly at every size. `rows_removed`
-        // does not: the single inner map still gets ONE random id, and its
-        // child-trie bucket costs a small, CONSTANT (not `n`-scaled) number
-        // of removes that varies by 1-2 rows depending on where that one id
-        // lands. Measured over 30 runs at every size: 11..13, i.e. up to
-        // 18.2% at n=100 — the percentage is large only because the
-        // absolute count is tiny, same trie-randomness source as
-        // `vector_get_nth`, at a much smaller magnitude because only one
-        // collection (not every entry) has a random id here.
-        ("nested_map_insert", FlatPerEntry, 20, nested_map_insert),
+        // Reusing one outer key, and building BOTH the outer map and the
+        // seed inner map with deterministic ids (see `nested_map_insert`'s
+        // doc comment), eliminates the randomness entirely — every metric
+        // reproduces exactly at every size. An earlier version of this
+        // workload only fixed the outer-key reuse, leaving the outer map's
+        // OWN id random; that alone still let `rows_removed`/`rows_written`
+        // wobble by ~1 row (see the doc comment for why: a random parent id
+        // moves WHERE the one-time nested-collection re-key lands in the
+        // child trie, even when nothing else about the workload is random).
+        // Fixing the parent id removed the last variable.
+        ("nested_map_insert", FlatPerEntry, 0, nested_map_insert),
         ("nested_map_get", ConstantPerCall, 0, nested_map_get),
     ];
 
