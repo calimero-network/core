@@ -1674,6 +1674,21 @@ impl GroupOp {
 }
 
 impl RootOp {
+    /// The op's own validation, for a receiver that has just unsealed it.
+    ///
+    /// `NamespaceOp::validate` runs before apply and, for a sealed op, can only
+    /// bound the ciphertext — the inner op is unreadable at that point. So these
+    /// checks have exactly one place left to run, and a receiver that unseals
+    /// without calling this loses validation for every sealed variant with
+    /// nothing to indicate it: no stage reports that a check moved.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the op's own validation rejects.
+    pub fn validate_after_unsealing(&self) -> Result<(), GovernanceError> {
+        self.validate()
+    }
+
     fn validate(&self) -> Result<(), GovernanceError> {
         match self {
             Self::GroupDeleted {

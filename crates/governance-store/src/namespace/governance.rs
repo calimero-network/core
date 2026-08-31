@@ -247,8 +247,38 @@ impl<'a> NamespaceGovernance<'a> {
         let mut result = ApplyNamespaceOpResult::default();
         let mut root_events: Vec<crate::op_events::OpEvent> = Vec::new();
 
-        match &op.op {
-            NamespaceOp::Root(root) => {
+        // Open a sealed root op before the match, so the arm below sees a `RootOp`
+        // whether it arrived sealed or in the clear and its body stays one
+        // implementation. Two copies of a 187-line apply would be two places for
+        // the sealed and cleartext paths to drift, and the drift would show as
+        // peers disagreeing about state rather than as anything failing.
+        let opened_root: Option<RootOp> = match &op.op {
+            NamespaceOp::RootSealed { key_id, encrypted } => {
+                let ns_id_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+                match GroupKeyring::new(self.store, ns_id_typed)
+                    .load_key_by_id(key_id.as_bytes())?
+                {
+                    Some(key) => {
+                        let inner = GroupKeyring::decrypt_root_op(&key, encrypted)?;
+                        // The validation the envelope could not do. `NamespaceOp::validate`
+                        // bounds the ciphertext and stops there, so for a sealed op the
+                        // inner op's own checks run here or nowhere — and nowhere is
+                        // silent, because no other stage notices that a check moved.
+                        inner.validate_after_unsealing()?;
+                        Some(inner)
+                    }
+                    // Not held yet. Ordinary for a member that has not received
+                    // the namespace key, so it must not be an error: erroring
+                    // would drop an op the node will be able to apply minutes
+                    // later. Left unapplied for the retry pass to pick up.
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+
+        match (&op.op, opened_root.as_ref()) {
+            (NamespaceOp::Root(root), _) | (NamespaceOp::RootSealed { .. }, Some(root)) => {
                 root_events = self.apply_root_op(op, root)?;
 
                 match root {
@@ -435,12 +465,27 @@ impl<'a> NamespaceGovernance<'a> {
                     _ => {}
                 }
             }
-            NamespaceOp::Group {
-                group_id,
-                key_id,
-                encrypted,
-                key_rotation,
-            } => {
+            // Sealed, and the key is not held. Reported rather than applied or
+            // dropped: the op stays in the log for the retry pass that runs on
+            // key delivery.
+            (NamespaceOp::RootSealed { key_id, .. }, None) => {
+                result.key_unwrap_failures.push(KeyUnwrapFailure {
+                    group_id: self.namespace_id.to_bytes(),
+                    reason: format!(
+                        "no namespace key {} held yet for a sealed root op",
+                        hex::encode(key_id.as_bytes())
+                    ),
+                });
+            }
+            (
+                NamespaceOp::Group {
+                    group_id,
+                    key_id,
+                    encrypted,
+                    key_rotation,
+                },
+                _,
+            ) => {
                 let group_id_typed = *group_id;
 
                 // Issue #2256: an `Open` subgroup is encrypted with the
