@@ -40,7 +40,8 @@ untouched, so this does not put you in a debug build, it only adds
 `master` saves a baseline per commit (`.github/workflows/benchmarks.yml`,
 `criterion` job); a PR labelled `run-benchmarks` compares against it with
 `critcmp` (same file, `compare` job). Neither job can fail your PR — see
-[Reading the comparison](#reading-the-comparison) below.
+[Reading the comparison](#reading-the-comparison) below for what the
+comparison actually needs in order to produce a table rather than a message.
 
 ## Tier 3 — macro
 
@@ -76,7 +77,20 @@ placeholders, not as a cost gate on sync.
 
 ## Reading the comparison
 
-The `run-benchmarks` label posts a `critcmp` table against the PR's base commit.
+The `run-benchmarks` label posts a `critcmp` table against the PR's base commit
+-- but only when a comparison is actually possible. Getting there needs, in
+order: a benchmarks.yml run to have completed successfully on the base commit
+(so `push` to `master` must have already run this workflow at that commit),
+and that run's artifacts to still be within the 30-day retention window. The
+`compare` job looks these up itself (`gh run list --workflow benchmarks.yml
+--commit <base-sha>`, then a cross-run `actions/download-artifact` using that
+run's id) and posts one of three plain-English "no comparison" messages
+instead of a table when any of that is missing, rather than a table that
+silently compares nothing. If the PR comment says "no comparison", read the
+job's own log for which of the three cases it hit before assuming the
+benchmarks are unchanged.
+
+When a table does show up:
 
 - Under ~5%: noise. Shared runners vary by more than that between identical runs.
 - 5-20% on one benchmark, nothing else: usually noise too. Re-run before believing it.
