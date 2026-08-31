@@ -6,9 +6,22 @@
 //! application bundle pays this on the way in, and the receiving node pays it
 //! again on the way out.
 //!
-//! Sizes bracket the chunk boundary on purpose: just under one chunk, exactly
-//! one, and several. A per-byte cost that jumps at the boundary means the
-//! chunking path, not the hashing, dominates.
+//! Sizes bracket the chunk boundary on purpose: just under one chunk
+//! (1,000,000 bytes), exactly one full chunk (1,048,576 bytes — `CHUNK_SIZE`
+//! is `1 << 20` exactly, `src/lib.rs:31`), and several (4,194,304 bytes, four
+//! chunks). A per-byte cost that jumps between the first two sizes means the
+//! chunking path, not the hashing, dominates; the observed measurement is
+//! flat across that boundary (see the benchmark report).
+//!
+//! Measured throughput lands around ~120-126 MiB/s, well short of the naive
+//! "hundreds of MB/s" a single SHA-256 pass would suggest, because
+//! `put_sized` hashes every chunk **twice** into two independent `Sha256`
+//! instances over the same bytes: `blob.digest.update(chunk)` accumulates the
+//! root id and `file.digest.update(chunk)` accumulates that chunk's own id
+//! (`src/lib.rs:132-135` for the `State` struct holding both digests,
+//! `:410-411` for the two updates). Two software SHA-256 passes at roughly
+//! 3-4 ns/byte each account for most of the ~7.9 ns/byte this bench measures;
+//! the filesystem write is the smaller remainder, not the dominant cost.
 //!
 //! Context for the numbers: a receiver abandons a transfer after 60s
 //! (`crates/network/.../request_blob.rs:18`), so the p2p ceiling of 500 MiB
