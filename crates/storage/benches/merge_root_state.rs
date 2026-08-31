@@ -7,13 +7,27 @@
 //! is compiled in only under `#[cfg(any(target_arch = "wasm32", test, feature
 //! = "testing"))]` — a plain `cargo bench` (no `--features testing`) builds
 //! neither, so calling `merge_root_state` itself here would just measure the
-//! `NoFunctionsRegistered` bootstrap/error shortcut, not a merge. This
-//! benches `merge_root_state_typed` (`crates/storage/src/merge.rs:125`)
-//! instead: it is the typed core `merge_root_state` calls once dispatch has
-//! resolved a concrete type, is public unconditionally, and does the same
-//! borsh-decode -> `Mergeable::merge` -> borsh-encode work. So what is
-//! measured here is exactly the framework's encode/dispatch/decode overhead,
-//! never gated behind a feature flag.
+//! `NoFunctionsRegistered` bootstrap/error shortcut, not a merge.
+//!
+//! This benches `merge_root_state_typed` (`crates/storage/src/merge.rs:125`)
+//! instead. It is NOT a function `merge_root_state` calls: when the registry
+//! dispatch path IS compiled in, `merge_root_state` -> `try_merge_registered`
+//! -> the `merge_fn` closure built by `register_crdt_merge`
+//! (`crates/storage/src/merge/registry.rs:224-249`), which is an
+//! independent, hand-duplicated decode -> `with_merge_mode(merge)` -> encode
+//! implementation — it never calls `merge_root_state_typed`
+//! (`grep -rn merge_root_state_typed crates/storage/src/` turns up only test
+//! call sites and a doc comment about the WASM-side macro export).
+//! `merge_root_state_typed` is instead the shape the WASM-side
+//! `#[app::state]`-generated `__calimero_merge_root_state` export calls, and
+//! is *functionally equivalent* to what the registry closure duplicates —
+//! same decode -> `Mergeable::merge` -> encode steps, same
+//! `existing_created_at == existing_ts` bootstrap shortcut — without needing
+//! the registry, `TypeId`, or any feature flag to reach it. So what is
+//! measured here is the framework's encode/decode overhead around one
+//! `Mergeable::merge` call: there is no `TypeId` lookup or trial-deserialize
+//! in the timed path, so registry-lookup cost is NOT included, and an
+//! optimization scoped from this number should not assume it is.
 //!
 //! `merge_root_state_typed`'s real signature (read from the source before
 //! writing this bench — it differs from an earlier draft that assumed
@@ -35,7 +49,7 @@
 //! call takes the real typed-merge branch, not the `existing_created_at ==
 //! existing_ts` bootstrap fast path that just clones `incoming` verbatim.
 //!
-//! `T` needs a registered-shape `Mergeable` impl to dispatch to (there is no
+//! `T` needs a `Mergeable` impl to call `merge` on (there is no
 //! registry involved here — `merge_root_state_typed` is generic and calls
 //! `T::merge` directly), so this bench defines a minimal local `BenchState`
 //! with an O(n) `merge`: a linear zip of `existing`/`incoming`'s identically
