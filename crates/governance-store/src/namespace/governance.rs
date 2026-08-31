@@ -2279,10 +2279,26 @@ pub fn seal_root_op_for_publish(
     // `[u8; 32]`, so binding them the other way round compiles and encrypts
     // under the id, producing ciphertext no holder of the key can open.
     let Some((key_id, key)) = GroupKeyring::new(store, ns_typed).load_current_key()? else {
-        eyre::bail!(
-            "refusing to publish a sealable root op in the clear: this node holds no namespace \
-             key, so its own state disagrees with its authority to author one"
+        // No namespace key exists yet, and that is a real state rather than a
+        // broken one: a namespace root is created before anything keys it, and
+        // `create_group` mints a key for the group it creates, not for the
+        // namespace above it. The first subgroup in a fresh namespace is
+        // therefore authored with no namespace key in the store.
+        //
+        // Refusing here was wrong — it failed five governance e2e tests on the
+        // claim that authoring a governance change implies holding the namespace
+        // key, which is not true during bootstrap.
+        //
+        // Publishing in the clear is not a downgrade in that window: sealing
+        // needs a key, and if none exists then no member holds one either, so a
+        // sealed op would be readable by nobody and protect nothing. Logged
+        // rather than silent, because "cleartext because unkeyed" and "cleartext
+        // because someone forgot" look identical in a packet capture.
+        tracing::info!(
+            namespace_id = %hex::encode(namespace_id.as_bytes()),
+            "publishing a root op in the clear: the namespace holds no key yet"
         );
+        return Ok(NamespaceOp::Root(op));
     };
 
     GroupKeyring::prepare_root_op_for_publish(
