@@ -1766,3 +1766,117 @@ fn emit_golden_root_op_vectors() {
         println!("{bytes:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// E1: sealing root ops
+// ---------------------------------------------------------------------------
+
+/// The claim that makes appending `RootSealed` safe: existing ops encode exactly
+/// as before.
+///
+/// Borsh numbers enum variants by declaration position, so appending is only
+/// safe while nothing is inserted ahead of the existing two. Pinned as bytes
+/// rather than trusted, because the failure is silent in the worst way — every
+/// op id in the namespace changes, and the first symptom is peers disagreeing
+/// about history rather than anything refusing to decode.
+#[test]
+fn appending_root_sealed_left_the_existing_discriminants_alone() {
+    let root = NamespaceOp::Root(RootOp::AdminChanged {
+        new_admin: calimero_account::AccountId::from([3u8; 32]),
+    });
+    let group = NamespaceOp::Group {
+        group_id: ContextGroupId::from([4u8; 32]),
+        key_id: KeyId::from([5u8; 32]),
+        encrypted: EncryptedGroupOp {
+            nonce: [6u8; 12],
+            ciphertext: vec![7, 8, 9],
+        },
+        key_rotation: None,
+    };
+    let sealed = NamespaceOp::RootSealed {
+        key_id: KeyId::from([5u8; 32]),
+        encrypted: EncryptedRootOp {
+            nonce: [6u8; 12],
+            ciphertext: vec![7, 8, 9],
+        },
+    };
+
+    assert_eq!(borsh::to_vec(&root).unwrap()[0], 0, "Root must stay 0");
+    assert_eq!(borsh::to_vec(&group).unwrap()[0], 1, "Group must stay 1");
+    assert_eq!(
+        borsh::to_vec(&sealed).unwrap()[0],
+        2,
+        "RootSealed must be appended, never inserted"
+    );
+}
+
+/// A sealed op and a group op with identical payloads must not encode alike.
+///
+/// They carry the same fields in the same order, so only the discriminant tells
+/// them apart. A receiver that read one as the other would look up the right key
+/// id in the wrong keyring and report a missing key rather than a mismatch.
+#[test]
+fn a_sealed_root_op_is_distinguishable_from_a_group_op() {
+    let key_id = KeyId::from([5u8; 32]);
+    let nonce = [6u8; 12];
+    let ciphertext = vec![7, 8, 9];
+
+    let sealed = borsh::to_vec(&NamespaceOp::RootSealed {
+        key_id,
+        encrypted: EncryptedRootOp {
+            nonce,
+            ciphertext: ciphertext.clone(),
+        },
+    })
+    .unwrap();
+    let group = borsh::to_vec(&NamespaceOp::Group {
+        group_id: ContextGroupId::from([5u8; 32]),
+        key_id,
+        encrypted: EncryptedGroupOp { nonce, ciphertext },
+        key_rotation: None,
+    })
+    .unwrap();
+
+    assert_ne!(sealed, group);
+}
+
+/// Every variant's sealability, asserted against the reasons rather than the
+/// implementation.
+///
+/// `root_op_is_sealable` is an exhaustive match, so a twelfth variant fails to
+/// compile until it is classified. This test states what the classification has
+/// to be for the five that carry no bootstrap constraint, so a future edit that
+/// reclassifies one has to argue with a test rather than only with a reviewer.
+#[test]
+fn only_the_admin_published_variants_are_sealable() {
+    assert!(root_op_is_sealable(&RootOp::AdminChanged {
+        new_admin: calimero_account::AccountId::from([1u8; 32]),
+    }));
+    assert!(root_op_is_sealable(&RootOp::PolicyUpdated {
+        policy_bytes: vec![1, 2, 3],
+    }));
+    assert!(root_op_is_sealable(&RootOp::GroupReparented {
+        child_group_id: ContextGroupId::from([2u8; 32]),
+        new_parent_id: ContextGroupId::from([3u8; 32]),
+    }));
+    assert!(root_op_is_sealable(&RootOp::GroupDeleted {
+        root_group_id: ContextGroupId::from([2u8; 32]),
+        cascade_group_ids: vec![],
+        cascade_context_ids: vec![],
+    }));
+    assert!(root_op_is_sealable(&RootOp::GroupCreated {
+        group_id: ContextGroupId::from([2u8; 32]),
+        parent_id: ContextGroupId::from([3u8; 32]),
+        restricted: true,
+        admin: calimero_account::AccountId::from([4u8; 32]),
+    }));
+
+    // `NamespaceCreated` is genesis: there is no namespace key yet to seal it
+    // under, and this op's own apply is what establishes the founder. Asserted
+    // because it is the variant most likely to look sealable to a future reader
+    // — it is admin-published, like the five, and differs only in when it runs.
+    assert!(!root_op_is_sealable(&RootOp::NamespaceCreated {
+        founder: calimero_account::AccountId::from([5u8; 32]),
+        account: deterministic_credential(),
+    }));
+}

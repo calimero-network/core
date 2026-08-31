@@ -3,10 +3,12 @@ use crate::{
 };
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
-    EncryptedGroupOp, EncryptedRootOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation, RootOp,
+    EncryptedGroupOp, EncryptedRootOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation,
+    NamespaceOp, RootOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::{X25519PublicKey, X25519SecretKey};
+use calimero_governance_types::KeyId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{GroupKeyEntry, GroupKeyValue, GROUP_KEY_PREFIX};
 use calimero_store::Store;
@@ -441,6 +443,44 @@ impl<'a> GroupKeyring<'a> {
             .ok_or(KeyringError::EncryptionFailed)?;
 
         Ok(EncryptedRootOp { nonce, ciphertext })
+    }
+
+    /// Prepare a root op for publishing: sealed if policy says so, cleartext if
+    /// not.
+    ///
+    /// Every publisher of a root op goes through here, so the decision about
+    /// which variants are sealed is made once rather than at each of the ten
+    /// sites that construct one. A per-site choice is a per-site opportunity to
+    /// disagree with the receiver, and that disagreement does not present as a
+    /// policy difference — it presents as a decode failure on a valid op.
+    ///
+    /// The seal happens before signing, necessarily: the signature covers the
+    /// `NamespaceOp`, so sealing after signing produces an op whose signature
+    /// verifies against bytes nobody sent.
+    ///
+    /// # Errors
+    ///
+    /// When sealing fails, or when a sealable op is offered with no key. The
+    /// latter is refused rather than silently published in the clear — an admin
+    /// publishing a governance change always holds the namespace key, so a
+    /// missing key is a broken assumption, and answering it by publishing
+    /// cleartext would quietly undo the encryption for that op.
+    pub fn prepare_root_op_for_publish(
+        namespace_key: Option<&[u8; 32]>,
+        key_id: KeyId,
+        op: RootOp,
+    ) -> EyreResult<NamespaceOp> {
+        if !calimero_governance_types::root_op_is_sealable(&op) {
+            return Ok(NamespaceOp::Root(op));
+        }
+        let Some(key) = namespace_key else {
+            eyre::bail!(
+                "refusing to publish a sealable root op in the clear: no namespace key was \
+                 available, which an admin publishing a governance change always holds"
+            );
+        };
+        let encrypted = Self::encrypt_root_op(key, &op)?;
+        Ok(NamespaceOp::RootSealed { key_id, encrypted })
     }
 
     /// Open a [`RootOp`] sealed by [`Self::encrypt_root_op`].
