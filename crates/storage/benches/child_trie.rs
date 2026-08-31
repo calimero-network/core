@@ -29,12 +29,13 @@
 //!
 //! `insert/{n}` is inherently mutating, so it cannot share that trie: instead
 //! it uses `iter_batched` with `BatchSize::PerIteration`, which builds a
-//! *fresh* `n`-child trie AND the `ChildInfo` to be inserted (`Id::random()`
-//! + `Metadata::new()`) in the (unmeasured) setup closure before every single
-//! timed call, and the timed closure does nothing but the `insert` itself.
-//! So `insert/{n}` measures "the cost of the `n+1`th insert into a trie that
-//! already holds `n` children" — not the cost of minting the child to insert,
-//! and not contaminated by any other insert in the same run.
+//! freshly made `n`-child trie AND the `ChildInfo` to be inserted
+//! (`Id::random()` + `Metadata::new()`) in the (unmeasured) setup closure
+//! before every single timed call, and the timed closure does nothing but
+//! the `insert` itself. So `insert/{n}` measures "the cost of the `n+1`th
+//! insert into a trie that already holds `n` children" — not the cost of
+//! minting the child to insert, and not contaminated by any other insert in
+//! the same run.
 //!
 //! An earlier version of this bench built one trie per `n` and reused it,
 //! unguarded, across `insert`/`get`/`root`/`children`. Because `insert`'s own
