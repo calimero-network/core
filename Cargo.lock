@@ -842,6 +842,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-write-bench"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
