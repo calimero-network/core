@@ -29,6 +29,23 @@ use crate::reset_counters;
 /// each size; the shape tests compare the first against the last.
 pub const SIZES: [usize; 4] = [10, 100, 1_000, 10_000];
 
+/// Collection sizes for [`CostShape::QuadraticBuild`] workloads only.
+///
+/// Deliberately smaller than [`SIZES`]. `rga_insert_per_char`'s TOTAL cost is
+/// `O(n^2)`, not `O(n)`, so `SIZES`'s top row would not merely be slower — it
+/// would be the wrong shape of slower: `n=10_000` measured (see the module's
+/// dev notes) at roughly `19s` for `n=5_000` alone, so `n=10_000` is close to
+/// a minute for ONE measurement, and every consumer of `all()` measures each
+/// workload multiple times (`tests/reproducible.rs` runs it 7x per size,
+/// `tests/flat_curve.rs` and the snapshot binary run it once per size, and
+/// `benches/collections.rs` iterates it under criterion). `2_000` keeps the
+/// slowest single measurement under ~3s — the asymptotic slope is already
+/// unambiguous well before `10_000`, since `reads/entry` climbs from `63.5`
+/// at `n=10` to `2047.0` at `n=2_000`, tracking `n` almost 1:1 by the top of
+/// this range (see `rga_insert_per_char`'s doc comment for the measured
+/// curve in full).
+pub const QUADRATIC_SIZES: [usize; 4] = [10, 100, 500, 2_000];
+
 /// What the cost curve of a workload is required to look like.
 ///
 /// This is an assertion, not a description. Every variant is checked by
@@ -47,6 +64,29 @@ pub enum CostShape {
     ///
     /// This is not a licence — it is a ratchet. See `ordered_read` below.
     KnownLinearInN,
+    /// A build of `n` operations whose TOTAL cost is KNOWN to grow
+    /// quadratically with `n` — the operation itself is `O(n)` per call, so a
+    /// loop of `n` calls is `O(n^2)` overall.
+    ///
+    /// This does not fit either of the other two shapes, and declaring it as
+    /// one would assert the wrong thing:
+    ///
+    /// - [`Self::FlatPerEntry`] asserts per-entry cost does NOT grow with
+    ///   `n`. Here it does, by construction — that growth is the finding.
+    /// - [`Self::KnownLinearInN`] is for a POINT operation (build `n`, reset
+    ///   counters, do ONE more call) whose single call costs `O(n)`. A
+    ///   `QuadraticBuild` workload has no such point call to isolate — the
+    ///   `O(n)` cost is paid on every one of the `n` calls that make up the
+    ///   build, not on an `n+1`th call after it.
+    ///
+    /// Like [`Self::KnownLinearInN`], this is a ratchet, not a licence: see
+    /// `tests/flat_curve.rs`'s `quadratic_build_costs_are_still_exactly_
+    /// quadratic`, which fails if the curve gets worse (superquadratic) AND
+    /// if it silently gets better (the fix nobody recorded).
+    ///
+    /// Measured at [`QUADRATIC_SIZES`], not [`SIZES`] — see that constant's
+    /// doc comment for why.
+    QuadraticBuild,
 }
 
 /// One measurable unit of work at one collection size.
@@ -182,6 +222,46 @@ fn rga_get_nth(n: usize) {
     let rga = build_rga(n);
     reset_counters();
     let _ignored = rga.get_text().expect("get_text should succeed");
+}
+
+/// Insert `n` characters into an RGA ONE AT A TIME via
+/// [`ReplicatedGrowableArray::insert`], each appended at the current end —
+/// the "someone is typing" access pattern, as opposed to `rga_insert`'s
+/// single bulk `insert_str` (the "paste one string" pattern).
+///
+/// # Why this is `QuadraticBuild`, and what it re-derives
+///
+/// `insert(pos, char)` re-derives its left-neighbour by linearising the
+/// WHOLE document on every call (`get_ordered_chars`, see `rga.rs`) — an
+/// `O(current length)` cost paid once per call. A loop of `n` such calls is
+/// therefore `O(n^2)` in total, not `O(n)`: this is exactly the gap
+/// `rga_insert`'s own doc comment names and deliberately does not measure,
+/// because `insert_str` linearises only ONCE for the whole batch. This
+/// workload is the per-call route `rga_insert` is not, and per-call is what
+/// a real editor actually does.
+///
+/// Measured `reads/entry` (`rows_read / n`, i.e. the AVERAGE cost of one
+/// `insert` call over the build) at [`QUADRATIC_SIZES`]:
+///
+/// | `n`   | reads/entry |
+/// |-------|-------------|
+/// | 10    | 63.5        |
+/// | 100   | 147.7       |
+/// | 500   | 547.1       |
+/// | 2,000 | 2,047.0     |
+///
+/// The average tracks `n` almost 1:1 above a small constant offset (~47,
+/// from the fixed per-call bookkeeping outside the linearisation) — the
+/// signature of a per-call cost that is itself linear in the CURRENT size,
+/// summed over a build that grows to `n`. That is what
+/// `CostShape::QuadraticBuild` asserts stays true: not a flat per-entry cost
+/// (that would be `FlatPerEntry`, and it is not what happens here), but a
+/// per-entry AVERAGE that itself climbs with `n`.
+fn rga_insert_per_char(n: usize) {
+    let mut rga = Root::new(ReplicatedGrowableArray::<MainStorage>::new);
+    for i in 0..n {
+        rga.insert(i, 'a').expect("insert should succeed");
+    }
 }
 
 fn build_rga(n: usize) -> Root<ReplicatedGrowableArray<MainStorage>> {
@@ -349,7 +429,7 @@ fn build_vector(n: usize) -> Root<Vector<String, MainStorage>> {
 /// `IndexCallbacks` through the counting store first — a separate piece of
 /// work, not a workload entry. See the task 9 report for the full note.
 pub fn all() -> Vec<Workload> {
-    use CostShape::{ConstantPerCall, FlatPerEntry, KnownLinearInN};
+    use CostShape::{ConstantPerCall, FlatPerEntry, KnownLinearInN, QuadraticBuild};
 
     /// A registry row: name, shape, tolerance, body. Sized-independent, so
     /// `all()` crosses it with [`SIZES`].
@@ -414,9 +494,35 @@ pub fn all() -> Vec<Workload> {
         ("nested_map_get", ConstantPerCall, 0, nested_map_get),
     ];
 
-    let mut out = Vec::with_capacity(REGISTRY.len() * SIZES.len());
+    /// [`CostShape::QuadraticBuild`] workloads, measured at
+    /// [`QUADRATIC_SIZES`] instead of [`SIZES`] — see that constant's doc
+    /// comment for why they need their own, smaller sizes. A separate array
+    /// rather than a row in `REGISTRY` because `REGISTRY` is crossed with
+    /// `SIZES` unconditionally below; a `QuadraticBuild` entry there would
+    /// silently get measured at `n=10_000` too.
+    const QUADRATIC_REGISTRY: [Entry; 1] = [(
+        "rga_insert_per_char",
+        QuadraticBuild,
+        0,
+        rga_insert_per_char,
+    )];
+
+    let mut out = Vec::with_capacity(
+        REGISTRY.len() * SIZES.len() + QUADRATIC_REGISTRY.len() * QUADRATIC_SIZES.len(),
+    );
     for n in SIZES {
         for (name, shape, tolerance_pct, run) in REGISTRY {
+            out.push(Workload {
+                name,
+                n,
+                shape,
+                tolerance_pct,
+                run,
+            });
+        }
+    }
+    for n in QUADRATIC_SIZES {
+        for (name, shape, tolerance_pct, run) in QUADRATIC_REGISTRY {
             out.push(Workload {
                 name,
                 n,

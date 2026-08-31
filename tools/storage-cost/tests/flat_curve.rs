@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use storage_cost::workloads::{all, CostShape, SIZES};
+use storage_cost::workloads::{all, CostShape, QUADRATIC_SIZES, SIZES};
 use storage_cost::{measure, Costs};
 
 /// Cost may grow by at most this factor between the smallest and largest
@@ -57,11 +57,37 @@ const LINEAR_CEILING_FACTOR: f64 = 4.0;
 const SMALLEST: usize = SIZES[0];
 const LARGEST: usize = SIZES[SIZES.len() - 1];
 
+/// A `QuadraticBuild` reads/entry (i.e. average per-call cost over the whole
+/// build — see `series`'s `FlatPerEntry` divisor, which this shape also
+/// uses) must be at least `n / QUADRATIC_FLOOR_DIVISOR` at the largest
+/// measured size, for the same reason `LINEAR_FLOOR_DIVISOR` exists: a value
+/// that falls below this means the per-call cost has stopped scaling with
+/// `n` at all, i.e. the build is no longer quadratic.
+///
+/// Calibrated, not guessed: `rga_insert_per_char` measures `2047.0`
+/// reads/entry at `n=2_000` (see its doc comment). Swapping the per-char
+/// loop for the flat, single-linearisation `insert_str` (the actual
+/// candidate fix — see `rga_insert`) measures `48.0` reads/entry at the same
+/// `n`, over 40x lower. `5.0` puts the floor at `400.0` — comfortably below
+/// the quadratic value and comfortably above the flat one, so this
+/// direction was verified to fire (and only fire) on the real "it got
+/// fixed" case, not tuned in the abstract.
+const QUADRATIC_FLOOR_DIVISOR: f64 = 5.0;
+
+/// …and at most `n * QUADRATIC_CEILING_FACTOR`. Past that, the per-call cost
+/// is growing faster than the document itself — worse than quadratic.
+const QUADRATIC_CEILING_FACTOR: f64 = 4.0;
+
+const QUADRATIC_LARGEST: usize = QUADRATIC_SIZES[QUADRATIC_SIZES.len() - 1];
+
 /// Measured cost of every workload of `shape`, as `name -> n -> cost`.
 ///
-/// `FlatPerEntry` costs are divided by `n`, because the workload deliberately
-/// does `n` operations. Point workloads are not: they perform exactly one
-/// operation, and its absolute cost is the thing under test.
+/// `FlatPerEntry` and `QuadraticBuild` costs are divided by `n`, because both
+/// are workloads that deliberately do `n` operations and what is under test
+/// is the AVERAGE cost of one — flat for the former, growing with `n` for
+/// the latter. Point workloads (`ConstantPerCall`, `KnownLinearInN`) are not
+/// divided: they perform exactly one operation, and its absolute cost is the
+/// thing under test.
 fn series(
     shape: CostShape,
     metric: fn(Costs) -> u64,
@@ -69,7 +95,7 @@ fn series(
     let mut by_name: BTreeMap<&'static str, BTreeMap<usize, f64>> = BTreeMap::new();
     for workload in all().into_iter().filter(|w| w.shape == shape) {
         let (_, costs) = measure(|| (workload.run)(workload.n));
-        let divisor = if shape == CostShape::FlatPerEntry {
+        let divisor = if matches!(shape, CostShape::FlatPerEntry | CostShape::QuadraticBuild) {
             workload.n as f64
         } else {
             1.0
@@ -178,4 +204,49 @@ fn known_linear_costs_are_still_exactly_linear() {
     }
 
     report(failures, "known-linear costs no longer match their marker");
+}
+
+/// The ratchet on BUILDS we know are `O(n^2)` overall — a per-call cost that
+/// is itself `O(n)`, paid `n` times — and have chosen not to fix yet.
+///
+/// Same both-directions shape as `known_linear_costs_are_still_exactly_
+/// linear`: fails if the curve gets worse than quadratic, and fails —
+/// differently, and on purpose — if the per-call cost stops growing with
+/// `n` (i.e. someone fixed the underlying `O(n)` re-linearisation and this
+/// marker was not moved to record it).
+///
+/// Measured at [`QUADRATIC_SIZES`], not [`SIZES`] — see that constant's doc
+/// comment on why a `QuadraticBuild` workload needs its own, smaller sizes.
+#[test]
+fn quadratic_build_costs_are_still_exactly_quadratic() {
+    let floor = QUADRATIC_LARGEST as f64 / QUADRATIC_FLOOR_DIVISOR;
+    let ceiling = QUADRATIC_LARGEST as f64 * QUADRATIC_CEILING_FACTOR;
+    let mut failures = Vec::new();
+
+    for (name, points) in &series(CostShape::QuadraticBuild, |c| c.rows_read) {
+        let large = points[&QUADRATIC_LARGEST];
+
+        if large < floor {
+            failures.push(format!(
+                "{name}: reads/entry at n={QUADRATIC_LARGEST} is {large:.1}, below the \
+                 {floor:.1} floor that marks a quadratic build — this appears to have been \
+                 FIXED. That is good news, and it must be recorded: move it to \
+                 CostShape::FlatPerEntry (or CostShape::KnownLinearInN if only the \
+                 per-call cost, not the whole build, was fixed), regenerate \
+                 tools/storage-cost/storage-costs.json, and update the read-wall write-up \
+                 this workload's doc comment cites."
+            ));
+        } else if large > ceiling {
+            failures.push(format!(
+                "{name}: reads/entry at n={QUADRATIC_LARGEST} is {large:.1}, above the \
+                 {ceiling:.1} ceiling — worse than quadratic, i.e. a regression stacked on \
+                 top of a known-bad cost"
+            ));
+        }
+    }
+
+    report(
+        failures,
+        "quadratic-build costs no longer match their marker",
+    );
 }
