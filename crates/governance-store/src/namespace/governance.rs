@@ -1405,8 +1405,112 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
+        // Sealed root ops first, then the group's own. A root op can be the thing
+        // that makes a group op applicable — `GroupCreated` is sealed, and a group
+        // op for a group this node has not folded yet has nothing to apply
+        // against — so draining them in the other order would leave the group
+        // ops to a later pass for no reason.
+        if let Err(e) = self.retry_sealed_root_ops() {
+            tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                error = %format!("{e:#}"),
+                "sealed-root retry pass failed; group retry continues"
+            );
+        }
+
         self.retry_encrypted_ops_for_group(group_id)
             .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))
+    }
+
+    /// Re-feed sealed root ops that arrived before this node held the key.
+    ///
+    /// The group retry cannot do this: its op-log walk selects by group id and
+    /// both it and the loop above it match `NamespaceOp::Group`, so a sealed root
+    /// op was skipped at two layers. Nothing re-fed it, which for a joining node
+    /// means never applying a root op that landed before its key — the namespace
+    /// structure it needs, permanently missing, with no error anywhere.
+    ///
+    /// Ops this node signed are skipped, for the reason the group collector
+    /// documents at length: the replay dedups on the namespace-level nonce, which
+    /// the local authoring path never wrote, so a node's own op is not recognised
+    /// as applied and its mutation re-runs — and re-running a removal out of
+    /// causal order deletes state a causally-later op restored. A node's own
+    /// sealed op was never buffered anyway; it held the key to seal it.
+    ///
+    /// # Errors
+    ///
+    /// When the op log cannot be walked. A single op that fails to open is
+    /// logged and skipped rather than failing the pass: one undecryptable op must
+    /// not stop the others from landing.
+    ///
+    /// Returns no divergence report, unlike the group retry: `apply_root_op`
+    /// yields events rather than a post-apply hash comparison, so there is no
+    /// verdict to pass up and a `None` would only look like one that came back
+    /// clean.
+    fn retry_sealed_root_ops(&self) -> EyreResult<()> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+        let own_identity = super::NamespaceRepository::new(self.store)
+            .identity(&ns_typed)
+            .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
+            .map(|(pk, _sk)| pk);
+
+        let entries = NamespaceOpLogService::new(self.store, self.namespace_id)
+            .collect_sealed_root_ops()
+            .map_err(|e| eyre::eyre!("collect_sealed_root_ops: {e}"))?;
+
+        for entry in entries {
+            if own_identity == Some(entry.signed_op.signer) {
+                continue;
+            }
+            let NamespaceOp::RootSealed {
+                key_id,
+                ref encrypted,
+            } = entry.signed_op.op
+            else {
+                continue;
+            };
+            // Still not held: the key that arrived was for something else. Not an
+            // error, and not a reason to stop — a later delivery may bring it.
+            let Some(key) = GroupKeyring::new(self.store, ns_typed)
+                .load_key_by_id(key_id.as_bytes())
+                .map_err(|e| eyre::eyre!("load namespace key for sealed root op: {e}"))?
+            else {
+                continue;
+            };
+            let root = match GroupKeyring::decrypt_root_op(&key, encrypted) {
+                Ok(root) => root,
+                Err(e) => {
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        error = %format!("{e:#}"),
+                        "skipping a sealed root op that would not open on retry"
+                    );
+                    continue;
+                }
+            };
+            // The same relocated check the receive path runs. Skipping it here
+            // would mean a replayed op is validated less than one applied on
+            // arrival, and the difference would only show as divergence.
+            if let Err(e) = root.validate_after_unsealing() {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    error = %format!("{e:#}"),
+                    "skipping a sealed root op that fails validation after unsealing"
+                );
+                continue;
+            }
+            match self.apply_root_op(&entry.signed_op, &root) {
+                Ok(_events) => record_namespace_retry_event("sealed_root_applied"),
+                Err(e) => {
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        error = %format!("{e:#}"),
+                        "sealed root op failed to apply on retry"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn retry_encrypted_ops_for_group(
