@@ -63,7 +63,6 @@
 //! trip worth attacking. #2203 measured ~18us at n=1000 on the pre-trie tree
 //! — this bench re-establishes that number on the current one.
 
-use std::any::Any as _;
 use std::hint::black_box;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
@@ -106,14 +105,6 @@ impl Mergeable for BenchState {
         }
         Ok(())
     }
-}
-
-// Compile-time proof `BenchState` is usable as `Any` (the `RekeyTarget`
-// supertrait), never called.
-#[allow(dead_code)]
-fn _bench_state_is_any(state: &BenchState) -> &dyn std::any::Any {
-    state.type_id();
-    state
 }
 
 fn payload(items: usize, salt: u8) -> Vec<u8> {
