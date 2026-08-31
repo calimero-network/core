@@ -366,6 +366,19 @@ opt-level = "z"
 strip = "symbols"
 panic = "unwind"
 
+# `cargo bench --workspace` unifies dev-dependency features across every
+# workspace member for the single resolve, regardless of which targets are
+# actually selected — so calimero-node's and calimero-dag's dev-only
+# `calimero-storage/testing` feature (needed for their own tests) leaks into
+# every bench build, including ones that never touch it directly. The
+# `bench` profile otherwise defaults to release's `debug-assertions = false`,
+# which trips calimero-storage's release-build guard against that feature
+# (see crates/storage/src/interface.rs). Bench builds are never shipped, so
+# turning debug-assertions back on here is safe — it only clears the guard,
+# it does not weaken any actual release build.
+[profile.bench]
+debug-assertions = true
+
 [profile.app-release]
 inherits = "release"
 codegen-units = 1
