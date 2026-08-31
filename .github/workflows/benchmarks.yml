@@ -2,6 +2,7 @@ name: Benchmarks
 
 permissions:
   contents: read
+  pull-requests: write
 
 # Post-merge on master, plus opt-in per PR via the `run-benchmarks` label.
 # Deliberately NOT on every pull_request: a full sweep is tens of minutes, and
@@ -15,15 +16,26 @@ on:
 
 jobs:
   criterion:
-    name: Criterion trend
+    name: Criterion trend (${{ matrix.crate }})
     # Never blocks a merge. Timing on shared runners is too noisy to gate on;
-    # the blocking storage-cost gate lives in ci-checks.yml.
+    # the blocking gates live in ci-checks.yml.
     if: >-
       github.event_name == 'push' ||
       github.event.label.name == 'run-benchmarks'
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - storage-cost
+          - calimero-storage
+          - calimero-store
+          - calimero-blobstore
+          - calimero-crypto
+          - calimero-runtime
+          - calimero-dag
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -32,15 +44,72 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: stable
-          shared-key: storage-cost
+          shared-key: bench-${{ matrix.crate }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Run benchmarks
-        run: cargo bench -p storage-cost -- --save-baseline ${{ github.sha }}
+        run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
 
       - name: Upload criterion baseline
         uses: actions/upload-artifact@v4
         with:
-          name: criterion-baseline-${{ github.sha }}
+          name: criterion-${{ matrix.crate }}-${{ github.sha }}
           path: target/criterion
           retention-days: 30
+
+  compare:
+    name: Compare against master
+    needs: criterion
+    # Only runs on the labelled-PR path, where a master baseline to compare
+    # against might exist. On a push to master there is nothing to compare.
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download this run's baselines
+        uses: actions/download-artifact@v4
+        with:
+          pattern: criterion-*-${{ github.sha }}
+          path: target/criterion
+          merge-multiple: true
+
+      # The base commit only has a baseline if it was itself built on master
+      # after this workflow landed (push-triggered runs upload one). A PR
+      # based on an older commit, or based on a commit whose artifacts have
+      # expired (30-day retention), has nothing here — that is expected, not
+      # an error, so this step must not fail the job.
+      - name: Download master's baselines
+        uses: actions/download-artifact@v4
+        with:
+          pattern: criterion-*-${{ github.event.pull_request.base.sha }}
+          path: target/criterion
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Install critcmp
+        run: cargo install critcmp --locked
+
+      # A table, not a verdict. Criterion's own significance threshold is ~5%
+      # and a shared runner beats that on cache state alone, so this is read by
+      # a human deciding whether a number is worth chasing.
+      #
+      # If the base commit has no baseline (see above), critcmp has nothing to
+      # diff against and this degrades to a message rather than a red job --
+      # continue-on-error is a backstop, not the mechanism relied on here.
+      - name: Compare
+        run: |
+          if critcmp ${{ github.event.pull_request.base.sha }} ${{ github.sha }} > /tmp/critcmp.txt 2>&1; then
+            :
+          else
+            echo "no comparable baseline on the base commit (${{ github.event.pull_request.base.sha }})" > /tmp/critcmp.txt
+          fi
+          cat /tmp/critcmp.txt
+
+      - name: Post the comparison
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: /tmp/critcmp.txt
+          comment-tag: criterion-comparison

@@ -11,8 +11,6 @@ operation costs.
 
 - `tools/storage-cost` + `scripts/check-storage-cost.sh` — storage rows per
   collection operation. Snapshot: `tools/storage-cost/storage-costs.json`.
-- `tools/sync-cost` + `scripts/check-sync-cost.sh` — sync round-trips, entities
-  and bytes per scenario. Snapshot: `tools/sync-cost/sync-costs.json`.
 
 Accepting a change:
 
@@ -39,19 +37,28 @@ otherwise trips (see `crates/storage/src/interface.rs`) — opt-level is
 untouched, so this does not put you in a debug build, it only adds
 `calimero-storage`'s runtime assertion checks to the measured path.
 
-`master` saves a baseline per commit; a PR labelled `run-benchmarks` compares
-against it with `critcmp`. As of this task, none of that pipeline exists yet:
-the `critcmp` comparison job lands in Task 11, `tools/sync-cost` +
-`scripts/check-sync-cost.sh` land in Task 10, and the per-crate benches used
-as examples above (`calimero-storage`'s `child_trie`, etc.) land across
-Tasks 2-8. A reader of this branch mid-flight should not assume any of that
-already runs.
+`master` saves a baseline per commit (`.github/workflows/benchmarks.yml`,
+`criterion` job); a PR labelled `run-benchmarks` compares against it with
+`critcmp` (same file, `compare` job). Neither job can fail your PR — see
+[Reading the comparison](#reading-the-comparison) below.
 
 ## Tier 3 — macro
 
 `.github/workflows/fuzzy-load-test.yml` (CPU/memory flamegraphs, nightly soak)
 and `crates/runtime/tests/chat_wall.rs` (the gas wall against the mero-chat
 sibling, `#[ignore]`d by design).
+
+`crates/node/tests/sync_sim/benchmarks.rs`'s `benchmark_all_scenarios` and
+`benchmark_scaling` are not sync-cost coverage today. They print round-trip,
+entity, merge and byte counters that read as measurements, but the sim
+harness never drives the sync protocol — `add_existing_node` schedules
+nothing, and the event-dispatch stubs in
+`crates/node/tests/sync_sim/sim_runtime.rs` are unfinished — so those
+counters are 0 for 12 of the 13 scenarios on every run. `benchmark_scaling`
+asserts nothing; `benchmark_all_scenarios` asserts only
+`summary.converged > 0`, which the one trivially-converging scenario
+satisfies regardless of what the other twelve report. Treat both as
+placeholders, not as a cost gate on sync.
 
 ## Adding a bench
 
@@ -66,3 +73,14 @@ sibling, `#[ignore]`d by design).
    benchmarking it is worth a `pub(crate)` seam — the copy silently stops
    tracking the original, which is how PR #2203's merkle bench died.
 5. `cargo bench --workspace --benches --no-run` before pushing.
+
+## Reading the comparison
+
+The `run-benchmarks` label posts a `critcmp` table against the PR's base commit.
+
+- Under ~5%: noise. Shared runners vary by more than that between identical runs.
+- 5-20% on one benchmark, nothing else: usually noise too. Re-run before believing it.
+- A whole group moving one way, or any change in the SHAPE of a sweep (the ratio
+  between n=100 and n=10000 changing): real, and worth explaining in the PR.
+- A cost gate failing: not noise, ever. That is a counted operation, and the
+  snapshot moved.
