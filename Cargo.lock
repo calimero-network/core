@@ -989,6 +989,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "camino",
+ "criterion",
  "eyre",
  "futures-util",
  "serde",
