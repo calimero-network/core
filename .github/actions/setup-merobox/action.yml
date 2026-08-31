@@ -53,7 +53,7 @@ runs:
         # Adding a field to an admin-api response therefore does not reach a
         # scenario until this pin moves. It is the same chain a `crates/client` fix
         # travels, for the same reason.
-        MEROBOX_VERSION="0.6.69"
+        MEROBOX_VERSION="0.6.70"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in
