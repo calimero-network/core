@@ -19,13 +19,40 @@
 //! mock (`calimero_storage::env`'s native `imp` module), so no explicit
 //! adaptor wiring is needed here: the default type parameter already gives
 //! this bench an in-memory backend.
+//!
+//! # What `{n}` means for each id — read this before reading the numbers
+//!
+//! `get/{n}`, `root/{n}` and `children/{n}` each build **one fresh trie of
+//! exactly `n` children** and only then start the timed loop, so every read
+//! in that group is against a trie whose population is exactly `n` — none of
+//! them mutate the trie they read.
+//!
+//! `insert/{n}` is inherently mutating, so it cannot share that trie: instead
+//! it uses `iter_batched` with `BatchSize::PerIteration`, which builds a
+//! *fresh* `n`-child trie in the (unmeasured) setup closure before every
+//! single timed call and inserts exactly one more child into it. So
+//! `insert/{n}` measures "the cost of the `n+1`th insert into a trie that
+//! already holds `n` children" — not contaminated by any other insert in the
+//! same run.
+//!
+//! An earlier version of this bench built one trie per `n` and reused it,
+//! unguarded, across `insert`/`get`/`root`/`children`. Because `insert`'s own
+//! timed closure runs thousands of times during criterion's
+//! calibration+sampling, that shared trie kept growing *during* the `insert`
+//! sub-benchmark — so by the time `get`/`root`/`children` ran against it,
+//! their actual population was `n` plus however many extra inserts criterion
+//! happened to perform, not `n`. That produced a `children/{n}` curve with no
+//! relationship to `n` (`children/10` and `children/1000` came out the same
+//! order of magnitude). See `task-2-3-report.md`'s fix section for the
+//! contaminated numbers next to the corrected ones — the difference is itself
+//! evidence for how much a shared, mutated fixture can lie.
 
 use std::hint::black_box;
 
 use calimero_storage::address::Id;
 use calimero_storage::child_trie::ChildTrie;
 use calimero_storage::entities::{ChildInfo, Metadata};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 
 /// Distinct children with fixed metadata; only the id and hash vary, which is
 /// all the trie keys on.
@@ -40,6 +67,7 @@ fn child(i: u64) -> ChildInfo {
     )
 }
 
+/// A trie with exactly `n` children, and the ids of every one of them.
 fn populated(n: usize) -> (ChildTrie, Vec<Id>) {
     let trie = ChildTrie::new(Id::random());
     let mut ids = Vec::with_capacity(n);
@@ -55,17 +83,26 @@ fn child_trie(c: &mut Criterion) {
     let mut group = c.benchmark_group("child_trie");
 
     for n in [10_usize, 100, 1_000, 10_000] {
-        let (trie, ids) = populated(n);
-
         group.throughput(Throughput::Elements(1));
 
+        // `insert/{n}`: cost of one insert into a trie that already holds
+        // exactly `n` children. `PerIteration` puts a fresh `n`-child build
+        // in the unmeasured setup closure before every single timed call, so
+        // the measured trie's population never drifts above `n` the way a
+        // shared, reused trie would.
         group.bench_with_input(BenchmarkId::new("insert", n), &n, |b, &n| {
-            let mut next = n as u64;
-            b.iter(|| {
-                next += 1;
-                black_box(trie.insert(child(next)))
-            });
+            b.iter_batched(
+                || populated(n).0,
+                |trie| black_box(trie.insert(child(n as u64 + 1))),
+                BatchSize::PerIteration,
+            );
         });
+
+        // `get/{n}`, `root/{n}`, `children/{n}`: all read-only, so one fresh
+        // `n`-child trie built once (outside the timed loop) can be shared
+        // safely across all three — none of them mutates it, so its
+        // population stays exactly `n` for the whole group.
+        let (trie, ids) = populated(n);
 
         group.bench_with_input(BenchmarkId::new("get", n), &ids, |b, ids| {
             let mut cursor = 0_usize;
