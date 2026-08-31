@@ -3,11 +3,12 @@ use crate::{
 };
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
-    EncryptedGroupOp, EncryptedRootOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyId, KeyRotation,
+    EncryptedGroupOp, EncryptedRootOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation,
     NamespaceOp, RootOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::{X25519PublicKey, X25519SecretKey};
+use calimero_governance_types::KeyId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{GroupKeyEntry, GroupKeyValue, GROUP_KEY_PREFIX};
 use calimero_store::Store;
