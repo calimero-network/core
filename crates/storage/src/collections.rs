@@ -236,6 +236,13 @@ impl<T, S: StorageAdaptor> Data for Collection<T, S> {
 }
 
 /// A collection of entries in a map.
+#[expect(
+    dead_code,
+    reason = "Never constructed: the map reaches its children through `Interface` \
+              directly. Retained as the declaration of a map's child layout and as \
+              the only in-tree user of `#[derive(Collection)]`, which would other- \
+              wise go unexercised by this build."
+)]
 #[derive(Collection, Copy, Clone, Debug, Eq, PartialEq)]
 #[children(Entry<T>)]
 struct Entries<T> {
@@ -803,11 +810,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// guard over it. The guard ties the borrow to the returned value, so
     /// callers hold the `RefCell` borrow for exactly as long as they use the
     /// set — no aliasing `&mut` outlives it (F166).
-    #[expect(
-        clippy::unwrap_in_result,
-        clippy::expect_used,
-        reason = "cache is populated immediately above"
-    )]
+    #[expect(clippy::expect_used, reason = "cache is populated immediately above")]
     fn children_cache(&self) -> StoreResult<RefMut<'_, IndexSet<Id>>> {
         let mut cache = self.children_ids.borrow_mut();
 

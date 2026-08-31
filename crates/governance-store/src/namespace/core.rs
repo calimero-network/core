@@ -295,6 +295,7 @@ impl<'a> NamespaceRepository<'a> {
         inviter_sk: &PrivateKey,
         expiration_secs: u64,
         invited_role: u8,
+        admitters: &[calimero_account::AccountId],
     ) -> EyreResult<
         Vec<(
             ContextGroupId,
@@ -330,7 +331,13 @@ impl<'a> NamespaceRepository<'a> {
             .as_secs();
         // Saturate to avoid overflowing into a past/wrapped expiration when a
         // caller passes a very large `expiration_secs`.
-        let expiration = now_secs.saturating_add(expiration_secs);
+        // Clamped here, at the minting site, rather than only in the API
+        // handlers: this is a public function and anything that reaches it is
+        // minting a real bearer credential. A ceiling enforced only at the edge
+        // is one an internal caller silently steps around.
+        let expiration = now_secs.saturating_add(
+            expiration_secs.min(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS),
+        );
 
         let mut result = Vec::with_capacity(groups.len());
         for gid in groups {
@@ -342,6 +349,7 @@ impl<'a> NamespaceRepository<'a> {
                 expiration_timestamp: expiration,
                 invitation_nonce,
                 invited_role,
+                admitters: admitters.to_vec(),
             };
 
             let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -372,6 +380,7 @@ impl<'a> NamespaceRepository<'a> {
                 inviter_account: Some(inviter_account),
                 application_id,
                 bytecode_id,
+                admitter_hints: Vec::new(),
             };
 
             result.push((gid, signed));

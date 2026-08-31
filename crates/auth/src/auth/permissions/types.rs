@@ -129,6 +129,7 @@ pub enum AliasType {
     Context,
     Application,
     Identity,
+    Device,
 }
 
 /// Context capability permissions
@@ -474,6 +475,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
+                                "device" => AliasType::Device,
                                 _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
@@ -485,6 +487,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
+                                "device" => AliasType::Device,
                                 _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
@@ -496,6 +499,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
+                                "device" => AliasType::Device,
                                 _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
@@ -507,6 +511,7 @@ impl FromStr for Permission {
                                 "context" => AliasType::Context,
                                 "application" => AliasType::Application,
                                 "identity" => AliasType::Identity,
+                                "device" => AliasType::Device,
                                 _ => return Err(format!("Unknown alias type: {subsubaction}")),
                             };
                             Ok(Permission::Context(ContextPermission::Alias(
@@ -688,6 +693,7 @@ impl fmt::Display for Permission {
                             AliasType::Context => "context",
                             AliasType::Application => "application",
                             AliasType::Identity => "identity",
+                            AliasType::Device => "device",
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:create:{type_str}{params}")
@@ -697,6 +703,7 @@ impl fmt::Display for Permission {
                             AliasType::Context => "context",
                             AliasType::Application => "application",
                             AliasType::Identity => "identity",
+                            AliasType::Device => "device",
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:list:{type_str}{params}")
@@ -706,6 +713,7 @@ impl fmt::Display for Permission {
                             AliasType::Context => "context",
                             AliasType::Application => "application",
                             AliasType::Identity => "identity",
+                            AliasType::Device => "device",
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:lookup:{type_str}{params}")
@@ -715,6 +723,7 @@ impl fmt::Display for Permission {
                             AliasType::Context => "context",
                             AliasType::Application => "application",
                             AliasType::Identity => "identity",
+                            AliasType::Device => "device",
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:delete:{type_str}{params}")
@@ -1171,6 +1180,20 @@ mod tests {
             }
             _ => panic!("Wrong permission type"),
         }
+
+        // Test create permission for device, and that it round-trips through
+        // Display rather than falling through to another alias type.
+        let perm = "context:alias:create:device[node-1]"
+            .parse::<Permission>()
+            .unwrap();
+        assert!(matches!(
+            perm,
+            Permission::Context(ContextPermission::Alias(AliasPermission::Create(
+                AliasType::Device,
+                ResourceScope::Specific(ref ids)
+            ))) if ids == &["node-1".to_string()]
+        ));
+        assert_eq!(perm.to_string(), "context:alias:create:device[node-1]");
     }
 
     #[test]

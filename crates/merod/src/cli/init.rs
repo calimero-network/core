@@ -654,37 +654,28 @@ impl InitCommand {
     }
 }
 
-/// Parse `--account-root`, accepting **either** encoding an operator can be handed.
+/// Parse `--account-root` as hex.
 ///
-/// A `PublicKey` renders base58, and that is what `merod account root` and `merod
-/// account export` print. The admin API hex-encodes the same value in
-/// `accountRootPublicKey`, which is what `meroctl account show` displays. So the two
-/// legitimate ways to obtain this key disagree on its encoding, and requiring one of
-/// them made the documented flow fail on the first copy-paste with
-/// "--account-root is not hex".
-///
-/// Accepting both is the fix rather than picking a side: neither existing printer is
-/// wrong for its own context, and an operator has no reason to know which one they
-/// are holding.
+/// Hex only. This accepted base58 too while both spellings were in circulation —
+/// `merod account root` printed one and the admin API the other. With a single
+/// encoding that leniency would be actively harmful: a base58 value arriving here
+/// means the caller is still on the old form, and quietly decoding it hides that
+/// instead of saying so.
 ///
 /// # Errors
-/// If the value is neither 64 hex characters nor a base58 public key.
+/// If the value is not 64 hex characters.
 fn parse_account_root_pk(given: &str) -> EyreResult<calimero_primitives::identity::PublicKey> {
     let given = given.trim();
-
-    if let Ok(bytes) = hex::decode(given) {
-        let raw: [u8; 32] = bytes.try_into().map_err(|_| {
-            eyre::eyre!("--account-root is hex but not 32 bytes; it must be 64 hex characters")
-        })?;
-        return Ok(calimero_primitives::identity::PublicKey::from(raw));
-    }
-
-    given.parse().map_err(|_| {
+    let bytes = hex::decode(given).map_err(|_ignored| {
         eyre::eyre!(
-            "--account-root is neither 64 hex characters nor a base58 public key. Take it \
-             from `merod account root` (base58) or `meroctl account show` (hex)"
+            "--account-root is not hex. It is 64 hex characters, which is how both \
+             `merod account root` and `meroctl account show` print it"
         )
-    })
+    })?;
+    let raw: [u8; 32] = bytes.try_into().map_err(|_ignored| {
+        eyre::eyre!("--account-root must be 32 bytes, i.e. 64 hex characters")
+    })?;
+    Ok(calimero_primitives::identity::PublicKey::from(raw))
 }
 
 #[cfg(test)]
@@ -834,29 +825,26 @@ mod tests {
         }
     }
 
-    /// `--account-root` must accept either encoding an operator can be handed.
+    /// `--account-root` takes hex, and refuses the old base58 spelling.
     ///
-    /// The two legitimate sources disagree: a `PublicKey` renders base58, which is
-    /// what `merod account root` and `merod account export` print, while the admin
-    /// API hex-encodes the same value in `accountRootPublicKey`, which is what
-    /// `meroctl account show` shows.
-    ///
-    /// Requiring hex made the documented flow fail on the first copy-paste with
-    /// "--account-root is not hex" — a wrong-encoding error for a value the
-    /// operator read out of our own command moments earlier.
+    /// It accepted both while `merod account root` printed base58 and the admin
+    /// API printed hex. With one encoding, accepting base58 would hide a caller
+    /// still on the old form instead of telling them.
     #[test]
-    fn account_root_accepts_both_hex_and_base58() {
+    fn account_root_is_hex_and_refuses_base58() {
         use calimero_primitives::identity::{PrivateKey, PublicKey};
 
         let expected: PublicKey = PrivateKey::from([9u8; 32]).public_key();
         let raw = *AsRef::<[u8; 32]>::as_ref(&expected);
 
-        let from_hex = super::parse_account_root_pk(&hex::encode(raw)).expect("hex");
-        let from_b58 = super::parse_account_root_pk(&expected.to_string()).expect("base58");
-
-        assert_eq!(from_hex, expected);
-        assert_eq!(from_b58, expected, "base58 is what our own commands print");
-        assert_eq!(from_hex, from_b58, "both encodings must name the same key");
+        assert_eq!(
+            super::parse_account_root_pk(&hex::encode(raw)).expect("hex"),
+            expected
+        );
+        assert!(
+            super::parse_account_root_pk("11111111111111111111111111111112").is_err(),
+            "base58 must be refused now that every id is hex",
+        );
     }
 
     /// A rejection must name where to get the value, not just that it is wrong.

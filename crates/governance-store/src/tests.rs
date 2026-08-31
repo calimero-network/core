@@ -2179,6 +2179,11 @@ fn enumerate_all_groups_multiple_groups_with_members() {
 /// using base58 (via `Repr<ApplicationId>`), not hex.  Before the fix,
 /// `hex::decode` was called on a base58 string, producing
 /// "Invalid character 'g' at position 1" errors at runtime.
+///
+/// Still base58 on purpose, while every `calimero-primitives` id is now hex.
+/// `Repr` belongs to `calimero-context-config`, which speaks external
+/// contract chains' conventions rather than ours — the same category as a
+/// libp2p `PeerId` or a `did:key`. Those did not move and are not meant to.
 #[test]
 fn extract_application_id_decodes_base58() {
     // Repr<[u8; 32]> serialises as base58 (canonical `Repr` serialization for the id field).
@@ -4130,6 +4135,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -4139,6 +4145,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -5407,6 +5414,7 @@ fn signed_invitation_for(
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: 1,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -5416,6 +5424,7 @@ fn signed_invitation_for(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 

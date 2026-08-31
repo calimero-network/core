@@ -12,7 +12,6 @@ publish = true
 actix.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
-bs58.workspace = true
 either.workspace = true
 eyre.workspace = true
 semver.workspace = true

@@ -264,7 +264,7 @@ the path parameter — these are reproduced exactly as routed below.
 | POST | `/admin-api/groups/:group_id/reparent` | Re-parent a group. |
 | GET | `/admin-api/groups/:group_id/subgroups` | List subgroups. |
 | GET | `/admin-api/groups/:group_id/members` | List group members. |
-| POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account. A bs58 public key is still accepted from older callers. |
+| POST | `/admin-api/groups/:group_id/members` | Add group members, each named by account, or by key written `key:<64-hex>`. Every id is hex, so the tag is what tells the two apart — an untagged key is read as an account. |
 | POST | `/admin-api/groups/:group_id/members/remove` | Remove group members. |
 | POST | `/admin-api/groups/:group_id/leave` | Leave a group. |
 | PUT | `/admin-api/groups/:group_id/members/:identity/role` | Update a member's role. |
@@ -337,12 +337,16 @@ the path parameter — these are reproduced exactly as routed below.
 | POST | `/admin-api/identity/context` | Generate a new context identity (keypair). |
 | POST | `/admin-api/alias/create/context` | Create an alias for a context. |
 | POST | `/admin-api/alias/create/application` | Create an alias for an application. |
+| POST | `/admin-api/alias/create/device` | Create an alias for a device. |
 | POST | `/admin-api/alias/lookup/context/:name` | Resolve a context alias. |
 | POST | `/admin-api/alias/lookup/application/:name` | Resolve an application alias. |
+| POST | `/admin-api/alias/lookup/device/:name` | Resolve a device alias. |
 | POST | `/admin-api/alias/delete/context/:name` | Delete a context alias. |
 | POST | `/admin-api/alias/delete/application/:name` | Delete an application alias. |
+| POST | `/admin-api/alias/delete/device/:name` | Delete a device alias. |
 | GET | `/admin-api/alias/list/context` | List context aliases. |
 | GET | `/admin-api/alias/list/application` | List application aliases. |
+| GET | `/admin-api/alias/list/device` | List device aliases. |
 
 <Aside type="note">
 Alias `lookup` and `delete` are routed as `POST` (not `GET`/`DELETE`) — the

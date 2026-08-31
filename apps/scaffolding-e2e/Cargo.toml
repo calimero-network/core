@@ -19,7 +19,6 @@ calimero-sdk = { workspace = true, features = ["tracing"] }
 calimero-storage.workspace = true
 sha2.workspace = true
 hex.workspace = true
-bs58.workspace = true
 tracing.workspace = true
 
 [package.metadata.workspaces]

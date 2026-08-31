@@ -1820,6 +1820,11 @@ impl ContextManager {
     /// addressing makes reuse always sound (same blob ⇒ same module), so
     /// entries never need eviction. The read-only method set is populated
     /// alongside from the embedded ABI.
+    #[expect(
+        clippy::result_large_err,
+        reason = "The error type is shared across this handler; boxing it here would \
+                  change a public signature, so it is left for a follow-up."
+    )]
     pub fn get_module_for_blob(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,

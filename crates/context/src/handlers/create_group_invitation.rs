@@ -19,6 +19,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         CreateGroupInvitationRequest {
             group_id,
             expiration_timestamp,
+            admitters,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -51,8 +52,13 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock before epoch")
                 .as_secs();
-            let expiration_timestamp: u64 =
-                now_secs + expiration_timestamp.unwrap_or(365 * 24 * 3600);
+            // Clamped, not merely defaulted: a caller asking for longer is a
+            // caller extending how long a leaked bearer credential stays
+            // redeemable, and the request is not theirs to grant.
+            let requested = expiration_timestamp
+                .unwrap_or(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS)
+                .min(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS);
+            let expiration_timestamp: u64 = now_secs + requested;
 
             let inviter_signer_id = SignerId::from(*signer);
 
@@ -62,6 +68,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 expiration_timestamp,
                 invitation_nonce,
                 invited_role: 1, // Member
+                admitters,
             };
 
             let invitation_bytes = borsh::to_vec(&invitation)
@@ -96,6 +103,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
                     bytecode_id: Some(meta.target.bytecode_id),
+                    admitter_hints: Vec::new(),
                 },
                 group_name,
             ))

@@ -359,8 +359,8 @@ steps:
   # v1 silent storage-type-flip bug would have produced.
   #
   # By account since #3399: an entry is owned by the person, so that a second
-  # device of theirs can edit it. This compared against the node's bs58 signing
-  # key until now, and went stale silently — the step was simply never reached,
+  # device of theirs can edit it. This compared against the node's signing key
+  # until now, and went stale silently — the step was simply never reached,
   # because reconciliation timed out three steps earlier.
   - name: Read AuthoredMap entry owner from node-2
     type: call

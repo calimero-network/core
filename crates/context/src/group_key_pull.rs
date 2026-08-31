@@ -108,6 +108,7 @@ mod tests {
             expiration_timestamp: 0,
             invitation_nonce: [0x42; 32],
             invited_role: 1,
+            admitters: Vec::new(),
         };
         let bytes = borsh::to_vec(&invitation).unwrap();
         let signature = admin_sk.sign(&Sha256::digest(&bytes)).unwrap();
@@ -117,6 +118,7 @@ mod tests {
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
             bytecode_id: None,
+            admitter_hints: Vec::new(),
         }
     }
 

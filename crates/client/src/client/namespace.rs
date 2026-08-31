@@ -1,10 +1,12 @@
 use calimero_server_primitives::admin::{
-    AccountPairCompleteApiRequest, AccountPairInitApiRequest, CreateGroupInvitationApiRequest,
-    CreateNamespaceApiRequest, CreateNamespaceApiResponse, DeleteNamespaceApiRequest,
-    DeleteNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest,
-    JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
-    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
+    AccountApplicationsApiResponse, AccountDevicesApiResponse, AccountPairCompleteApiRequest,
+    AccountPairInitApiRequest, AdmitJoinApiRequest, AdmitJoinApiResponse,
+    CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
+    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
+    JoinGroupApiRequest, JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse,
+    ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RelinkDeviceApiRequest,
+    RelinkDeviceApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -125,6 +127,48 @@ where
         Ok(response)
     }
 
+    /// Repair or widen the reach of a device this account already certified.
+    ///
+    /// Re-runs pairing's fan-out against the namespaces this node takes part in
+    /// now, which is what closes the drift a namespace gained afterwards leaves
+    /// behind. Naming no application repairs without widening.
+    pub async fn relink_device(
+        &self,
+        device_id: &str,
+        request: RelinkDeviceApiRequest,
+    ) -> Result<RelinkDeviceApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/account/devices/{device_id}/relink"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Every device of this account, with the scope and bindings this node can see.
+    ///
+    /// Joined from the node-local certificate cache and the live bindings of every
+    /// namespace this node takes part in, so it reports devices this node never
+    /// certified as well as the ones it did.
+    pub async fn list_account_devices(&self) -> Result<AccountDevicesApiResponse> {
+        let response = self.connection.get("admin-api/account/devices").await?;
+        Ok(response)
+    }
+
+    /// The applications this account speaks in.
+    ///
+    /// The only route by which a device that is a member of nothing can learn
+    /// them: a namespace summary is withheld from non-members.
+    pub async fn list_account_applications(&self) -> Result<AccountApplicationsApiResponse> {
+        let response = self
+            .connection
+            .get("admin-api/account/applications")
+            .await?;
+        Ok(response)
+    }
+
     /// Withdraw a device from an account, terminally.
     ///
     /// An admin may revoke any device and rotates the scope key in the same op.
@@ -170,6 +214,33 @@ where
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/join"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Hand a join this caller already signed to a node the inviter named as an
+    /// admitter, for that node to publish.
+    ///
+    /// The counterpart to [`Self::join_namespace`], which publishes from the node
+    /// serving the call. A keyholder has no such node — an account, a device
+    /// certificate signed offline, and nowhere to publish from — so it signs the
+    /// membership op itself and presents it here.
+    ///
+    /// Handing the op to somebody else is safe because it is signed by the
+    /// joiner's device key, and every peer checks that key against the credential
+    /// the op carries when applying a join. The admitter carries the claim and
+    /// cannot author one: it may refuse to publish, and nothing else.
+    pub async fn admit_join(
+        &self,
+        namespace_id: &str,
+        request: AdmitJoinApiRequest,
+    ) -> Result<AdmitJoinApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/admit"),
                 request,
             )
             .await?;

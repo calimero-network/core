@@ -37,7 +37,7 @@ struct Release {
 }
 
 pub async fn check_for_update() {
-    if rand::random::<u8>() % 10 != 0 {
+    if !rand::random::<u8>().is_multiple_of(10) {
         return;
     }
 

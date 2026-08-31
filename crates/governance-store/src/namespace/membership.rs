@@ -214,6 +214,36 @@ impl<'a> NamespaceMembershipService<'a> {
         Ok(())
     }
 
+    /// Whether this node may admit a claim of `invitation`.
+    ///
+    /// An empty `admitters` list is every invitation minted before the field
+    /// existed, and means the legacy behaviour: any peer that can validate the
+    /// invitation may admit. A non-empty list means the inviter chose who may,
+    /// and everyone else must refuse — including a node that would otherwise
+    /// have validated it perfectly well.
+    ///
+    /// The check has to live here rather than at the transport, because
+    /// refusing is the *point*: an invitation restricted to named admitters is
+    /// only worth restricting if a peer that receives it anyway declines to act
+    /// on it.
+    ///
+    /// # Errors
+    ///
+    /// When the list is non-empty and does not name `self_account`.
+    pub fn require_may_admit(
+        signed_invitation: &SignedGroupOpenInvitation,
+        self_account: &AccountId,
+    ) -> EyreResult<()> {
+        let admitters = &signed_invitation.invitation.admitters;
+        if admitters.is_empty() || admitters.contains(self_account) {
+            return Ok(());
+        }
+        bail!(
+            "this node is not an admitter for the invitation ({} named);              the joiner must present it to one of them",
+            admitters.len()
+        );
+    }
+
     /// The joiner must prove it owns the account the op admits, and the
     /// invitation must be genuinely the inviter's.
     ///

@@ -479,6 +479,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         expiration_timestamp: 0,
         invitation_nonce: [0x21; 32],
         invited_role: 1,
+        admitters: Vec::new(),
     };
     let inv_sig = admin_sk
         .sign(&<sha2::Sha256 as sha2::Digest>::digest(
@@ -491,6 +492,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     };
 
     let gov = NamespaceGovernance::new(&store, ns_bytes.into());

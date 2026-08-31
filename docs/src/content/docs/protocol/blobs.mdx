@@ -12,7 +12,7 @@ import { Steps } from '@astrojs/starlight/components';
 
 A **blob** is an opaque, content-addressed byte string. It is identified by a
 `BlobId` — a 32-byte hash derived from the blob's content — and it is displayed
-as a base58 string. Because the identifier _is_ a hash of the bytes, a `BlobId`
+as a hex string. Because the identifier _is_ a hash of the bytes, a `BlobId`
 both names a blob and lets any holder verify that the bytes it received are the
 bytes that were asked for.
 
@@ -23,7 +23,7 @@ hot, causally-ordered data; blobs carry the bulk, referenced by id.
 
 ```rust
 // crates/primitives/src/blobs.rs
-pub struct BlobId(Hash);   // 32-byte digest, base58 on display
+pub struct BlobId(Hash);   // 32-byte digest, hex on display
 ```
 
 :::note

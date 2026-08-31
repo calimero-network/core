@@ -273,6 +273,19 @@ pub fn beacon_admission_provable(store: &Store, beacon: &SignedReadinessBeacon) 
     {
         return false;
     }
+    // An invitation that names admitters is not claimable by broadcast at all,
+    // whoever receives the beacon. Refusing here is what makes the field mean
+    // something: the inviter restricted admission precisely so the invitation
+    // would not travel this path, and a receiver that honoured it anyway would
+    // re-open the exposure the restriction exists to close — the proof rides on
+    // the namespace topic as plain borsh, readable by any subscriber.
+    //
+    // Deliberately not "unless this node is an admitter". Admitting here would
+    // still have meant the invitation was broadcast to everyone first, which is
+    // the harm; being entitled to admit does not un-leak it.
+    if !inv.invitation.admitters.is_empty() {
+        return false;
+    }
     // The consumed-invitation row is account-keyed, so answering "has this
     // peer already redeemed it" needs the account its key speaks for. Unlike
     // every other caller on this plane, an unresolved key here is ORDINARY
