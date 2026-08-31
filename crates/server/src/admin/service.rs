@@ -98,64 +98,64 @@ pub(crate) fn setup(
         )
         .route("/applications", get(list_applications::handler))
         .route(
-            "/applications/:application_id",
+            "/applications/{application_id}",
             get(get_application::handler).delete(uninstall_application::handler),
         )
         .route(
-            "/applications/:application_id/abi",
+            "/applications/{application_id}/abi",
             get(get_application_abi::handler),
         )
         .route(
-            "/applications/:application_id/versions",
+            "/applications/{application_id}/versions",
             get(list_application_versions::handler),
         )
         // Package management
         .route("/packages", get(list_packages::handler))
-        .route("/packages/:package/versions", get(list_versions::handler))
-        .route("/packages/:package/latest", get(get_latest_version::handler))
+        .route("/packages/{package}/versions", get(list_versions::handler))
+        .route("/packages/{package}/latest", get(get_latest_version::handler))
         // Context management
         .route(
             "/contexts",
             get(get_context_ids::handler).post(create_context::handler),
         )
         .route(
-            "/contexts/:context_id",
+            "/contexts/{context_id}",
             get(get_context::handler).delete(delete_context::handler),
         )
         .route(
-            "/contexts/:context_id/application",
+            "/contexts/{context_id}/application",
             post(update_context_application::handler),
         )
         .route(
-            "/contexts/:context_id/intents",
+            "/contexts/{context_id}/intents",
             post(perform_intent::handler),
         )
         .route(
-            "/contexts/:context_id/resync",
+            "/contexts/{context_id}/resync",
             post(resync_context::handler),
         )
         .route(
-            "/contexts/for-application/:application_id",
+            "/contexts/for-application/{application_id}",
             get(get_contexts_for_application::handler),
         )
         .route(
-            "/contexts/with-executors/for-application/:application_id",
+            "/contexts/with-executors/for-application/{application_id}",
             get(get_contexts_with_executors_for_application::handler),
         )
         .route(
-            "/contexts/:context_id/storage",
+            "/contexts/{context_id}/storage",
             get(get_context_storage::handler),
         )
         .route(
-            "/contexts/:context_id/identities",
+            "/contexts/{context_id}/identities",
             get(get_context_identities::handler),
         )
         .route(
-            "/contexts/:context_id/identities-owned",
+            "/contexts/{context_id}/identities-owned",
             get(get_context_identities::handler),
         )
         .route(
-            "/contexts/:context_id/group",
+            "/contexts/{context_id}/group",
             get(get_context_group::handler),
         )
         // Identity management
@@ -168,7 +168,7 @@ pub(crate) fn setup(
             "/contexts/sync",
             Router::new()
                 .route("/", post(sync::handler))
-                .route("/:context_id", post(sync::handler)),
+                .route("/{context_id}", post(sync::handler)),
         )
         // Per-namespace usage (counts + on-disk bytes)
         .route("/usage", get(usage::handler))
@@ -179,7 +179,7 @@ pub(crate) fn setup(
         // Blob management
         .route("/blobs", put(blob::upload_handler).get(blob::list_handler))
         .route(
-            "/blobs/:blob_id",
+            "/blobs/{blob_id}",
             get(blob::download_handler)
                 .head(blob::info_handler)
                 .delete(blob::delete_handler),
@@ -187,131 +187,131 @@ pub(crate) fn setup(
         // Group management
         .route("/groups", post(groups::create_group::handler))
         .route(
-            "/groups/:group_id",
+            "/groups/{group_id}",
             get(groups::get_group_info::handler).delete(groups::delete_group::handler),
         )
         .route(
-            "/groups/:group_id/contexts",
+            "/groups/{group_id}/contexts",
             get(groups::list_group_contexts::handler),
         )
         .route(
-            "/groups/:group_id/reparent",
+            "/groups/{group_id}/reparent",
             post(groups::reparent_group::handler),
         )
         .route(
-            "/groups/:group_id/subgroups",
+            "/groups/{group_id}/subgroups",
             get(groups::list_subgroups::handler),
         )
         .route(
-            "/groups/:group_id/members",
+            "/groups/{group_id}/members",
             get(groups::list_group_members::handler).post(groups::add_group_members::handler),
         )
         .route(
-            "/groups/:group_id/members/remove",
+            "/groups/{group_id}/members/remove",
             post(groups::remove_group_members::handler),
         )
         .route(
-            "/groups/:group_id/member-devices",
+            "/groups/{group_id}/member-devices",
             get(groups::list_member_devices::handler),
         )
         .route(
-            "/groups/:group_id/leave",
+            "/groups/{group_id}/leave",
             post(groups::leave_group::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/role",
+            "/groups/{group_id}/members/{account}/role",
             put(groups::update_member_role::handler),
         )
         .route(
-            "/groups/:group_id/metadata",
+            "/groups/{group_id}/metadata",
             get(groups::set_group_metadata::get_handler).put(groups::set_group_metadata::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/metadata",
+            "/groups/{group_id}/members/{account}/metadata",
             get(groups::set_member_metadata::get_handler).put(groups::set_member_metadata::handler),
         )
         .route(
-            "/groups/:group_id/contexts/:context_id/metadata",
+            "/groups/{group_id}/contexts/{context_id}/metadata",
             get(groups::set_context_metadata::get_handler)
                 .put(groups::set_context_metadata::handler),
         )
         .route(
-            "/groups/:group_id/contexts/:context_id/remove",
+            "/groups/{group_id}/contexts/{context_id}/remove",
             post(groups::detach_context_from_group::handler),
         )
         .route(
-            "/groups/:group_id/upgrade",
+            "/groups/{group_id}/upgrade",
             post(groups::upgrade_group::handler),
         )
         .route(
-            "/groups/:group_id/upgrade/status",
+            "/groups/{group_id}/upgrade/status",
             get(groups::get_group_upgrade_status::handler),
         )
         .route(
-            "/groups/:namespace_id/cascade-status",
+            "/groups/{namespace_id}/cascade-status",
             get(groups::get_cascade_status::handler),
         )
         .route(
-            "/groups/:namespace_id/migration-status",
+            "/groups/{namespace_id}/migration-status",
             get(groups::get_migration_status::handler),
         )
         .route(
-            "/groups/:namespace_id/migration/abort",
+            "/groups/{namespace_id}/migration/abort",
             post(groups::abort_migration::handler),
         )
         .route(
-            "/groups/:group_id/upgrade/retry",
+            "/groups/{group_id}/upgrade/retry",
             post(groups::retry_group_upgrade::handler),
         )
         .route(
-            "/groups/:group_id/issue-ownership-proof",
+            "/groups/{group_id}/issue-ownership-proof",
             post(groups::issue_ownership_proof::handler),
         )
         .route(
-            "/groups/:group_id/issue-namespace-ownership-proof",
+            "/groups/{group_id}/issue-namespace-ownership-proof",
             post(groups::issue_namespace_ownership_proof::handler),
         )
         .route(
-            "/groups/:group_id/sync",
+            "/groups/{group_id}/sync",
             post(groups::sync_group::handler),
         )
         .route(
-            "/groups/:group_id/join-via-inheritance",
+            "/groups/{group_id}/join-via-inheritance",
             post(groups::join_subgroup_inheritance::handler),
         )
         .route(
-            "/contexts/:context_id/join",
+            "/contexts/{context_id}/join",
             post(join_context::handler),
         )
         .route(
-            "/contexts/:context_id/leave",
+            "/contexts/{context_id}/leave",
             post(leave_context::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/capabilities",
+            "/groups/{group_id}/members/{account}/capabilities",
             get(groups::get_member_capabilities::handler)
                 .put(groups::set_member_capabilities::handler),
         )
         .route(
-            "/groups/:group_id/members/:account/auto-follow",
+            "/groups/{group_id}/members/{account}/auto-follow",
             put(groups::set_member_auto_follow::handler),
         )
         .route(
-            "/groups/:group_id/settings/default-capabilities",
+            "/groups/{group_id}/settings/default-capabilities",
             put(groups::set_default_capabilities::handler),
         )
         .route(
-            "/groups/:group_id/settings/tee-admission-policy",
+            "/groups/{group_id}/settings/tee-admission-policy",
             get(groups::get_tee_admission_policy::handler)
                 .put(groups::set_tee_admission_policy::handler),
         )
         .route(
-            "/groups/:group_id/settings/subgroup-visibility",
+            "/groups/{group_id}/settings/subgroup-visibility",
             put(groups::set_subgroup_visibility::handler),
         )
         // Legacy subgroup invitation/join routes kept for backwards compatibility.
         .route(
-            "/groups/:group_id/invite",
+            "/groups/{group_id}/invite",
             post(groups::create_group_invitation::handler),
         )
         .route("/groups/join", post(groups::join_group::handler))
@@ -333,11 +333,11 @@ pub(crate) fn setup(
         // after a pairing binds its devices on its own, and this closes the drift
         // left by every one gained before that landed.
         .route(
-            "/account/devices/:device_id/relink",
+            "/account/devices/{device_id}/relink",
             post(account::relink::handler),
         )
         .route(
-            "/namespaces/:namespace_id/account/revoke",
+            "/namespaces/{namespace_id}/account/revoke",
             post(namespaces::revoke_device::handler),
         )
         // Namespace management
@@ -346,32 +346,32 @@ pub(crate) fn setup(
             get(namespaces::list::handler).post(namespaces::create_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id",
+            "/namespaces/{namespace_id}",
             get(namespaces::get_namespace::handler).delete(namespaces::delete_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/invite",
+            "/namespaces/{namespace_id}/invite",
             post(namespaces::invite_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/join",
+            "/namespaces/{namespace_id}/join",
             post(namespaces::join_namespace::handler),
         )
         .route(
-            "/namespaces/:namespace_id/admit",
+            "/namespaces/{namespace_id}/admit",
             post(namespaces::admit_join::handler),
         )
         .route(
-            "/namespaces/:namespace_id/leave",
+            "/namespaces/{namespace_id}/leave",
             post(namespaces::leave_namespace::handler),
         )
         .route(
-            "/namespaces/for-application/:application_id",
+            "/namespaces/for-application/{application_id}",
             get(namespaces::list_for_application::handler),
         )
         // Namespace governance (Phase 2)
         .route(
-            "/namespaces/:namespace_id/groups",
+            "/namespaces/{namespace_id}/groups",
             get(namespaces::list_namespace_groups::handler)
                 .post(namespaces::create_group_in_namespace::handler),
         )
@@ -436,7 +436,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
         .route("/", get(serve_embedded_file)) // Match base path
-        .route("/*path", get(serve_embedded_file)); // Match all sub-paths
+        .route("/{*path}", get(serve_embedded_file)); // Match all sub-paths
 
     Some((path, router))
 }
