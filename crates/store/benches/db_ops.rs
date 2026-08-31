@@ -21,14 +21,15 @@
 //! `read_then_put` is the merge-path pattern — read the existing value, write
 //! a new one under the same key — which is what a delta apply does per entity.
 //!
-//! Population accounting: each group id `{inmem,rocks}/{n}` is populated with
-//! exactly `n` distinct keys before any measurement starts. `get_hit` and
-//! `get_miss` never mutate the database, so the size stays exactly `n` for the
-//! whole group. `put` and `read_then_put` write into a disjoint key range set
-//! aside above `n` (`n + 10_000 ..`), so thousands of criterion samples do grow
-//! the database past `n` — but they never touch the `n`-sized keyspace that
-//! `get_hit`/`get_miss` read from within the same group, so those two ids keep
-//! measuring exactly the database size their group id claims.
+//! Population accounting: each group is populated with exactly `n` distinct
+//! keys before any measurement starts, and the database never grows past `n`
+//! for the rest of the group. `get_hit` and `get_miss` never mutate the
+//! database. `read_then_put` reads and rewrites `hit_keys` — the same 32 keys
+//! `get_hit` reads — in place, one key per iteration. `put` cycles through a
+//! fixed 128-element `put_keys` vector, overwriting the same 128 keys on
+//! every iteration once the cursor wraps. So both mutators hold the database
+//! at exactly `n` rows for the whole group; none of the four benchmarked ops
+//! ever grows it.
 //!
 //! What would change a decision: at these sizes the whole column family fits
 //! in the block cache, so a `get_hit` that climbs with `n` cannot be
@@ -78,9 +79,11 @@ fn populate<D: for<'a> Database<'a>>(db: &D, n: usize) {
     }
 }
 
-fn run_group<D: for<'a> Database<'a>>(c: &mut Criterion, prefix: &str, db: &D, n: usize) {
-    let mut group = c.benchmark_group(prefix);
-
+fn run_group<D: for<'a> Database<'a>>(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    db: &D,
+    n: usize,
+) {
     let hit_keys: Vec<[u8; KEY_LEN]> = (0..32_u64)
         .map(|i| i * (n as u64 / 32).max(1))
         .map(key_bytes)
@@ -139,28 +142,30 @@ fn run_group<D: for<'a> Database<'a>>(c: &mut Criterion, prefix: &str, db: &D, n
                 .expect("put must succeed");
         });
     });
-
-    group.finish();
 }
 
 fn inmem(c: &mut Criterion) {
+    let mut group = c.benchmark_group("inmem");
     for n in [100_usize, 1_000, 10_000] {
         let db = InMemoryDB::owned();
         populate(&db, n);
-        run_group(c, &format!("inmem/{n}"), &db, n);
+        run_group(&mut group, &db, n);
     }
+    group.finish();
 }
 
 fn rocks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rocks");
     for n in [100_usize, 1_000, 10_000] {
         let dir = TempDir::new().expect("tempdir must create");
         let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf())
             .expect("tempdir path must be utf-8");
         let db = RocksDB::open(&StoreConfig::new(path)).expect("rocksdb must open");
         populate(&db, n);
-        run_group(c, &format!("rocks/{n}"), &db, n);
+        run_group(&mut group, &db, n);
         // `dir` drops here, taking the database with it.
     }
+    group.finish();
 }
 
 criterion_group!(benches, inmem, rocks);
