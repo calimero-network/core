@@ -19,7 +19,7 @@
 //! instances over the same bytes: `blob.digest.update(chunk)` accumulates the
 //! root id and `file.digest.update(chunk)` accumulates that chunk's own id
 //! (`src/lib.rs:132-135` for the `State` struct holding both digests,
-//! `:410-411` for the two updates). Two software SHA-256 passes at roughly
+//! `:411-412` for the two updates). Two software SHA-256 passes at roughly
 //! 3-4 ns/byte each account for most of the ~7.9 ns/byte this bench measures;
 //! the filesystem write is the smaller remainder, not the dominant cost.
 //!

@@ -31,7 +31,7 @@
 //! calimero-dag --bench pending` silently skip the target instead of
 //! building it, or a self-referential dev-dependency to force it on), the
 //! fixture uses the crate's ungated public constructor,
-//! `CausalDelta::new(id, parents, payload, hlc)` (`:134`), passing
+//! `CausalDelta::new(id, parents, payload, hlc)` (`:135`), passing
 //! `HybridTimestamp::default()` for the one field `new_test` filled in for
 //! free. That is the only difference between the two constructors — `new_test`
 //! is a convenience wrapper around `new`, not a distinct code path — so this
