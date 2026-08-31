@@ -319,8 +319,8 @@ mod borsh_layout_round_trip {
         assert_eq!(decoded.metadata.updated_at, 2000);
         assert_eq!(decoded.metadata.field_name.as_deref(), Some("field"));
         assert_eq!(decoded.metadata.schema_version, Some(7));
-        // The mirror decodes `crdt_type` as the canonical `CrdtType`, so this
-        // also guards the `CrdtType` borsh layout against drift.
+        // The mirror imports the canonical `CrdtType`, so this asserts the two
+        // structs agree on the field - not that `CrdtType`'s own layout is stable.
         assert_eq!(
             decoded.metadata.crdt_type,
             Some(CrdtType::LwwRegister {

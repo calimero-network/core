@@ -73,7 +73,7 @@ where
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
-            CrdtType::unordered_set(std::any::type_name::<V>()),
+            CrdtType::unordered_set(""),
         );
         let parent = self.inner.id();
         for (v, storage_type) in elements {
@@ -144,7 +144,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::unordered_set(std::any::type_name::<V>()),
+                CrdtType::unordered_set(""),
             ),
         }
     }
@@ -192,10 +192,8 @@ where
             .expect("failed to clear for migration");
 
         // Now reassign the collection's ID
-        self.inner.reassign_deterministic_id_with_crdt_type(
-            field_name,
-            CrdtType::unordered_set(std::any::type_name::<V>()),
-        );
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::unordered_set(""));
 
         // Re-insert all elements under the new parent ID, preserving each
         // entry's original storage type.

@@ -549,10 +549,7 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::collections::crdt_meta::CrdtType;
         let map_id = Self::rotation_log_child_id(anchor);
         if S::storage_read(Key::Entry(map_id)).is_none() {
-            let crdt = CrdtType::unordered_map(
-                core::any::type_name::<[u8; 32]>(),
-                core::any::type_name::<crate::rotation_log::RotationLogEntry>(),
-            );
+            let crdt = CrdtType::unordered_map("", "");
             let meta = Metadata::with_crdt_type(0, 0, crdt);
             <Index<S>>::add_child_to(anchor, ChildInfo::new(map_id, [0u8; 32], meta.clone()))?;
             // Byte-identical to a genuinely-created empty `UnorderedMap` at this

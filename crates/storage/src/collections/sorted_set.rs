@@ -92,7 +92,7 @@ where
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__sorted_set",
-            CrdtType::sorted_set(std::any::type_name::<V>()),
+            CrdtType::sorted_set(""),
         );
         for v in elements {
             let _ = self.insert(v).expect("re-insert set element during re-key");
@@ -138,7 +138,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::sorted_set(std::any::type_name::<V>()),
+                CrdtType::sorted_set(""),
             ),
         }
     }
@@ -161,10 +161,8 @@ where
         self.inner
             .clear_for_rekey()
             .expect("failed to clear for migration");
-        self.inner.reassign_deterministic_id_with_crdt_type(
-            field_name,
-            CrdtType::sorted_set(std::any::type_name::<V>()),
-        );
+        self.inner
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::sorted_set(""));
         for value in elements {
             self.insert(value)
                 .expect("failed to re-insert element during migration");

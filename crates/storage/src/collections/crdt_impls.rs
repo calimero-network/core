@@ -136,8 +136,7 @@ impl<T: Mergeable> Mergeable for Box<T> {
 
 impl<T: 'static> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        // Include the inner type name for proper merge support
-        CrdtType::lww_register(std::any::type_name::<T>())
+        CrdtType::lww_register("")
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -285,7 +284,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>())
+        CrdtType::unordered_map("", "")
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -354,7 +353,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>())
+        CrdtType::sorted_map("", "")
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -413,7 +412,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::unordered_set(std::any::type_name::<T>())
+        CrdtType::unordered_set("")
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -480,7 +479,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::sorted_set(std::any::type_name::<T>())
+        CrdtType::sorted_set("")
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -529,7 +528,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::vector(std::any::type_name::<T>())
+        CrdtType::vector("")
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -606,12 +605,13 @@ mod tests {
     #[test]
     fn test_lww_register_is_crdt() {
         assert!(LwwRegister::<String>::is_crdt());
-        // The inner type contains the full type path
+        // Empty, not the type path: these bytes are persisted and hashed, and
+        // rustc guarantees nothing about how `type_name` renders a type.
         match LwwRegister::<String>::crdt_type() {
             CrdtType::LwwRegister { inner_type } => {
                 assert!(
-                    inner_type.contains("String"),
-                    "inner_type should contain 'String', got: {inner_type}"
+                    inner_type.is_empty(),
+                    "inner_type must stay empty, got: {inner_type}"
                 );
             }
             other => panic!("Expected LwwRegister, got: {other:?}"),
@@ -649,14 +649,11 @@ mod tests {
                 key_type,
                 value_type,
             } => {
+                // Both empty for the same reason as `LwwRegister::inner_type`.
+                assert!(key_type.is_empty(), "key_type must stay empty: {key_type}");
                 assert!(
-                    key_type.contains("String"),
-                    "key_type should contain 'String', got: {key_type}"
-                );
-                // Value type is Counter (a CRDT), not u64 - type_name returns full path
-                assert!(
-                    value_type.contains("Counter"),
-                    "value_type should contain 'Counter', got: {value_type}"
+                    value_type.is_empty(),
+                    "value_type must stay empty: {value_type}"
                 );
             }
             other => panic!("Expected UnorderedMap, got: {other:?}"),

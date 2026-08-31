@@ -971,6 +971,41 @@ mod tests {
         assert_eq!(decoded.version, 10);
     }
 
+    /// A fully-populated `LeafMetadata`, frozen byte for byte.
+    ///
+    /// `CrdtType` sits at offset 0, so any change to its layout shifts every
+    /// field behind it and a peer on the older binary silently misreads the
+    /// frame. merobox cannot catch that - both sides of an e2e run are the same
+    /// build - so a recorded byte string is the only guard.
+    #[test]
+    fn leaf_metadata_encoding_is_byte_frozen() {
+        let ancestor = calimero_storage::entities::ChildInfo::new(
+            calimero_storage::address::Id::new([0x33; 32]),
+            [0x44; 32],
+            calimero_storage::entities::Metadata::with_crdt_type(5, 6, CrdtType::lww_register("")),
+        );
+        let md = LeafMetadata::new(CrdtType::unordered_map("", ""), 1, [0x11; 32])
+            .with_created_at(2)
+            .with_version(3)
+            .with_parent([0x22; 32])
+            .with_ancestors(vec![ancestor])
+            .with_authorization(calimero_storage::entities::StorageType::User {
+                owner: calimero_account::AccountId::from([0xDD; 32]),
+                signature_data: None,
+            })
+            .with_schema_bytecode_id([0x55; 32]);
+
+        let bytes = borsh::to_vec(&md).expect("serialize");
+        assert_eq!(hex::encode(&bytes), "040000000000000000010000000000000002000000000000000300000000000000111111111111111111111111111111111111111111111111111111111111111101222222222222222222222222222222222222222222222222222222222222222201000000333333333333333333333333333333333333333333333333333333333333333344444444444444444444444444444444444444444444444444444444444444440500000000000000060000000000000000010000000000000000000000000000000101dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd00015555555555555555555555555555555555555555555555555555555555555555");
+
+        // Spelled out separately: the pin above only means anything while
+        // `crdt_type` really is the leading field.
+        assert_eq!(
+            &bytes[..9],
+            borsh::to_vec(&md.crdt_type).expect("serialize").as_slice()
+        );
+    }
+
     #[test]
     fn test_crdt_type_variants() {
         let types = vec![

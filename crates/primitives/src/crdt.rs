@@ -30,10 +30,9 @@ pub enum CrdtType {
     ///
     /// Wraps primitive types with timestamp-based conflict resolution.
     /// Merge: Higher HLC timestamp wins, with node ID as tie-breaker.
-    ///
-    /// The inner type name enables proper deserialization during merge.
     LwwRegister {
-        /// Inner type name (e.g., "String", "u64", "MyStruct")
+        /// Vestigial - written as `""`, read back only for the `"Opaque"` and
+        /// [`JS_ROOT_CRDT_TYPE_NAME`] sentinels. Kept for borsh compatibility.
         inner_type: String,
     },
 
@@ -71,9 +70,9 @@ pub enum CrdtType {
     /// Values are merged recursively if they implement Mergeable.
     /// Merge: Union of keys, recursive merge of values.
     UnorderedMap {
-        /// Key type name
+        /// Vestigial - always `""`; kept for borsh compatibility.
         key_type: String,
-        /// Value type name (may be a nested CRDT)
+        /// Vestigial - always `""`; kept for borsh compatibility.
         value_type: String,
     },
 
@@ -86,9 +85,9 @@ pub enum CrdtType {
     /// state is synced and merge is byte-identical to `UnorderedMap`.
     /// Merge: Union of keys, recursive merge of values.
     SortedMap {
-        /// Key type name
+        /// Vestigial - always `""`; kept for borsh compatibility.
         key_type: String,
-        /// Value type name (may be a nested CRDT)
+        /// Vestigial - always `""`; kept for borsh compatibility.
         value_type: String,
     },
 
@@ -98,7 +97,7 @@ pub enum CrdtType {
     /// Elements are never lost once added.
     /// Merge: Union of all elements from both sets.
     UnorderedSet {
-        /// Element type name
+        /// Vestigial - always `""`; kept for borsh compatibility.
         element_type: String,
     },
 
@@ -109,7 +108,7 @@ pub enum CrdtType {
     /// Ordering is derived from `T: Ord` — no extra state is synced.
     /// Merge: Union of all elements from both sets.
     SortedSet {
-        /// Element type name
+        /// Vestigial - always `""`; kept for borsh compatibility.
         element_type: String,
     },
 
@@ -119,7 +118,7 @@ pub enum CrdtType {
     /// Elements are identified by index + timestamp for ordering.
     /// Merge: Element-wise merge by index with timestamp ordering.
     Vector {
-        /// Element type name (may be a nested CRDT)
+        /// Vestigial - always `""`; kept for borsh compatibility.
         element_type: String,
     },
 
@@ -473,5 +472,81 @@ mod tests {
         assert_eq!(tag(&CrdtType::SharedStorage), 11);
         assert_eq!(tag(&CrdtType::Custom("c".into())), 12);
         assert_eq!(tag(&CrdtType::RotationLog), 13);
+    }
+
+    // ------------------------------------------------------- frozen encodings
+    //
+    // Byte-for-byte pins. merobox cannot reach this class of break at all:
+    // every node in an e2e run is the SAME build, so a payload or layout change
+    // is invisible there and only surfaces against rows already on disk or a
+    // peer that has not been restarted yet.
+
+    /// Every variant's complete encoding, as production writes it today.
+    ///
+    /// The string payloads are frozen EMPTY on purpose: they land in persisted
+    /// `EntityIndex` metadata, in `LeafMetadata` on the wire, and in the
+    /// `CausalDelta::compute_id` preimage, so filling them from
+    /// `std::any::type_name` - whose rendering rustc does not guarantee - makes
+    /// all of those bytes compiler-dependent.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn borsh_encodings_are_byte_frozen() {
+        let frozen: &[(CrdtType, &[u8])] = &[
+            (CrdtType::lww_register(""), &[0, 0, 0, 0, 0]),
+            (CrdtType::GCounter, &[1]),
+            (CrdtType::PnCounter, &[2]),
+            (CrdtType::Rga, &[3]),
+            (
+                CrdtType::unordered_map("", ""),
+                &[4, 0, 0, 0, 0, 0, 0, 0, 0],
+            ),
+            (CrdtType::sorted_map("", ""), &[5, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (CrdtType::unordered_set(""), &[6, 0, 0, 0, 0]),
+            (CrdtType::sorted_set(""), &[7, 0, 0, 0, 0]),
+            (CrdtType::vector(""), &[8, 0, 0, 0, 0]),
+            (CrdtType::UserStorage, &[9]),
+            (CrdtType::FrozenStorage, &[10]),
+            (CrdtType::SharedStorage, &[11]),
+            (
+                CrdtType::Custom("my_type".to_owned()),
+                &[12, 7, 0, 0, 0, b'm', b'y', b'_', b't', b'y', b'p', b'e'],
+            ),
+            (CrdtType::RotationLog, &[13]),
+            // The one payload production still writes.
+            (
+                CrdtType::js_root(),
+                &[0, 6, 0, 0, 0, b'J', b's', b'R', b'o', b'o', b't'],
+            ),
+        ];
+
+        for (crdt_type, expected) in frozen {
+            assert_eq!(
+                borsh::to_vec(crdt_type).unwrap(),
+                *expected,
+                "encoding drifted for {crdt_type:?}"
+            );
+        }
+    }
+
+    /// Rows and wire frames written before the payload was frozen empty carry
+    /// rustc's `type_name` output verbatim. They must still decode - that is
+    /// why the fields are retained rather than removed.
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn legacy_type_name_payloads_still_decode() {
+        let mut lww = vec![0u8, 21, 0, 0, 0];
+        lww.extend_from_slice(b"alloc::string::String");
+        let decoded: CrdtType = borsh::from_slice(&lww).unwrap();
+        assert_eq!(decoded, CrdtType::lww_register("alloc::string::String"));
+
+        let mut map = vec![4u8, 21, 0, 0, 0];
+        map.extend_from_slice(b"alloc::string::String");
+        map.extend_from_slice(&[3, 0, 0, 0]);
+        map.extend_from_slice(b"u64");
+        let decoded: CrdtType = borsh::from_slice(&map).unwrap();
+        assert_eq!(
+            decoded,
+            CrdtType::unordered_map("alloc::string::String", "u64")
+        );
     }
 }
