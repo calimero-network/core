@@ -341,9 +341,6 @@
         },
         {
           "$ref": "#/definitions/BytesType"
-        },
-        {
-          "$ref": "#/definitions/VariableBytesType"
         }
       ]
     },
