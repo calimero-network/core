@@ -165,14 +165,6 @@ fn stream_opens(node: &TestNode) -> Vec<PeerId> {
         .clone()
 }
 
-/// Whether the established-member arm currently holds `NS`'s debounce slot.
-fn member_slot_claimed(node: &TestNode) -> bool {
-    node.ns_beacon_sync_debounce
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains_key(&NS)
-}
-
 #[actix::test]
 #[serial(boot_test_node)]
 async fn unprovable_beacon_pulls_nothing() {

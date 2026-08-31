@@ -12,11 +12,10 @@
 //! minting and any `calimero_tee_attestation` mock symbols out of here —
 //! adding one would silently drag `cascade_dispatch_e2e` back behind the
 //! feature gate.
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use actix::Actor;
 use calimero_blobstore::config::BlobStoreConfig;
@@ -223,7 +222,6 @@ pub(crate) struct TestNode {
     pub(crate) readiness_cache: Arc<crate::readiness::ReadinessCache>,
     /// The manager's established-member beacon-sync debounce slots, so a test
     /// can confirm that arm really claimed one before asserting on the other.
-    pub(crate) ns_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
     /// Peers the node opened a sync stream to. See [`StubNetworkActor`].
     pub(crate) stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
     /// Gossipsub payloads this node published. See [`StubNetworkActor`].
@@ -337,7 +335,6 @@ pub(crate) async fn boot_test_node() -> TestNode {
     );
 
     let readiness_cache = node_manager.readiness_cache.clone();
-    let ns_beacon_sync_debounce = node_manager.ns_beacon_sync_debounce.clone();
     let stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>> = Arc::new(Mutex::new(Vec::new()));
     let publishes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -377,7 +374,6 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_client,
         node_addr,
         readiness_cache,
-        ns_beacon_sync_debounce,
         stream_opens,
         publishes,
     }
