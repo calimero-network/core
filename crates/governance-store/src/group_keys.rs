@@ -3,7 +3,7 @@ use crate::{
 };
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
-    EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation,
+    EncryptedGroupOp, EncryptedRootOp, EnvelopeRecipient, GroupOp, KeyEnvelope, KeyRotation, RootOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::{X25519PublicKey, X25519SecretKey};
@@ -411,6 +411,68 @@ impl<'a> GroupKeyring<'a> {
             }
         }
         Ok(false)
+    }
+
+    /// Seal a [`RootOp`] under the namespace key.
+    ///
+    /// The caller picks the key and is responsible for it being the namespace's,
+    /// not a subgroup's — a root op sealed under a subgroup key would decrypt for
+    /// a strict subset of the members entitled to read it, and would look correct
+    /// at every step until some member could not fold namespace structure.
+    ///
+    /// Only the five admin-published variants are sealable; see
+    /// [`EncryptedRootOp`] for why the joins, `KeyDelivery` and
+    /// `NamespaceCreated` are not. This function does not enforce that: E1 gates
+    /// it at the publisher, where the decision belongs, and sealing a join here
+    /// would fail later at a point far from the cause.
+    ///
+    /// # Errors
+    ///
+    /// When borsh encoding or AEAD sealing fails.
+    pub fn encrypt_root_op(namespace_key: &[u8; 32], op: &RootOp) -> EyreResult<EncryptedRootOp> {
+        use calimero_crypto::SharedKey;
+
+        let plaintext = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh encode RootOp: {e}"))?;
+        let sk = PrivateKey::from(*namespace_key);
+        let shared_key = SharedKey::from_sk(&sk);
+
+        let (nonce, ciphertext) = shared_key
+            .encrypt(plaintext)
+            .ok_or(KeyringError::EncryptionFailed)?;
+
+        Ok(EncryptedRootOp { nonce, ciphertext })
+    }
+
+    /// Open a [`RootOp`] sealed by [`Self::encrypt_root_op`].
+    ///
+    /// A failure here is not necessarily corruption: the ordinary case is a node
+    /// that does not hold the key yet, which must buffer and retry on key
+    /// delivery rather than treat the op as invalid. Callers that cannot tell
+    /// those apart will drop ops a joiner needs.
+    ///
+    /// # Errors
+    ///
+    /// When AEAD opening fails (wrong key, or a tampered nonce/ciphertext), or
+    /// when the plaintext does not decode as a current-schema `RootOp`.
+    pub fn decrypt_root_op(
+        namespace_key: &[u8; 32],
+        encrypted: &EncryptedRootOp,
+    ) -> EyreResult<RootOp> {
+        use calimero_crypto::SharedKey;
+
+        let sk = PrivateKey::from(*namespace_key);
+        let shared_key = SharedKey::from_sk(&sk);
+        let plaintext = shared_key
+            .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
+            .ok_or(KeyringError::DecryptionFailed)?;
+        borsh::from_slice(&plaintext).map_err(|e| {
+            tracing::warn!(
+                plaintext_len = plaintext.len(),
+                prefix = ?plaintext.first(),
+                "decrypted root op does not match the current RootOp schema"
+            );
+            eyre::eyre!("borsh decode RootOp: {e}")
+        })
     }
 
     pub fn encrypt_op(group_key: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
@@ -1854,5 +1916,113 @@ mod delete_tests {
             val.insertion_seq, 0,
             "the rewrite must carry the original insertion sequence over"
         );
+    }
+}
+
+#[cfg(test)]
+mod root_op_sealing_tests {
+    use super::*;
+
+    fn sealable_root_ops() -> Vec<(&'static str, RootOp)> {
+        let gid = ContextGroupId::from([7u8; 32]);
+        let account = AccountId::from([9u8; 32]);
+        vec![
+            (
+                "GroupCreated",
+                RootOp::GroupCreated {
+                    group_id: gid,
+                    parent_id: ContextGroupId::from([1u8; 32]),
+                    restricted: true,
+                    admin: account,
+                },
+            ),
+            (
+                "GroupReparented",
+                RootOp::GroupReparented {
+                    child_group_id: gid,
+                    new_parent_id: ContextGroupId::from([2u8; 32]),
+                },
+            ),
+            (
+                "GroupDeleted",
+                RootOp::GroupDeleted {
+                    root_group_id: gid,
+                    cascade_group_ids: vec![ContextGroupId::from([3u8; 32])],
+                    cascade_context_ids: Vec::new(),
+                },
+            ),
+            ("AdminChanged", RootOp::AdminChanged { new_admin: account }),
+            (
+                "PolicyUpdated",
+                RootOp::PolicyUpdated {
+                    policy_bytes: vec![1, 2, 3, 4],
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_sealable_root_op_survives_a_round_trip() {
+        let key = [5u8; 32];
+        for (name, op) in sealable_root_ops() {
+            let sealed = GroupKeyring::encrypt_root_op(&key, &op).expect(name);
+            let opened = GroupKeyring::decrypt_root_op(&key, &sealed).expect(name);
+            // Compared as borsh: RootOp has no PartialEq, and the bytes are what
+            // the receiver actually folds.
+            assert_eq!(
+                borsh::to_vec(&op).unwrap(),
+                borsh::to_vec(&opened).unwrap(),
+                "{name} did not survive sealing"
+            );
+            // The plaintext must not be recoverable from the ciphertext.
+            assert_ne!(
+                sealed.ciphertext,
+                borsh::to_vec(&op).unwrap(),
+                "{name} was stored in the clear"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_op_does_not_open_under_the_wrong_key() {
+        let (_, op) = sealable_root_ops().remove(3);
+        let sealed = GroupKeyring::encrypt_root_op(&[5u8; 32], &op).unwrap();
+        assert!(
+            GroupKeyring::decrypt_root_op(&[6u8; 32], &sealed).is_err(),
+            "a non-member's key opened a root op"
+        );
+    }
+
+    #[test]
+    fn a_tampered_root_op_does_not_open() {
+        let (_, op) = sealable_root_ops().remove(4);
+        let key = [5u8; 32];
+
+        let mut flipped_ciphertext = GroupKeyring::encrypt_root_op(&key, &op).unwrap();
+        flipped_ciphertext.ciphertext[0] ^= 0x01;
+        assert!(
+            GroupKeyring::decrypt_root_op(&key, &flipped_ciphertext).is_err(),
+            "a flipped ciphertext bit still opened — the payload is not authenticated"
+        );
+
+        let mut flipped_nonce = GroupKeyring::encrypt_root_op(&key, &op).unwrap();
+        flipped_nonce.nonce[0] ^= 0x01;
+        assert!(
+            GroupKeyring::decrypt_root_op(&key, &flipped_nonce).is_err(),
+            "a flipped nonce bit still opened"
+        );
+    }
+
+    #[test]
+    fn sealing_the_same_op_twice_differs() {
+        // A fresh nonce per sealing. Identical ciphertext for identical input
+        // would let an observer match repeated governance actions without
+        // holding the key.
+        let key = [5u8; 32];
+        let (_, op) = sealable_root_ops().remove(1);
+        let a = GroupKeyring::encrypt_root_op(&key, &op).unwrap();
+        let b = GroupKeyring::encrypt_root_op(&key, &op).unwrap();
+        assert_ne!(a.nonce, b.nonce, "nonce reused across two sealings");
+        assert_ne!(a.ciphertext, b.ciphertext, "ciphertext is deterministic");
     }
 }
