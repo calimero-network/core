@@ -3479,3 +3479,113 @@ async fn self_leave_drives_a_real_key_rotation_on_a_remaining_admin() {
         "the pre-rotation key must be retained so already-written ops stay readable"
     );
 }
+
+/// A sealed root op that arrives before the key still lands once it does.
+///
+/// The property the whole E0–E1c chain rests on, and nothing else asserts it.
+/// Sealing group structure is only safe if a member who receives an op before its
+/// key still converges afterwards; if it did not, a joining node would be missing
+/// namespace structure permanently, with no error anywhere to say so.
+///
+/// Written against the three steps in order: E1b buffers the op rather than
+/// erroring, `apply_signed_op` logs it regardless of whether it applied, and E2's
+/// pass finds it — the group retry could not, because its walk selects by group id
+/// and both it and the loop above matched `NamespaceOp::Group`.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_sealed_group_created_lands_after_the_key_arrives() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_governance_store::{
+        apply_signed_namespace_op, retry_encrypted_ops_for_group, GroupKeyring,
+        MembershipRepository, MetaRepository, NamespaceRepository,
+    };
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let mut rng = OsRng;
+
+    let ns_gid = ContextGroupId::from([0xE7u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(
+            &ns_gid,
+            &sample_meta(calimero_context::test_support::account_for(&owner_pk)),
+        )
+        .expect("save namespace root meta");
+    let owner_account = calimero_context::test_support::enrol(&store, &ns_gid, &owner_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_account, GroupMemberRole::Admin)
+        .expect("add owner as namespace-root admin");
+    // The receiver is a different identity from the signer, so the retry's
+    // own-signed skip does not swallow the op under test.
+    NamespaceRepository::new(&store)
+        .replace_identity(&ns_gid, &member_pk, member_sk.as_bytes())
+        .expect("store receiver namespace identity");
+
+    let namespace_key: [u8; 32] = {
+        use rand::RngCore;
+        let mut k = [0u8; 32];
+        rng.fill_bytes(&mut k);
+        k
+    };
+    let key_id = GroupKeyring::key_id_for(&namespace_key);
+    let sub_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+
+    let inner_op = RootOp::GroupCreated {
+        group_id: sub_gid.to_bytes().into(),
+        parent_id: ns_gid.to_bytes().into(),
+        restricted: true,
+        admin: owner_account,
+    };
+    let encrypted =
+        GroupKeyring::encrypt_root_op(&namespace_key, &inner_op).expect("seal GroupCreated");
+
+    let sealed_op = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        vec![],
+        1,
+        NamespaceOp::RootSealed {
+            key_id: key_id.into(),
+            encrypted,
+        },
+    )
+    .expect("sign NamespaceOp::RootSealed(GroupCreated)");
+
+    // Applied with no key held. Must not error — a member that has not received
+    // the namespace key yet is an ordinary state, and erroring would drop an op
+    // this node can apply minutes later.
+    apply_signed_namespace_op(&store, &sealed_op)
+        .expect("a sealed op with no key must buffer, not fail");
+
+    assert_eq!(
+        NamespaceRepository::new(&store)
+            .parent(&sub_gid)
+            .expect("read parent before the key"),
+        None,
+        "the subgroup must not exist while the op is unreadable"
+    );
+
+    // The key arrives.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .expect("store namespace key on receiver");
+
+    retry_encrypted_ops_for_group(&store, namespace_id.into(), ns_gid.to_bytes())
+        .expect("retry after key delivery");
+
+    // The assertion the chain exists for: structure the node could not read is
+    // folded once it can, without the op being resent.
+    assert_eq!(
+        NamespaceRepository::new(&store)
+            .parent(&sub_gid)
+            .expect("read parent after the key"),
+        Some(ns_gid),
+        "the sealed GroupCreated must land once the key is held"
+    );
+}

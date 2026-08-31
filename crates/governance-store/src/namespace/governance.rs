@@ -1405,19 +1405,6 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
-        // Sealed root ops first, then the group's own. A root op can be the thing
-        // that makes a group op applicable — `GroupCreated` is sealed, and a group
-        // op for a group this node has not folded yet has nothing to apply
-        // against — so draining them in the other order would leave the group
-        // ops to a later pass for no reason.
-        if let Err(e) = self.retry_sealed_root_ops() {
-            tracing::warn!(
-                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                error = %format!("{e:#}"),
-                "sealed-root retry pass failed; group retry continues"
-            );
-        }
-
         self.retry_encrypted_ops_for_group(group_id)
             .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))
     }
@@ -1517,6 +1504,23 @@ impl<'a> NamespaceGovernance<'a> {
         &self,
         group_id: [u8; 32],
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        // Sealed root ops first, and here rather than at a caller. A key reaches a
+        // node two ways — a `KeyDelivery` op, and the pull in `group_key_pull` —
+        // and both come through this function. Draining at one of them left the
+        // other silently unable to fold buffered root ops, which is what the
+        // convergence test caught.
+        //
+        // Root before group, because a root op can be what makes a group op
+        // applicable: `GroupCreated` is sealed, and a group op for a group this
+        // node has not folded has nothing to apply against.
+        if let Err(e) = self.retry_sealed_root_ops() {
+            tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                error = %format!("{e:#}"),
+                "sealed-root retry pass failed; group retry continues"
+            );
+        }
+
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
         let retry_candidates = retry_service
