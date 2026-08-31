@@ -2279,26 +2279,25 @@ pub fn seal_root_op_for_publish(
     // `[u8; 32]`, so binding them the other way round compiles and encrypts
     // under the id, producing ciphertext no holder of the key can open.
     let Some((key_id, key)) = GroupKeyring::new(store, ns_typed).load_current_key()? else {
-        // No namespace key exists yet, and that is a real state rather than a
-        // broken one: a namespace root is created before anything keys it, and
-        // `create_group` mints a key for the group it creates, not for the
-        // namespace above it. The first subgroup in a fresh namespace is
-        // therefore authored with no namespace key in the store.
+        // A namespace is keyed at creation: the root *is* a group, `create_group`
+        // handles both, and it mints a key for whatever group it creates. So by
+        // the time any `GroupCreated` is published its namespace has a key, and a
+        // publisher without one has something wrong with it.
         //
-        // Refusing here was wrong — it failed five governance e2e tests on the
-        // claim that authoring a governance change implies holding the namespace
-        // key, which is not true during bootstrap.
+        // Refused rather than downgraded to cleartext. Sealable group structure
+        // has no business on the wire unsealed, and a fallback would be a
+        // legitimate-looking path for exactly that — indistinguishable, to a
+        // receiver, from a node that skipped sealing on purpose.
         //
-        // Publishing in the clear is not a downgrade in that window: sealing
-        // needs a key, and if none exists then no member holds one either, so a
-        // sealed op would be readable by nobody and protect nothing. Logged
-        // rather than silent, because "cleartext because unkeyed" and "cleartext
-        // because someone forgot" look identical in a packet capture.
-        tracing::info!(
-            namespace_id = %hex::encode(namespace_id.as_bytes()),
-            "publishing a root op in the clear: the namespace holds no key yet"
+        // This briefly published cleartext instead, to make five governance e2e
+        // tests pass. They build a namespace by writing repository rows directly
+        // and never mint its key, so they were under-building the fixture rather
+        // than exercising a real state; the fixtures now key the namespace as
+        // production does.
+        eyre::bail!(
+            "refusing to publish a sealable root op in the clear: this namespace holds no key, \
+             which cannot happen for one created through `create_group`"
         );
-        return Ok(NamespaceOp::Root(op));
     };
 
     GroupKeyring::prepare_root_op_for_publish(
