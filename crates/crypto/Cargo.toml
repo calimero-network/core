@@ -19,6 +19,14 @@ zeroize.workspace = true
 
 calimero-primitives = { workspace = true, features = ["rand"] }
 
+[lib]
+bench = false
+
 [dev-dependencies]
+criterion.workspace = true
 eyre.workspace = true
 rand.workspace = true
+
+[[bench]]
+name = "aead"
+harness = false

@@ -1166,6 +1166,7 @@ name = "calimero-crypto"
 version = "0.0.0"
 dependencies = [
  "calimero-primitives",
+ "criterion",
  "curve25519-dalek",
  "ed25519-dalek",
  "eyre",
