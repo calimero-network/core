@@ -43,6 +43,19 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 "create group invitation",
             )?;
 
+            // An invitation nobody restricted is claimable by broadcast, which
+            // publishes it to every subscriber of the namespace topic. Callers
+            // that say nothing get the group's admins and TEE nodes rather than
+            // that, so the exposed case stops being the one you reach by
+            // omission.
+            let admitters = if admitters.is_empty() {
+                calimero_governance_store::NamespaceMembershipService::default_admitters(
+                    &datastore, &group_id,
+                )?
+            } else {
+                admitters
+            };
+
             let private_key = PrivateKey::from(node_sk);
 
             let mut rng = rand::thread_rng();

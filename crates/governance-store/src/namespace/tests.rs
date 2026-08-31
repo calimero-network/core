@@ -359,6 +359,44 @@ fn rewriting_the_admitters_invalidates_the_invitation() {
 }
 
 #[test]
+fn default_admitters_names_admins_and_skips_everybody_else() {
+    let mut rng = rand::rngs::OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_account = enrol_member(&store, &gid, &admin_sk.public_key());
+    let reader_sk = PrivateKey::random(&mut rng);
+    let reader_account = enrol_member(&store, &gid, &reader_sk.public_key());
+
+    let repo = MembershipRepository::new(&store);
+    repo.add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    repo.add_member(&gid, &reader_account, GroupMemberRole::ReadOnly)
+        .unwrap();
+
+    let admitters = NamespaceMembershipService::default_admitters(&store, &gid).unwrap();
+
+    // The admin, and only the admin. A read-only member appearing here would
+    // hand admission authority to everyone in the group, which is the opposite
+    // of restricting it.
+    assert_eq!(admitters, vec![admin_account]);
+    assert!(!admitters.contains(&reader_account));
+}
+
+#[test]
+fn default_admitters_is_empty_for_a_group_with_no_admin() {
+    let store = test_store();
+    let gid = test_group_id();
+
+    // Returned as `Ok(vec![])`, not an error: the caller decides. Minting an
+    // invitation nobody can admit is a different problem from failing to read
+    // the membership rows, and collapsing the two would hide the second.
+    let admitters = NamespaceMembershipService::default_admitters(&store, &gid).unwrap();
+    assert!(admitters.is_empty());
+}
+
+#[test]
 fn validate_open_invitation_rejects_expired() {
     let mut rng = rand::rngs::OsRng;
     let store = test_store();
