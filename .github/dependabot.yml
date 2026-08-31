@@ -21,6 +21,14 @@ updates:
       interval: weekly
     open-pull-requests-limit: 10
     groups:
+      # Families that version in lockstep, matched first so no member is ever bumped alone:
+      # each appears in the others' public API, so a lone bump lands two incompatible types.
+      wasmer:
+        patterns: ["wasmer", "wasmer-*"]
+      libp2p:
+        patterns: ["libp2p", "libp2p-*", "multiaddr", "prometheus-client"]
+      tower:
+        patterns: ["tower", "tower-*"]
       cargo:
         patterns: ["*"]
         update-types: ["minor", "patch"]

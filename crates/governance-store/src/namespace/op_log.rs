@@ -185,6 +185,76 @@ impl<'a> NamespaceOpLogService<'a> {
         Ok(())
     }
 
+    /// Every sealed root op in this namespace's log.
+    ///
+    /// A sibling of [`Self::collect_signed_group_ops_for_group`] rather than a
+    /// parameter on it, because the two select on different things: a group op is
+    /// found by its group id, and a sealed root op has no group to be found by —
+    /// it is namespace-scoped, and the whole log is its scope.
+    ///
+    /// Needed because both this scan and the retry above it match
+    /// `NamespaceOp::Group` and skip everything else, so a sealed root op was
+    /// invisible to the retry at two layers. Nothing re-fed it after a key
+    /// arrived, which for a joining node means never applying a root op that
+    /// landed before its key.
+    ///
+    /// # Errors
+    ///
+    /// When the op log cannot be iterated.
+    pub fn collect_sealed_root_ops(&self) -> EyreResult<Vec<StoredSignedGroupOp>> {
+        let mut entries = Vec::new();
+        let handle = self.store.handle();
+        let start =
+            calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), [0u8; 32]);
+        let mut iter = handle
+            .iter::<calimero_store::key::NamespaceGovOp>()
+            .map_err(|e| eyre::eyre!("iter::<NamespaceGovOp>: {e}"))?;
+        let first = iter.seek(start).transpose();
+        let mut entries_iter = first.into_iter().chain(iter.keys());
+        loop {
+            let key = match entries_iter.next() {
+                None => break,
+                Some(Ok(k)) => k,
+                Some(Err(_)) => {
+                    record_namespace_decode_invalid("sealed_root_iter_end");
+                    break;
+                }
+            };
+            // Both guards, in this order, as the group walk does. Without the
+            // row check the iterator runs on into the key families that sort
+            // after this one, and they are the same width with the namespace id
+            // in the same place — so the id check alone would accept them.
+            if !key.is_gov_op_row() {
+                break;
+            }
+            if key.namespace_id() != self.namespace_id.to_bytes() {
+                break;
+            }
+            let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(e) => {
+                    record_namespace_decode_invalid("sealed_root_value");
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        delta_id = %hex::encode(key.delta_id()),
+                        error = %e,
+                        "skipping undecodable NamespaceGovOpValue during sealed-root walk"
+                    );
+                    continue;
+                }
+            };
+            let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
+                continue;
+            };
+            let NamespaceOp::RootSealed { key_id, .. } = signed_op.op else {
+                continue;
+            };
+            entries.push(StoredSignedGroupOp { signed_op, key_id });
+        }
+        Ok(entries)
+    }
+
     pub fn collect_signed_group_ops_for_group(
         &self,
         group_id: [u8; 32],

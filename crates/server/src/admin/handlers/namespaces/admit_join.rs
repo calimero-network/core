@@ -20,7 +20,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::{AdmitJoinApiRequest, AdmitJoinApiResponseData};
+use calimero_server_primitives::admin::{
+    AdmitJoinApiRequest, AdmitJoinApiResponse, AdmitJoinApiResponseData,
+};
 use reqwest::StatusCode;
 use tracing::info;
 
@@ -93,6 +95,25 @@ pub async fn handler(
         .into_response();
     }
 
+    // The op's own signature, before anything else about it is trusted.
+    //
+    // Publishing puts this on the namespace topic under this node's connection.
+    // Without this check a designated admitter forwards any well-formed join
+    // whose signature is worthless — every peer rejects it at apply, so nothing
+    // is admitted, but the garbage still travels and it travels with this node's
+    // name on it. Decoding the borsh proved the shape, not the authorship.
+    //
+    // This is not the check that stops an admitter substituting a member: that is
+    // `signer == credential.statement.sign_pk`, enforced at apply by every peer,
+    // and it stays there because it must hold for ops this endpoint never saw.
+    if let Err(err) = op.verify_signature() {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("signed_op signature does not verify: {err}"),
+        }
+        .into_response();
+    }
+
     // Derived from the op, as the governance publisher does. The receiver
     // ignores both today, but zeros would be wrong the moment anything reads
     // them for dedup or parent links.
@@ -150,9 +171,37 @@ pub async fn handler(
         .into_response();
     }
 
-    // Published as-is. The op is signed by the joiner's device key and every
-    // peer checks that on apply, so this node cannot alter who joined, which
-    // group, or with what role — it can only decline to carry it.
+    // Applied here before it is published anywhere.
+    //
+    // Publishing alone leaves this node with the stalest possible view of the
+    // membership it just admitted: peers fold the op, and the one node the
+    // joiner actually talked to does not. With no mesh peers it is worse than
+    // stale — the publish is best-effort, nobody folds it, and the joiner is
+    // told `published: true` about an op that changed nothing anywhere.
+    //
+    // Applying first also means only an op this node's own state accepted gets
+    // broadcast, so a bad op is answered with an error instead of being handed
+    // to the network under this node's name.
+    match state.ctx_client.apply_signed_namespace_op(op.clone()).await {
+        Ok(outcome) => {
+            info!(
+                namespace_id = %namespace_id_str,
+                ?outcome,
+                "applied a joiner's signed join op locally",
+            );
+        }
+        Err(err) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: format!("signed_op was refused on apply: {err}"),
+            }
+            .into_response();
+        }
+    }
+
+    // Then published. The op is signed by the joiner's device key and every peer
+    // checks that on apply, so this node cannot alter who joined, which group, or
+    // with what role — it can only decline to carry it.
     if let Err(err) = state
         .node_client
         .publish_signed_namespace_op(
@@ -169,7 +218,13 @@ pub async fn handler(
     info!(namespace_id=%namespace_id_str, "admitted a joiner's signed join op");
 
     ApiResponse {
-        payload: AdmitJoinApiResponseData { published: true },
+        // The wrapper type, not the payload type: `ApiResponse` serialises what
+        // it is given verbatim, so handing it the inner struct omits the `data`
+        // key every client unwraps by — which reads as a successful call
+        // returning nothing rather than as an error.
+        payload: AdmitJoinApiResponse {
+            data: AdmitJoinApiResponseData { published: true },
+        },
     }
     .into_response()
 }
