@@ -27,7 +27,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
-use crate::{MembershipRepository, NamespaceMembershipService, ReentryRepository};
+use crate::MembershipRepository;
 
 /// Default `min_acks` for governance publishes — at least one peer must
 /// ack before we consider the op delivered. Spec §6.2. Callers that

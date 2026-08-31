@@ -5,17 +5,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
-};
+use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
-use sha2::{Digest, Sha256};
-
-use crate::ReentryRepository;
 
 use super::*;
 
