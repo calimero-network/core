@@ -1,19 +1,49 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{Error as SynError, FnArg, Ident, Pat, Path, Type};
+use syn::{Error as SynError, FnArg, Ident, Pat, Path, Receiver, ReceiverKind, Type};
 
 use crate::errors::{Errors, ParseError, Pretty};
 use crate::logic::ty::{LogicTy, LogicTyInput};
 use crate::logic::utils::typed_path;
 
-pub enum SelfType<'a> {
-    Owned(&'a Type),
-    Mutable(&'a Type),
-    Immutable(&'a Type),
+/// A method's `self` receiver, carrying the tokens a diagnostic about it should
+/// point at.
+pub enum SelfType {
+    Owned(TokenStream),
+    Mutable(TokenStream),
+    Immutable(TokenStream),
+}
+
+impl SelfType {
+    fn by_ref(mutable: bool, span: TokenStream) -> Self {
+        if mutable {
+            Self::Mutable(span)
+        } else {
+            Self::Immutable(span)
+        }
+    }
+}
+
+/// syn models a shorthand receiver without a type, so span what the author wrote:
+/// the ascribed type of `self: T`, else the receiver itself minus a leading `mut`.
+fn receiver_tokens(receiver: &Receiver) -> TokenStream {
+    let self_token = &receiver.self_token;
+
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "`ReceiverKind` is `#[non_exhaustive]`"
+    )]
+    match &receiver.kind {
+        ReceiverKind::Typed(_, ty) => ty.to_token_stream(),
+        ReceiverKind::Reference(ampersand, lifetime, mutability) => {
+            quote! { #ampersand #lifetime #mutability #self_token }
+        }
+        _ => self_token.to_token_stream(),
+    }
 }
 
 pub enum LogicArg<'a> {
-    Receiver(SelfType<'a>),
+    Receiver(SelfType),
     Typed(Box<LogicArgTyped<'a>>),
 }
 
@@ -45,40 +75,51 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
         match input.arg {
             FnArg::Receiver(receiver) => {
+                let span = receiver_tokens(receiver);
+
                 'recv: {
-                    let Some(path) = typed_path(&receiver.ty, true) else {
-                        break 'recv;
+                    // `self`, `&self` and `&mut self` name the impl type by
+                    // construction; only `self: T` has to be matched against it.
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "`ReceiverKind` is `#[non_exhaustive]`"
+                    )]
+                    let (is_self, reference) = match &receiver.kind {
+                        ReceiverKind::Reference(_, _, mutability) => (
+                            true,
+                            Some(SelfType::by_ref(mutability.is_some(), span.clone())),
+                        ),
+                        ReceiverKind::Typed(_, ty) => {
+                            let Some(path) = typed_path(ty, true) else {
+                                break 'recv;
+                            };
+
+                            let mut reference = None;
+
+                            if let Type::Reference(ref_) = &**ty {
+                                reference =
+                                    Some(SelfType::by_ref(ref_.mutability.is_some(), span.clone()));
+                            }
+
+                            (input.type_ == path || path.is_ident("Self"), reference)
+                        }
+                        _ => (true, None),
                     };
 
-                    let is_self = input.type_ == path || path.is_ident("Self");
-
-                    let mut reference = None;
-
-                    if let Type::Reference(ref_) = &*receiver.ty {
-                        reference = ref_
-                            .mutability
-                            .map_or(Some(SelfType::Immutable(&receiver.ty)), |_| {
-                                Some(SelfType::Mutable(&receiver.ty))
-                            });
-                    } else if is_self {
+                    if reference.is_none() && is_self {
                         // todo! circumvent via `#[app::destroy]`
-                        errors.subsume(SynError::new_spanned(
-                            &receiver.ty,
-                            ParseError::NoSelfOwnership,
-                        ));
+                        errors.subsume(SynError::new_spanned(&span, ParseError::NoSelfOwnership));
                     }
 
                     if is_self {
                         errors.check()?;
 
-                        return Ok(Self::Receiver(
-                            reference.unwrap_or(SelfType::Owned(&receiver.ty)),
-                        ));
+                        return Ok(Self::Receiver(reference.unwrap_or(SelfType::Owned(span))));
                     }
                 }
 
                 Err(errors.finish(SynError::new_spanned(
-                    &receiver.ty,
+                    &span,
                     ParseError::ExpectedSelf(Pretty::Path(input.type_)),
                 )))
             }
