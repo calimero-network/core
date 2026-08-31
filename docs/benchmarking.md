@@ -1,6 +1,13 @@
 # Benchmarking core
 
-Three tiers. Only one of them can fail your PR.
+Three tiers, but timing benches never gate a PR: only deterministic counts
+(Tier 1) and compilability/lint of bench code can fail your PR. Concretely,
+three things can fail a PR on a bench: the Tier 1 cost gate, the
+`bench-compile` job (`cargo bench --workspace --benches --no-run`), and the
+`rust` job's `cargo build --workspace --all-targets --tests` /
+`cargo clippy --workspace --all-targets --features calimero-storage/testing
+-- -D warnings`, both of which compile and lint every bench file too. A
+*timing* result, from any of these benches, never can.
 
 ## Tier 1 — cost gates (BLOCKING)
 
@@ -26,7 +33,7 @@ criterion's ~5% significance threshold from cache state alone.
 
     cargo bench -p calimero-storage --bench child_trie
     cargo bench -p calimero-storage --bench child_trie -- --quick     # ~10s, noisy, for iterating
-    cargo bench -p calimero-storage --bench child_trie -- --test      # run once, assert nothing: what CI's rot gate does
+    cargo bench -p calimero-storage --bench child_trie -- --test      # run once, assert nothing: a local smoke test, NOT what CI's rot gate does (that's `cargo bench --workspace --benches --no-run`, which compiles without executing — see `bench-compile` below)
 
 Criterion compiles benches with release optimisations. Never read numbers from
 a debug build — SHA256 and allocation paths are ~20x slower and the curve shape
@@ -74,6 +81,13 @@ placeholders, not as a cost gate on sync.
    benchmarking it is worth a `pub(crate)` seam — the copy silently stops
    tracking the original, which is how PR #2203's merkle bench died.
 5. `cargo bench --workspace --benches --no-run` before pushing.
+6. If this is the crate's *first* `[[bench]]`, add the crate name to the
+   `matrix.crate` list in `.github/workflows/benchmarks.yml` (`criterion`
+   job). `bench-compile` (step 5) verifies every bench target still
+   compiles, but it does not run anything or add a crate to the trend job —
+   a crate missing from that hand-maintained matrix silently gets no
+   `master` baseline and never appears in a PR comparison, even though its
+   bench compiles cleanly and looks covered.
 
 ## Reading the comparison
 
