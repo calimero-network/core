@@ -372,14 +372,16 @@ pub fn all() -> Vec<Workload> {
         ("unordered_map_len", ConstantPerCall, 0, unordered_map_len),
         ("unordered_map_get", ConstantPerCall, 0, unordered_map_get),
         // Walks the whole trie, so its node count follows the random id
-        // distribution. Measured spread over seven runs: 10.5% at n=10,
-        // under 3% at every larger size. NOTE (task 9): this task's snapshot
-        // regeneration moved `vector_get_nth`'s committed rows (e.g. 40->42
-        // at n=10) as a side effect of running the whole binary again —
-        // `vector_get_nth` itself is unchanged, the new numbers are a fresh
-        // draw from the same random-id-dependent distribution described
-        // above, and the delta is well inside the declared 25% tolerance.
-        ("vector_get_nth", KnownLinearInN, 25, vector_get_nth),
+        // distribution. Measured worst-case spread over seven runs, across
+        // six separate measurement rounds: 5.0%-10.5% at n=10 (the current
+        // committed snapshot's n=10 rows_read is 41 — see
+        // `storage-costs.json` — a fresh draw from that same distribution,
+        // not a change to the workload), under 3% at every larger size. 18%
+        // is `tests/reproducible.rs`'s `declared_tolerances_bound_the_
+        // observed_spread` re-derived bound for that range (3x the worst
+        // observed spread plus 5 points of sampling headroom), not the
+        // 25% cap this used to sit at — see that test for the rule.
+        ("vector_get_nth", KnownLinearInN, 18, vector_get_nth),
         // `insert_str` linearises the document once per call, then does `n`
         // flat `UnorderedMap` inserts — see `rga_insert`'s doc comment for why
         // this is genuinely flat and not the same question as the per-char
@@ -389,8 +391,9 @@ pub fn all() -> Vec<Workload> {
         // linearises the whole document — same SHAPE as `vector_get_nth`
         // (KnownLinearInN), one step further along the same wall (see
         // `rga_get_nth`'s doc comment), but NOT the same tolerance.
-        // `vector_get_nth`'s 25% comes from real child-trie bucket
-        // randomness (measured 10.5% spread at n=10). `get_text()`'s
+        // `vector_get_nth`'s 18% comes from real child-trie bucket
+        // randomness (measured 5.0%-10.5% worst-case spread at n=10 across
+        // six rounds). `get_text()`'s
         // linearisation walks `self.chars.entries()` and sorts in memory —
         // no trie-bucket lookup is involved, so it is not subject to that
         // randomness at all. Measured: exactly `2n` rows_read at every size,
