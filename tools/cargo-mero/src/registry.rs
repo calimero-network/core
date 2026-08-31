@@ -32,10 +32,13 @@ pub enum Bump {
 pub fn next_version(base_url: &str, package: &str, bump: Bump) -> Result<String> {
     let url = format!("{base_url}/api/v2/bundles?package={package}");
     let body = ureq::get(&url)
-        .timeout(TIMEOUT)
+        .config()
+        .timeout_global(Some(TIMEOUT))
+        .build()
         .call()
         .map_err(|e| eyre!("failed to query the registry at {url}: {e}"))?
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| eyre!("failed to read the registry response from {url}: {e}"))?;
     let bundles: Value = serde_json::from_str(&body)
         .map_err(|e| eyre!("registry returned invalid JSON from {url}: {e}"))?;
@@ -112,19 +115,26 @@ pub fn publish(base_url: &str, api_key: &str, mpk: &Utf8Path) -> Result<()> {
         .map_err(|e| eyre!("failed to build the publish request from {mpk}: {e}"))?;
 
     let url = format!("{base_url}/api/v2/bundles/push");
-    match ureq::post(&url)
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("Content-Type", "application/json")
-        .timeout(TIMEOUT)
-        .send_string(&body.to_string())
-    {
-        Ok(_) => Ok(()),
-        Err(ureq::Error::Status(code, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            Err(eyre!("registry rejected the publish ({code}): {body}"))
-        }
-        Err(e) => Err(eyre!("failed to publish to {url}: {e}")),
+    // ureq 3's `Error::StatusCode` carries only the code, so a non-2xx would
+    // lose the body the registry explains itself in. Turn that mapping off and
+    // read the status here, keeping the old message intact.
+    let mut response = ureq::post(&url)
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .config()
+        .timeout_global(Some(TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .send(body.to_string())
+        .map_err(|e| eyre!("failed to publish to {url}: {e}"))?;
+
+    if response.status().is_success() {
+        return Ok(());
     }
+
+    let code = response.status().as_u16();
+    let body = response.body_mut().read_to_string().unwrap_or_default();
+    Err(eyre!("registry rejected the publish ({code}): {body}"))
 }
 
 /// Split out from the HTTP call so the request body is unit-testable: parses
