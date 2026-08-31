@@ -242,7 +242,7 @@ impl SecretGame {
         let guess_hash = Sha256::digest(guess.as_bytes());
         let guess_hash_hex = hex::encode(guess_hash);
         let who_b = calimero_sdk::env::device_id();
-        let who = bs58::encode(who_b).into_string();
+        let who = hex::encode(who_b);
         let success = guess_hash_hex == public_hash_hex;
 
         // Record the guess in local-only history.

@@ -167,7 +167,7 @@ impl TrieBucket {
 /// The `i`th nibble of `id`, high nibble first.
 fn nibble(id: Id, i: usize) -> u8 {
     let byte = id.as_bytes()[i / 2];
-    if i % 2 == 0 {
+    if i.is_multiple_of(2) {
         byte >> 4
     } else {
         byte & 0x0f

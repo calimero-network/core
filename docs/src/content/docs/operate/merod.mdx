@@ -345,7 +345,7 @@ and is never sent — only the signature travels.
 
 ```sh
 merod account warrant \
-  --context <base58 ContextId> \
+  --context <hex ContextId> \
   --method  set \
   --args    '{"key":"k","value":"v"}' \
   --executor <64-hex AccountId of the relay> \
@@ -354,10 +354,16 @@ merod account warrant \
   --credential <hex from sign-cert>
 ```
 
-<Aside type="tip" title="Ids are not all the same encoding">
-`ContextId` and `PublicKey` are **base58**; `AccountId` and `DeviceId` are **64-char
-hex**. A wrong encoding parses as a different-but-valid value in some positions, so it
-fails only on real data.
+<Aside type="tip" title="Every id is 64-character hex">
+`ContextId`, `PublicKey`, `AccountId`, `DeviceId`, `ApplicationId` and `BlobId` all
+render and parse as **64 lowercase hex characters**. `ContextId` and `PublicKey` used to
+be base58, and pasting one encoding where the other belonged parsed as a
+different-but-valid value — failing only on real data. That whole class of mistake is
+gone.
+
+What it costs: an account and a key are now spelled identically, so nothing can tell
+them apart by looking. Where the difference matters — adding a group member — the key is
+tagged: `key:<64-hex>`, against a bare `<64-hex>` for an account.
 </Aside>
 
 ### export and import

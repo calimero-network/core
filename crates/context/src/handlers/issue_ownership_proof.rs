@@ -218,7 +218,11 @@ pub(crate) fn build_ownership_proof(
         audience,
         group_id: hex::encode(group_id.to_bytes()),
         issuer_identity: signer_public_key.to_string(),
-        context_id: bs58::encode(context_id.as_ref()).into_string(),
+        // Hex, like every other id in this payload. This field was the one
+        // base58 holdout, and mdma verifies the payload byte-for-byte, so the
+        // change is visible there — as is `issuer_identity` above, which moved
+        // to hex with `PublicKey`'s `Display` rather than by an edit here.
+        context_id: hex::encode(context_id.as_ref()),
         subject,
         nonce,
         issued_at_ms: now_ms,

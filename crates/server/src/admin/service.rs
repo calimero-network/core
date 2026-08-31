@@ -358,6 +358,10 @@ pub(crate) fn setup(
             post(namespaces::join_namespace::handler),
         )
         .route(
+            "/namespaces/:namespace_id/admit",
+            post(namespaces::admit_join::handler),
+        )
+        .route(
             "/namespaces/:namespace_id/leave",
             post(namespaces::leave_namespace::handler),
         )

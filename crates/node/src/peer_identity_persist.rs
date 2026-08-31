@@ -144,7 +144,7 @@ pub(crate) fn spawn_snapshot_tick(
             // `SCORE_FULL_RESYNC_TICKS` to re-converge gossipsub's
             // connection-scoped scores (see `reconcile_peer_scores`).
             ticks = ticks.wrapping_add(1);
-            let force_full = ticks % SCORE_FULL_RESYNC_TICKS == 0;
+            let force_full = ticks.is_multiple_of(SCORE_FULL_RESYNC_TICKS);
             reconcile_peer_scores(&state, &network, force_full);
         }
     })

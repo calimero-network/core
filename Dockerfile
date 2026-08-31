@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 
-ARG RUST_VERSION=1.88.0
+ARG RUST_VERSION=1.98.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
 ################################################################################
 # Digest pins the exact base image for reproducible builds. When bumping
 # RUST_VERSION, refresh this digest too (docker buildx imagetools inspect
 # rust:<version>-slim-bookworm) — the digest, not the tag, selects the image.
-FROM rust:${RUST_VERSION}-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS build
+FROM rust:${RUST_VERSION}-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
@@ -47,7 +47,7 @@ RUN --mount=type=cache,target=/app/target/ \
 ################################################################################
 # Digest-pinned runtime base; refresh with `docker buildx imagetools inspect
 # debian:bookworm-slim` when updating.
-FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 
 LABEL org.opencontainers.image.description="Calimero Node" \
     org.opencontainers.image.licenses="MIT OR Apache-2.0" \

@@ -194,10 +194,6 @@ impl Alias {
         // This is more readable with using consts.
         // Even though the `KIND_SIZE` is equal to 1, inclusive range (`KIND_SIZE..=SCOPE_SIZE`)
         // would be very confusing for comprehension (and would require knowing that KIND_SIZE==1.
-        #[expect(
-            clippy::range_plus_one,
-            reason = "It's more readable with using constants"
-        )]
         scope.copy_from_slice(&bytes[KIND_SIZE..KIND_SIZE + SCOPE_SIZE]);
 
         let scope = <T::Scope as StoreScopeCompat>::Scope::from_scope(scope);

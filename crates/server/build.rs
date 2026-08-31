@@ -227,7 +227,8 @@ fn release_download_url(repo: &str, version: &str, asset: &str) -> String {
         .replace("{asset}", asset)
 }
 
-#[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
+// The distinct `'a: 'b` bound lets the empty case hand `str` straight back as the
+// return value instead of allocating a copy.
 fn replace<'a: 'b, 'b>(str: Cow<'a, str>, replace: impl Fn(&str) -> Option<&str>) -> Cow<'b, str> {
     let mut idx = 0;
     let mut buf = str.as_ref();

@@ -96,10 +96,10 @@ the bytes — recomputing the id to confirm it got what it asked for.
 ## Exercise it
 
 ```sh
-# the BlobId comes back base58-encoded; store the metadata via your method
+# the BlobId comes back hex-encoded; store the metadata via your method
 meroctl --node node1 call upload_file \
   --context <context-id> \
-  --args '{"name": "notes.txt", "blob_id": "<base58-blob-id>", "size": 12}'
+  --args '{"name": "notes.txt", "blob_id": "<hex-blob-id>", "size": 12}'
 ```
 
 ## Next steps

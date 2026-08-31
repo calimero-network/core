@@ -799,6 +799,7 @@ mod tests {
             expiration_timestamp: 0,
             invitation_nonce: [0xD4; 32],
             invited_role: 1,
+            admitters: Vec::new(),
         };
         let signature = inviter_sk
             .sign(&Sha256::digest(
@@ -811,6 +812,7 @@ mod tests {
             inviter_account: None,
             application_id: Some(APP),
             bytecode_id: Some([0xD5; 32]),
+            admitter_hints: Vec::new(),
         }
     }
 

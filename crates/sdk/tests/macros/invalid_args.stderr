@@ -4,7 +4,11 @@ error[E0277]: (calimero)> no method named `#[app::init]` found for type `MyType`
 4 | struct MyType;
   |        ^^^^^^ add an `#[app::init]` method to this type
   |
-  = help: the trait `AppStateInit` is not implemented for `MyType`
+help: the trait `AppStateInit` is not implemented for `MyType`
+ --> tests/macros/invalid_args.rs:4:1
+  |
+4 | struct MyType;
+  | ^^^^^^^^^^^^^
 note: required by a bound in `AppState`
  --> src/state.rs
   |
@@ -17,4 +21,4 @@ warning: unused variable: `value`
 10 |     pub fn method(&self, value: impl MyTrait) {}
    |                          ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
    |
-   = note: `#[warn(unused_variables)]` on by default
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default

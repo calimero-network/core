@@ -252,7 +252,7 @@ where
                                 parts.extensions.insert(AuthenticatedKey(pk));
                             }
                             Err(_) => {
-                                // The stored value is not a valid Ed25519/base58 public
+                                // The stored value is not a valid Ed25519/hex public
                                 // key. This is expected for username/password auth: the
                                 // user_password provider stores the username in the
                                 // `public_key` field as a human-readable identifier, not
@@ -275,7 +275,7 @@ where
                         //
                         // Note: username/password root keys do NOT reach this arm.
                         // The `user_password` provider stores the username as a
-                        // non-base58 string in `public_key`, so `get_key_public_key`
+                        // non-hex string in `public_key`, so `get_key_public_key`
                         // returns `Ok(Some(username))` and `PublicKey::from_str` fails
                         // → that path is handled by the `Err(_)` arm above.
                         //

@@ -1,12 +1,12 @@
 use calimero_server_primitives::admin::{
     AccountApplicationsApiResponse, AccountDevicesApiResponse, AccountPairCompleteApiRequest,
-    AccountPairInitApiRequest, CreateGroupInvitationApiRequest, CreateNamespaceApiRequest,
-    CreateNamespaceApiResponse, DeleteNamespaceApiRequest, DeleteNamespaceApiResponse,
-    GetNamespaceApiResponse, JoinGroupApiRequest, JoinNamespaceApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
-    NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
-    RelinkDeviceApiRequest, RelinkDeviceApiResponse, RevokeDeviceApiRequest,
-    RevokeDeviceApiResponse,
+    AccountPairInitApiRequest, AdmitJoinApiRequest, AdmitJoinApiResponse,
+    CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
+    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
+    JoinGroupApiRequest, JoinNamespaceApiResponse, ListNamespaceGroupsApiResponse,
+    ListNamespacesApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RelinkDeviceApiRequest,
+    RelinkDeviceApiResponse, RevokeDeviceApiRequest, RevokeDeviceApiResponse,
 };
 use eyre::Result;
 use serde::Serialize;
@@ -214,6 +214,33 @@ where
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/join"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Hand a join this caller already signed to a node the inviter named as an
+    /// admitter, for that node to publish.
+    ///
+    /// The counterpart to [`Self::join_namespace`], which publishes from the node
+    /// serving the call. A keyholder has no such node — an account, a device
+    /// certificate signed offline, and nowhere to publish from — so it signs the
+    /// membership op itself and presents it here.
+    ///
+    /// Handing the op to somebody else is safe because it is signed by the
+    /// joiner's device key, and every peer checks that key against the credential
+    /// the op carries when applying a join. The admitter carries the claim and
+    /// cannot author one: it may refuse to publish, and nothing else.
+    pub async fn admit_join(
+        &self,
+        namespace_id: &str,
+        request: AdmitJoinApiRequest,
+    ) -> Result<AdmitJoinApiResponse> {
+        let response = self
+            .connection
+            .post(
+                &format!("admin-api/namespaces/{namespace_id}/admit"),
                 request,
             )
             .await?;

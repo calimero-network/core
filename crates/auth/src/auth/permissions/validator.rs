@@ -880,7 +880,7 @@ mod tests {
         // Test the new enhanced endpoint
         let req = Request::builder()
             .method(Method::GET)
-            .uri("/admin-api/contexts/with-executors/for-application/9e4gX24aMx3KWWViZeYu8E4e8UrntWDEsuDTFJTXdKsu")
+            .uri("/admin-api/contexts/with-executors/for-application/805c25d95ae7634d38998a01f6f0f1b3859a63b61158a4c5acc604498015ff10")
             .body(Body::empty())
             .unwrap();
 
@@ -889,7 +889,10 @@ mod tests {
         match &permissions[0] {
             Permission::Context(ContextPermission::List(ResourceScope::Specific(ids))) => {
                 assert_eq!(ids.len(), 1);
-                assert_eq!(ids[0], "9e4gX24aMx3KWWViZeYu8E4e8UrntWDEsuDTFJTXdKsu");
+                assert_eq!(
+                    ids[0],
+                    "805c25d95ae7634d38998a01f6f0f1b3859a63b61158a4c5acc604498015ff10"
+                );
             }
             _ => panic!("Unexpected permission type: {:?}", permissions[0]),
         }

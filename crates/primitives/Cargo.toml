@@ -9,7 +9,6 @@ description.workspace = true
 publish = true
 
 [dependencies]
-bs58.workspace = true
 borsh = { workspace = true, features = ["derive"], optional = true }
 ed25519-dalek.workspace = true
 eyre.workspace = true

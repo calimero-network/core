@@ -7,7 +7,7 @@ use calimero_context_client::group::AddGroupMembersRequest;
 use calimero_context_client::local_governance::{GroupOp, KeyEnvelope, NamespaceOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519PublicKey;
-use calimero_primitives::identity::{MemberIdentity, PrivateKey, PublicKey};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use tracing::{info, warn};
 
 use crate::ContextManager;
@@ -46,17 +46,15 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     AccountBindingRepository::new(&datastore).live_devices_by_account(&ns_id)?;
 
                 for (identity, role) in &members {
-                    // An account is taken as given - deliberately, since the
-                    // point of naming one is to name somebody this node may not
-                    // have converged on yet. A key must resolve: resolution runs
-                    // at the NAMESPACE, because a direct add targets a subgroup
-                    // and names somebody who joined the namespace earlier.
-                    let member_account = match identity {
-                        MemberIdentity::Account(account) => *account,
-                        MemberIdentity::Key(key) => {
-                            crate::member_account::require(&datastore, &group_id, key)?
-                        }
-                    };
+                    // The wire cannot say whether these 32 bytes are an account
+                    // or a signing key, so the bindings decide. Resolution runs at
+                    // the NAMESPACE, because a direct add targets a subgroup and
+                    // names somebody who joined the namespace earlier. An
+                    // unresolvable identity is taken as an account as given -
+                    // deliberately, since the point of naming one is to name
+                    // somebody this node may not have converged on yet.
+                    let (member_account, member_key) =
+                        crate::member_account::resolve(&datastore, &group_id, identity)?;
                     let report = calimero_governance_store::sign_apply_and_publish(
                         &datastore,
                         &node_client,
@@ -82,7 +80,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                         GroupKeyring::new(&datastore, group_id).load_current_key()?
                     {
                         let deliveries = key_deliveries(
-                            identity,
+                            member_key,
                             member_account,
                             &devices,
                             &sk,
@@ -140,24 +138,24 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 /// the batch: one stale `kem_pk` must not cost a member every other device it
 /// has, since the joiner-side pull is a far slower way to get the key.
 fn key_deliveries(
-    identity: &MemberIdentity,
+    member_key: Option<PublicKey>,
     member_account: AccountId,
     devices: &BTreeMap<AccountId, Vec<DeviceBinding>>,
     sk: &PrivateKey,
     group_id: &ContextGroupId,
     group_key: &[u8; 32],
 ) -> Vec<(KeyEnvelope, PublicKey)> {
-    match identity {
-        MemberIdentity::Key(key) => {
-            match GroupKeyring::wrap_for_member(sk, key, &group_id.to_bytes(), group_key) {
-                Ok(envelope) => vec![(envelope, *key)],
+    match member_key {
+        Some(key) => {
+            match GroupKeyring::wrap_for_member(sk, &key, &group_id.to_bytes(), group_key) {
+                Ok(envelope) => vec![(envelope, key)],
                 Err(e) => {
                     warn!(?e, %key, "failed to wrap the group key for the added member");
                     vec![]
                 }
             }
         }
-        MemberIdentity::Account(_) => devices
+        None => devices
             .get(&member_account)
             .map(Vec::as_slice)
             .unwrap_or_default()
@@ -215,7 +213,7 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
-            &MemberIdentity::Account(account),
+            None,
             account,
             &devices_in(&store, &ns),
             &admin_sk,
@@ -247,7 +245,7 @@ mod tests {
         let account = account_for(&PrivateKey::random(&mut rng).public_key());
 
         let deliveries = key_deliveries(
-            &MemberIdentity::Account(account),
+            None,
             account,
             &devices_in(&store, &ns),
             &admin_sk,
@@ -271,7 +269,7 @@ mod tests {
         let unusable = PublicKey::from([0u8; 32]);
 
         let deliveries = key_deliveries(
-            &MemberIdentity::Key(unusable),
+            Some(unusable),
             account_for(&unusable),
             &devices_in(&store, &ns),
             &admin_sk,
@@ -294,7 +292,7 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
-            &MemberIdentity::Key(member),
+            Some(member),
             account,
             &devices_in(&store, &ns),
             &admin_sk,

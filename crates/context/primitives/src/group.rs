@@ -266,9 +266,15 @@ impl Message for RetryGroupUpgradeRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
-    /// Duration in seconds for the invitation validity.
-    /// Defaults to 1 year when not provided.
+    /// Duration in seconds for the invitation validity. Defaults to, and is
+    /// clamped at, `MAX_INVITATION_VALIDITY_SECS`.
     pub expiration_timestamp: Option<u64>,
+    /// Accounts permitted to admit a claim of this invitation.
+    ///
+    /// Empty leaves admission open to broadcast, which publishes the invitation
+    /// to every subscriber of the namespace topic. Signed into the invitation,
+    /// so it cannot be redirected afterwards.
+    pub admitters: Vec<calimero_account::AccountId>,
 }
 
 impl Message for CreateGroupInvitationRequest {
