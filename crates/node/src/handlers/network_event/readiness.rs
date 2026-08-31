@@ -70,14 +70,6 @@ fn beacon_indicates_divergence(
     (local_has_state || is_namespace_member) && dag_head != [0u8; 32] && !head_op_present_locally
 }
 
-/// Which of the two beacon paths asked for a governance pull.
-///
-/// One value rather than an `Option<PeerId>` alongside the signer, because the
-/// two would have to agree and nothing could enforce it — passing one peer as the
-/// pull target and a different one as the beacon's signer would compile and then
-/// pull from the wrong place. The signer is always known, so it is passed
-/// unconditionally and this says only what to do with it.
-
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
 /// no beacon-triggered sync fired for `namespace_id` within
 /// [`NS_BEACON_SYNC_DEBOUNCE`]; returns `false` otherwise.
