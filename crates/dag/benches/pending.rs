@@ -23,6 +23,21 @@
 //! no meaningful executor overhead, and the setup itself is outside every
 //! timed closure below regardless.
 //!
+//! The brief's fixture built each `CausalDelta` with `CausalDelta::new_test`,
+//! which is `#[cfg(any(test, feature = "testing"))]` — unreachable from a
+//! bench binary (no `cfg(test)`) without the crate's own `testing` feature
+//! turned on. Rather than pull that feature in (which would need either
+//! `required-features` on the `[[bench]]`, making a bare `cargo bench -p
+//! calimero-dag --bench pending` silently skip the target instead of
+//! building it, or a self-referential dev-dependency to force it on), the
+//! fixture uses the crate's ungated public constructor,
+//! `CausalDelta::new(id, parents, payload, hlc)` (`:134`), passing
+//! `HybridTimestamp::default()` for the one field `new_test` filled in for
+//! free. That is the only difference between the two constructors — `new_test`
+//! is a convenience wrapper around `new`, not a distinct code path — so this
+//! fixture exercises the exact same `CausalDelta` shape without needing the
+//! feature at all.
+//!
 //! Each sub-benchmark measures a pending set of exactly the size its `n`
 //! claims: `get_missing_parents` and `pending_stats` are read-only and reuse
 //! one fixture across all their iterations, but `cleanup_stale` mutates (it
@@ -36,6 +51,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use calimero_dag::{AddDeltaOutcome, ApplyError, CausalDelta, DagStore};
+use calimero_storage::logical_clock::HybridTimestamp;
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 
 /// Applier that is never actually invoked: every delta built by
@@ -65,7 +81,7 @@ fn pending_dag(n: usize) -> DagStore<Vec<u8>> {
         id[..8].copy_from_slice(&i.to_le_bytes());
         let mut parent = [0xFF_u8; 32];
         parent[..8].copy_from_slice(&i.to_le_bytes());
-        let delta = CausalDelta::new_test(id, vec![parent], vec![0_u8; 64]);
+        let delta = CausalDelta::new(id, vec![parent], vec![0_u8; 64], HybridTimestamp::default());
         let outcome = rt.block_on(dag.add_delta_with_outcome(delta, &applier));
         assert!(
             matches!(outcome, Ok(AddDeltaOutcome::Pending)),

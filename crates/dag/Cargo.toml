@@ -28,15 +28,13 @@ tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 [features]
 testing = []
 
-# `CausalDelta::new_test` (the fixture builder the bench needs) is gated
-# `cfg(any(test, feature = "testing"))`: a bench binary is not built with
-# `cfg(test)`, so it can only reach it through the crate's own "testing"
-# feature. `cargo bench --workspace --benches` unifies this in for free
-# (calimero-node's dev-deps already enable `calimero-dag/testing`, see the
-# `[profile.bench.package.calimero-storage]` comment in the root Cargo.toml
-# for the same mechanism); a single-package `cargo bench -p calimero-dag`
-# needs `--features testing` passed explicitly.
+# `pending` deliberately does NOT need `required-features = ["testing"]`.
+# Its fixture builds `CausalDelta` via the ungated `CausalDelta::new`
+# constructor instead of the `testing`-gated `CausalDelta::new_test` — see
+# the bench's module docs for why that's a safe, equivalent substitution.
+# `required-features` would make a bare `cargo bench -p calimero-dag --bench
+# pending` silently *skip* the target instead of building it, which is
+# exactly the rot Task 1's workspace-wide compile gate exists to catch.
 [[bench]]
 name = "pending"
 harness = false
-required-features = ["testing"]
