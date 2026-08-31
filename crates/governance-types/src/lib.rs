@@ -984,6 +984,32 @@ impl NamespaceOp {
     }
 }
 
+/// An encrypted root operation payload. Only namespace members — who hold the
+/// namespace key — can decrypt the inner [`RootOp`].
+///
+/// Structurally identical to [`EncryptedGroupOp`] and deliberately a separate
+/// type: the two are sealed under different keys (namespace vs group), and one
+/// alias for both would let a mistake at a call site typecheck.
+///
+/// Carries no key id of its own. The enclosing op variant does, exactly as
+/// [`NamespaceOp::Group`] does for a group op, so rotation stays resolvable by
+/// `load_key_by_id` rather than by guessing the current key.
+///
+/// **Not every root op can be sealed.** The four `MemberJoined*` variants are
+/// published by a principal that does not hold the key yet; `KeyDelivery` is how
+/// the key arrives, so sealing it under that key is unsatisfiable; and
+/// `NamespaceCreated` is genesis, before any key exists. What remains —
+/// `GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`,
+/// `PolicyUpdated` — is published by an admin who is already a member, so no
+/// non-member has any business reading it.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct EncryptedRootOp {
+    /// 12-byte AES-GCM nonce.
+    pub nonce: [u8; 12],
+    /// `AES-256-GCM(borsh(RootOp))` using the namespace key.
+    pub ciphertext: Vec<u8>,
+}
+
 /// An encrypted group operation payload. Only members of the group
 /// (who possess the group key) can decrypt the inner [`GroupOp`].
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
