@@ -29,11 +29,12 @@
 //!
 //! `insert/{n}` is inherently mutating, so it cannot share that trie: instead
 //! it uses `iter_batched` with `BatchSize::PerIteration`, which builds a
-//! *fresh* `n`-child trie in the (unmeasured) setup closure before every
-//! single timed call and inserts exactly one more child into it. So
-//! `insert/{n}` measures "the cost of the `n+1`th insert into a trie that
-//! already holds `n` children" — not contaminated by any other insert in the
-//! same run.
+//! *fresh* `n`-child trie AND the `ChildInfo` to be inserted (`Id::random()`
+//! + `Metadata::new()`) in the (unmeasured) setup closure before every single
+//! timed call, and the timed closure does nothing but the `insert` itself.
+//! So `insert/{n}` measures "the cost of the `n+1`th insert into a trie that
+//! already holds `n` children" — not the cost of minting the child to insert,
+//! and not contaminated by any other insert in the same run.
 //!
 //! An earlier version of this bench built one trie per `n` and reused it,
 //! unguarded, across `insert`/`get`/`root`/`children`. Because `insert`'s own
@@ -87,13 +88,16 @@ fn child_trie(c: &mut Criterion) {
 
         // `insert/{n}`: cost of one insert into a trie that already holds
         // exactly `n` children. `PerIteration` puts a fresh `n`-child build
-        // in the unmeasured setup closure before every single timed call, so
-        // the measured trie's population never drifts above `n` the way a
-        // shared, reused trie would.
+        // AND the `ChildInfo` to be inserted in the unmeasured setup closure
+        // before every single timed call, so neither the trie build nor
+        // `child()`'s `Id::random()` + `Metadata::new()` land in the timed
+        // path — only the `insert` call itself does — and the measured
+        // trie's population never drifts above `n` the way a shared, reused
+        // trie would.
         group.bench_with_input(BenchmarkId::new("insert", n), &n, |b, &n| {
             b.iter_batched(
-                || populated(n).0,
-                |trie| black_box(trie.insert(child(n as u64 + 1))),
+                || (populated(n).0, child(n as u64 + 1)),
+                |(trie, c)| black_box(trie.insert(c)),
                 BatchSize::PerIteration,
             );
         });
