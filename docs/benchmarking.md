@@ -32,10 +32,20 @@ criterion's ~5% significance threshold from cache state alone.
 
 Criterion compiles benches with release optimisations. Never read numbers from
 a debug build — SHA256 and allocation paths are ~20x slower and the curve shape
-will lie to you.
+will lie to you. One exception: `[profile.bench.package.calimero-storage]`
+turns `debug-assertions` back on for that one package only, to clear a
+release-build guard in `calimero-storage` that a workspace-wide bench compile
+otherwise trips (see `crates/storage/src/interface.rs`) — opt-level is
+untouched, so this does not put you in a debug build, it only adds
+`calimero-storage`'s runtime assertion checks to the measured path.
 
 `master` saves a baseline per commit; a PR labelled `run-benchmarks` compares
-against it with `critcmp`.
+against it with `critcmp`. As of this task, none of that pipeline exists yet:
+the `critcmp` comparison job lands in Task 11, `tools/sync-cost` +
+`scripts/check-sync-cost.sh` land in Task 10, and the per-crate benches used
+as examples above (`calimero-storage`'s `child_trie`, etc.) land across
+Tasks 2-8. A reader of this branch mid-flight should not assume any of that
+already runs.
 
 ## Tier 3 — macro
 

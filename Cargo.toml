@@ -373,10 +373,10 @@ panic = "unwind"
 # every bench build, including ones that never touch it directly. The
 # `bench` profile otherwise defaults to release's `debug-assertions = false`,
 # which trips calimero-storage's release-build guard against that feature
-# (see crates/storage/src/interface.rs). Bench builds are never shipped, so
-# turning debug-assertions back on here is safe — it only clears the guard,
-# it does not weaken any actual release build.
-[profile.bench]
+# (see crates/storage/src/interface.rs). Scoped to the one package whose
+# guard is tripped, so other crates' Tier-2 criterion numbers keep real
+# release semantics (opt-level untouched either way).
+[profile.bench.package.calimero-storage]
 debug-assertions = true
 
 [profile.app-release]
