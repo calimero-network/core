@@ -14,6 +14,7 @@ mod domain;
 mod pairing;
 mod revocation;
 mod root_key;
+mod sdk_credential_fixture;
 mod signed;
 mod warrant;
 mod warrant_wire_fixture;
