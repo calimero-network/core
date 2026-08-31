@@ -137,11 +137,13 @@ pub struct ReadinessManager {
   `admission_proof: Option<SignedGroupOpenInvitation>` field) and
   verified by
   `calimero_context::governance_broadcast::verify_readiness_beacon`
-  (signature + namespace member set). A beacon that fails the
-  membership check falls through to `beacon_admission_provable`, which
-  grants a governance pull targeted at the beacon's own signer when the
-  beacon carries a verifiable admission proof - never a membership row
-  or a cache entry.
+  (signature + namespace member set). A beacon that fails the membership
+  check falls through to the stranded-member arm and is otherwise dropped.
+  It used to be rescuable by a verifiable admission proof it carried; that
+  path existed so an invitation could be claimed by broadcast, which direct
+  admission replaced — the invitation names who may admit it, and the
+  admitter applies and publishes the join, so no stranger's beacon needs to
+  unlock a pull.
 - Periodic emission on `beacon_interval` ticks for `*Ready` tiers.
 - Edge-trigger emission on tier transition into `*Ready` (via
   `LocalStateChanged` / `ApplyBeaconLocal`).
