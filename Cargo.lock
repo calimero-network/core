@@ -1183,6 +1183,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "calimero-storage",
+ "criterion",
  "rand 0.8.5",
  "serde",
  "thiserror 1.0.69",

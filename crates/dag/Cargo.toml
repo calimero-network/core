@@ -16,10 +16,27 @@ thiserror.workspace = true
 calimero-storage.workspace = true
 tracing.workspace = true
 
+[lib]
+bench = false
+
 [dev-dependencies]
 calimero-storage = { workspace = true, features = ["testing"] }
+criterion.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 
 [features]
 testing = []
+
+# `CausalDelta::new_test` (the fixture builder the bench needs) is gated
+# `cfg(any(test, feature = "testing"))`: a bench binary is not built with
+# `cfg(test)`, so it can only reach it through the crate's own "testing"
+# feature. `cargo bench --workspace --benches` unifies this in for free
+# (calimero-node's dev-deps already enable `calimero-dag/testing`, see the
+# `[profile.bench.package.calimero-storage]` comment in the root Cargo.toml
+# for the same mechanism); a single-package `cargo bench -p calimero-dag`
+# needs `--features testing` passed explicitly.
+[[bench]]
+name = "pending"
+harness = false
+required-features = ["testing"]
