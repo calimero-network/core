@@ -1963,6 +1963,92 @@ mod delete_tests {
 mod root_op_sealing_tests {
     use super::*;
 
+    // ---- E1: the publish choke point ----
+
+    #[test]
+    fn a_sealable_op_comes_back_sealed_and_opens_to_the_same_bytes() {
+        let key = [5u8; 32];
+        let key_id = KeyId::from([9u8; 32]);
+        let op = RootOp::AdminChanged {
+            new_admin: AccountId::from([1u8; 32]),
+        };
+        let expected = borsh::to_vec(&op).unwrap();
+
+        let prepared =
+            GroupKeyring::prepare_root_op_for_publish(Some(&key), key_id, op).expect("prepare");
+
+        let NamespaceOp::RootSealed {
+            key_id: got_id,
+            encrypted,
+        } = prepared
+        else {
+            panic!("a sealable op must be sealed");
+        };
+        // The id travels with the ciphertext. Without it a receiver holding two
+        // namespace keys after a rotation has to guess which one to try.
+        assert_eq!(got_id, key_id);
+
+        let opened = GroupKeyring::decrypt_root_op(&key, &encrypted).expect("decrypt");
+        assert_eq!(borsh::to_vec(&opened).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_non_sealable_op_passes_through_in_the_clear() {
+        // `NamespaceCreated` is genesis: there is no key yet, so it must survive
+        // the choke point untouched even when one is offered.
+        let prepared = GroupKeyring::prepare_root_op_for_publish(
+            Some(&[5u8; 32]),
+            KeyId::from([9u8; 32]),
+            RootOp::NamespaceCreated {
+                founder: AccountId::from([2u8; 32]),
+                account: deterministic_join_credential(),
+            },
+        )
+        .expect("prepare");
+
+        assert!(matches!(
+            prepared,
+            NamespaceOp::Root(RootOp::NamespaceCreated { .. })
+        ));
+    }
+
+    #[test]
+    fn a_sealable_op_with_no_key_is_refused_not_published_clear() {
+        // The alternative would be publishing this op in the clear, which is the
+        // one outcome sealing exists to prevent — and it would happen exactly
+        // when the node's own state is already wrong.
+        let err = GroupKeyring::prepare_root_op_for_publish(
+            None,
+            KeyId::from([9u8; 32]),
+            RootOp::PolicyUpdated {
+                policy_bytes: vec![1, 2, 3],
+            },
+        )
+        .expect_err("must refuse");
+        assert!(
+            err.to_string().contains("in the clear"),
+            "the error should say what it is refusing to do: {err}"
+        );
+    }
+
+    fn deterministic_join_credential(
+    ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+        let genesis = calimero_account::AccountGenesis::new(PublicKey::from([0u8; 32]));
+        Box::new(calimero_account::AccountProof {
+            statement: calimero_account::DeviceCert {
+                account: genesis.account_id(),
+                device: calimero_account::DeviceId::from([0u8; 32]),
+                sign_pk: PublicKey::from([0u8; 32]),
+                kem_pk: calimero_account::KemPublicKey::from([0u8; 32]),
+                key_epoch: 0,
+                device_epoch: 0,
+                signature: [0u8; 64],
+            },
+            genesis,
+            chain: vec![],
+        })
+    }
+
     fn sealable_root_ops() -> Vec<(&'static str, RootOp)> {
         let gid = ContextGroupId::from([7u8; 32]);
         let account = AccountId::from([9u8; 32]);
