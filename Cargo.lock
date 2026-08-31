@@ -1025,7 +1025,6 @@ dependencies = [
  "eyre",
  "reqwest 0.12.28",
  "serde",
- "thiserror 1.0.69",
  "tokio",
  "toml 0.8.23",
  "tracing",
