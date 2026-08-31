@@ -1626,6 +1626,7 @@ dependencies = [
  "calimero-storage-macros",
  "calimero-wasm-abi",
  "claims",
+ "criterion",
  "ed25519-dalek",
  "eyre",
  "fixedstr",
