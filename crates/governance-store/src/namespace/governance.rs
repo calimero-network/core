@@ -2250,6 +2250,47 @@ pub fn apply_received_group_key(
         responder_identity,
     )
 }
+/// Prepare a root op for publishing, resolving this namespace's key here.
+///
+/// The publish sites construct a root op; they should not each also look up a key
+/// and decide whether to seal. This is the one call they make, and the policy
+/// stays in `root_op_is_sealable` — one place to disagree with the receiver rather
+/// than one per site.
+///
+/// # Errors
+///
+/// When the keyring cannot be read, when sealing fails, or when a sealable op is
+/// offered by a node holding no namespace key. That last case is refused rather
+/// than published in the clear: authoring a governance change means holding the
+/// namespace key, so its absence means the node's own state is wrong — and
+/// answering that by publishing unsealed would undo the encryption exactly when
+/// it is least safe to.
+pub fn seal_root_op_for_publish(
+    store: &Store,
+    namespace_id: NamespaceId,
+    op: RootOp,
+) -> EyreResult<NamespaceOp> {
+    if !calimero_governance_types::root_op_is_sealable(&op) {
+        return Ok(NamespaceOp::Root(op));
+    }
+
+    let ns_typed = ContextGroupId::from(namespace_id.to_bytes());
+    // `(key_id, key)` — `into_tuple` yields the id first. Both halves are
+    // `[u8; 32]`, so binding them the other way round compiles and encrypts
+    // under the id, producing ciphertext no holder of the key can open.
+    let Some((key_id, key)) = GroupKeyring::new(store, ns_typed).load_current_key()? else {
+        eyre::bail!(
+            "refusing to publish a sealable root op in the clear: this node holds no namespace \
+             key, so its own state disagrees with its authority to author one"
+        );
+    };
+
+    GroupKeyring::prepare_root_op_for_publish(
+        Some(&key),
+        calimero_governance_types::KeyId::from(key_id),
+        op,
+    )
+}
 
 /// Re-drive any buffered encrypted group ops for `group_id` that were
 /// effect-skipped because their dependencies (key or subgroup meta) were
