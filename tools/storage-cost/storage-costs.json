@@ -225,25 +225,25 @@
     }
   },
   "vector_get_nth": {
-    "tolerance_pct": 25,
+    "tolerance_pct": 18,
     "sizes": {
       "00000010": {
-        "rows_read": 41,
+        "rows_read": 40,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 301,
+        "rows_read": 299,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00001000": {
-        "rows_read": 2134,
+        "rows_read": 2155,
         "rows_written": 0,
         "rows_removed": 0
       },
       "00010000": {
-        "rows_read": 13328,
+        "rows_read": 13306,
         "rows_written": 0,
         "rows_removed": 0
       }
