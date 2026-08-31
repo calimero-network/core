@@ -54,10 +54,12 @@ runs:
         # scenario until this pin moves. It is the same chain a `crates/client` fix
         # travels, for the same reason.
         #
-        # 0.6.71 is what lets the account scenarios drop their shell wrappers:
-        # `expect_status` on the account steps, and `where`/`not_match`/`contains`/
-        # `retries` on the reads (merobox#386).
-        MEROBOX_VERSION="0.6.71"
+        # 0.6.72 is what lets the account scenarios drop their shell wrappers:
+        # `expect_status` on the account steps and `where`/`not_match`/`contains`/
+        # `retries` on the reads (merobox#386), plus the dispatch fix without which
+        # `account_relink` and `account_applications` validate and then fail to run
+        # (merobox#391 - they had been unreachable since 0.6.68).
+        MEROBOX_VERSION="0.6.72"
         TAG="v${MEROBOX_VERSION}"
 
         case "$(uname -m)" in
