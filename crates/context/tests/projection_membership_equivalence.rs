@@ -89,6 +89,7 @@ fn sign_invitation(
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: role,
+        admitters: Vec::new(),
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_sig = admin_sk
@@ -100,6 +101,7 @@ fn sign_invitation(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 

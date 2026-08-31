@@ -393,10 +393,12 @@ mod tests {
                 expiration_timestamp: 1_900_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
+            admitter_hints: Vec::new(),
         }
     }
 

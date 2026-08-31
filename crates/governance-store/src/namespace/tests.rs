@@ -114,6 +114,16 @@ fn test_signed_invitation(
     group_id: ContextGroupId,
     expiration_timestamp: u64,
 ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    test_signed_invitation_with_admitters(inviter_sk, group_id, expiration_timestamp, Vec::new())
+}
+
+/// As above, but restricting who may admit a claim of it.
+fn test_signed_invitation_with_admitters(
+    inviter_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    expiration_timestamp: u64,
+    admitters: Vec<calimero_account::AccountId>,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -125,6 +135,7 @@ fn test_signed_invitation(
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
+        admitters,
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = inviter_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -134,6 +145,7 @@ fn test_signed_invitation(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_hints: Vec::new(),
     }
 }
 
@@ -270,6 +282,79 @@ async fn the_publish_only_path_also_feeds_the_local_apply_path() {
     assert!(
         fed,
         "the publish-only path must feed the local apply path too"
+    );
+}
+
+/// An unrestricted invitation is admissible by anyone, as before.
+#[test]
+fn any_node_may_admit_an_unrestricted_invitation() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let signed = test_signed_invitation(&admin_sk, gid, 1_000_000);
+    let stranger = calimero_account::AccountId::from([0x99; 32]);
+
+    assert!(
+        NamespaceMembershipService::require_may_admit(&signed, &stranger).is_ok(),
+        "an empty admitter list is every invitation minted before the field, and \
+         must keep working"
+    );
+}
+
+/// A restricted invitation names who may admit, and everyone else refuses.
+#[test]
+fn only_a_named_admitter_may_admit_a_restricted_invitation() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let named = calimero_account::AccountId::from([0x11; 32]);
+    let stranger = calimero_account::AccountId::from([0x22; 32]);
+
+    let signed = test_signed_invitation_with_admitters(&admin_sk, gid, 1_000_000, vec![named]);
+
+    assert!(
+        NamespaceMembershipService::require_may_admit(&signed, &named).is_ok(),
+        "the named admitter must be able to admit"
+    );
+    // The refusal is the whole point. A node that can validate the invitation
+    // perfectly well must still decline, or restricting admission buys nothing.
+    assert!(
+        NamespaceMembershipService::require_may_admit(&signed, &stranger).is_err(),
+        "a node the inviter did not name must refuse, however valid the invitation"
+    );
+}
+
+/// The admitter list is inside the signature, so it cannot be rewritten.
+///
+/// This is the property the whole design rests on: an unsigned list is one an
+/// attacker edits to name a node of its choosing, which would buy nothing at all.
+#[test]
+fn rewriting_the_admitters_invalidates_the_invitation() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let named = calimero_account::AccountId::from([0x11; 32]);
+    let attacker = calimero_account::AccountId::from([0x22; 32]);
+
+    let mut signed = test_signed_invitation_with_admitters(&admin_sk, gid, 1_000_000, vec![named]);
+
+    // The signature was valid over the invitation as minted.
+    assert!(
+        NamespaceMembershipService::verify_open_invitation_signature(&signed).is_ok(),
+        "the invitation must verify before it is tampered with"
+    );
+
+    signed.invitation.admitters = vec![attacker];
+
+    assert!(
+        NamespaceMembershipService::verify_open_invitation_signature(&signed).is_err(),
+        "redirecting admission must break the inviter's signature"
     );
 }
 
@@ -3556,7 +3641,7 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
         .unwrap();
 
     let invitations = NamespaceRepository::new(&store)
-        .create_recursive_invitations(&ns, &inviter_sk, 3600, 1)
+        .create_recursive_invitations(&ns, &inviter_sk, 3600, 1, &[])
         .unwrap();
     let invited: Vec<ContextGroupId> = invitations.iter().map(|(gid, _)| *gid).collect();
 
