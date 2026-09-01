@@ -55,9 +55,9 @@ fn test_various_crdt_types_preserved() {
     let types_to_test = [
         (1, CrdtType::GCounter),
         (2, CrdtType::PnCounter),
-        (3, CrdtType::lww_register("test")),
+        (3, CrdtType::lww_register()),
         (4, CrdtType::Rga),
-        (5, CrdtType::unordered_map("String", "u64")),
+        (5, CrdtType::UnorderedMap),
         (6, CrdtType::Custom("MyType".to_string())),
     ];
 
@@ -90,21 +90,18 @@ fn test_is_builtin_crdt_classification() {
     );
     assert!(is_builtin_crdt(&CrdtType::Rga), "Rga is builtin");
     assert!(
-        is_builtin_crdt(&CrdtType::lww_register("u64")),
+        is_builtin_crdt(&CrdtType::lww_register()),
         "LwwRegister is builtin"
     );
     assert!(
-        is_builtin_crdt(&CrdtType::unordered_map("String", "u64")),
+        is_builtin_crdt(&CrdtType::UnorderedMap),
         "UnorderedMap is builtin"
     );
     assert!(
-        is_builtin_crdt(&CrdtType::unordered_set("String")),
+        is_builtin_crdt(&CrdtType::UnorderedSet),
         "UnorderedSet is builtin"
     );
-    assert!(
-        is_builtin_crdt(&CrdtType::vector("u64")),
-        "Vector is builtin"
-    );
+    assert!(is_builtin_crdt(&CrdtType::Vector), "Vector is builtin");
     assert!(
         is_builtin_crdt(&CrdtType::UserStorage),
         "UserStorage is builtin"
@@ -134,7 +131,7 @@ fn test_lww_register_returns_incoming() {
     let existing = vec![1, 2, 3, 4];
     let incoming = vec![5, 6, 7, 8];
 
-    let result = merge_by_crdt_type(&CrdtType::lww_register("test"), &existing, &incoming);
+    let result = merge_by_crdt_type(&CrdtType::lww_register(), &existing, &incoming);
 
     assert!(result.is_ok(), "LwwRegister merge should succeed");
     assert_eq!(
@@ -170,9 +167,9 @@ fn test_collection_types_return_incoming() {
     let incoming = vec![5, 6, 7, 8];
 
     for crdt_type in [
-        CrdtType::unordered_map("String", "u64"),
-        CrdtType::unordered_set("String"),
-        CrdtType::vector("u64"),
+        CrdtType::UnorderedMap,
+        CrdtType::UnorderedSet,
+        CrdtType::Vector,
     ] {
         let result = merge_by_crdt_type(&crdt_type, &existing, &incoming);
         assert!(result.is_ok(), "{crdt_type:?} should succeed");

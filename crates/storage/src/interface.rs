@@ -73,7 +73,7 @@ pub type MainInterface = Interface<MainStorage>;
 /// LWW fallback. It is consulted only after the merge registry reports no
 /// registered function, so a registered merger always wins first.
 ///
-/// The synthetic `LwwRegister { inner_type: "Opaque" }` marker the node sync
+/// The synthetic `CrdtType::opaque_leaf()` marker the node sync
 /// layer attaches to opaque leaves *on the wire* is deliberately NOT matched
 /// here: that marker is a HashComparison wire-format concern owned by the node
 /// crate and never reaches a local `save_raw`/`save_internal` write (the sync
@@ -549,7 +549,7 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::collections::crdt_meta::CrdtType;
         let map_id = Self::rotation_log_child_id(anchor);
         if S::storage_read(Key::Entry(map_id)).is_none() {
-            let crdt = CrdtType::unordered_map("", "");
+            let crdt = CrdtType::UnorderedMap;
             let meta = Metadata::with_crdt_type(0, 0, crdt);
             <Index<S>>::add_child_to(anchor, ChildInfo::new(map_id, [0u8; 32], meta.clone()))?;
             // Byte-identical to a genuinely-created empty `UnorderedMap` at this

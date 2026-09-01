@@ -78,8 +78,6 @@ const MAX_PENDING_NODES: usize = 10_000;
 /// emitting a leaf with this synthetic type is wire-format-stable and
 /// merge-equivalent to the `None` it stands in for. See
 /// `docs/superpowers/specs/2026-05-13-opaque-leaf-sync-design.md`.
-pub(crate) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
-
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
 
@@ -395,11 +393,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // `apply_leaf_with_crdt_merge` which LWW-writes
                     // them directly (no Mergeable to dispatch).
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    let is_opaque = matches!(
-                        &leaf_data.metadata.crdt_type,
-                        calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
-                            if inner_type == OPAQUE_LEAF_CRDT_TYPE_NAME
-                    );
+                    let is_opaque = leaf_data.metadata.crdt_type.is_opaque_leaf();
                     if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
                         stats.deferred_root_merges.push((
                             leaf_data.key,
@@ -1333,7 +1327,7 @@ fn collect_leaves_recursive(
                 // Opaque leaf — carry it with a synthetic LWW wire type so it is
                 // pushed (and is `is_valid()` on the peer), not silently dropped.
                 trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
-                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+                CrdtType::opaque_leaf()
             });
             // Carry the leaf's Merkle parent_id on the wire so the
             // receiver can place the entity at the correct position in
@@ -1609,7 +1603,7 @@ pub(crate) fn get_local_tree_node(
             // peer's `TreeNode::is_valid()` rejects) carrying a synthetic LWW wire
             // type — merge-equivalent to `None` and Merkle-hash-neutral.
             trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
-            CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+            CrdtType::opaque_leaf()
         });
         // Carry the leaf's Merkle parent_id on the wire — see the same
         // comment in `collect_leaves_recursive` for rationale.
@@ -2151,9 +2145,7 @@ mod tests {
 
             // Seed an LWW entry under root, written at hlc 100.
             let mut md = Metadata::new(100, 100);
-            md.crdt_type = Some(CrdtType::LwwRegister {
-                inner_type: "String".to_owned(),
-            });
+            md.crdt_type = Some(CrdtType::lww_register());
             Interface::<MainStorage>::apply_action(
                 Action::Add {
                     id: entry_id,
@@ -2188,13 +2180,7 @@ mod tests {
             let leaf = TreeLeafData::new(
                 *entry_id.as_bytes(),
                 b"peer-value".to_vec(),
-                LeafMetadata::new(
-                    CrdtType::LwwRegister {
-                        inner_type: "String".to_owned(),
-                    },
-                    100,
-                    *root_id.as_bytes(),
-                ),
+                LeafMetadata::new(CrdtType::lww_register(), 100, *root_id.as_bytes()),
             );
             apply_leaf_with_crdt_merge(context_id, &leaf).expect("apply pulled leaf");
 
@@ -2225,7 +2211,7 @@ mod tests {
     use std::sync::Arc;
 
     fn hc_opaque_leaf(key: [u8; 32], schema: Option<[u8; 32]>) -> TreeLeafData {
-        let mut md = LeafMetadata::new(CrdtType::lww_register("test"), 100, [0u8; 32]);
+        let mut md = LeafMetadata::new(CrdtType::lww_register(), 100, [0u8; 32]);
         if let Some(k) = schema {
             md = md.with_schema_bytecode_id(k);
         }

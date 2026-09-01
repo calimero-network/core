@@ -136,7 +136,7 @@ impl<T: Mergeable> Mergeable for Box<T> {
 
 impl<T: 'static> CrdtMeta for LwwRegister<T> {
     fn crdt_type() -> CrdtType {
-        CrdtType::lww_register("")
+        CrdtType::lww_register()
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -284,7 +284,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::unordered_map("", "")
+        CrdtType::UnorderedMap
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -353,7 +353,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::sorted_map("", "")
+        CrdtType::SortedMap
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -412,7 +412,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::unordered_set("")
+        CrdtType::UnorderedSet
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -479,7 +479,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::sorted_set("")
+        CrdtType::SortedSet
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -528,7 +528,7 @@ where
     S: StorageAdaptor,
 {
     fn crdt_type() -> CrdtType {
-        CrdtType::vector("")
+        CrdtType::Vector
     }
 
     fn storage_strategy() -> StorageStrategy {
@@ -605,17 +605,7 @@ mod tests {
     #[test]
     fn test_lww_register_is_crdt() {
         assert!(LwwRegister::<String>::is_crdt());
-        // Empty, not the type path: these bytes are persisted and hashed, and
-        // rustc guarantees nothing about how `type_name` renders a type.
-        match LwwRegister::<String>::crdt_type() {
-            CrdtType::LwwRegister { inner_type } => {
-                assert!(
-                    inner_type.is_empty(),
-                    "inner_type must stay empty, got: {inner_type}"
-                );
-            }
-            other => panic!("Expected LwwRegister, got: {other:?}"),
-        }
+        assert_eq!(LwwRegister::<String>::crdt_type(), CrdtType::lww_register());
         assert!(!LwwRegister::<String>::can_contain_crdts());
     }
 
@@ -644,20 +634,7 @@ mod tests {
     fn test_map_can_contain_crdts() {
         type TestMap = UnorderedMap<String, Counter>;
         assert!(TestMap::is_crdt());
-        match TestMap::crdt_type() {
-            CrdtType::UnorderedMap {
-                key_type,
-                value_type,
-            } => {
-                // Both empty for the same reason as `LwwRegister::inner_type`.
-                assert!(key_type.is_empty(), "key_type must stay empty: {key_type}");
-                assert!(
-                    value_type.is_empty(),
-                    "value_type must stay empty: {value_type}"
-                );
-            }
-            other => panic!("Expected UnorderedMap, got: {other:?}"),
-        }
+        assert_eq!(TestMap::crdt_type(), CrdtType::UnorderedMap);
         assert!(TestMap::can_contain_crdts()); // Maps CAN contain CRDTs!
     }
 

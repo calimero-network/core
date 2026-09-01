@@ -73,7 +73,7 @@ where
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
             "__set",
-            CrdtType::unordered_set(""),
+            CrdtType::UnorderedSet,
         );
         let parent = self.inner.id();
         for (v, storage_type) in elements {
@@ -144,7 +144,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::unordered_set(""),
+                CrdtType::UnorderedSet,
             ),
         }
     }
@@ -193,7 +193,7 @@ where
 
         // Now reassign the collection's ID
         self.inner
-            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::unordered_set(""));
+            .reassign_deterministic_id_with_crdt_type(field_name, CrdtType::UnorderedSet);
 
         // Re-insert all elements under the new parent ID, preserving each
         // entry's original storage type.

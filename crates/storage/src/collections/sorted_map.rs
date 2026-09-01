@@ -121,11 +121,7 @@ where
     S: StorageAdaptor,
 {
     fn rekey_relative_to(&mut self, parent_id: Id) {
-        self.reassign_deterministic_id_under(
-            parent_id,
-            "__nested_sorted_map",
-            CrdtType::sorted_map("", ""),
-        );
+        self.reassign_deterministic_id_under(parent_id, "__nested_sorted_map", CrdtType::SortedMap);
     }
 }
 
@@ -182,7 +178,7 @@ where
             inner: Collection::new_with_field_name_and_crdt_type(
                 parent_id,
                 field_name,
-                CrdtType::sorted_map("", ""),
+                CrdtType::SortedMap,
             ),
         }
     }
@@ -287,7 +283,7 @@ where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        self.reassign_deterministic_id_with_crdt_type(field_name, CrdtType::sorted_map("", ""));
+        self.reassign_deterministic_id_with_crdt_type(field_name, CrdtType::SortedMap);
     }
 
     /// Insert a key-value pair into the map.

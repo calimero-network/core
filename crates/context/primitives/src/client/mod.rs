@@ -286,9 +286,7 @@ mod borsh_layout_round_trip {
     fn metadata_with(storage_type: StorageType) -> Metadata {
         let mut md = Metadata::new(1000, 2000);
         md.storage_type = storage_type;
-        md.crdt_type = Some(CrdtType::LwwRegister {
-            inner_type: "u64".to_owned(),
-        });
+        md.crdt_type = Some(CrdtType::lww_register());
         md.field_name = Some("field".to_owned());
         md.schema_version = Some(7);
         md
@@ -321,12 +319,7 @@ mod borsh_layout_round_trip {
         assert_eq!(decoded.metadata.schema_version, Some(7));
         // The mirror imports the canonical `CrdtType`, so this asserts the two
         // structs agree on the field - not that `CrdtType`'s own layout is stable.
-        assert_eq!(
-            decoded.metadata.crdt_type,
-            Some(CrdtType::LwwRegister {
-                inner_type: "u64".to_owned()
-            })
-        );
+        assert_eq!(decoded.metadata.crdt_type, Some(CrdtType::lww_register()));
         decoded
     }
 

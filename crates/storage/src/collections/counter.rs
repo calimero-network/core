@@ -234,7 +234,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> super::rekey::RekeyTarget
         // upgrade fallback, and mints a stray random ROOT child on every merge
         // — leaving the receiver with orphan entities the writer never had and
         // diverging the root hash.
-        let map_crdt_type = CrdtType::unordered_map("", "");
+        let map_crdt_type = CrdtType::UnorderedMap;
         self.positive.reassign_deterministic_id_under(
             parent_id,
             "__counter_positive",
