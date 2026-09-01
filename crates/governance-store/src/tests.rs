@@ -4129,7 +4129,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -5408,7 +5408,7 @@ fn signed_invitation_for(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 

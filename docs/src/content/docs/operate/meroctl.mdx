@@ -187,7 +187,7 @@ Alias: `ns`. Namespaces are root groups (application instances).
 | `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--bytecode-id` (alias: `--app-key`) |
 | `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
 | `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`                                |
-| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive`, `--admitter`, `--admitter-multiaddr`, `--admitter-url` (see [below](#invitation-admitters-and-hints)) |
+| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive`, `--admitter`, `--admitter-addr` (see [below](#invitation-admitters-and-addresses)) |
 | `join <NAMESPACE_ID> <INVITATION>` | Join a namespace using an invitation.             | `NAMESPACE_ID`, invitation JSON                              |
 | `leave <NAMESPACE_ID>`             | Leave a namespace (cascades through descendants). | `NAMESPACE_ID`                                               |
 | `groups <NAMESPACE_ID>`            | List direct groups under a namespace.             | `NAMESPACE_ID`                                               |
@@ -203,48 +203,38 @@ meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
 ---
 
 
-### Invitation admitters and hints
+### Invitation admitters and addresses
 
-`namespace invite` takes three optional flags that decide **who** may admit a
-joiner and **where** the joiner should look for them. All are repeatable.
+`namespace invite` takes two optional flags that decide **who** may admit a joiner
+and **where** the joiner should look for them. Both are repeatable.
 
 | flag | value | what it does |
 | --- | --- | --- |
 | `--admitter` | account, 64 hex | Narrows who may admit this invitation. Omit and the node uses the group's admins plus its TEE nodes. **Signed**, so it cannot be redirected afterwards. |
-| `--admitter-multiaddr` | `/ip4/…/tcp/…/p2p/<peer-id>` | Where a joiner **that runs a node** can dial an admitter. |
-| `--admitter-url` | `https://…` | Where a joiner **holding only a key** can reach an admitter's admin API. |
+| `--admitter-addr` | `/ip4/…/tcp/…/p2p/<peer-id>` | Where a joiner can dial an admitter. **Unsigned**, and must include the `/p2p/` suffix. |
 
-The two hint flags are separate because the endpoints are not interchangeable: a
-keyholder has no swarm to dial a multiaddr from. One flag taking a bare string
-would leave the node guessing which kind it received.
-
-**You usually need none of them.** The node names the admitters itself, and fills
-in multiaddr hints from the addresses it already has on file. Reach for the flags
-when:
+**You usually need neither.** The node names the admitters itself and fills in
+addresses from what it already has on file. Reach for them when:
 
 - `--admitter` — you want a *narrower* set than every admin and TEE node.
-- `--admitter-multiaddr` — the node's address for an admitter is stale or missing
-  (it has not seen that peer within the cache's 24-hour window).
-- `--admitter-url` — you are inviting a keyholder. **The node never generates a URL
-  hint**, so this one is only ever present if you pass it.
+- `--admitter-addr` — the node's address for an admitter is stale or missing (it
+  has not seen that peer within the cache's 24-hour window).
 
 ```bash
 # Ordinary case: let the node decide who admits and where they are.
 meroctl namespace invite $NS
 
-# Invite a keyholder to a hosted deployment.
-meroctl namespace invite $NS --admitter-url https://node-1.example.com
-
 # Narrow admission to one account, and say where it is.
 meroctl namespace invite $NS \
   --admitter 8f2c...e1 \
-  --admitter-multiaddr /ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample
+  --admitter-addr /ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample
 ```
 
-Hints are **unsigned**, deliberately. A wrong multiaddr costs a failed dial and
-nothing more, because the signed `--admitter` list still decides who may answer.
-See [Direct Admission](/protocol/direct-admission/) for why a URL is not guessed
-the way a multiaddr is.
+Addresses are **unsigned**, deliberately. A wrong one costs a failed dial and
+nothing more: libp2p authenticates the peer id on connect, and the signed
+`--admitter` list still decides who may answer. See
+[Direct Admission](/protocol/direct-admission/) for why an address travels
+unsigned while the admitter list cannot.
 
 ## blob
 

@@ -1,7 +1,7 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture as _};
 use calimero_context_client::group::{CreateGroupInvitationRequest, CreateGroupInvitationResponse};
 use calimero_context_config::types::{
-    AdmitterEndpoint, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
 use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
@@ -11,20 +11,20 @@ use sha2::{Digest, Sha256};
 
 use crate::ContextManager;
 
-/// Format this node's confirmed external addresses as endpoints a joiner can
+/// Format this node's confirmed external addresses as multiaddrs a joiner can
 /// dial.
 ///
 /// Split from the lookup so the shape is testable without a live swarm: the
 /// peer id is appended because a bare address does not say who answers at it,
 /// and a joiner cannot resolve that for itself — the identity-to-peer map is
 /// exactly what it does not have yet.
-fn dialable_self_endpoints(
+fn dialable_self_addrs(
     local_peer_id: &impl std::fmt::Display,
     external_addrs: &[impl std::fmt::Display],
-) -> Vec<AdmitterEndpoint> {
+) -> Vec<String> {
     external_addrs
         .iter()
-        .map(|addr| AdmitterEndpoint::Multiaddr(format!("{addr}/p2p/{local_peer_id}")))
+        .map(|addr| format!("{addr}/p2p/{local_peer_id}"))
         .collect()
 }
 
@@ -44,14 +44,14 @@ fn dialable_self_endpoints(
 /// Best-effort throughout: the caches expire, so an admitter not seen lately is
 /// simply not hinted. That is a joiner with one fewer address to try, never a
 /// wrong one — the signed `admitters` list still decides who may answer.
-async fn resolve_admitter_endpoints(
+async fn resolve_admitter_addrs(
     node_client: &calimero_node_primitives::client::NodeClient,
     datastore: &calimero_store::Store,
     signed: &SignedGroupOpenInvitation,
     signer_account: calimero_account::AccountId,
-) -> Vec<AdmitterEndpoint> {
+) -> Vec<String> {
     let group_id = signed.invitation.group_id;
-    let mut hints = Vec::new();
+    let mut addrs = Vec::new();
 
     // This node, if it is one of the admitters. `external_addrs` rather than
     // `listen_addrs`: the latter includes `0.0.0.0` and loopback, which are not
@@ -59,7 +59,7 @@ async fn resolve_admitter_endpoints(
     // relay-circuit form a NAT'd node is reachable on.
     if signed.invitation.admitters.contains(&signer_account) {
         let status = node_client.network_status().await;
-        hints.extend(dialable_self_endpoints(
+        addrs.extend(dialable_self_addrs(
             &status.local_peer_id,
             &status.external_addrs,
         ));
@@ -92,21 +92,15 @@ async fn resolve_admitter_endpoints(
                 .peer_addrs_for_identities(group_id, identities)
                 .await
             {
-                hints.push(AdmitterEndpoint::Multiaddr(format!("{addr}/p2p/{peer}")));
+                addrs.push(format!("{addr}/p2p/{peer}"));
             }
         }
     }
 
     let mut seen = std::collections::BTreeSet::new();
-    hints.retain(|hint| {
-        let key = match hint {
-            AdmitterEndpoint::Multiaddr(value) => (0u8, value.clone()),
-            AdmitterEndpoint::Url(value) => (1u8, value.clone()),
-        };
-        seen.insert(key)
-    });
+    addrs.retain(|addr| seen.insert(addr.clone()));
 
-    if hints.is_empty() {
+    if addrs.is_empty() {
         // Said out loud, because the alternative is minting a credential that
         // silently cannot be redeemed: a joiner holding a hintless invitation
         // has to already know where to knock, and for a keyholder with no node
@@ -118,7 +112,7 @@ async fn resolve_admitter_endpoints(
              address, so the joiner needs one out of band"
         );
     }
-    hints
+    addrs
 }
 
 impl Handler<CreateGroupInvitationRequest> for ContextManager {
@@ -130,7 +124,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             group_id,
             expiration_timestamp,
             admitters,
-            admitter_hints,
+            admitter_addrs,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -190,7 +184,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 // The cost is reachability, not authority. A non-admin inviter
                 // mints invitations it cannot admit, so the invitee has to reach
                 // an admin or TEE node rather than whoever handed it the
-                // invitation — which is what `admitter_hints` is for. This node
+                // invitation — which is what `admitter_addrs` is for. This node
                 // can only hint the admitters it can address, and itself is the
                 // one it always can; see the hint pass below for what that
                 // leaves uncovered.
@@ -259,7 +253,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
                     bytecode_id: Some(meta.bytecode_id),
-                    admitter_hints,
+                    admitter_addrs,
                 },
                 group_name,
                 signer_account,
@@ -283,8 +277,8 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let mut signed_invitation = signed_invitation;
-                if signed_invitation.admitter_hints.is_empty() {
-                    signed_invitation.admitter_hints = resolve_admitter_endpoints(
+                if signed_invitation.admitter_addrs.is_empty() {
+                    signed_invitation.admitter_addrs = resolve_admitter_addrs(
                         &node_client,
                         &datastore_for_hints,
                         &signed_invitation,
@@ -304,19 +298,17 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{dialable_self_endpoints, AdmitterEndpoint};
+    use super::dialable_self_addrs;
 
     #[test]
-    fn an_endpoint_carries_the_peer_id_the_address_alone_does_not() {
+    fn an_address_carries_the_peer_id_it_alone_does_not() {
         // A joiner cannot turn a bare address into "who answers there" — the
         // identity-to-peer map is precisely what it has not synced yet. So the
         // peer id travels in the hint or the hint is unusable.
-        let hints = dialable_self_endpoints(&"12D3KooWTEST", &["/ip4/10.0.0.1/tcp/2528"]);
+        let addrs = dialable_self_addrs(&"12D3KooWTEST", &["/ip4/10.0.0.1/tcp/2528"]);
         assert_eq!(
-            hints,
-            vec![AdmitterEndpoint::Multiaddr(
-                "/ip4/10.0.0.1/tcp/2528/p2p/12D3KooWTEST".to_owned()
-            )]
+            addrs,
+            vec!["/ip4/10.0.0.1/tcp/2528/p2p/12D3KooWTEST".to_owned()]
         );
     }
 
@@ -326,23 +318,21 @@ mod tests {
         // reachable only through its relay reservation, so dropping circuit
         // addresses would leave exactly the nodes that most need a hint
         // advertising nothing.
-        let hints = dialable_self_endpoints(
+        let addrs = dialable_self_addrs(
             &"12D3KooWSELF",
             &["/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRELAY/p2p-circuit"],
         );
         assert_eq!(
-            hints,
-            vec![AdmitterEndpoint::Multiaddr(
-                "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRELAY/p2p-circuit/p2p/12D3KooWSELF".to_owned()
-            )]
+            addrs,
+            vec!["/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRELAY/p2p-circuit/p2p/12D3KooWSELF".to_owned()]
         );
     }
 
     #[test]
     fn no_external_address_yields_no_hint_rather_than_a_useless_one() {
-        let hints = dialable_self_endpoints(&"12D3KooWSELF", &[] as &[String]);
+        let addrs = dialable_self_addrs(&"12D3KooWSELF", &[] as &[String]);
         assert!(
-            hints.is_empty(),
+            addrs.is_empty(),
             "a node with no confirmed external address has nothing dialable to offer"
         );
     }

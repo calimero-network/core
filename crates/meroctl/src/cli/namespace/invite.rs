@@ -1,4 +1,3 @@
-use calimero_context_config::types::AdmitterEndpoint;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
 use clap::Parser;
 use eyre::Result;
@@ -35,48 +34,27 @@ pub struct InviteCommand {
     )]
     pub admitters: Vec<String>,
 
-    /// Where a joining NODE can dial an admitter.
+    /// Where a joiner can dial an admitter.
     ///
     /// Only worth passing when this node cannot work the address out itself —
     /// it has no entry for that account, or the one it has is stale.
     #[clap(
-        long = "admitter-multiaddr",
+        long = "admitter-addr",
         value_name = "MULTIADDR",
-        help = "libp2p multiaddr (with peer id) for an admitter, for a joiner \
-                that runs a node (repeatable)."
+        help = "libp2p multiaddr of an admitter, including its /p2p/<peer-id> \
+                suffix (repeatable). Usually unnecessary: the node fills these \
+                in from addresses it already has."
     )]
-    pub admitter_multiaddrs: Vec<String>,
-
-    /// Where a joining KEYHOLDER can reach an admitter over HTTPS.
-    ///
-    /// The one that survives restarts, and the one a joiner with no node of its
-    /// own can actually use.
-    #[clap(
-        long = "admitter-url",
-        value_name = "URL",
-        help = "https:// base URL of an admitter's admin API, for a joiner \
-                holding only a key (repeatable)."
-    )]
-    pub admitter_urls: Vec<String>,
+    pub admitter_addrs: Vec<String>,
 }
 
 impl InviteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        // Passed through as given. The two kinds are not interchangeable — a
-        // keyholder has no swarm to dial a multiaddr from — so they stay
-        // separate flags rather than one the node has to guess the shape of.
-        let admitter_hints: Vec<AdmitterEndpoint> = self
-            .admitter_multiaddrs
-            .into_iter()
-            .map(AdmitterEndpoint::Multiaddr)
-            .chain(self.admitter_urls.into_iter().map(AdmitterEndpoint::Url))
-            .collect();
-
         let request = CreateGroupInvitationApiRequest {
             expiration_timestamp: self.expiration_timestamp,
             recursive: Some(self.recursive),
             admitters: self.admitters,
-            admitter_hints,
+            admitter_addrs: self.admitter_addrs,
         };
 
         let client = environment.client()?;

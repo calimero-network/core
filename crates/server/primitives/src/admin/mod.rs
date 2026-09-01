@@ -2289,17 +2289,16 @@ pub struct CreateGroupInvitationApiRequest {
     /// checked against the account an admitter proves it holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admitters: Vec<String>,
-    /// Where to reach those admitters, for a caller that knows better than the
-    /// node does.
+    /// libp2p addresses for those admitters, each a full multiaddr including
+    /// the `/p2p/<peer-id>` suffix.
     ///
-    /// `{"multiaddr": "/ip4/.../p2p/12D3Koo..."}` for a joiner that runs a node,
-    /// `{"url": "https://..."}` for one holding only a key. Empty or absent asks
-    /// the node to fill them in from what it knows.
+    /// Empty or absent asks the node to fill them in from addresses it already
+    /// has on file. Supplied values are used as given rather than merged.
     ///
-    /// Unsigned: a wrong endpoint misdirects where a joiner knocks, never who
-    /// may answer.
+    /// Unsigned: a wrong address misdirects where a joiner knocks, never who may
+    /// answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub admitter_hints: Vec<calimero_context_config::types::AdmitterEndpoint>,
+    pub admitter_addrs: Vec<String>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {

@@ -650,7 +650,7 @@ fn test_invitation() -> SignedGroupOpenInvitation {
         inviter_signature: String::new(),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 

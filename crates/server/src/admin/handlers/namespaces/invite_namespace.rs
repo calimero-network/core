@@ -152,7 +152,7 @@ pub async fn handler(
             group_id: namespace_id,
             expiration_timestamp: req.expiration_timestamp,
             admitters,
-            admitter_hints: req.admitter_hints,
+            admitter_addrs: req.admitter_addrs,
         })
         .await
         .map_err(parse_api_error);

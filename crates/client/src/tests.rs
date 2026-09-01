@@ -514,7 +514,7 @@ async fn create_namespace_invitation() {
         .create_namespace_invitation(
             GID,
             CreateGroupInvitationApiRequest {
-                admitter_hints: Vec::new(),
+                admitter_addrs: Vec::new(),
                 expiration_timestamp: None,
                 recursive: None,
                 admitters: Vec::new(),

@@ -276,16 +276,16 @@ pub struct CreateGroupInvitationRequest {
     /// node to admit, so it is not a value worth reaching by omission. Signed
     /// into the invitation, so it cannot be redirected afterwards.
     pub admitters: Vec<calimero_account::AccountId>,
-    /// Where to reach the admitters, for a caller that knows better than this
-    /// node does.
+    /// libp2p addresses for the admitters, for a caller that knows better than
+    /// this node does.
     ///
-    /// Supplied hints are used as given and are not merged with what the node
-    /// can work out for itself: a caller that names endpoints is usually
+    /// Supplied addresses are used as given and are not merged with what the
+    /// node can work out for itself: a caller that names one is usually
     /// correcting the node's view, not extending it. Empty asks the node to fill
     /// them in best-effort.
     ///
-    /// Unsigned, so a wrong value costs a failed connection and nothing more.
-    pub admitter_hints: Vec<calimero_context_config::types::AdmitterEndpoint>,
+    /// Unsigned, so a wrong value costs a failed dial and nothing more.
+    pub admitter_addrs: Vec<String>,
 }
 
 impl Message for CreateGroupInvitationRequest {
