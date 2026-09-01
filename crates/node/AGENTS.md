@@ -133,15 +133,15 @@ pub struct ReadinessManager {
 ```
 
 - Beacons signed via `READINESS_BEACON_SIGN_DOMAIN` (canonical
-  `signable_bytes`, which also covers an optional
-  `admission_proof: Option<SignedGroupOpenInvitation>` field) and
-  verified by
+  `signable_bytes`) and verified by
   `calimero_context::governance_broadcast::verify_readiness_beacon`
-  (signature + namespace member set). A beacon that fails the
-  membership check falls through to `beacon_admission_provable`, which
-  grants a governance pull targeted at the beacon's own signer when the
-  beacon carries a verifiable admission proof - never a membership row
-  or a cache entry.
+  (signature + namespace member set). A beacon that fails the membership
+  check falls through to the stranded-member arm and is otherwise dropped.
+  It used to be rescuable by a verifiable admission proof it carried; that
+  path existed so an invitation could be claimed by broadcast, which direct
+  admission replaced — the invitation names who may admit it, and the
+  admitter applies and publishes the join, so no stranger's beacon needs to
+  unlock a pull.
 - Periodic emission on `beacon_interval` ticks for `*Ready` tiers.
 - Edge-trigger emission on tier transition into `*Ready` (via
   `LocalStateChanged` / `ApplyBeaconLocal`).
@@ -155,10 +155,7 @@ pub struct ReadinessManager {
   check returns before reaching the republish drain, so a
   subscribe/probe that lands inside that window does not retry until
   the next one outside it. The stored op is rebroadcast verbatim, never
-  re-signed. While an entry is queued, every outgoing beacon for that
-  namespace also carries its invitation as `admission_proof`, so a peer
-  that has not yet seen the membership op can still verify the joiner
-  belongs. Entries expire after `REPUBLISH_CAP` (10 min) and are NOT
+  re-signed. Entries expire after `REPUBLISH_CAP` (10 min) and are NOT
   removed on republish, so a later subscriber gets another attempt.
 
 ### J6 namespace-join (Phase 8)

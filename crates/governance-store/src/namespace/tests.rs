@@ -418,13 +418,23 @@ fn default_admitters_names_admins_and_skips_everybody_else() {
 }
 
 #[test]
-fn default_admitters_is_empty_for_a_group_with_no_admin() {
+fn default_admitters_reports_an_empty_set_rather_than_inventing_one() {
     let store = test_store();
     let gid = test_group_id();
 
-    // Returned as `Ok(vec![])`, not an error: the caller decides. Minting an
-    // invitation nobody can admit is a different problem from failing to read
-    // the membership rows, and collapsing the two would hide the second.
+    // `Ok(vec![])`, not an error: this is a query, and an empty group truthfully
+    // has no admitters. Failing to read the membership rows is a different
+    // problem, and collapsing the two would hide the second.
+    //
+    // What that value MEANS is the caller's business, and there is only one
+    // sound reading of it. Every group has an admin —
+    // `ensure_not_last_admin_removal` and `ensure_not_last_admin_demotion`
+    // refuse to remove the last one — so an empty result is an inconsistent
+    // store, not a group to mint for. The invitation path therefore refuses
+    // instead of minting, because an empty admitter list is precisely the value
+    // that means "claimable by broadcast": defaulting through would answer an
+    // invariant violation with the least restricted credential the system can
+    // express.
     let admitters = NamespaceMembershipService::default_admitters(&store, &gid).unwrap();
     assert!(admitters.is_empty());
 }

@@ -398,7 +398,6 @@ fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadi
         applied_through,
         ts_millis: 0,
         strong,
-        admission_proof: None,
         signature: [0u8; 64],
     }
 }
@@ -706,31 +705,6 @@ fn pending_republish_survives_within_cap() {
     prune_expired_republishes(&mut pending, Instant::now());
 
     assert_eq!(pending.len(), 1);
-}
-
-#[test]
-fn admission_proof_is_the_invitation_inside_the_queued_join() {
-    let proof = admission_proof_from(&test_signed_op()).expect("a queued join carries its proof");
-
-    assert_eq!(
-        borsh::to_vec(&proof).expect("encode proof"),
-        borsh::to_vec(&test_invitation()).expect("encode invitation"),
-        "the beacon must carry the very invitation the join op was built from"
-    );
-}
-
-#[test]
-fn non_join_op_carries_no_admission_proof() {
-    let mut op = test_signed_op();
-    op.op = NamespaceOp::Root(RootOp::NamespaceCreated {
-        founder: test_join_account().statement.account,
-        account: test_join_account(),
-    });
-
-    assert!(
-        admission_proof_from(&op).is_none(),
-        "only an invitation-based join yields a proof"
-    );
 }
 
 #[test]

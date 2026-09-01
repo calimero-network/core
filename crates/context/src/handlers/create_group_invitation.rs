@@ -49,9 +49,39 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
             // that, so the exposed case stops being the one you reach by
             // omission.
             let admitters = if admitters.is_empty() {
-                calimero_governance_store::NamespaceMembershipService::default_admitters(
-                    &datastore, &group_id,
-                )?
+                let defaulted =
+                    calimero_governance_store::NamespaceMembershipService::default_admitters(
+                        &datastore, &group_id,
+                    )?;
+                // A group always has at least one admin — losing the last one is
+                // refused by `ensure_not_last_admin_removal` and its demotion
+                // counterpart — so an empty result here is not a group without
+                // admins, it is a store that disagrees with an invariant.
+                //
+                // Refused rather than defaulted through. An empty admitter list is
+                // the one value that means "claimable by broadcast", so carrying
+                // on would answer an inconsistency by minting the least
+                // restricted credential the system can express, at exactly the
+                // moment there is reason to trust it least.
+                if defaulted.is_empty() {
+                    eyre::bail!(
+                        "refusing to mint an invitation for a group with no admin and no TEE node: \
+                         every group is supposed to have an admin, so this is an inconsistent \
+                         store rather than a group to issue an unrestricted invitation for"
+                    );
+                }
+
+                // Deliberately NOT the inviter. `CAN_INVITE_MEMBERS` grants
+                // creating an invitation, not seeing it through: admission stays
+                // with admins and TEE nodes, so a delegated inviter cannot
+                // complete a membership on its own.
+                //
+                // The cost is reachability, not authority. A non-admin inviter
+                // mints invitations it cannot admit, so the invitee has to reach
+                // an admin or TEE node rather than whoever handed it the
+                // invitation — which is what `admitter_hints` is for, and nothing
+                // populates those yet.
+                defaulted
             } else {
                 admitters
             };
