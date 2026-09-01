@@ -19,9 +19,21 @@
 //! instances over the same bytes: `blob.digest.update(chunk)` accumulates the
 //! root id and `file.digest.update(chunk)` accumulates that chunk's own id
 //! (`src/lib.rs:132-135` for the `State` struct holding both digests,
-//! `:411-412` for the two updates). Two software SHA-256 passes at roughly
-//! 3-4 ns/byte each account for most of the ~7.9 ns/byte this bench measures;
-//! the filesystem write is the smaller remainder, not the dominant cost.
+//! `:411-412` for the two updates).
+//!
+//! # Splitting hashing from the filesystem (2026-08-31 measurement)
+//!
+//! The paragraph above was arithmetic ("two SHA-256 passes at roughly 3-4
+//! ns/byte each"), not a measurement of this codebase's actual SHA-256 cost
+//! against actual `put` numbers side by side. The `hash_sha256_x2` group
+//! below measures it directly: two back-to-back `Sha256::update` passes over
+//! the SAME in-memory buffer (mirroring `put_sized`'s two-digest shape
+//! exactly, with no filesystem or `BlobManager` in the loop at all) at the
+//! same three sizes as `put`. Compare its ns/byte against `put`'s: the
+//! difference is the filesystem-write-plus-dispatch share, not attributed by
+//! arithmetic. See the report this bench feeds
+//! (`.superpowers/sdd/2026-08-31-core-benchmark-suite/final-measurements.md`)
+//! for the resulting split and whether it confirms "most of it is hashing".
 //!
 //! Context for the numbers: a receiver abandons a transfer after 60s
 //! (`crates/network/.../request_blob.rs:18`), so the p2p ceiling of 500 MiB
@@ -39,6 +51,7 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::Store as DataStore;
 use camino::Utf8PathBuf;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 /// Mirrors the crate's own test setup (`src/lib.rs:890-900`): an in-memory
@@ -92,5 +105,43 @@ fn chunking(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, chunking);
+/// Isolates the two-SHA-256-passes cost `put_sized` pays per chunk
+/// (`src/lib.rs:132-135`, `:411-412`) from everything else `put` also pays
+/// (chunk-boundary bookkeeping, the `BlobManager`/`FileSystem` dispatch, and
+/// the actual filesystem write) — same sizes as the `put` group above, no
+/// filesystem or async runtime in the timed section at all. `Digest::update`
+/// processes data in fixed internal blocks regardless of how many calls
+/// supply it, so hashing the payload as one `update` per digest measures the
+/// identical total SHA-256 cost `put_sized`'s per-1MiB-chunk `update` calls
+/// pay — only the call-count differs, not the bytes actually run through the
+/// compression function.
+fn hash_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hash_sha256_x2");
+
+    for bytes in [1_000_000_usize, 1_048_576, 4_194_304] {
+        let payload = vec![0xCD_u8; bytes];
+
+        group.throughput(Throughput::Bytes(bytes as u64));
+        group.bench_with_input(
+            BenchmarkId::new("hash_sha256_x2", bytes),
+            &payload,
+            |b, payload| {
+                b.iter(|| {
+                    // Mirrors `put_sized`'s `State`: one digest accumulating
+                    // the root id, one accumulating this chunk's own id, both
+                    // fed the SAME bytes.
+                    let mut root_digest = Sha256::new();
+                    let mut chunk_digest = Sha256::new();
+                    root_digest.update(black_box(&payload[..]));
+                    chunk_digest.update(black_box(&payload[..]));
+                    black_box((root_digest.finalize(), chunk_digest.finalize()))
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, chunking, hash_only);
 criterion_main!(benches);

@@ -46,6 +46,43 @@
 //!
 //! What would change a decision: a walk that grows faster than the set, which
 //! would make an index over pending parents worth building.
+//!
+//! # `get_missing_parents` is bounded work, not `n`-proportional work
+//!
+//! `get_missing_parents(query_limit)` breaks out of its walk over
+//! `self.pending` as soon as it has collected
+//! `min(query_limit, self.delta_query_limit)` missing parent ids (`:861` —
+//! `if missing_ids.len() >= delta_query_limit { break 'outer; }`). This bench
+//! calls it with `query_limit = 128` against a `DagStore` built with the
+//! default `delta_query_limit` (`MAX_DELTA_QUERY_LIMIT = 3000`), so the walk
+//! is capped at 128 missing-parent ids REGARDLESS of how big the pending set
+//! is. At `n = 10_000` the reported ~515 Melem/s is `n` divided by a runtime
+//! that is actually governed by the 128-id cap, not by `n` — it is not a
+//! throughput number at all, it is "how fast can 128 ids be collected",
+//! relabelled using an `n` the call never walks in full. It only becomes an
+//! honest throughput figure at `n <= 128`, where the cap has not yet
+//! engaged. The group's `group.throughput(Throughput::Elements(n as u64))`
+//! is overridden below for this one sub-benchmark to declare
+//! `min(n, query_limit)` instead — the actual bounded element count the call
+//! does work over — so the reported elem/s stops silently flattening at the
+//! cap and instead reads as what it is: roughly flat past `n = 128`, because
+//! the work IS flat past `n = 128`.
+//!
+//! `pending_stats` and `cleanup_stale` are NOT bounded this way — both walk
+//! (or drain) the full pending set — so `Throughput::Elements(n)` stays
+//! correct for them and is left alone.
+//!
+//! # The more useful measurement: sweep `query_limit`, not `n`
+//!
+//! Since the real independent variable behind `get_missing_parents`' cost is
+//! `min(query_limit, delta_query_limit)`, not `n`, `get_missing_parents_by_limit`
+//! below fixes the pending set at a single large size (`n = 10_000`, already
+//! deep in the capped regime for every `query_limit` this sweeps) and varies
+//! `query_limit` instead. That is the sweep that actually answers "what does
+//! this call cost", where the `n`-sweep above (at a fixed `query_limit =
+//! 128`) mostly answers "is 10,000 pending entries slower to WALK THE FIRST
+//! 128 IDS OF than 10 pending entries is" — a much narrower question, and
+//! one this bench already answers by n=128 in the sweep above.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -53,6 +90,11 @@ use std::time::Duration;
 use calimero_dag::{AddDeltaOutcome, ApplyError, CausalDelta, DagStore};
 use calimero_storage::logical_clock::HybridTimestamp;
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+
+/// `query_limit` this bench passes to `get_missing_parents` in the `n`-sweep
+/// above — the number that actually bounds its work once `n` exceeds it. See
+/// the module doc's "bounded work, not n-proportional work" section.
+const GET_MISSING_PARENTS_QUERY_LIMIT: usize = 128;
 
 /// Applier that is never actually invoked: every delta built by
 /// [`pending_dag`] names a parent that is not in the DAG, so
@@ -101,16 +143,29 @@ fn pending(c: &mut Criterion) {
         // pending deltas, not zero. See module docs above.
         assert_eq!(dag.pending_stats().count, n, "fixture pending count != n");
 
-        group.throughput(Throughput::Elements(n as u64));
-
+        // `get_missing_parents` walks at most `min(n, GET_MISSING_PARENTS_QUERY_LIMIT)`
+        // pending entries — see the module doc's "bounded work, not
+        // n-proportional work" section — so its throughput is declared over
+        // that bounded count, not over `n`.
+        group.throughput(Throughput::Elements(
+            n.min(GET_MISSING_PARENTS_QUERY_LIMIT) as u64
+        ));
         group.bench_with_input(
             BenchmarkId::new("get_missing_parents", n),
             &dag,
             |b, dag| {
-                b.iter(|| black_box(dag.get_missing_parents(black_box(128)).len()));
+                b.iter(|| {
+                    black_box(
+                        dag.get_missing_parents(black_box(GET_MISSING_PARENTS_QUERY_LIMIT))
+                            .len(),
+                    )
+                });
             },
         );
 
+        // `pending_stats` and `cleanup_stale` (below) both walk/drain the
+        // FULL pending set, so `n` is their real throughput denominator.
+        group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::new("pending_stats", n), &dag, |b, dag| {
             b.iter(|| black_box(dag.pending_stats()));
         });
@@ -133,5 +188,28 @@ fn pending(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, pending);
+/// The more useful sweep for `get_missing_parents`: fix the pending set at a
+/// single large `n` and vary `query_limit`, the parameter that actually
+/// bounds the call's work — see the module doc's "the more useful
+/// measurement" section.
+fn get_missing_parents_by_limit(c: &mut Criterion) {
+    const N: usize = 10_000;
+    let dag = pending_dag(N);
+    assert_eq!(dag.pending_stats().count, N, "fixture pending count != N");
+
+    let mut group = c.benchmark_group("dag_get_missing_parents_by_query_limit");
+    for query_limit in [10_usize, 128, 500, 1_000, 3_000] {
+        group.throughput(Throughput::Elements(query_limit.min(N) as u64));
+        group.bench_with_input(
+            BenchmarkId::new("get_missing_parents", query_limit),
+            &dag,
+            |b, dag| {
+                b.iter(|| black_box(dag.get_missing_parents(black_box(query_limit)).len()));
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, pending, get_missing_parents_by_limit);
 criterion_main!(benches);

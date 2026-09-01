@@ -46,18 +46,23 @@
 //! and the two walls are not assumed to be the same distance out — that is
 //! exactly what this probe checks.
 //!
-//! # Measured results (2026-08-31, against this tree)
+//! # Measured results (2026-09-01, against this tree)
 //!
-//! * **Write wall (typing, one keystroke at a time)** — EXTRAPOLATED. Largest
-//!   executed point: a single `insert_text` call at document length 8,400
-//!   characters costs 696,466,208 gas (70% of the 1,000,000,000 ceiling); at
-//!   1,000 characters it costs 102,870,342. That pair fits a line
-//!   (slope ≈80,216 gas/character, intercept ≈22.7M) that crosses
-//!   1,000,000,000 gas at **≈12,190 characters**. No call in the executed
-//!   range (100 through 8,400) actually returned `GasExhausted` — the sweep
-//!   was stopped short of the wall to keep this probe's `#[ignore]`d run
-//!   inside a few minutes; see `typing_and_reading_walls` for how to push the
-//!   ceiling higher and turn this into an executed number.
+//! * **Write wall (typing, one keystroke at a time)** — EXECUTED, by
+//!   `typing_and_reading_walls_resume`. Real `GasExhausted`: the 12,544th
+//!   character lands (the document reaches exactly **12,544 characters**),
+//!   and the call attempting to add the 12,545th character returns
+//!   `GasExhausted` with `limit = 1,000,000,000`. (`GasExhausted`'s `limit`
+//!   field is the configured ceiling, not the gas actually consumed by the
+//!   failing call — the VM aborts at the ceiling, so no larger number than
+//!   the limit itself is ever observable for the failing call.) The last
+//!   logged successful call before the wall, at 12,500 characters, costs
+//!   995,190,062 gas (99.5% of the ceiling); the previous EXTRAPOLATED
+//!   estimate from a shorter sweep (largest executed point 8,400 characters)
+//!   was ≈12,190 — the real wall lands 354 characters (2.9%) past that
+//!   extrapolation. See `typing_and_reading_walls_resume`'s doc comment for
+//!   how this was reached without repaying the O(n²) cost of rebuilding
+//!   0..9,000 one keystroke at a time.
 //!
 //! * **Bulk `insert_str`, one call, empty document** — EXECUTED, by binary
 //!   search: a single call pasting 491 characters into an empty document
@@ -80,21 +85,20 @@
 //!   editor would" is not what this measures — there is no way to call it
 //!   that stays flat past a few hundred characters per call.
 //!
-//! * **Read wall (`get_text`)** — EXTRAPOLATED, from the SAME sweep that
-//!   produced the write wall (one `get_text` call every 100 characters, on
-//!   the same growing document). Largest executed point: at 8,400 characters
-//!   `get_text` costs 692,379,273 gas; at 1,000 characters it costs
-//!   98,367,475. That line crosses 1,000,000,000 gas at **≈12,230
-//!   characters** — inside a few hundred characters of the write wall above,
-//!   not far from it. An earlier estimate put the read wall near 9,200
-//!   characters by extrapolating from a single `get_text` call against a
-//!   document built with ONE bulk `insert_str` (400 characters, 43,554,113
-//!   gas). That single point was a weaker basis than the swept curve here:
-//!   it could not distinguish an early, not-yet-converged per-character rate
-//!   from the true asymptotic slope, and it measured `get_text` against a
-//!   document built the one way `insert_str` cannot build past ~491
-//!   characters. The 18-point swept fit above supersedes it: write and read
-//!   die within measurement noise of each other, not "far apart".
+//! * **Read wall (`get_text`)** — NOT REACHED within the executed sweep,
+//!   because the write wall arrived first: `get_text` is probed every 100
+//!   characters, and the write wall landed at 12,544 — 44 characters past
+//!   the last read probe at 12,500, where `get_text` still succeeds
+//!   (992,170,668 gas, 99.2% of the ceiling). The read wall is therefore
+//!   bracketed to somewhere in (12,500, 12,545], i.e. within 45 characters of
+//!   the write wall — consistent with the EXTRAPOLATED estimate this
+//!   superseded (≈12,230, "within a few hundred characters of the write
+//!   wall") but now anchored to two real executed numbers instead of a line
+//!   fit. Pinning it exactly would need one more `get_text` call against the
+//!   already-built 12,544-character document from `typing_and_reading_walls_resume`
+//!   — not done here since "within 45 characters of the write wall" already
+//!   answers the question this probe exists to ask (write and read die
+//!   together, not "far apart").
 //!
 //! # It can no longer rot quietly
 //!
@@ -570,6 +574,243 @@ fn single_call_paste_wall() {
         lo >= 10,
         "the single-call paste wall landed at only {lo} characters — investigate \
          before quoting the number, this is far below anything seen so far"
+    );
+}
+
+/// Reaches the ACTUAL write/read walls without repaying the O(n^2) cost of
+/// building the document one keystroke at a time from zero.
+///
+/// `typing_and_reading_walls` proved (2026-08-31 run, executed not
+/// extrapolated) that the per-keystroke sweep from 0 to 9,000 characters
+/// never walls, landing at 740,409,355 gas (74% of the 1,000,000,000
+/// ceiling) at n=9,000 — see the module doc's "Measured results" for the
+/// full table. Continuing that sweep one keystroke at a time all the way to
+/// the wall (~12,000+) is only ~3,000 more characters, but each call is
+/// O(current length), so it is the most expensive part of the whole curve —
+/// re-deriving it from scratch is not worth repaying.
+///
+/// This probe instead builds a document of the SAME starting length via
+/// `insert_str`'s BULK path (a handful of ~480-character `insert_text`
+/// calls, each landing in one shot instead of one character at a time), then
+/// CROSS-VALIDATES that a bulk-built document costs the same to touch as a
+/// per-char-built one of the same length, before trusting the continuation:
+/// if `insert_text`/`get_text` gas at the resume point does not land within
+/// 15% of the executed per-char value at the same n, the two construction
+/// methods produce structurally different documents and this probe refuses
+/// to report a wall built on that assumption.
+#[test]
+#[ignore = "slow: builds the compiled collaborative-editor app, then executes \
+            real WASM calls from the resume point to the wall. Faster than \
+            typing_and_reading_walls because it skips repaying 0..RESUME_AT \
+            one keystroke at a time."]
+fn typing_and_reading_walls_resume() {
+    let wasm = editor_wasm();
+    let limits = VMLimits::default();
+    println!("guest:   real collaborative-editor app, built from this tree");
+    println!("max_gas: {:?}", limits.max_gas);
+
+    let module = Engine::with_limits(limits)
+        .compile(&wasm)
+        .expect("compile metered module");
+
+    preflight(&module);
+
+    // The exact n at which `typing_and_reading_walls`'s 2026-08-31 executed
+    // sweep last reported numbers before this probe was written: insert_gas
+    // 740,409,355 (30,476 reads), get_text_gas 736,356,680 (30,366 reads).
+    const RESUME_AT: usize = 9_000;
+    const REFERENCE_INSERT_GAS: u64 = 740_409_355;
+    const REFERENCE_READ_GAS: u64 = 736_356_680;
+    const CROSS_VALIDATION_TOLERANCE: f64 = 0.15;
+
+    let mut storage = InMemoryStorage::default();
+    expect_ok(
+        &call(&module, &mut storage, "init", &serde_json::json!({})),
+        "init",
+    );
+
+    // Build RESUME_AT characters via the bulk path. `single_call_paste_wall`
+    // found ~491 NEW characters is the ceiling for a single call into an
+    // EMPTY document — but that budget is consumed almost entirely by the
+    // new characters themselves (≈2,038,000 gas/char, "zero fixed
+    // overhead"), so a call into a NON-empty document has far LESS than 491
+    // characters of headroom: the same call also pays to linearise
+    // whatever's already there. Chunks here are kept an order of magnitude
+    // under that single-call ceiling so there is always headroom left for
+    // that linearise cost, with a halving backoff if a chunk still walls.
+    const CHUNK: usize = 25;
+    let mut built = 0_usize;
+    let mut chunk = CHUNK;
+    while built < RESUME_AT {
+        let this_chunk = chunk.min(RESUME_AT - built);
+        let text: String = std::iter::repeat_n('x', this_chunk).collect();
+        let outcome = call(
+            &module,
+            &mut storage,
+            "insert_text",
+            &serde_json::json!({"position": built, "text": text}),
+        );
+        match &outcome.returns {
+            Ok(_) => {
+                built += this_chunk;
+            }
+            Err(error) => match classify("insert_text", error) {
+                Verdict::Wall { .. } => {
+                    assert!(
+                        chunk > 1,
+                        "bulk build walled even at chunk size 1 with only {built} \
+                         characters landed — the write wall is far lower than the \
+                         per-char sweep found, investigate before trusting any \
+                         number from this probe"
+                    );
+                    chunk = (chunk / 2).max(1);
+                    println!(
+                        "  (bulk build: chunk walled at built={built}, backing off to {chunk})"
+                    );
+                }
+                Verdict::Drift(detail) => drift(&format!(
+                    "{detail}\nThis appeared during the bulk build at built={built}, not \
+                     against an empty document."
+                )),
+            },
+        }
+    }
+    assert_eq!(
+        built, RESUME_AT,
+        "bulk build must land exactly at RESUME_AT"
+    );
+
+    // Cross-validate: one more keystroke and one read, at the SAME n the
+    // per-char sweep measured, must cost about the same regardless of how
+    // the document got here.
+    let probe_insert = call(
+        &module,
+        &mut storage,
+        "insert_text",
+        &serde_json::json!({"position": RESUME_AT, "text": "x"}),
+    );
+    expect_ok(&probe_insert, "insert_text (cross-validation)");
+    let probe_read = call(&module, &mut storage, "get_text", &serde_json::json!({}));
+    expect_ok(&probe_read, "get_text (cross-validation)");
+
+    let insert_gas = probe_insert
+        .gas_used
+        .unwrap_or_else(|| drift("insert_text (cross-validation) reported no gas_used"));
+    let read_gas = probe_read
+        .gas_used
+        .unwrap_or_else(|| drift("get_text (cross-validation) reported no gas_used"));
+    let insert_delta =
+        (insert_gas as f64 - REFERENCE_INSERT_GAS as f64).abs() / REFERENCE_INSERT_GAS as f64;
+    let read_delta =
+        (read_gas as f64 - REFERENCE_READ_GAS as f64).abs() / REFERENCE_READ_GAS as f64;
+    println!(
+        "cross-validation at n={RESUME_AT}: bulk-built insert_gas={insert_gas} \
+         (per-char reference {REFERENCE_INSERT_GAS}, delta {:.1}%), \
+         bulk-built read_gas={read_gas} (per-char reference {REFERENCE_READ_GAS}, \
+         delta {:.1}%)",
+        insert_delta * 100.0,
+        read_delta * 100.0,
+    );
+    assert!(
+        insert_delta <= CROSS_VALIDATION_TOLERANCE && read_delta <= CROSS_VALIDATION_TOLERANCE,
+        "a bulk-built document of length {RESUME_AT} costs a meaningfully different \
+         amount to touch than the SAME LENGTH document built one keystroke at a time \
+         (insert delta {:.1}%, read delta {:.1}%, tolerance {:.0}%) — the two \
+         construction methods are not structurally equivalent, so continuing this \
+         sweep from a bulk-built document would not measure the per-keystroke wall \
+         this probe claims to measure. Do not trust a wall number from this run.",
+        insert_delta * 100.0,
+        read_delta * 100.0,
+        CROSS_VALIDATION_TOLERANCE * 100.0,
+    );
+
+    // landed already includes the RESUME_AT + 1 cross-validation character.
+    let mut landed = RESUME_AT + 1;
+    let ceiling = ceiling();
+    const READ_PROBE_STRIDE: usize = 100;
+    let mut write_wall: Option<usize> = None;
+    let mut last_read_ok: Option<usize> = Some(landed);
+    let mut read_wall: Option<usize> = None;
+
+    println!("\n  n        insert_gas       i_reads   ms  | get_text_gas    r_reads   ms");
+    println!(
+        "  {landed:<6}  {:>12?}  {:>7}  {:>5} | {:>12?}  {:>7}  {:>5}  (cross-validation point)",
+        insert_gas, probe_insert.storage_reads, "-", read_gas, probe_read.storage_reads, "-",
+    );
+
+    'sweep: while landed < ceiling {
+        let started = Instant::now();
+        let outcome = call(
+            &module,
+            &mut storage,
+            "insert_text",
+            &serde_json::json!({"position": landed, "text": "x"}),
+        );
+        let write_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        if let Err(error) = &outcome.returns {
+            match classify("insert_text", error) {
+                Verdict::Wall { limit } => {
+                    println!("\nWRITE WALL at {landed} (gas limit {limit})");
+                    write_wall = Some(landed);
+                    break 'sweep;
+                }
+                Verdict::Drift(detail) => drift(&format!(
+                    "{detail}\nThis appeared only after {landed} characters, so it is \
+                     state-dependent rather than a stale call signature."
+                )),
+            }
+        }
+        landed += 1;
+
+        if read_wall.is_none() && landed % READ_PROBE_STRIDE == 0 {
+            let started = Instant::now();
+            let read = call(&module, &mut storage, "get_text", &serde_json::json!({}));
+            let read_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            match &read.returns {
+                Ok(_) => {
+                    last_read_ok = Some(landed);
+                    println!(
+                        "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1} | {:>12?}  {:>7}  {read_ms:>5.1}",
+                        outcome.gas_used, outcome.storage_reads, read.gas_used, read.storage_reads,
+                    );
+                }
+                Err(error) => match classify("get_text", error) {
+                    Verdict::Wall { .. } => {
+                        read_wall = Some(landed);
+                        println!(
+                            "  {landed:<6}  {:>12?}  {:>7}  {write_ms:>5.1} | READ WALL (gas exhausted)",
+                            outcome.gas_used, outcome.storage_reads,
+                        );
+                        if write_wall.is_some() {
+                            break 'sweep;
+                        }
+                    }
+                    Verdict::Drift(detail) => drift(&detail),
+                },
+            }
+        }
+    }
+
+    println!("\n--- result ---");
+    println!("characters landed:  {landed}");
+    match write_wall {
+        Some(n) => println!("write wall (insert_text, one more char): {n}"),
+        None => println!("write wall (insert_text, one more char): none below {ceiling}"),
+    }
+    match (last_read_ok, read_wall) {
+        (Some(ok), Some(bad)) => {
+            println!("read wall  (get_text): last OK at {ok}, first exhausted at {bad}")
+        }
+        (_, Some(bad)) => println!("read wall  (get_text): exhausted by {bad}"),
+        (_, None) => println!("read wall  (get_text): none below {landed}"),
+    }
+
+    assert!(
+        write_wall.is_some() || read_wall.is_some(),
+        "swept from {RESUME_AT} to the {ceiling} ceiling and neither insert_text nor \
+         get_text ever exhausted gas — raise RGA_WALL_CEILING and rerun"
     );
 }
 

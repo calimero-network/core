@@ -75,6 +75,23 @@ const DEFAULT_MAX_OPEN_FILES: i32 = 256;
 /// reducing disk I/O for hot data.
 const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024;
 
+/// Env var name for a measurement-only override of the block cache size.
+///
+/// Unset in every real deployment; exists so `crates/store/benches/db_ops.rs`
+/// can shrink the cache below its 128MB default and force cache eviction at
+/// bench-affordable working-set sizes, instead of needing to grow the
+/// benchmarked database past 128MB to observe the same effect. Parsed once,
+/// at `open()`; an unset or unparsable value falls back to
+/// `DEFAULT_BLOCK_CACHE_SIZE`.
+const BLOCK_CACHE_SIZE_OVERRIDE_ENV: &str = "CALIMERO_ROCKSDB_BLOCK_CACHE_BYTES_FOR_BENCH";
+
+fn block_cache_size() -> usize {
+    std::env::var(BLOCK_CACHE_SIZE_OVERRIDE_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_BLOCK_CACHE_SIZE)
+}
+
 /// Cap on the total size of write-ahead logs kept on disk (256MB).
 ///
 /// RocksDB retains every WAL back to the oldest UNFLUSHED memtable across all
@@ -151,7 +168,7 @@ impl Database<'_> for RocksDB {
         // pins them all (see DEFAULT_MAX_TOTAL_WAL_SIZE).
         options.set_max_total_wal_size(DEFAULT_MAX_TOTAL_WAL_SIZE);
 
-        let cache = rocksdb::Cache::new_lru_cache(DEFAULT_BLOCK_CACHE_SIZE);
+        let cache = rocksdb::Cache::new_lru_cache(block_cache_size());
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         block_opts.set_block_cache(&cache);
         options.set_block_based_table_factory(&block_opts);
