@@ -14,17 +14,25 @@ pub fn derive(input: DeriveInput) -> TokenStream {
     let ident = &input.ident;
     // `#[abi(name = "...")]` picks the manifest name; the identifier is only
     // the default. This is how two types sharing an ident stay distinct.
-    let name = match abi_name(&input.attrs) {
-        Ok(renamed) => renamed.unwrap_or_else(|| ident.to_string()),
+    let options = match abi_options(&input.attrs) {
+        Ok(options) => options,
         Err(err) => {
             let errors = Errors::default();
             errors.subsume(err);
             return errors.to_compile_error();
         }
     };
+    let name = options.name.clone().unwrap_or_else(|| ident.to_string());
 
     let body = match &input.data {
-        Data::Struct(item) => struct_def(&item.fields),
+        Data::Struct(item) => match struct_def(&item.fields, options.pattern.as_deref()) {
+            Ok(body) => body,
+            Err(err) => {
+                let errors = Errors::default();
+                errors.subsume(err);
+                return errors.to_compile_error();
+            }
+        },
         Data::Enum(item) => enum_def(&name, item),
         Data::Union(_) => {
             let errors = Errors::default();
@@ -65,47 +73,77 @@ pub fn derive(input: DeriveInput) -> TokenStream {
     }
 }
 
-/// The `#[abi(name = "...")]` override, if present and well-formed. A rename
-/// gives a type a manifest identity independent of its Rust identifier, which
-/// is how two types sharing an ident register without colliding.
-fn abi_name(attrs: &[syn::Attribute]) -> Result<Option<String>, SynError> {
+/// The `#[abi(...)]` options, if present and well-formed. A rename gives a type
+/// a manifest identity independent of its Rust identifier, which is how two
+/// types sharing an ident register without colliding. A `pattern` constrains a
+/// newtype's values for generated clients; it is descriptive, not enforced here.
+#[derive(Default)]
+struct AbiOptions {
+    name: Option<String>,
+    pattern: Option<String>,
+}
+
+fn abi_options(attrs: &[syn::Attribute]) -> Result<AbiOptions, SynError> {
+    let mut options = AbiOptions::default();
     let Some(attr) = attrs.iter().find(|attr| attr.path().is_ident("abi")) else {
-        return Ok(None);
+        return Ok(options);
     };
 
-    let mut name = None;
     attr.parse_nested_meta(|meta| {
-        if !meta.path.is_ident("name") {
-            return Err(meta.error("unsupported `abi` key; expected `name = \"...\"`"));
-        }
+        let key = if meta.path.is_ident("name") {
+            &mut options.name
+        } else if meta.path.is_ident("pattern") {
+            &mut options.pattern
+        } else {
+            return Err(meta
+                .error("unsupported `abi` key; expected `name = \"...\"` or `pattern = \"...\"`"));
+        };
         let value = meta.value()?.parse::<syn::LitStr>()?.value();
         if value.is_empty() {
-            return Err(meta.error("`name` must not be empty"));
+            return Err(meta.error("value must not be empty"));
         }
-        name = Some(value);
+        *key = Some(value);
         Ok(())
     })?;
 
-    name.map(Some)
-        .ok_or_else(|| SynError::new_spanned(attr, "`#[abi(...)]` requires `name = \"...\"`"))
+    if options.name.is_none() && options.pattern.is_none() {
+        return Err(SynError::new_spanned(
+            attr,
+            "`#[abi(...)]` requires `name = \"...\"` or `pattern = \"...\"`",
+        ));
+    }
+
+    Ok(options)
 }
 
 /// A one-field tuple struct is an alias to its inner type; everything else
 /// (including a unit struct) is a record.
-fn struct_def(fields: &Fields) -> TokenStream {
+fn struct_def(fields: &Fields, pattern: Option<&str>) -> Result<TokenStream, SynError> {
     if let Fields::Unnamed(unnamed) = fields {
         if unnamed.unnamed.len() == 1 {
             let ty = &unnamed.unnamed[0].ty;
-            return quote! {
+            let pattern = match pattern {
+                Some(pattern) => quote!(Some(#pattern.to_owned())),
+                None => quote!(None),
+            };
+            return Ok(quote! {
                 ::calimero_sdk::abi::TypeDef::Alias {
                     target: <#ty as ::calimero_sdk::abi::AbiType>::type_ref(__reg),
+                    pattern: #pattern,
                 }
-            };
+            });
         }
     }
 
+    if let Some(pattern) = pattern {
+        return Err(SynError::new_spanned(
+            proc_macro2::Literal::string(pattern),
+            "`pattern` applies only to a one-field tuple struct",
+        ));
+    }
+
     let fields = fields_vec(fields, false);
-    quote! { ::calimero_sdk::abi::TypeDef::Record { fields: #fields } }
+    Ok(quote! { ::calimero_sdk::abi::TypeDef::Record { fields: #fields } })
 }
 
 fn enum_def(enum_name: &str, data: &DataEnum) -> TokenStream {
