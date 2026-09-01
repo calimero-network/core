@@ -191,6 +191,51 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// The portable stop, and on Windows the only one: no `SIGTERM`, and `taskkill`
+/// without `/F` cannot reach a console process with no window. A supervisor
+/// closing merod's stdin has to be enough on its own.
+///
+/// Deliberately not `#[cfg(unix)]`, unlike the pipe test above: this is exactly
+/// the path that has no unix machinery behind it, so restricting it to unix
+/// would exercise everything except the case it exists for.
+#[test]
+#[ignore = "drives a real node; needs an environment with netlink"]
+fn the_node_stops_when_its_stdin_closes() {
+    let home = scratch("stdin");
+    init(&home, "n1");
+
+    let log = Node::log_path("stdin");
+    let sink = std::fs::File::create(&log).expect("log file");
+    let child = Command::new(env!("CARGO_BIN_EXE_merod"))
+        .args([
+            "--home".as_ref(),
+            home.as_os_str(),
+            "--node".as_ref(),
+            "n1".as_ref(),
+        ])
+        .args(["run", "--exit-on-stdin-close"])
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(sink.try_clone().expect("clone log")))
+        .stderr(Stdio::from(sink))
+        .spawn()
+        .expect("spawn merod run");
+    let mut node = Node { child, log };
+
+    wait_until_ready(&node);
+    assert!(
+        node.child.try_wait().expect("try_wait").is_none(),
+        "node stopped before its stdin closed"
+    );
+
+    // The whole event: the supervisor lets go of the write end.
+    drop(node.child.stdin.take().expect("child stdin"));
+
+    let took = wait_for_exit(&mut node, "stdin closed");
+    println!("node exited {took:?} after its stdin closed");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// `rm -rf` removes a name, not a file, so nothing tells the node - it has to
 /// notice that the directory it holds is no longer the one at its path.
 #[test]

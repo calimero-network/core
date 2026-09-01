@@ -1,15 +1,78 @@
 //! Reasons to stop that no signal announces: the process that spawned this node
 //! going away, or the data directory it opened being replaced underneath it.
 
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::Duration;
+
+/// Resolves when this process's stdin reaches EOF.
+///
+/// The portable half of what `parent_closed` does on unix, and on Windows the
+/// only half there is. A supervisor holds the write end of merod's stdin and
+/// closes it to ask for a graceful stop; the OS closes it too if the supervisor
+/// dies, so one channel covers both without the supervisor having to tell them
+/// apart.
+///
+/// Windows has no `SIGTERM`. The alternative there is
+/// `GenerateConsoleCtrlEvent`, which addresses a *process group sharing the
+/// caller's console* — and a GUI supervisor has no console to share, so it
+/// would have to allocate or attach one purely to deliver the event. A pipe
+/// needs no console, no process group, and no platform code at all.
+///
+/// Read on a plain OS thread rather than a runtime blocking task, deliberately.
+/// A thread parked in `read` cannot be cancelled, and runtime shutdown waits for
+/// its blocking pool — so a node whose supervisor outlives it would hang on the
+/// way out, which is the same trap `parent_closed` documents. A detached thread
+/// does not delay process exit.
+///
+/// Parks forever when not enabled, so a caller can `select!` on it either way.
+pub async fn stdin_closed(enabled: bool) -> String {
+    if !enabled {
+        return std::future::pending().await;
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // Not `tokio::task::spawn_blocking`: see the note above about shutdown.
+    drop(std::thread::spawn(move || {
+        use std::io::Read as _;
+
+        let mut scratch = [0_u8; 64];
+        let mut stdin = std::io::stdin();
+        let reason = loop {
+            match stdin.read(&mut scratch) {
+                Ok(0) => break "the process that started this node closed its stdin".to_owned(),
+                // A supervisor that writes down the pipe is not saying anything
+                // yet, so anything it sends is discarded rather than read as a
+                // stop. Mirrors `parent_closed`.
+                Ok(_) => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => {
+                    break format!("the pipe to the process that started this node failed: {err}")
+                }
+            }
+        };
+        let _ = tx.send(reason);
+    }));
+
+    match rx.await {
+        Ok(reason) => reason,
+        // The reader thread is gone without reporting. Parking is the safe
+        // answer: resolving would stop a node nobody asked to stop.
+        Err(_) => std::future::pending().await,
+    }
+}
 
 /// A stat is microseconds, so this is short enough to bound how long a node whose
 /// directory is gone keeps writing, which is the damage this prevents.
+#[cfg(unix)]
 pub const DATA_DIR_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
+#[cfg(unix)]
 /// Identifies a directory rather than its name. `rm -rf` removes the name, so the
 /// path can resolve to a different directory while this one is still held open.
 fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
@@ -18,6 +81,7 @@ fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
 
 /// Resolves when the directory this node opened is no longer the one its path
 /// points at - deleted, replaced, or on a volume that went away.
+#[cfg(unix)]
 pub async fn data_dir_replaced(path: PathBuf, interval: Duration) -> String {
     // Held open for as long as the watch runs: that keeps the inode allocated, so a
     // directory created later at this path cannot reuse the number and slip past.
@@ -57,6 +121,7 @@ pub async fn data_dir_replaced(path: PathBuf, interval: Duration) -> String {
 /// Resolves when the write end of `fd` is closed, which the kernel does when the
 /// process holding it exits - including a `SIGKILL`, which runs no code of its own.
 /// Parks when there is no fd, so a caller can watch it either way.
+#[cfg(unix)]
 pub async fn parent_closed(fd: Option<RawFd>) -> String {
     use tokio::io::AsyncReadExt;
 
@@ -92,7 +157,27 @@ pub async fn parent_closed(fd: Option<RawFd>) -> String {
     }
 }
 
+/// Portable half of the watchdog tests. The dangerous failure for a default-off
+/// watch is that it resolves anyway, which stops a node nobody asked to stop.
 #[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_disabled_stdin_watch_never_resolves() {
+        let mut watch = tokio::spawn(stdin_closed(false));
+
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(200), &mut watch).await;
+
+        assert!(
+            waited.is_err(),
+            "a node that did not ask to watch stdin must never stop because of it"
+        );
+        watch.abort();
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::fd::IntoRawFd;
 
