@@ -512,10 +512,9 @@ steps:
     retries: 45
     interval: 2
 
-  # A2 is the one that matters: the device never named it at pair-init, so its
-  # presence here is the holder's auto-bind arriving device-side. Polled, because
-  # it reaches this node by sync and a member of nothing cannot be barriered on.
-  - name: The device sees both of app A's namespaces, including the one it never named
+  # The only route by which a member of nothing learns this: a namespace summary
+  # is withheld from non-members.
+  - name: The device is told which namespace its account speaks app A in
     type: account_applications
     node: account-scope-node-2
     where:
@@ -523,9 +522,6 @@ steps:
     contains:
       namespaces:
         - '{{ns_a1}}'
-        - '{{ns_a2}}'
-    retries: 30
-    interval: 2
 
   # ── Revoke, naming one namespace ───────────────────────────────────
 
