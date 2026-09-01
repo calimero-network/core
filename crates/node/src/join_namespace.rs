@@ -316,13 +316,61 @@ pub async fn join_namespace(
 /// Document this asymmetry rather than wrap the publish in another
 /// timeout layer (which would race with the publish's own ack-collection
 /// logic).
-/// How many of an invitation's addresses this node will dial.
+/// How many distinct admitter **machines** this node will dial.
+///
+/// Counted in peers rather than addresses, because the several addresses a peer
+/// has are alternative routes to the same node: a direct one and a relay
+/// circuit, plus whatever it had before it last moved. If that node is off, all
+/// of them fail and the joiner has learned one fact — so charging four budget
+/// slots for it would spend the budget inside a single unreachable machine and
+/// never reach the next admitter, which may be up.
 ///
 /// Deliberately far below the decode bound. `admitter_addrs` sits outside the
 /// inviter's signature, so anyone relaying an invitation may rewrite it, and
 /// dialing is an action taken on a stranger's say-so. A real invitation names a
 /// handful of admitters; anything past that is not a joiner being helped.
-const MAX_ADMITTER_DIALS: usize = 8;
+const MAX_ADMITTER_PEERS_DIALED: usize = 8;
+
+/// Group admitter addresses by the machine they reach, capped at `max_peers`.
+///
+/// Order is preserved, and that is load-bearing rather than incidental: the mint
+/// puts TEE admitters first because they are hosted and stay up, and ordering is
+/// the only way it can say so — the field is bare strings, and a joiner that has
+/// synced nothing cannot tell a TEE account from an admin one.
+///
+/// The cap counts **machines**. Several addresses for one peer are alternative
+/// routes to it — a direct one, a relay circuit, whatever it had before it last
+/// moved — so if that machine is off they all fail and the joiner has learned
+/// one fact. Charging each of them against the budget would spend it inside a
+/// single unreachable node and never reach the next admitter.
+///
+/// An address with no `/p2p/<peer-id>` is dropped: without it the joiner cannot
+/// tell who answers there, which is the one thing the address exists to carry.
+fn group_admitter_routes(
+    addrs: &[String],
+    max_peers: usize,
+) -> Vec<(libp2p::PeerId, Vec<libp2p::Multiaddr>)> {
+    let mut by_peer: Vec<(libp2p::PeerId, Vec<libp2p::Multiaddr>)> = Vec::new();
+    for addr in addrs {
+        let Ok(parsed) = addr.parse::<libp2p::Multiaddr>() else {
+            tracing::debug!(%addr, "skipping unparseable admitter address");
+            continue;
+        };
+        let Some(libp2p::multiaddr::Protocol::P2p(peer)) = parsed.iter().last() else {
+            tracing::debug!(%addr, "skipping admitter address with no peer id");
+            continue;
+        };
+        // Split the lookup from the insert: a machine already in the list keeps
+        // collecting routes even once the cap is reached, while a new one past
+        // the cap contributes nothing.
+        if let Some((_, routes)) = by_peer.iter_mut().find(|(known, _)| *known == peer) {
+            routes.push(parsed);
+        } else if by_peer.len() < max_peers {
+            by_peer.push((peer, vec![parsed]));
+        }
+    }
+    by_peer
+}
 
 /// Dial the addresses an invitation offers, best-effort, before publishing.
 ///
@@ -342,26 +390,28 @@ async fn dial_admitter_addrs(node_client: &NodeClient, op: &NamespaceOp) {
         return;
     };
 
-    let mut dialed = 0usize;
-    for addr in &signed_invitation.admitter_addrs {
-        if dialed == MAX_ADMITTER_DIALS {
-            tracing::debug!(
-                offered = signed_invitation.admitter_addrs.len(),
-                dialed,
-                "invitation offers more admitter addresses than this node will dial"
-            );
-            break;
-        }
-        let Ok(parsed) = addr.parse::<libp2p::Multiaddr>() else {
-            tracing::debug!(%addr, "skipping unparseable admitter address");
-            continue;
-        };
-        dialed += 1;
-        match node_client.network_client().dial(parsed).await {
-            Ok(()) => tracing::debug!(%addr, "dialed an admitter named by the invitation"),
-            // Stale or unreachable is the ordinary case, not a fault: the
-            // address was recorded when the invitation was minted.
-            Err(err) => tracing::debug!(%addr, %err, "admitter address did not dial"),
+    let offered = signed_invitation.admitter_addrs.len();
+    let by_peer =
+        group_admitter_routes(&signed_invitation.admitter_addrs, MAX_ADMITTER_PEERS_DIALED);
+    tracing::debug!(
+        offered,
+        machines = by_peer.len(),
+        "grouped admitter addresses by machine"
+    );
+
+    for (peer, routes) in by_peer {
+        for addr in routes {
+            match node_client.network_client().dial(addr.clone()).await {
+                Ok(()) => {
+                    tracing::debug!(%peer, %addr, "dialed an admitter named by the invitation");
+                    // One route to a machine is all that machine needs. The
+                    // rest are alternatives, not additions.
+                    break;
+                }
+                // Stale or unreachable is the ordinary case, not a fault: the
+                // address was recorded when the invitation was minted.
+                Err(err) => tracing::debug!(%peer, %addr, %err, "admitter address did not dial"),
+            }
         }
     }
 }
@@ -743,5 +793,72 @@ mod retry_backoff_tests {
             Duration::from_secs(2),
             max
         ));
+    }
+}
+
+#[cfg(test)]
+mod admitter_route_tests {
+    use super::group_admitter_routes;
+
+    fn addr(peer: &str, port: u16) -> String {
+        format!("/ip4/10.0.0.1/tcp/{port}/p2p/{peer}")
+    }
+
+    const A: &str = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN";
+    const B: &str = "12D3KooWQYhTNQdmr3ArTeUHRYzFg94BKyTkoWBDWez9kSCVe2Xo";
+
+    #[test]
+    fn several_routes_to_one_machine_cost_one_slot() {
+        // Four addresses, one machine. If the machine is off they all fail and
+        // the joiner has learned one thing — so they must not consume four
+        // slots and starve the next admitter.
+        let addrs = vec![addr(A, 1), addr(A, 2), addr(A, 3), addr(A, 4), addr(B, 1)];
+
+        let grouped = group_admitter_routes(&addrs, 2);
+
+        assert_eq!(grouped.len(), 2, "two machines, not five addresses");
+        assert_eq!(
+            grouped[0].1.len(),
+            4,
+            "all four routes to the first are kept"
+        );
+        assert_eq!(grouped[1].1.len(), 1);
+    }
+
+    #[test]
+    fn order_is_preserved_so_the_mints_tee_first_ordering_survives() {
+        // The mint expresses "try the hosted node first" as position, because
+        // the field is bare strings with nothing to mark a TEE node. Reordering
+        // here would silently discard that.
+        let addrs = vec![addr(B, 1), addr(A, 1)];
+
+        let grouped = group_admitter_routes(&addrs, 8);
+
+        assert_eq!(grouped[0].0.to_string(), B, "first offered is tried first");
+        assert_eq!(grouped[1].0.to_string(), A);
+    }
+
+    #[test]
+    fn the_cap_drops_machines_not_routes() {
+        let addrs = vec![addr(A, 1), addr(B, 1), addr(A, 2)];
+
+        let grouped = group_admitter_routes(&addrs, 1);
+
+        assert_eq!(grouped.len(), 1, "only the first machine survives the cap");
+        assert_eq!(
+            grouped[0].1.len(),
+            2,
+            "a machine already in the list keeps collecting its later routes"
+        );
+    }
+
+    #[test]
+    fn an_address_with_no_peer_id_is_dropped() {
+        let addrs = vec!["/ip4/10.0.0.1/tcp/2528".to_owned(), addr(A, 1)];
+
+        let grouped = group_admitter_routes(&addrs, 8);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].0.to_string(), A);
     }
 }
