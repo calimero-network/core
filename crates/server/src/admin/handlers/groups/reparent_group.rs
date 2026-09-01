@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::local_governance::RootOp;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{ReparentGroupApiRequest, ReparentGroupApiResponse};
@@ -50,10 +50,19 @@ pub async fn handler(
         };
 
     let signer_sk = PrivateKey::from(sk_bytes);
-    let op = NamespaceOp::Root(RootOp::GroupReparented {
-        child_group_id: child_group_id.to_bytes().into(),
-        new_parent_id: new_parent_id.to_bytes().into(),
-    });
+    // Sealed under the namespace key: where a group sits in the tree is
+    // members' business. This site does not decide that — the choke point does.
+    let op = match calimero_governance_store::seal_root_op_for_publish(
+        &state.store,
+        namespace_id.to_bytes().into(),
+        RootOp::GroupReparented {
+            child_group_id: child_group_id.to_bytes().into(),
+            new_parent_id: new_parent_id.to_bytes().into(),
+        },
+    ) {
+        Ok(op) => op,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     info!(child=%group_id_str, new_parent=%req.new_parent_id, "Reparenting subgroup");
 

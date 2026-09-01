@@ -514,6 +514,24 @@ fn provision_tee_owner_with_sk(
     // The namespace identity is what `admit_tee_node` uses as the verifier
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
+    // The namespace's own encryption key, which production mints in
+    // `create_group` for whatever group it creates — and a namespace root is a
+    // group, so a real namespace is keyed from the moment it exists.
+    //
+    // This shim skipped it, which made every namespace it built look permanently
+    // unkeyed. That is not a state production can reach, and the gap only
+    // surfaced once root ops started being sealed: five tests here failed on a
+    // publisher refusing to send group structure in the clear, and the refusal
+    // was right. Keying the fixture is the fix; relaxing the publisher was not.
+    {
+        use rand::RngCore;
+        let mut namespace_key = [0u8; 32];
+        rng.fill_bytes(&mut namespace_key);
+        let _ = calimero_governance_store::GroupKeyring::new(&node.store, *gid)
+            .store_key(&namespace_key)
+            .expect("mint the namespace key, as create_group does");
+    }
+
     calimero_governance_store::NamespaceRepository::new(&node.store)
         .replace_identity(gid, &owner_pk, owner_sk.as_bytes())
         .expect("store_namespace_identity");

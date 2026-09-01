@@ -2262,6 +2262,62 @@ pub fn apply_received_group_key(
         responder_identity,
     )
 }
+/// Prepare a root op for publishing, resolving this namespace's key here.
+///
+/// The publish sites construct a root op; they should not each also look up a key
+/// and decide whether to seal. This is the one call they make, and the policy
+/// stays in `root_op_is_sealable` — one place to disagree with the receiver rather
+/// than one per site.
+///
+/// # Errors
+///
+/// When the keyring cannot be read, when sealing fails, or when a sealable op is
+/// offered by a node holding no namespace key. That last case is refused rather
+/// than published in the clear: authoring a governance change means holding the
+/// namespace key, so its absence means the node's own state is wrong — and
+/// answering that by publishing unsealed would undo the encryption exactly when
+/// it is least safe to.
+pub fn seal_root_op_for_publish(
+    store: &Store,
+    namespace_id: NamespaceId,
+    op: RootOp,
+) -> EyreResult<NamespaceOp> {
+    if !calimero_governance_types::root_op_is_sealable(&op) {
+        return Ok(NamespaceOp::Root(op));
+    }
+
+    let ns_typed = ContextGroupId::from(namespace_id.to_bytes());
+    // `(key_id, key)` — `into_tuple` yields the id first. Both halves are
+    // `[u8; 32]`, so binding them the other way round compiles and encrypts
+    // under the id, producing ciphertext no holder of the key can open.
+    let Some((key_id, key)) = GroupKeyring::new(store, ns_typed).load_current_key()? else {
+        // A namespace is keyed at creation: the root *is* a group, `create_group`
+        // handles both, and it mints a key for whatever group it creates. So by
+        // the time any `GroupCreated` is published its namespace has a key, and a
+        // publisher without one has something wrong with it.
+        //
+        // Refused rather than downgraded to cleartext. Sealable group structure
+        // has no business on the wire unsealed, and a fallback would be a
+        // legitimate-looking path for exactly that — indistinguishable, to a
+        // receiver, from a node that skipped sealing on purpose.
+        //
+        // This briefly published cleartext instead, to make five governance e2e
+        // tests pass. They build a namespace by writing repository rows directly
+        // and never mint its key, so they were under-building the fixture rather
+        // than exercising a real state; the fixtures now key the namespace as
+        // production does.
+        eyre::bail!(
+            "refusing to publish a sealable root op in the clear: this namespace holds no key, \
+             which cannot happen for one created through `create_group`"
+        );
+    };
+
+    GroupKeyring::prepare_root_op_for_publish(
+        Some(&key),
+        calimero_governance_types::KeyId::from(key_id),
+        op,
+    )
+}
 
 /// Re-drive any buffered encrypted group ops for `group_id` that were
 /// effect-skipped because their dependencies (key or subgroup meta) were
