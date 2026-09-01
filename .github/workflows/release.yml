@@ -208,13 +208,7 @@ jobs:
     strategy:
       matrix:
         # Keep legacy check names for required status checks.
-        #
-        # TEMPORARY (remove before merge): the pull_request arm normally stays
-        # Linux-only for cost, exactly as aarch64 and macOS are excluded. The
-        # Windows entry is duplicated into it here only so THIS pull request
-        # proves a Windows build green before it reaches master, since no
-        # Windows build has ever run in this repository.
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
       fail-fast: false
     runs-on: ${{ matrix.runner }}
 
