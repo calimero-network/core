@@ -6,24 +6,22 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use cached_path::Cache;
-use cached_path::Options;
+use calimero_build_utils::fetch_and_extract;
 use eyre::bail;
 use eyre::OptionExt;
-use reqwest::blocking::Client as ReqwestClient;
+use reqwest::blocking::Client;
+use reqwest::header::AUTHORIZATION;
 use reqwest::redirect::Policy;
 use reqwest::Url;
-use reqwest_compat::blocking::Client as ReqwestCompatClient;
-use reqwest_compat::header::AUTHORIZATION;
 
 const USER_AGENT: &str = "calimero-auth-build";
-const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
+const FRESHNESS_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const FETCH_RETRY_ATTEMPTS: u32 = 4;
 const FETCH_RETRY_INITIAL_DELAY_SECS: u64 = 2;
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 /// Pinned, not `"latest"`. Resolving `"latest"` at build time meant two builds of
 /// one core commit could embed different auth-frontend bundles, and the resolution
-/// itself was a live GitHub round-trip on every build — outside the download cache
+/// itself was a live GitHub round-trip on every build - outside the download cache
 /// below, so a warm cache did not spare it. Bumping is a deliberate edit here.
 /// `CALIMERO_AUTH_FRONTEND_VERSION=latest` still opts back in per build.
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.3";
@@ -94,7 +92,7 @@ fn try_main() -> eyre::Result<()> {
     let frontend_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
-        let mut builder = ReqwestCompatClient::builder().user_agent(USER_AGENT);
+        let mut builder = Client::builder().user_agent(USER_AGENT);
 
         if let Some(token) = token {
             let headers = [(AUTHORIZATION, format!("Bearer {token}").try_into()?)].into_iter();
@@ -102,22 +100,14 @@ fn try_main() -> eyre::Result<()> {
             builder = builder.default_headers(headers.collect());
         }
 
-        let cache = Cache::builder()
-            .client_builder(builder)
-            .freshness_lifetime(FRESHNESS_LIFETIME)
-            .dir(target_dir()?.join("cache"))
-            .build()?;
-
-        let mut options = Options::default().subdir("auth-frontend").extract();
+        let client = builder.build()?;
 
         let force = option_env!("CALIMERO_AUTH_FRONTEND_FETCH")
             .map_or(false, |c| matches!(c, "1" | "true" | "yes"));
 
-        if force {
-            options = options.force();
-        }
+        let cache_dir = target_dir()?.join("cache").join("auth-frontend");
 
-        let workdir = cached_path_with_retry(&cache, &src, &options)?;
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force)?;
 
         let repo = fs::read_dir(workdir)?
             .filter_map(Result::ok)
@@ -138,21 +128,23 @@ fn try_main() -> eyre::Result<()> {
 
 /// Fetch the frontend archive, retrying a failure that looks transient.
 ///
-/// Mirrors `cached_path_with_retry` in `crates/server/build.rs`, which exists for
-/// the same reason: `cached_path` retries only 502/503/504 and timeouts, and
-/// classifies a 404 as fatal. That is the wrong call for this URL, because
 /// GitHub's codeload builds tag archives on demand and can answer 404 for a tag
-/// that certainly exists — which is how a release build once failed on a tag that
+/// that certainly exists - which is how a release build once failed on a tag that
 /// resolved by hand minutes later. A genuinely bad tag still fails, just after a
 /// few seconds of patience instead of instantly.
-fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::Result<PathBuf> {
+fn fetch_with_retry(
+    client: &Client,
+    src: &str,
+    cache_dir: &Path,
+    force: bool,
+) -> eyre::Result<PathBuf> {
     let mut delay_secs = FETCH_RETRY_INITIAL_DELAY_SECS;
 
     for attempt in 1..=FETCH_RETRY_ATTEMPTS {
-        match cache.cached_path_with_options(src, options) {
+        match fetch_and_extract(client, src, cache_dir, FRESHNESS_LIFETIME, force) {
             Ok(path) => return Ok(path),
             Err(err) => {
-                let report = eyre::Report::new(err).wrap_err(format!(
+                let report = err.wrap_err(format!(
                     "failed to fetch the auth-frontend archive from {src} (attempt {attempt}/{FETCH_RETRY_ATTEMPTS})"
                 ));
 
@@ -173,7 +165,7 @@ fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::
 
 fn resolve_latest_release_tag(repo: &str, token: Option<&str>) -> eyre::Result<Option<String>> {
     let latest_release_url = CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL.replace("{repo}", repo);
-    let client = ReqwestClient::builder()
+    let client = Client::builder()
         .user_agent(USER_AGENT)
         .redirect(Policy::limited(5))
         .build()?;
