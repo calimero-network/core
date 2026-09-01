@@ -208,13 +208,7 @@ jobs:
     strategy:
       matrix:
         # Keep legacy check names for required status checks.
-        #
-        # TEMPORARY (remove before merge): this PR exists to unbreak the Windows
-        # build, and the pull_request arm is Linux-only for cost -- so without
-        # this it cannot demonstrate the one thing it claims. #3771 adds a
-        # permanent Windows lane; until that merges, this is how a Windows fix
-        # proves itself.
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
       fail-fast: false
     runs-on: ${{ matrix.runner }}
 
