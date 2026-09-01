@@ -236,7 +236,7 @@ hkdf = "0.12"
 indexmap = "2.6.0"
 infer = "0.22.0"
 itertools = "0.15.0"
-jsonschema = { version = "0.49", default-features = false }
+jsonschema = { version = "0.52", default-features = false }
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 lazy_static = "1.4"
 libp2p = "0.56.0"
