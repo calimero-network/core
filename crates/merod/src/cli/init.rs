@@ -35,21 +35,21 @@ use super::auth_mode::AuthModeArg;
 use crate::cli;
 
 /// Restrict a single path to the given owner-only `mode` (`0700` for
-/// directories, `0600` for files). No-op on non-Unix platforms, which lack
-/// POSIX mode bits.
-#[cfg(unix)]
+/// directories, `0600` for files) — and to the equivalent DACL on Windows,
+/// where a file otherwise inherits whatever the containing directory allows.
+///
+/// `mode` is the unix spelling of the intent. Windows has no mode, so the
+/// helper derives the same intent from whether the path is a directory; the
+/// argument is ignored there rather than approximated.
 async fn restrict_to_owner(path: impl AsRef<Path>, mode: u32) -> EyreResult<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = path.as_ref();
-    fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .await
-        .wrap_err_with(|| format!("failed to restrict permissions on {path:?}"))
-}
-
-#[cfg(not(unix))]
-async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()> {
-    Ok(())
+    let _ = mode;
+    let path = path.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        calimero_utils_fs::restrict_existing_to_owner(&path)
+            .wrap_err_with(|| format!("failed to restrict permissions on {path:?}"))
+    })
+    .await
+    .wrap_err("failed to join the permission-restriction task")?
 }
 
 /// Recursively restrict a directory tree to owner-only access: `0700` for every
@@ -61,7 +61,10 @@ async fn restrict_to_owner(_path: impl AsRef<Path>, _mode: u32) -> EyreResult<()
 /// left untouched (RocksDB creates none here). `pub(crate)` so
 /// `auth set-admin` applies the same pinning to the auth database it may
 /// create.
-#[cfg(unix)]
+///
+/// Runs on every platform. It used to be unix-only, which left the whole
+/// datastore on Windows inheriting the ACL of wherever `--home` pointed — the
+/// one place the raw node data lives.
 pub(crate) async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult<()> {
     let mut stack = vec![root.as_ref().to_path_buf()];
 
@@ -85,11 +88,6 @@ pub(crate) async fn restrict_tree_to_owner(root: impl AsRef<Path>) -> EyreResult
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub(crate) async fn restrict_tree_to_owner(_root: impl AsRef<Path>) -> EyreResult<()> {
-    Ok(())
-}
-
 /// Create `path` and any missing parents, with directories created owner-only
 /// (`0700`) on Unix. Using the mode at creation time means the node home is
 /// never momentarily visible to other users with permissive bits — the window a
@@ -105,7 +103,16 @@ async fn create_dir_owner_only(path: impl AsRef<Path>) -> EyreResult<()> {
     builder
         .create(path)
         .await
-        .wrap_err_with(|| format!("failed to create directory {path:?}"))
+        .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
+
+    // Unconditional, not `cfg(windows)`. Windows has no mode to set at creation,
+    // so the directory arrives with the parent's inherited ACL and has to be
+    // narrowed immediately afterwards; on unix the mode above already did it and
+    // this re-applies the same 0700. Writing it without a `cfg` costs one
+    // redundant syscall per directory at init and keeps the call type-checked on
+    // every host, where a `cfg(windows)` body is compiled by nothing a
+    // pull request runs.
+    restrict_to_owner(path, 0o700).await
 }
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
