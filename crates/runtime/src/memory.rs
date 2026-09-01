@@ -2,17 +2,15 @@ use core::ptr::NonNull;
 
 use wasmer::sys::vm::{VMConfig, VMMemory, VMMemoryDefinition, VMTable, VMTableDefinition};
 use wasmer::sys::{BaseTunables, Tunables};
-use wasmer_types::{
-    MemoryError, MemoryStyle, MemoryType, Pages, TableStyle, TableType, WASM_MAX_PAGES,
-};
+use wasmer_types::{MemoryError, MemoryStyle, MemoryType, TableStyle, TableType};
 
 use crate::logic::VMLimits;
 
-/// Custom tunables for the Wasmer runtime that configure memory and stack limits.
+/// Custom tunables for the Wasmer runtime that carry the guest stack limit.
 ///
-/// This struct wraps Wasmer's `BaseTunables` to provide custom memory configuration
-/// based on `VMLimits`. While `WasmerTunables` creates memory through the `Tunables`
-/// trait methods, the actual memory ownership is transferred to Wasmer's `Store`.
+/// Memory and table construction delegate to `BaseTunables`; only `vmconfig` is
+/// ours. While `WasmerTunables` creates memory through the `Tunables` trait
+/// methods, the actual memory ownership is transferred to Wasmer's `Store`.
 ///
 /// # Memory Management
 ///
@@ -31,11 +29,7 @@ pub struct WasmerTunables {
 
 impl WasmerTunables {
     pub fn new(limits: &VMLimits) -> Self {
-        let base = BaseTunables {
-            static_memory_bound: Pages(limits.max_memory_pages),
-            static_memory_offset_guard_size: u64::from(WASM_MAX_PAGES),
-            dynamic_memory_offset_guard_size: u64::from(WASM_MAX_PAGES),
-        };
+        let base = BaseTunables::new();
 
         let vmconfig = VMConfig {
             wasm_stack_size: Some(limits.max_stack_size),
