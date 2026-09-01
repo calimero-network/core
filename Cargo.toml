@@ -123,6 +123,7 @@ members = [
     "./crates/store/impl/rocksdb",
     "./crates/sys",
     "./crates/utils/actix",
+    "./crates/utils/fs",
     "./crates/wasm-abi",
 
     "./apps/scaffolding-e2e",
@@ -278,6 +279,7 @@ strum = "0.28.0"
 syn = { version = "2.0", features = ["full"] }
 tar = "0.4"
 tempfile = "3.10"
+windows-sys = "0.61"
 tdx-quote = "0.0.4"
 tdx_workload_attestation = "0.1.0"
 thiserror = "2.0.20"
@@ -347,6 +349,7 @@ calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-sys = { path = "./crates/sys" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
+calimero-utils-fs = { path = "./crates/utils/fs" }
 calimero-wasm-abi = { path = "./crates/wasm-abi" }
 mero-abi = { path = "./tools/calimero-abi" }
 mero-auth = { path = "./crates/auth" }

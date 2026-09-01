@@ -1037,6 +1037,7 @@ dependencies = [
  "calimero-node-primitives",
  "calimero-runtime",
  "calimero-server",
+ "calimero-utils-fs",
  "camino",
  "eyre",
  "libp2p-identity",
@@ -1701,6 +1702,15 @@ dependencies = [
  "pastey",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "calimero-utils-fs"
+version = "0.0.0"
+dependencies = [
+ "eyre",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5618,6 +5628,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "calimero-bundle",
+ "calimero-utils-fs",
  "clap",
  "ed25519-dalek",
  "eyre",
@@ -5642,6 +5653,7 @@ dependencies = [
  "calimero-crypto",
  "calimero-primitives",
  "calimero-server-primitives",
+ "calimero-utils-fs",
  "camino",
  "clap",
  "color-eyre",
@@ -5689,6 +5701,7 @@ dependencies = [
  "calimero-store-rocksdb",
  "calimero-tee-attestation",
  "calimero-utils-actix",
+ "calimero-utils-fs",
  "camino",
  "clap",
  "color-eyre",
