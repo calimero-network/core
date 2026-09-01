@@ -24,6 +24,7 @@
 //! takes the channel handles off `SyncManager`, constructs a
 //! `SyncDriver`, and forwards `run(&self)`.
 
+use std::collections::HashMap;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinPara
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::ContextId;
 use eyre::Result;
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, MissedTickBehavior};
@@ -156,12 +157,9 @@ impl SyncDriver {
         let mut next_sync = time::interval(self.frequency);
         next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        let mut requested_ctx = None;
-        let mut requested_peer = None;
         // Namespaces whose governance pull delivered nothing, with the number
         // of interval retries still owed to each.
-        let mut pending_ns_sync: std::collections::HashMap<[u8; 32], u8> =
-            std::collections::HashMap::new();
+        let mut pending_ns_sync: HashMap<[u8; 32], u8> = HashMap::new();
 
         loop {
             tokio::select! {
@@ -213,6 +211,11 @@ impl SyncDriver {
                             "SyncSession initiator produced no result within watchdog grace — assuming a wedged session/actor; failing it so periodic-sync retries (#2319)"
                         );
                     }
+
+                    // Periodic sweep: every context goes through the tracker's
+                    // normal eligibility gate (force = false) and uses
+                    // discovery-based peer selection.
+                    self.dispatch_pending_contexts(HashMap::new(), true).await;
                 }
                 Some(result) = self.session_result_rx.recv() => {
                     // `apply_result` clears the dispatch-attempt + wedge
@@ -273,184 +276,234 @@ impl SyncDriver {
                 Some((ctx, peer)) = self.ctx_sync_rx.recv() => {
                     debug!(?ctx, ?peer, "Received sync request");
 
-                    requested_ctx = ctx;
-                    requested_peer = peer;
-
-                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
-                    // When multiple contexts join rapidly (common in E2E tests), they all
-                    // call sync() which queues requests in ctx_sync_rx. The old code only
-                    // processed ONE request per loop iteration, leaving contexts 2-N queued
-                    // indefinitely. This caused those contexts to never sync and remain
-                    // with dag_heads=[] and Uninitialized errors.
+                    // Collect this request together with everything else
+                    // already queued behind it, preserving each request's
+                    // per-context peer hint. Multiple sync requests frequently
+                    // enqueue near-simultaneously — most notably a burst of
+                    // gossipsub `Subscribed` events on a context join, each
+                    // requesting a targeted pull from the peer that just
+                    // joined. Draining them lets every queued context be
+                    // dispatched in this iteration (nothing is left stalled),
+                    // while keeping the peer targeting and the
+                    // explicit-request force-bypass that each request carries.
                     //
-                    // Solution: Use try_recv() to drain all buffered requests immediately,
-                    // then trigger a full sync that will process all contexts.
+                    // Draining used to discard both: it counted the extra
+                    // requests and then cleared the context and peer to force
+                    // an all-contexts sweep, which defeated the one
+                    // peer-targeted trigger (mesh-join pull) in exactly the
+                    // high-contention burst it exists for, and downgraded
+                    // operator resyncs to recency-gated no-ops.
+                    //
+                    // A bare `None` context is a global request and is the only
+                    // thing that escalates to a full all-contexts sweep; a
+                    // burst of purely context-specific requests dispatches
+                    // exactly those contexts.
+                    let mut explicit: HashMap<ContextId, Option<PeerId>> = HashMap::new();
+                    let mut sweep_all = false;
+                    ingest_sync_request(&mut explicit, &mut sweep_all, ctx, peer);
+
                     let mut drained_count = 0;
-                    while self.ctx_sync_rx.try_recv().is_ok() {
+                    while let Ok((ctx, peer)) = self.ctx_sync_rx.try_recv() {
                         drained_count += 1;
+                        ingest_sync_request(&mut explicit, &mut sweep_all, ctx, peer);
+                    }
+                    if drained_count > 0 {
+                        debug!(
+                            drained_count,
+                            contexts = explicit.len(),
+                            sweep_all,
+                            "Coalesced additional queued sync requests"
+                        );
                     }
 
-                    if drained_count > 0 {
-                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
-                        // Clear requested_ctx to force syncing ALL contexts
-                        // This ensures newly-joined contexts get synced even if they weren't first in queue
-                        requested_ctx = None;
-                        requested_peer = None;
-                    }
+                    self.dispatch_pending_contexts(explicit, sweep_all).await;
                 }
             }
-
-            self.dispatch_pending_contexts(requested_ctx.take(), requested_peer.take())
-                .await;
         }
     }
 
-    /// Walk pending contexts after a `next_sync.tick()` or
-    /// `ctx_sync_rx` arm fired. For each context, consult the tracker
-    /// for eligibility, attempt a `session_tx.try_send`, and record
-    /// the outcome (success / Full / Closed) back into the tracker.
+    /// Dispatch the sync requests assembled by the `ctx_sync_rx` arm or
+    /// synthesised by the periodic `next_sync.tick()`.
     ///
-    /// `requested_ctx`/`requested_peer` mirror the explicit-request
-    /// override the `ctx_sync_rx` arm captured: when present, `force`
-    /// bypasses the dispatch-backoff and recency checks (but not
-    /// `AlreadyInProgress` — see `dispatch_decision`'s contract).
+    /// Two disjoint groups are dispatched:
     ///
-    /// **Note on drain semantics:** when the `ctx_sync_rx` arm in
-    /// [`Self::run`] drains additional queued requests, it
-    /// deliberately clears `requested_ctx` / `requested_peer` to
-    /// `None` (the "CRITICAL FIX" comment in the arm body explains
-    /// the rationale: a full-context sweep is the only way to avoid
-    /// indefinitely stalling later-queued contexts). The side
-    /// effect, which is shared with the pre-extraction
-    /// `SyncManager::start`, is that the originally-explicit
-    /// context's force-bypass is dropped along with all the other
-    /// drained ones — every context goes through the tracker's
-    /// normal eligibility checks in that case. Trading a single
-    /// explicit context's targeted-sync precision for guaranteed
-    /// progress across the queue is intentional.
+    /// 1. **`explicit`** — contexts that were explicitly requested, each with
+    ///    its (optional) peer hint. These are dispatched with `force = true`,
+    ///    bypassing the dispatch-backoff and recency checks (but never
+    ///    `AlreadyInProgress` — see `dispatch_decision`'s contract), and
+    ///    forward their peer hint into `SyncSessionJob::Initiator`. Every
+    ///    queued context is dispatched here, so no later-queued context is
+    ///    starved.
+    ///
+    /// 2. **sweep** — when `sweep_all` is set (a global `sync(None, ..)`
+    ///    request, or the periodic tick), every remaining context is walked
+    ///    through the tracker's normal eligibility gate (`force = false`) with
+    ///    discovery-based peer selection. Contexts already dispatched in group
+    ///    1 are skipped, so a context named explicitly is not dispatched twice
+    ///    in one iteration.
     async fn dispatch_pending_contexts(
         &mut self,
-        requested_ctx: Option<ContextId>,
-        requested_peer: Option<PeerId>,
+        explicit: HashMap<ContextId, Option<PeerId>>,
+        sweep_all: bool,
     ) {
-        let contexts = requested_ctx
-            .is_none()
-            .then(|| self.context_client.get_context_ids(None));
-
-        let contexts = stream::iter(requested_ctx)
-            .map(Ok)
-            .chain(stream::iter(contexts).flatten());
-
-        let mut contexts = pin!(contexts);
-
-        while let Some(context_id) = contexts.next().await {
-            let context_id = match context_id {
-                Ok(context_id) => context_id,
-                Err(err) => {
-                    error!(%err, "Failed reading context id to sync");
-                    continue;
-                }
-            };
-
-            // Phase 1: read-only eligibility check. We must not mutate
-            // state here because a failed `try_send` below would leave
-            // `last_sync = None` with no future result to clear it —
-            // permanently stalling the context (Cursor bugbot #2317).
-            // The tracker rolls together the #2319 dispatch-attempt
-            // backoff and the recency check; `force` (explicit
-            // request) bypasses both.
-            let force = requested_ctx.is_some();
-            let is_first_sync = match self.tracker.dispatch_decision(&context_id, force) {
-                DispatchDecision::Skip(reason) => {
-                    match reason {
-                        SkipReason::DispatchRecentlyAttempted => debug!(
-                            %context_id,
-                            "Skipping sync — dispatch recently attempted, mailbox was full (#2319)"
-                        ),
-                        SkipReason::AlreadyInProgress => debug!(
-                            %context_id,
-                            "Sync already in progress"
-                        ),
-                        SkipReason::LastSyncTooRecent {
-                            time_since,
-                            minimum,
-                        } => debug!(
-                            %context_id,
-                            ?time_since,
-                            ?minimum,
-                            "Skipping sync, last one was too recent"
-                        ),
-                    }
-                    continue;
-                }
-                DispatchDecision::Eligible {
-                    is_first_sync,
-                    forced_despite_recency,
-                } => {
-                    if let Some(time_since) = forced_despite_recency {
-                        debug!(
-                            %context_id,
-                            ?time_since,
-                            minimum = ?self.interval,
-                            "Force syncing despite recency, due to explicit request"
-                        );
-                    }
-                    is_first_sync
-                }
-            };
-
-            debug!(%context_id, "Scheduled sync");
-
-            // Phase 2: dispatch BEFORE mutating state — so a
-            // `Full`/`Closed` outcome leaves the per-context tracking
-            // state untouched and the next interval tick (or
-            // heartbeat trigger) just retries.
-            let generation = self.tracker.begin_dispatch_generation(context_id);
-            let dispatched = match self.session_tx.try_send(SyncSessionJob::Initiator {
-                context_id,
-                peer_id: requested_peer,
-                generation,
-            }) {
-                Ok(()) => true,
-                Err(SyncSessionSendError::Full) => {
-                    match self.tracker.record_dispatch_full(context_id) {
-                        FullWarnHint::EmitWarn => warn!(
-                            %context_id,
-                            "SyncSession actor mailbox full — skipping initiator dispatch; backing off this context for {:?} (#2316/#2319)",
-                            self.interval
-                        ),
-                        FullWarnHint::EmitDebug => debug!(
-                            %context_id,
-                            "SyncSession actor mailbox full — skipping (rate-limited; see periodic rollup) (#2319)"
-                        ),
-                    }
-                    false
-                }
-                Err(SyncSessionSendError::Closed) => {
-                    self.tracker.record_dispatch_closed(context_id);
-                    warn!(
-                        %context_id,
-                        "SyncSession actor closed — skipping initiator dispatch"
-                    );
-                    false
-                }
-            };
-
-            if !dispatched {
-                continue;
-            }
-
-            // Phase 3: dispatch succeeded — mark the context as
-            // in-flight. A `SyncSessionResult` will arrive on
-            // `session_result_rx` and call `on_success` / `on_failure`
-            // to clear the flag — or, if it never does, the #2319
-            // watchdog above fails it after the grace.
-            if is_first_sync {
-                info!(%context_id, "Syncing for the first time");
-            }
-            self.tracker
-                .record_dispatch_succeeded(context_id, is_first_sync);
+        // Group 1: explicit, forced, peer-targeted.
+        for (&context_id, &peer_id) in &explicit {
+            self.try_dispatch(context_id, peer_id, true).await;
         }
+
+        // Group 2: full sweep, unforced, discovery-selected peer.
+        if sweep_all {
+            let contexts = self.context_client.get_context_ids(None);
+            let mut contexts = pin!(contexts);
+
+            while let Some(context_id) = contexts.next().await {
+                let context_id = match context_id {
+                    Ok(context_id) => context_id,
+                    Err(err) => {
+                        error!(%err, "Failed reading context id to sync");
+                        continue;
+                    }
+                };
+
+                if explicit.contains_key(&context_id) {
+                    continue;
+                }
+
+                self.try_dispatch(context_id, None, false).await;
+            }
+        }
+    }
+
+    /// Attempt to dispatch a sync session for a single context.
+    ///
+    /// Consults the tracker for eligibility (`force` bypasses the
+    /// dispatch-backoff and recency checks but not `AlreadyInProgress`),
+    /// forwards a `SyncSessionJob::Initiator` carrying `peer_id` on success,
+    /// and records the outcome (success / Full / Closed) back into the tracker.
+    async fn try_dispatch(&mut self, context_id: ContextId, peer_id: Option<PeerId>, force: bool) {
+        // Phase 1: read-only eligibility check. We must not mutate
+        // state here because a failed `try_send` below would leave
+        // `last_sync = None` with no future result to clear it —
+        // permanently stalling the context (Cursor bugbot #2317).
+        // The tracker rolls together the #2319 dispatch-attempt
+        // backoff and the recency check; `force` (explicit
+        // request) bypasses both.
+        let is_first_sync = match self.tracker.dispatch_decision(&context_id, force) {
+            DispatchDecision::Skip(reason) => {
+                match reason {
+                    SkipReason::DispatchRecentlyAttempted => debug!(
+                        %context_id,
+                        "Skipping sync — dispatch recently attempted, mailbox was full (#2319)"
+                    ),
+                    SkipReason::AlreadyInProgress => debug!(
+                        %context_id,
+                        "Sync already in progress"
+                    ),
+                    SkipReason::LastSyncTooRecent {
+                        time_since,
+                        minimum,
+                    } => debug!(
+                        %context_id,
+                        ?time_since,
+                        ?minimum,
+                        "Skipping sync, last one was too recent"
+                    ),
+                }
+                return;
+            }
+            DispatchDecision::Eligible {
+                is_first_sync,
+                forced_despite_recency,
+            } => {
+                if let Some(time_since) = forced_despite_recency {
+                    debug!(
+                        %context_id,
+                        ?time_since,
+                        minimum = ?self.interval,
+                        "Force syncing despite recency, due to explicit request"
+                    );
+                }
+                is_first_sync
+            }
+        };
+
+        debug!(%context_id, "Scheduled sync");
+
+        // Phase 2: dispatch BEFORE mutating state — so a
+        // `Full`/`Closed` outcome leaves the per-context tracking
+        // state untouched and the next interval tick (or
+        // heartbeat trigger) just retries.
+        let generation = self.tracker.begin_dispatch_generation(context_id);
+        let dispatched = match self.session_tx.try_send(SyncSessionJob::Initiator {
+            context_id,
+            peer_id,
+            generation,
+        }) {
+            Ok(()) => true,
+            Err(SyncSessionSendError::Full) => {
+                match self.tracker.record_dispatch_full(context_id) {
+                    FullWarnHint::EmitWarn => warn!(
+                        %context_id,
+                        "SyncSession actor mailbox full — skipping initiator dispatch; backing off this context for {:?} (#2316/#2319)",
+                        self.interval
+                    ),
+                    FullWarnHint::EmitDebug => debug!(
+                        %context_id,
+                        "SyncSession actor mailbox full — skipping (rate-limited; see periodic rollup) (#2319)"
+                    ),
+                }
+                false
+            }
+            Err(SyncSessionSendError::Closed) => {
+                self.tracker.record_dispatch_closed(context_id);
+                warn!(
+                    %context_id,
+                    "SyncSession actor closed — skipping initiator dispatch"
+                );
+                false
+            }
+        };
+
+        if !dispatched {
+            return;
+        }
+
+        // Phase 3: dispatch succeeded — mark the context as
+        // in-flight. A `SyncSessionResult` will arrive on
+        // `session_result_rx` and call `on_success` / `on_failure`
+        // to clear the flag — or, if it never does, the #2319
+        // watchdog above fails it after the grace.
+        if is_first_sync {
+            info!(%context_id, "Syncing for the first time");
+        }
+        self.tracker
+            .record_dispatch_succeeded(context_id, is_first_sync);
+    }
+}
+
+/// Fold one `(context, peer)` sync request into the batch being assembled.
+///
+/// `Some(context)` records an explicit, peer-targeted request. A later request
+/// naming a peer for a context that already has one wins, and a later request
+/// with no peer never erases a hint already recorded — a targeted pull is the
+/// more specific instruction, and losing it is the bug this whole path exists
+/// to fix.
+///
+/// `None` is a global request and is the only thing that sets `sweep_all`.
+fn ingest_sync_request(
+    explicit: &mut HashMap<ContextId, Option<PeerId>>,
+    sweep_all: &mut bool,
+    ctx: Option<ContextId>,
+    peer: Option<PeerId>,
+) {
+    match ctx {
+        Some(context_id) => {
+            let slot = explicit.entry(context_id).or_insert(peer);
+            if peer.is_some() {
+                *slot = peer;
+            }
+        }
+        None => *sweep_all = true,
     }
 }
 
@@ -478,6 +531,114 @@ mod tests {
     // `p5_partition_scenarios_tests`) and the namespace-join /
     // open-subgroup-join e2e workflows continue to exercise the
     // driver's behaviour end-to-end in the meantime.
+
+    // The request-coalescing logic (`ingest_sync_request`) has no such
+    // constructor dependency and is unit-tested directly below — it is the part
+    // that decides, for a burst of queued requests, which contexts get a forced
+    // targeted dispatch and whether a full sweep is triggered.
+
+    use calimero_primitives::context::ContextId;
+    use libp2p::PeerId;
+
+    use super::{ingest_sync_request, HashMap};
+
+    fn ctx(byte: u8) -> ContextId {
+        ContextId::from([byte; 32])
+    }
+
+    /// Fold a whole batch of requests, mirroring the `ctx_sync_rx` arm.
+    fn ingest_all(
+        requests: &[(Option<ContextId>, Option<PeerId>)],
+    ) -> (HashMap<ContextId, Option<PeerId>>, bool) {
+        let mut explicit = HashMap::new();
+        let mut sweep_all = false;
+        for &(c, p) in requests {
+            ingest_sync_request(&mut explicit, &mut sweep_all, c, p);
+        }
+        (explicit, sweep_all)
+    }
+
+    #[test]
+    fn single_targeted_request_preserves_peer_and_no_sweep() {
+        let peer = PeerId::random();
+        let (explicit, sweep_all) = ingest_all(&[(Some(ctx(1)), Some(peer))]);
+
+        assert!(
+            !sweep_all,
+            "a context-specific request must not trigger a sweep"
+        );
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit.get(&ctx(1)), Some(&Some(peer)));
+    }
+
+    #[test]
+    fn burst_of_distinct_contexts_keeps_each_peer_and_no_sweep() {
+        let (pa, pb, pc) = (PeerId::random(), PeerId::random(), PeerId::random());
+        let (explicit, sweep_all) = ingest_all(&[
+            (Some(ctx(1)), Some(pa)),
+            (Some(ctx(2)), Some(pb)),
+            (Some(ctx(3)), Some(pc)),
+        ]);
+
+        // Regression: a burst of purely context-specific requests must
+        // dispatch exactly those contexts with their peers preserved —
+        // not collapse into an untargeted all-contexts sweep.
+        assert!(!sweep_all);
+        assert_eq!(explicit.len(), 3);
+        assert_eq!(explicit.get(&ctx(1)), Some(&Some(pa)));
+        assert_eq!(explicit.get(&ctx(2)), Some(&Some(pb)));
+        assert_eq!(explicit.get(&ctx(3)), Some(&Some(pc)));
+    }
+
+    #[test]
+    fn last_targeted_peer_wins_for_same_context() {
+        let (first, second) = (PeerId::random(), PeerId::random());
+        let (explicit, sweep_all) =
+            ingest_all(&[(Some(ctx(1)), Some(first)), (Some(ctx(1)), Some(second))]);
+
+        assert!(!sweep_all);
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit.get(&ctx(1)), Some(&Some(second)));
+    }
+
+    #[test]
+    fn targeted_hint_is_not_erased_by_later_untargeted_request() {
+        let peer = PeerId::random();
+        let (explicit, _) = ingest_all(&[(Some(ctx(1)), Some(peer)), (Some(ctx(1)), None)]);
+
+        // An untargeted request for a context must not downgrade an
+        // earlier targeted one to discovery-based selection.
+        assert_eq!(explicit.get(&ctx(1)), Some(&Some(peer)));
+
+        // ...and order-independent: untargeted first, targeted second.
+        let (explicit, _) = ingest_all(&[(Some(ctx(2)), None), (Some(ctx(2)), Some(peer))]);
+        assert_eq!(explicit.get(&ctx(2)), Some(&Some(peer)));
+    }
+
+    #[test]
+    fn global_request_triggers_sweep() {
+        let (explicit, sweep_all) = ingest_all(&[(None, None)]);
+
+        assert!(sweep_all);
+        assert!(explicit.is_empty());
+    }
+
+    #[test]
+    fn mixed_batch_sweeps_and_keeps_explicit_targets() {
+        let peer = PeerId::random();
+        let (explicit, sweep_all) = ingest_all(&[
+            (Some(ctx(1)), Some(peer)),
+            (None, None),
+            (Some(ctx(2)), None),
+        ]);
+
+        // A global request in the batch triggers the sweep, but the
+        // explicitly-targeted contexts are still dispatched forced and
+        // targeted (and skipped by the sweep via `contains_key`).
+        assert!(sweep_all);
+        assert_eq!(explicit.get(&ctx(1)), Some(&Some(peer)));
+        assert_eq!(explicit.get(&ctx(2)), Some(&None));
+    }
 
     use super::{retries_left_after_failure, MAX_NS_SYNC_RETRIES};
 
