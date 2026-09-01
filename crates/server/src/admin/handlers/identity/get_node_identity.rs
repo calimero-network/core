@@ -33,7 +33,13 @@ use crate::AdminState;
 /// name a device no peer will admit and - for a paired node - an adopted account
 /// it no longer speaks for. So this falls back to the node's own root, which is
 /// the only account it can still honestly claim.
-pub(crate) type NodeIdentityParts = (AccountId, PublicKey, Option<DeviceId>, Option<KemPublicKey>);
+pub(crate) type NodeIdentityParts = (
+    AccountId,
+    PublicKey,
+    Option<DeviceId>,
+    Option<KemPublicKey>,
+    bool,
+);
 
 pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityParts>> {
     let devices = NodeDeviceRepository::new(store);
@@ -41,19 +47,34 @@ pub(crate) fn node_identity(store: &Store) -> EyreResult<Option<NodeIdentityPart
         // Through the crate's own accessor, not by reaching into the secret:
         // `kem_public_key` is what certificates already publish, so the value
         // reported here cannot drift from the one that gets certified.
+        //
+        // A paired node adopted an account rooted on another machine and may hold a
+        // root of its own besides, so the account has to match rather than a root
+        // merely existing.
+        let holds_root = devices
+            .account_root()?
+            .is_some_and(|root| root.account() == held.account);
         return Ok(Some((
             held.account,
             held.genesis.root_sign_pk,
             Some(held.device()),
             Some(held.kem_public_key()),
+            holds_root,
         )));
     }
     // No usable device: this node speaks only for itself, and a node with neither
     // a usable device nor a root has taken part in nothing at all. No device also
-    // means no agreement key, which is the device's.
-    Ok(devices
-        .account_root()?
-        .map(|root| (root.account(), root.genesis().root_sign_pk, None, None)))
+    // means no agreement key, which is the device's, and the account reported is its
+    // own root's - so it holds that root by construction.
+    Ok(devices.account_root()?.map(|root| {
+        (
+            root.account(),
+            root.genesis().root_sign_pk,
+            None,
+            None,
+            true,
+        )
+    }))
 }
 
 /// Who this node is: the account it writes as, the device it is, and the key it
@@ -80,7 +101,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
     };
 
-    let Some((account, account_root_pk, device, agreement_key)) = held else {
+    let Some((account, account_root_pk, device, agreement_key, holds_account_root)) = held else {
         return ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "this node holds neither a usable device nor an account root yet; \
@@ -135,6 +156,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 // offline root can now read all three from one call and certify
                 // this node's device without the node ever touching the root.
                 device_agreement_key: agreement_key,
+                holds_account_root,
             },
         },
     }
@@ -184,7 +206,7 @@ mod tests {
             .ensure_enrolled(&NS.into())
             .expect("mint this node's device");
 
-        let (account, root_pk, device, _agreement) = node_identity(&store)
+        let (account, root_pk, device, _agreement, _holds) = node_identity(&store)
             .expect("read")
             .expect("an enrolled node has an identity");
 
@@ -225,7 +247,7 @@ mod tests {
             .apply_revocation(&NS.into(), adopted.device())
             .expect("tombstone this node's device");
 
-        let (account, _root_pk, device, _agreement) = node_identity(&store)
+        let (account, _root_pk, device, _agreement, _holds) = node_identity(&store)
             .expect("read")
             .expect("the node still has its own root to fall back on");
         assert_eq!(account, own_root);
@@ -253,5 +275,62 @@ mod tests {
             .expect("tombstone this node's device");
 
         assert!(node_identity(&store).expect("read").is_none());
+    }
+
+    /// The holder: it minted the root the account is derived from, so it is the
+    /// one machine that can certify another device into it.
+    #[test]
+    fn a_node_speaking_for_its_own_account_holds_that_account_s_root() {
+        let store = a_node_taking_part_somewhere();
+        let devices = NodeDeviceRepository::new(&store);
+        let _root = devices.provision_account_root().expect("root");
+        let held = devices.ensure_enrolled(&NS.into()).expect("mint");
+
+        let (account, .., holds_root) = node_identity(&store).expect("read").expect("present");
+        assert_eq!(account, held.account);
+        assert!(holds_root);
+    }
+
+    /// The case a bare "does a root exist" check gets wrong. This node ran
+    /// `merod init` and so holds a root, but it speaks for an account rooted on
+    /// another machine, and certifying into that one is not its to do.
+    #[test]
+    fn a_paired_node_does_not_hold_the_root_of_the_account_it_adopted() {
+        let store = a_node_taking_part_somewhere();
+        let devices = NodeDeviceRepository::new(&store);
+        let own = devices.provision_account_root().expect("root").account();
+        let adopted = devices
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS)],
+                AccountGenesis::new(PrivateKey::from([0x53; 32]).public_key()),
+            )
+            .expect("adopt");
+        assert_ne!(adopted.account, own, "the fixture has to make them differ");
+
+        let (account, .., holds_root) = node_identity(&store).expect("read").expect("present");
+        assert_eq!(
+            account, adopted.account,
+            "it speaks for the account it adopted"
+        );
+        assert!(
+            !holds_root,
+            "it holds a root, but not the one the account it speaks for is derived from"
+        );
+    }
+
+    /// A node that holds no root at all can certify nothing.
+    #[test]
+    fn a_node_with_no_root_of_its_own_holds_none() {
+        let store = a_node_taking_part_somewhere();
+        let adopted = NodeDeviceRepository::new(&store)
+            .ensure_enrolled_into(
+                &[ContextGroupId::from(NS)],
+                AccountGenesis::new(PrivateKey::from([0x54; 32]).public_key()),
+            )
+            .expect("adopt");
+
+        let (account, .., holds_root) = node_identity(&store).expect("read").expect("present");
+        assert_eq!(account, adopted.account);
+        assert!(!holds_root);
     }
 }

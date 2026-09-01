@@ -3517,6 +3517,14 @@ pub struct NodeIdentityApiResponseData {
     /// is the one thing that opens those deliveries and is reachable from no HTTP
     /// route.
     pub device_agreement_key: Option<String>,
+
+    /// Whether this node holds the root key of the account it speaks for. False
+    /// means no root key available: the node runs on a delegate device key, so it
+    /// cannot certify another device into the account.
+    ///
+    /// Defaulted, so a response from a node predating the field still deserializes.
+    #[serde(default)]
+    pub holds_account_root: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
