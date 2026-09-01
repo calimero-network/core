@@ -9243,9 +9243,9 @@ checksum = "591ef38edfb78ca4771ee32cf494cb8771944bee237a9b91fc9c1424ac4b777b"
 
 [[package]]
 name = "tdx-quote"
-version = "0.0.4"
+version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14f4ab4f38ef1537f0ccd0fbae769a5295a4b33f81a07b8d5b6267504594d80b"
+checksum = "1a2b5801f4d44185197dffb3a63147bb227e19987b5b93628269625676ab1635"
 dependencies = [
  "nom",
  "p256",
@@ -11321,7 +11321,6 @@ dependencies = [
  "p256",
  "p384",
  "p521",
- "rsa",
  "sha2 0.10.9",
  "signature",
  "spki",

@@ -280,7 +280,7 @@ syn = { version = "3.0", features = ["full"] }
 tar = "0.4"
 tempfile = "3.10"
 windows-sys = "0.61"
-tdx-quote = "0.0.4"
+tdx-quote = "0.0.5"
 tdx_workload_attestation = "0.1.0"
 thiserror = "2.0.20"
 thunderdome = "0.6.1"
