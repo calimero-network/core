@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{FromRequest, Json};
 use axum::http::{Request, StatusCode};
@@ -41,7 +40,6 @@ impl IntoResponse for ValidationError {
 /// Validated JSON extractor that performs input validation and sanitization
 pub struct ValidatedJson<T>(pub T);
 
-#[async_trait]
 impl<T, S> FromRequest<S> for ValidatedJson<T>
 where
     T: DeserializeOwned + Validate + Send + 'static,

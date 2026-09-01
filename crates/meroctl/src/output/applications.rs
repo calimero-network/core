@@ -11,8 +11,7 @@ use super::Report;
 impl Report for Application {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
         let _ = table.set_header(vec![
             Cell::new("ID").fg(Color::Blue),
@@ -45,8 +44,7 @@ impl Report for GetApplicationResponse {
 impl Report for InstallApplicationResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
         let _ = table.set_header(vec![Cell::new("Application Installed").fg(Color::Green)]);
         let _ = table.add_row(vec![format!(
@@ -65,8 +63,7 @@ impl Report for calimero_server_primitives::admin::ListApplicationVersionsRespon
             return;
         }
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
         let _ = table.set_header(vec![
             Cell::new("Version").fg(Color::Blue),
             Cell::new("Package").fg(Color::Blue),
@@ -91,8 +88,7 @@ impl Report for ListApplicationsResponse {
             println!("No applications found");
         } else {
             let mut table = Table::new();
-            let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-            let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+            *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
             let _ = table.set_header(vec![
                 Cell::new("ID").fg(Color::Blue),
@@ -118,8 +114,7 @@ impl Report for ListApplicationsResponse {
 impl Report for UninstallApplicationResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
         let _ = table.set_header(vec![Cell::new("Application Uninstalled").fg(Color::Green)]);
         let _ = table.add_row(vec![format!(
@@ -134,8 +129,7 @@ impl Report for UninstallApplicationResponse {
 impl Report for ListPackagesResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
         let _ = table.set_header(vec![Cell::new("Package").fg(Color::Blue)]);
 
@@ -150,8 +144,7 @@ impl Report for ListPackagesResponse {
 impl Report for ListVersionsResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
         let _ = table.set_header(vec![Cell::new("Version").fg(Color::Blue)]);
 
@@ -166,8 +159,7 @@ impl Report for ListVersionsResponse {
 impl Report for GetLatestVersionResponse {
     fn report(&self) {
         let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        *table.style_mut() = comfy_table::presets::UTF8_FULL.with_rounded_corners();
 
         let _ = table.set_header(vec![
             Cell::new("Version").fg(Color::Blue),

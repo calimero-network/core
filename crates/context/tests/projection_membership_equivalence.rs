@@ -1351,6 +1351,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
     let rot_op = calimero_governance_store::op_from_namespace_op_with_binding(
         &rot_env,
         Some(&rotation),
+        None,
         Some((account, cert.device)),
         rot_id,
         hlc(2),

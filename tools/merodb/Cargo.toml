@@ -21,7 +21,7 @@ serde = { workspace = true, features = ["derive"] }
 borsh = { workspace = true, features = ["derive"] }
 eyre = { workspace = true }
 hex = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 tracing = { workspace = true }
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-storage = { workspace = true }
@@ -33,9 +33,9 @@ jaq-interpret = "1.2"
 jaq-parse = "1.0"
 
 # GUI dependencies (optional)
-axum = { version = "0.7", optional = true, features = ["multipart"] }
+axum = { workspace = true, optional = true, features = ["multipart"] }
 tokio = { version = "1", features = ["full"], optional = true }
-tower-http = { version = "0.5", optional = true, features = ["fs", "set-header"] }
+tower-http = { workspace = true, optional = true, features = ["fs", "set-header"] }
 
 [dev-dependencies]
 tempfile = "3.10"

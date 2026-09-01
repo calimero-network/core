@@ -7654,7 +7654,7 @@ mod auto_follow_tests {
     fn subgroup_created_event_fires_after_namespace_op_persist() {
         use std::sync::{Arc, Barrier};
 
-        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
         use super::NamespaceGovernance;
         use crate::op_events::{self, OpEvent};
@@ -7684,17 +7684,28 @@ mod auto_follow_tests {
             .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
             .unwrap();
 
+        // The namespace key production mints when the namespace is created; this
+        // fixture builds its rows by hand and skipped it.
+        let _ = crate::GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key");
+
         let op = SignedNamespaceOp::sign(
             &admin_sk,
             ns_id.into(),
             vec![],
             1,
-            NamespaceOp::Root(RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            }),
+            crate::seal_root_op_for_publish(
+                &store,
+                ns_id.into(),
+                RootOp::GroupCreated {
+                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                    group_id: new_group_id.into(),
+                    parent_id: ns_id.into(),
+                    restricted: true,
+                },
+            )
+            .expect("seal the create op"),
         )
         .unwrap();
         // `delta_id` is the op's content hash — the key the namespace

@@ -277,6 +277,35 @@ impl<'a> NamespaceGovernance<'a> {
             _ => None,
         };
 
+        // A sealable root op arriving in the clear is refused, not folded.
+        //
+        // Until now sealing was a convention: a publisher that skipped it still
+        // had its op accepted everywhere, so the guarantee held only as long as
+        // every publisher chose to honour it. This is what makes it a rule.
+        //
+        // Unconditional, with no exception for an unkeyed namespace. A namespace
+        // root is a group, `create_group` mints a key for whatever group it
+        // creates, so a namespace is keyed from the moment it exists and there is
+        // no legitimate window in which one of these five is authored without a
+        // key to seal it under. An exception here would also have to be decided
+        // from the receiver's own keyring, and a node still awaiting key delivery
+        // would answer differently from a keyed peer — two nodes disagreeing
+        // about whether an op is admissible is divergence, not policy.
+        //
+        // The cost is a coordinated upgrade: a peer running this code refuses the
+        // cleartext ops a pre-sealing publisher emits, and ops already on the DAG
+        // from before sealing are refused on replay. Both are the re-bootstrap
+        // this change is understood to require.
+        if let NamespaceOp::Root(root) = &op.op {
+            if calimero_governance_types::root_op_is_sealable(root) {
+                eyre::bail!(
+                    "refusing a root op that should have been sealed: this variant is published \
+                     under the namespace key, and accepting it in the clear would make sealing \
+                     advisory"
+                );
+            }
+        }
+
         match (&op.op, opened_root.as_ref()) {
             (NamespaceOp::Root(root), _) | (NamespaceOp::RootSealed { .. }, Some(root)) => {
                 root_events = self.apply_root_op(op, root)?;
@@ -2203,6 +2232,29 @@ pub fn decrypt_group_op(
     };
     match resolved {
         Some(group_key) => Ok(Some(GroupKeyring::decrypt_op(&group_key, encrypted)?)),
+        None => Ok(None),
+    }
+}
+
+/// Open a sealed root op, or `None` when this node holds no key for it.
+///
+/// The root analogue of [`decrypt_group_op`], and deliberately namespace-only:
+/// a root op is sealed under the namespace key, so unlike the group path there
+/// is no subgroup keyring to fall back to.
+///
+/// `None` is an ordinary answer, not a fault — a member that has not yet been
+/// delivered the namespace key cannot read these, and says so rather than
+/// guessing. Callers must fold that `None` as a hole the reader can see, never
+/// as "nothing happened here".
+pub fn open_sealed_root_op(
+    store: &Store,
+    namespace_id: NamespaceId,
+    key_id: &[u8; 32],
+    encrypted: &calimero_governance_types::EncryptedRootOp,
+) -> EyreResult<Option<RootOp>> {
+    let ns_group = ContextGroupId::from(namespace_id.to_bytes());
+    match GroupKeyring::new(store, ns_group).load_key_by_id(key_id)? {
+        Some(key) => Ok(Some(GroupKeyring::decrypt_root_op(&key, encrypted)?)),
         None => Ok(None),
     }
 }

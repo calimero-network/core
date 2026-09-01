@@ -15,20 +15,20 @@ pub fn service() -> Router {
         .route("/device", post(create_alias::handler::<DeviceId>));
 
     let lookup_routes = Router::new()
-        .route("/context/:name", post(lookup_alias::handler::<ContextId>))
+        .route("/context/{name}", post(lookup_alias::handler::<ContextId>))
         .route(
-            "/application/:name",
+            "/application/{name}",
             post(lookup_alias::handler::<ApplicationId>),
         )
-        .route("/device/:name", post(lookup_alias::handler::<DeviceId>));
+        .route("/device/{name}", post(lookup_alias::handler::<DeviceId>));
 
     let delete_routes = Router::new()
-        .route("/context/:name", post(delete_alias::handler::<ContextId>))
+        .route("/context/{name}", post(delete_alias::handler::<ContextId>))
         .route(
-            "/application/:name",
+            "/application/{name}",
             post(delete_alias::handler::<ApplicationId>),
         )
-        .route("/device/:name", post(delete_alias::handler::<DeviceId>));
+        .route("/device/{name}", post(delete_alias::handler::<DeviceId>));
 
     let list_routes = Router::new()
         .route("/context", get(list_aliases::handler::<ContextId>))
@@ -46,12 +46,21 @@ pub fn service() -> Router {
 mod tests {
     use std::sync::Arc;
 
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::Extension;
+    use calimero_context_client::client::ContextClient;
     use calimero_node_primitives::client::{AliasExists, NodeClient};
     use calimero_primitives::alias::Alias;
     use calimero_primitives::identity::DeviceId;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
     use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    use super::service;
+    use crate::{AdminState, NodeReadiness};
 
     /// A `NodeClient` over a fresh in-memory store, for exercising the alias
     /// CRUD the create/lookup/list/delete handlers delegate to.
@@ -130,5 +139,51 @@ mod tests {
                 ("phone".to_owned(), DeviceId::from([0x22; 32])),
             ]
         );
+    }
+
+    /// Every alias route carries at most one path parameter, and the handlers
+    /// must bind it. axum rejects an extractor whose arity disagrees with the
+    /// matched route, so a handler asking for more parameters than the route
+    /// declares answers 500 instead of running.
+    #[actix::test]
+    async fn alias_routes_bind_their_path_parameters() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, _blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+        let state = Arc::new(AdminState::new(
+            store,
+            ctx_client,
+            node_client,
+            Arc::new(NodeReadiness::new()),
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+
+        for (method, uri) in [
+            ("POST", "/lookup/device/laptop"),
+            ("POST", "/delete/device/laptop"),
+            ("GET", "/list/device"),
+        ] {
+            let response = service()
+                .layer(Extension(Arc::clone(&state)))
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK, "{method} {uri}");
+        }
     }
 }
