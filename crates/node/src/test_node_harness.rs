@@ -217,13 +217,6 @@ pub(crate) struct TestNode {
     /// tests. Keeping it is load-bearing, not vestigial.
     #[cfg_attr(not(feature = "mock-attestation"), allow(dead_code))]
     pub(crate) node_addr: actix::Addr<NodeManager>,
-    /// The manager's own beacon cache, so a test can assert what a receive path
-    /// did (or refused to do) to it.
-    pub(crate) readiness_cache: Arc<crate::readiness::ReadinessCache>,
-    /// The manager's established-member beacon-sync debounce slots, so a test
-    /// can confirm that arm really claimed one before asserting on the other.
-    /// Peers the node opened a sync stream to. See [`StubNetworkActor`].
-    pub(crate) stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
     /// Gossipsub payloads this node published. See [`StubNetworkActor`].
     pub(crate) publishes: Arc<Mutex<Vec<Vec<u8>>>>,
 }
@@ -334,8 +327,6 @@ pub(crate) async fn boot_test_node() -> TestNode {
         prometheus_client::metrics::counter::Counter::default(),
     );
 
-    let readiness_cache = node_manager.readiness_cache.clone();
-    let stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>> = Arc::new(Mutex::new(Vec::new()));
     let publishes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
 
     let arb = pool.get().await.expect("arbiter");
@@ -354,7 +345,9 @@ pub(crate) async fn boot_test_node() -> TestNode {
     // (mesh sampling + best-effort publish) resolves instead of deadlocking
     // on an uninitialised `LazyRecipient`. See `StubNetworkActor`.
     let arb3 = pool.get().await.expect("arbiter 3");
-    let stub_opens = stream_opens.clone();
+    // The stub needs somewhere to record stream opens; no test reads them back
+    // today, so this sink is deliberately not surfaced on `TestNode`.
+    let stub_opens: Arc<Mutex<Vec<libp2p::PeerId>>> = Arc::new(Mutex::new(Vec::new()));
     let stub_publishes = publishes.clone();
     let _network_addr = Actor::start_in_arbiter(&arb3, move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient");
@@ -373,8 +366,6 @@ pub(crate) async fn boot_test_node() -> TestNode {
         context_client,
         node_client,
         node_addr,
-        readiness_cache,
-        stream_opens,
         publishes,
     }
 }

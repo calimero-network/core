@@ -223,13 +223,6 @@ pub(super) fn handle_readiness_beacon(
 /// genuinely-divergent beacon from another peer for the next
 /// [`NS_BEACON_SYNC_DEBOUNCE`] window.
 ///
-/// `source` targets the pull at the beacon's own publisher. It is `Some` only on
-/// the provable non-member path, where the advertised head op exists nowhere
-/// else yet: that peer's join op has reached no other member, so pulling from an
-/// arbitrary mesh peer would query someone who cannot serve it while still
-/// burning the debounce slot. `None` keeps the established-member path on the
-/// mesh-peer pull, where any member that applied the op can serve it.
-///
 /// Debounced through `ns_beacon_sync_debounce`; see that field's docs.
 fn spawn_beacon_divergence_sync(
     manager: &mut NodeManager,

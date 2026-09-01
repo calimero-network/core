@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::db::InMemoryDB;
@@ -532,7 +532,6 @@ fn signed_beacon(
     namespace_id: NamespaceId,
     applied_through: u64,
     strong: bool,
-    admission_proof: Option<SignedGroupOpenInvitation>,
 ) -> SignedReadinessBeacon {
     let mut beacon = SignedReadinessBeacon {
         namespace_id,
@@ -541,7 +540,6 @@ fn signed_beacon(
         applied_through,
         ts_millis: 1_700_000_000_000,
         strong,
-        admission_proof,
         signature: [0u8; 64],
     };
     beacon.signature = sk
@@ -558,7 +556,7 @@ async fn verify_readiness_beacon_accepts_signed_member_beacon() {
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let beacon = signed_beacon(&sk, ns_id.into(), 17, true, None);
+    let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     assert!(
         verify_readiness_beacon(&store, &beacon),
         "signed beacon from a member must verify"
@@ -574,7 +572,7 @@ async fn verify_readiness_beacon_rejects_non_member_signer() {
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
     // No plant_namespace_member call.
-    let beacon = signed_beacon(&sk, ns_id.into(), 17, true, None);
+    let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
 
@@ -590,7 +588,7 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let mut beacon = signed_beacon(&sk, ns_id.into(), 17, true, None);
+    let mut beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     beacon.signature = [0u8; 64]; // clobber the signature
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
