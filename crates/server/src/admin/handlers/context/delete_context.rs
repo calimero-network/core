@@ -3,11 +3,9 @@ use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::{
-    DeleteContextApiRequest, DeleteContextResponse, DeletedContextResponseData,
-};
+use calimero_server_primitives::admin::{DeleteContextResponse, DeletedContextResponseData};
 use reqwest::StatusCode;
 use tower_sessions::Session;
 use tracing::{error, info};
@@ -19,7 +17,6 @@ pub async fn handler(
     Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    _body: Option<Json<DeleteContextApiRequest>>,
 ) -> impl IntoResponse {
     let context_id_result = match ContextId::from_str(&context_id) {
         Ok(id) => id,

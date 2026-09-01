@@ -361,15 +361,22 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // emitted NO op and the founder lived only in the creator's local
                 // GroupMeta, which is exactly the gap #2474 closes.
                 if let Some(parent_id) = parent_group_id {
-                    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-                        // The account this node acts as — the same one written
-                        // into the local rows above, so a receiver folds the
-                        // creator the rows already name.
-                        admin: admin_account,
-                        group_id: group_id.to_bytes().into(),
-                        parent_id: parent_id.to_bytes().into(),
-                        restricted,
-                    });
+                    // Sealed under the namespace key. Group structure is only
+                    // members' business, and the choke point decides — this site
+                    // does not know or need to know which variants seal.
+                    let create_op = calimero_governance_store::seal_root_op_for_publish(
+                        &datastore,
+                        namespace_id.to_bytes().into(),
+                        RootOp::GroupCreated {
+                            // The account this node acts as — the same one written
+                            // into the local rows above, so a receiver folds the
+                            // creator the rows already name.
+                            admin: admin_account,
+                            group_id: group_id.to_bytes().into(),
+                            parent_id: parent_id.to_bytes().into(),
+                            restricted,
+                        },
+                    )?;
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,

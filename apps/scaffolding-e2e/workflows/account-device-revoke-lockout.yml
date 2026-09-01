@@ -237,23 +237,30 @@ steps:
   #
   # One step for both halves because the ordering is forced: node-3 cannot mint
   # its DeviceId without the account, and node-2 cannot certify it without the id
-  # and both keys. The script also checks that the two sides derived the same
-  # confirmation code, and that the scope key was delivered. Scoped to every
-  # application, which is what naming none means.
+  # and both keys. The step also checks that the two sides derived the same
+  # confirmation code and that what was certified is what was minted. Naming no
+  # application scopes the link to every one of them.
   - name: Pair node-3 onto Alice's account
-    type: script
-    script: scripts/account-pair.sh
-    target: local
-    args:
-      - account-revoke-node-3
-      - account-revoke-node-2
-      - '{{root_key}}'
-      - '-'
+    type: account_pair
+    node: account-revoke-node-3
+    holder: account-revoke-node-2
+    root_key: '{{root_key}}'
+    namespaces:
       - '{{namespace_id}}'
+    outputs:
+      key_delivered: keyDelivered
+      credential: credential
 
-  # A `script` step exports nothing, so what the pairing minted is read back from
-  # the device's own identity - which `pair-init` wrote synchronously, before the
-  # script returned.
+  # node-3's write below rests on both: the link is what confers authority, and
+  # the key is what makes the device able to read what it writes into.
+  - name: The pairing delivered a scope key and minted a credential
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+      - 'json_not_equal({{credential}}, "")'
+
+  # node-3's own view of the account it adopted, which its `pair-init` wrote
+  # synchronously before the step returned.
   - name: What node-3 speaks as, now that it is paired
     type: node_identity
     node: account-revoke-node-3
@@ -513,29 +520,17 @@ steps:
 #
 # Wired into `.github/workflows/e2e-rust-apps.yml`.
 #
-# `node_identity` (>= 0.6.54), `account_revoke` and `account_show` are NATIVE
-# merobox steps. Pairing is not: merobox's `account_pair` drives the
-# namespace-scoped routes, which no longer exist - they took one namespace from
-# the path and fanned the link out to every namespace regardless - so it runs
-# through `scripts/account-pair.sh` against the account-level pair.
-#
-# A `script` step cannot export custom `outputs:` - it only sets
-# `script_output_local`, which the next script step overwrites - so what the
-# pairing minted is read back from the device's own `node_identity` rather than
-# threaded through a temp file, which is how the four shell scripts these steps
-# replaced used to carry it. The assertions are `json_assert` statements, where
-# a reader of this file can see them.
+# `node_identity`, `account_pair`, `account_revoke` and `account_show` are all
+# native merobox steps. `account_pair` drives the account-level routes as of
+# merobox 0.6.71; before that it drove the namespace-scoped ones, which no
+# longer exist - they took one namespace from the path and fanned the link out
+# to every namespace regardless.
 #
 # What this scenario does NOT assert is the refusals: substituted key material
 # and a mismatched confirmation code are driven by
 # `account-pairing-application-scope`, against the live routes and at the states
 # where each is reachable. Repeating them here would need a second pairing to
 # refuse and buy no stronger claim.
-#
-# `account-api.sh` is the shared URL/auth/call helper: nothing in the e2e
-# suite invokes `meroctl`, merobox drives nodes through its own client, and the
-# merod image does not ship the CLI — so a `target: local` script talks to the
-# admin API directly. The CLI commands are thin wrappers over the same endpoints.
 #
 # The three code gaps this workflow was written ahead of — per-device
 # authorization on the governance bridge, enrolling into an EXISTING account, and

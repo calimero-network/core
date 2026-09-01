@@ -103,15 +103,15 @@ primitives/                   # calimero-server-primitives
 ```
 GET  /admin-api/contexts              # List contexts
 POST /admin-api/contexts              # Create context
-GET  /admin-api/contexts/:id          # Get context
-DELETE /admin-api/contexts/:id        # Delete context
+GET  /admin-api/contexts/{id}          # Get context
+DELETE /admin-api/contexts/{id}        # Delete context
 
 GET  /admin-api/applications          # List apps
 POST /admin-api/install-application   # Install app by package@version
-GET  /admin-api/applications/:id      # Get app
-GET  /admin-api/applications/:id/abi  # Embedded WASM ABI manifest (optional ?service_name=)
+GET  /admin-api/applications/{id}      # Get app
+GET  /admin-api/applications/{id}/abi  # Embedded WASM ABI manifest (optional ?service_name=)
 
-POST /admin-api/contexts/:id/join     # Join context
+POST /admin-api/contexts/{id}/join     # Join context
 ```
 
 ### JSON-RPC
@@ -168,7 +168,7 @@ use axum::routing::{get, post, delete};
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/contexts", get(list_contexts).post(create_context))
-        .route("/contexts/:id", get(get_context).delete(delete_context))
+        .route("/contexts/{id}", get(get_context).delete(delete_context))
 }
 ```
 

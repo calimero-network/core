@@ -1,17 +1,22 @@
 #!/bin/sh
 #
-# What `POST /admin-api/account/pair-complete` refuses, and with which status.
+# The two `POST /admin-api/account/pair-complete` refusals that need a payload
+# with one field substituted.
 #
-#     args: [ <holder>, <new-node>, <namespace-id>, <root-key>, <unbound-application> ]
+#     args: [ <holder>, <new-node>, <namespace-id>, <root-key> ]
 #
-# `<unbound-application>` must be one the holder serves in no namespace yet, so
-# the scope resolves to nothing. Asserted by status, not by failure: a 200 is a
-# security regression and a 500 is the regression this mapping prevents.
+# Still a script because merobox's `account_pair` derives the statement and the
+# confirmation code from its own `pair-init`, so no scenario can hand it a bad
+# one. The refusals that need only a different request - an unreachable scope, a
+# device this node never certified - are native `expect_status` steps.
+#
+# Asserted by status, not by failure: a 200 is a security regression and a 500
+# is the regression this mapping prevents.
 
 set -eu
 
-if [ "$#" -ne 5 ]; then
-    echo "usage: $0 <holder> <new-node> <namespace-id> <root-key> <unbound-application>" >&2
+if [ "$#" -ne 4 ]; then
+    echo "usage: $0 <holder> <new-node> <namespace-id> <root-key>" >&2
     exit 1
 fi
 
@@ -21,7 +26,6 @@ holder="$1"
 newnode="$2"
 namespace="$3"
 root_key="$4"
-unbound_application="$5"
 
 init=$(api "${newnode}" POST "account/pair-init" \
     "{\"accountRootPublicKey\":\"${root_key}\",\"namespaces\":[\"${namespace}\"]}")
@@ -43,9 +47,8 @@ done
 offer() {
     _statement="$1"
     _code="$2"
-    _applications="$3"
-    printf '{"deviceId":"%s","kemPublicKey":"%s","signPublicKey":"%s","statement":"%s","confirmationCode":"%s","applications":%s}' \
-        "${device}" "${kem}" "${sign}" "${_statement}" "${_code}" "${_applications}"
+    printf '{"deviceId":"%s","kemPublicKey":"%s","signPublicKey":"%s","statement":"%s","confirmationCode":"%s","applications":[]}' \
+        "${device}" "${kem}" "${sign}" "${_statement}" "${_code}"
 }
 
 # `refuse <status> <what> <body>` - the holder's `pair-complete` must answer
@@ -61,19 +64,13 @@ tampered="0${statement#?}"
 if [ "${tampered}" = "${statement}" ]; then
     tampered="1${statement#?}"
 fi
-refuse 400 "a tampered statement" "$(offer "${tampered}" "${code}" '[]')"
+refuse 400 "a tampered statement" "$(offer "${tampered}" "${code}")"
 
 # The gate that stands between the account and a WHOLESALE substitution: one that
 # replaces both keys and re-signs, so the statement verifies cleanly and only the
 # code - which arrives from the other device by a channel the attacker does not
 # control - disagrees.
 refuse 400 "a mismatched confirmation code" \
-    "$(offer "${statement}" "DEAD-BEEF-DEAD-BEEF" '[]')"
+    "$(offer "${statement}" "DEAD-BEEF-DEAD-BEEF")"
 
-# `409`, not `400`: the payload is perfect and the identical call works once this
-# node takes part in a namespace targeting that application. Checked before the
-# payload is looked at, so this says the SCOPE was refused rather than the keys.
-refuse 409 "a scope this node signs nowhere in" \
-    "$(offer "${statement}" "${code}" "[\"${unbound_application}\"]")"
-
-echo "every refusal answered its own status; the real pairing is the account-pair.sh step"
+echo "both substituted-payload refusals answered their own status"

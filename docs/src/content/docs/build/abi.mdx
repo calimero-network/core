@@ -140,6 +140,36 @@ There are two ways out, depending on what actually collided:
   `Wrapper<u64>` both want to be `Wrapper`. Define a separate concrete type per
   instantiation so every shape has its own name.
 
+## Constraining a newtype
+
+A one-field tuple struct describes as an alias to its inner type.
+`#[abi(pattern = "...")]` records what its values are allowed to look like:
+
+```rust
+#[derive(AbiType)]
+#[abi(pattern = "^[0-9a-f]{64}$")]
+pub struct FolderId(String);
+```
+
+The pattern is ECMA-262 source text and lands on the alias in the manifest:
+
+```json
+{ "kind": "alias", "target": { "kind": "string" }, "pattern": "^[0-9a-f]{64}$" }
+```
+
+It is **descriptive, not enforced**.
+The node does not check values against it; a generated client uses it to reject
+bad input at its own boundary, before a call goes out.
+Whatever the app itself requires still has to be checked in the app.
+
+`pattern` applies only to a one-field tuple struct.
+On anything else the build fails, because there is no single value for it to
+describe:
+
+```
+`pattern` applies only to a one-field tuple struct
+```
+
 ## Inspecting the ABI
 
 `cargo mero abi` reads a compiled module or the artifacts beside it:

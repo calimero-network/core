@@ -80,7 +80,7 @@ description: >
   has to arrange:
 
     * A tampered statement, a mismatched confirmation code (`400`) and a scope
-      this node signs nowhere in (`409`), all before the real pairing - the
+      this node signs nowhere in (`409`), all before the real pairing - each
       refusal step runs its own idempotent `pair-init` and completes nothing.
       The unreachable scope is app B, asked for while app B still has no
       namespace, which is what makes an application resolve to nothing here.
@@ -223,8 +223,8 @@ steps:
       namespace reads that namespace's governance state hash, which the node
       answers only for a member - and node-2 is a member of nothing by
       construction, which is the property the scenario exists to test. Every
-      read of node-2's state below is therefore polled inside a script instead,
-      against the device's own account-scoped routes.
+      read of node-2's state below therefore carries `retries` instead, against
+      the device's own account-scoped routes.
     nodes:
       - account-scope-node-1
       - account-scope-node-3
@@ -248,11 +248,14 @@ steps:
   # ── The refusals pair-complete owes, while app B has no namespace ──
 
   # Here rather than later, because the `409` needs an application this node
-  # serves in no namespace and app B is exactly that until the next step. The
-  # step performs its own `pair-init` on node-2 and completes nothing; that
+  # serves in no namespace and app B is exactly that until the next step. Both
+  # steps perform their own `pair-init` on node-2 and complete nothing; that
   # `pair-init` is idempotent, so the real pairing below mints the same device
   # and reads out the same code even though it names one namespace more.
-  - name: Pair-complete refuses a bad payload and an unreachable scope
+  #
+  # A script, because these two need a payload with one field substituted and
+  # `account_pair` derives the statement and the code from its own `pair-init`.
+  - name: Pair-complete refuses a tampered statement and a mismatched code
     type: script
     script: scripts/account-pair-refusal-statuses.sh
     target: local
@@ -261,7 +264,19 @@ steps:
       - account-scope-node-2
       - '{{ns_a1}}'
       - '{{alice_root}}'
+
+  # `409`, not `400`: the payload is perfect, and the scope is checked before it
+  # is looked at - so this says the SCOPE was refused rather than the keys.
+  - name: Pair-complete refuses a scope this node signs nowhere in
+    type: account_pair
+    node: account-scope-node-2
+    holder: account-scope-node-1
+    root_key: '{{alice_root}}'
+    namespaces:
+      - '{{ns_a1}}'
+    applications:
       - '{{app_b}}'
+    expect_status: 409
 
   # ── The second namespace, which the scope must NOT reach ───────────
 
@@ -298,19 +313,21 @@ steps:
   # The namespace set and the application scope are chosen independently on
   # purpose. node-2 subscribes to A1 and B1; node-1 certifies it for app A only.
   - name: Pair node-2 onto Alice's account, scoped to app A
-    type: script
-    script: scripts/account-pair.sh
-    target: local
-    args:
-      - account-scope-node-2
-      - account-scope-node-1
-      - '{{alice_root}}'
-      - '{{app_a}}'
+    type: account_pair
+    node: account-scope-node-2
+    holder: account-scope-node-1
+    root_key: '{{alice_root}}'
+    namespaces:
       - '{{ns_a1}}'
       - '{{ns_b1}}'
+    applications:
+      - '{{app_a}}'
+    outputs:
+      key_delivered: keyDelivered
+      credential: credential
 
-  # Reads node-2's own device row, which `pair-init` wrote synchronously before
-  # the script returned - so there is nothing here to wait for.
+  # node-2's own view of the account it adopted, which its `pair-init` wrote
+  # synchronously before the step returned - so there is nothing to wait for.
   - name: What node-2 speaks as, now that it is paired
     type: node_identity
     node: account-scope-node-2
@@ -320,30 +337,36 @@ steps:
 
   # One account, two distinct replicas. Sharing a device id would have the two
   # share counter slots and an HLC seed and silently lose each other's writes,
-  # so the inequality matters as much as the equality.
-  - name: The phone joined Alice's account, not one of its own
+  # so the inequality matters as much as the equality. Without the key and the
+  # credential the device can reach none of the state every step below reads.
+  - name: The phone joined Alice's account, carrying a key and a credential
     type: json_assert
     statements:
       - 'json_equal({{paired_account}}, {{alice_account}})'
       - 'json_not_equal({{paired_device}}, {{alice_device}})'
+      - 'json_equal({{key_delivered}}, true)'
+      - 'json_not_equal({{credential}}, "")'
 
   # ── The scope landed where it was aimed, and nowhere else ──────────
 
   # Reads node-1's own store, which its own `pair-complete` wrote before it
   # answered, so no barrier stands between this and the pairing.
+  # `assert_api_response`, not `account_devices`: only this step takes `absent`,
+  # which is what pins each list to one entry and makes the absence assertable.
   - name: The paired device reaches app A's namespace and not app B's
-    type: script
-    script: scripts/account-device-scope.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - '{{paired_device}}'
-      - --scope
-      - '{{app_a}}'
-      - --bound
-      - '{{ns_a1}}'
-      - --unbound
-      - '{{ns_b1}}'
+    type: assert_api_response
+    node: account-scope-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: false
+      revoked: false
+      applications.0: '{{app_a}}'
+      namespaces.0: '{{ns_a1}}'
+    absent:
+      - applications.1
+      - namespaces.1
 
   # ── What a repair refuses while the pairing stands ─────────────────
 
@@ -351,29 +374,51 @@ steps:
   # refusal is reachable in: a revoked device re-enrols under its own account
   # root, and a node holding its own account answers `404` for a device it never
   # certified rather than `403` for the machine.
-  - name: Relink refuses the wrong device and the wrong machine
-    type: script
-    script: scripts/account-relink-refusals.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - account-scope-node-2
-      - '{{paired_device}}'
+
+  # 64 hex that decodes and names no device of this account, so the refusal
+  # comes from the certificate lookup rather than the width check.
+  - name: Relink refuses a device this node holds no certificate for
+    type: account_relink
+    node: account-scope-node-1
+    device_id: '1111111111111111111111111111111111111111111111111111111111111111'
+    expect_status: 404
+
+  - name: Relink refuses a repair run on the paired device rather than the holder
+    type: account_relink
+    node: account-scope-node-2
+    device_id: '{{paired_device}}'
+    expect_status: 403
 
   # ── Widen the scope without the device being present ───────────────
 
+  # Exactly one namespace is published into and one skipped, which is what lets
+  # the captures below name them by position.
   - name: Relink the paired device, widening its scope to app B
-    type: script
-    script: scripts/account-relink.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - '{{paired_device}}'
+    type: account_relink
+    node: account-scope-node-1
+    device_id: '{{paired_device}}'
+    applications:
       - '{{app_b}}'
-      - '{{ns_b1}}'
-      - '{{ns_a1}}'
-      - '{{app_a}}'
-      - '{{app_b}}'
+    outputs:
+      relinked_device: deviceId
+      relink_scope: applications
+      relink_linked_ns: linkedIn.0.namespaceId
+      relink_key_delivered: linkedIn.0.keyDelivered
+      relink_skipped_ns: skipped.0.namespaceId
+      relink_skipped_reason: skipped.0.reason
+
+  # Publication is per-DAG, so "it worked" is a set of namespaces rather than a
+  # boolean, and a skip has to say why - re-publishing where the device was
+  # already bound would re-endorse a live binding on every call.
+  - name: The relink published into B1 with its key, and left A1 alone
+    type: json_assert
+    statements:
+      - 'json_equal({{relinked_device}}, {{paired_device}})'
+      - 'json_subset({{relink_scope}}, ["{{app_a}}", "{{app_b}}"])'
+      - 'json_equal({{relink_linked_ns}}, {{ns_b1}})'
+      - 'json_equal({{relink_key_delivered}}, true)'
+      - 'json_equal({{relink_skipped_ns}}, {{ns_a1}})'
+      - 'json_equal({{relink_skipped_reason}}, "alreadyBound")'
 
   - name: Settle the relink's op in namespace B1
     type: wait_for_sync
@@ -383,19 +428,26 @@ steps:
     group_id: '{{ns_b1}}'
     timeout: 120
 
+  # The scope is an exact set; the bindings are membership, because that set
+  # grows as namespaces are gained and pinning it whole would fail on that.
   - name: The widened scope now reaches both namespaces
-    type: script
-    script: scripts/account-device-scope.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - '{{paired_device}}'
-      - --scope
-      - '{{app_a}}'
-      - '{{app_b}}'
-      - --bound
-      - '{{ns_a1}}'
-      - '{{ns_b1}}'
+    type: assert_api_response
+    node: account-scope-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: false
+      revoked: false
+    contains:
+      applications:
+        - '{{app_a}}'
+        - '{{app_b}}'
+      namespaces:
+        - '{{ns_a1}}'
+        - '{{ns_b1}}'
+    absent:
+      - applications.2
 
   # ── A namespace gained afterwards binds the device on its own ──────
 
@@ -413,16 +465,19 @@ steps:
   # No barrier: this reads the binding rows node-1 wrote inside its own
   # creation, before it answered. A2 has no second member to converge with yet.
   - name: The paired device was carried into A2 with no re-pairing
-    type: script
-    script: scripts/account-device-scope.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - '{{paired_device}}'
-      - --bound
-      - '{{ns_a1}}'
-      - '{{ns_b1}}'
-      - '{{ns_a2}}'
+    type: assert_api_response
+    node: account-scope-node-1
+    path: /admin-api/account/devices
+    where:
+      deviceId: '{{paired_device}}'
+    match:
+      isSelf: false
+      revoked: false
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
+        - '{{ns_b1}}'
+        - '{{ns_a2}}'
 
   # ── The device ends up able to RUN the application ─────────────────
 
@@ -444,14 +499,29 @@ steps:
     group_id: '{{ns_a1}}'
     timeout: 120
 
+  # Polled, because acquisition is best-effort off an apply-time event. `size`,
+  # not the id: a registration writes a stub row under the real id everywhere.
   - name: The paired device acquired app A without membership or a context
-    type: script
-    script: scripts/account-device-application.sh
-    target: local
-    args:
-      - account-scope-node-2
-      - '{{app_a}}'
-      - '{{ns_a1}}'
+    type: assert_api_response
+    node: account-scope-node-2
+    path: /admin-api/applications
+    where:
+      id: '{{app_a}}'
+    not_match:
+      size: 0
+    retries: 45
+    interval: 2
+
+  # The only route by which a member of nothing learns this: a namespace summary
+  # is withheld from non-members.
+  - name: The device is told which namespace its account speaks app A in
+    type: account_applications
+    node: account-scope-node-2
+    where:
+      applicationId: '{{app_a}}'
+    contains:
+      namespaces:
+        - '{{ns_a1}}'
 
   # ── Revoke, naming one namespace ───────────────────────────────────
 
@@ -481,12 +551,10 @@ steps:
   # enough to reach the tombstone. Reads the store its own revocation wrote
   # before it answered, so there is nothing to barrier on.
   - name: Relink refuses a spent id
-    type: script
-    script: scripts/account-relink-refusal-revoked.sh
-    target: local
-    args:
-      - account-scope-node-1
-      - '{{paired_device}}'
+    type: account_relink
+    node: account-scope-node-1
+    device_id: '{{paired_device}}'
+    expect_status: 403
 
   - name: Settle the revocation across namespace A1's members
     type: wait_for_sync
@@ -499,24 +567,31 @@ steps:
   # Polled rather than barriered, for the same reason as every other read of
   # node-2: it is a member of nothing, so nothing can barrier on it. The
   # tombstone reaches it by sync rather than by the call that made it.
+  # Two negatives: the spent id must not be presented as this node's, nor may
+  # the adopted account - the fallback names node-2's own root instead.
   - name: The revoked device stops presenting itself as Alice's
-    type: script
-    script: scripts/account-device-spent.sh
-    target: local
-    args:
-      - account-scope-node-2
-      - '{{paired_device}}'
-      - '{{alice_account}}'
+    type: assert_api_response
+    node: account-scope-node-2
+    path: /admin-api/identity
+    not_match:
+      data.deviceId: '{{paired_device}}'
+      data.accountId: '{{alice_account}}'
+    retries: 30
+    interval: 2
 
 stop_all_nodes: true
 
 # ── Wiring ─────────────────────────────────────────────────────────
 #
 # Refusals live here rather than in their own scenario because each needs a
-# different state of this one. They are `script` steps, not `expected_failure`,
+# different state of this one. They are `expect_status`, not `expected_failure`,
 # which passes on the 500 the status mapping exists to stop.
 #
-# Every account-level route is driven by `target: local` curl: merobox has no
-# native step for them. node-2 appears in no `wait_for_sync` - a namespace
-# barrier reads `groupStateHash`, which a node answers only for a member, and a
-# paired device is a member of nothing. Its state is polled inside the scripts.
+# The two `pair-complete` `400`s still run through a script: they need a payload
+# with one field substituted - a tampered statement, a code the device never
+# minted - and `account_pair` derives both from its own `pair-init`, so no
+# scenario can hand it a bad one.
+#
+# node-2 appears in no `wait_for_sync` - a namespace barrier reads
+# `groupStateHash`, which a node answers only for a member, and a paired device
+# is a member of nothing. Reads of it carry `retries` instead.

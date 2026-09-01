@@ -689,6 +689,67 @@ pub enum NamespaceOp {
         /// the removed member cannot read it.
         key_rotation: Option<KeyRotation>,
     },
+    /// A root op sealed under the namespace key.
+    ///
+    /// Appended rather than inserted: borsh numbers variants by position, so
+    /// `Root` and `Group` keep discriminants 0 and 1 and every existing op
+    /// encodes byte-identically. Only a sealed op is new on the wire, and an
+    /// older node fails to decode it rather than misreading it — borsh rejects
+    /// an unknown discriminant outright.
+    ///
+    /// Carries `key_id` for the same reason [`NamespaceOp::Group`] does: after a
+    /// rotation the receiver holds more than one namespace key, and resolving by
+    /// id is the difference between decrypting the op and guessing.
+    ///
+    /// Only the five admin-published variants reach here; see
+    /// [`root_op_is_sealable`].
+    RootSealed {
+        key_id: KeyId,
+        encrypted: EncryptedRootOp,
+    },
+}
+
+/// Whether a [`RootOp`] is published sealed.
+///
+/// Five of the eleven variants are. The four `MemberJoined*` are published by a
+/// principal that does not hold the key yet; `KeyDelivery` is how the key
+/// arrives, so sealing it under that key is unsatisfiable — and it needs no
+/// sealing, since its payload is already sealed to the recipient inside
+/// `KeyEnvelope`; `NamespaceCreated` is genesis, before any key exists.
+///
+/// What remains is published by an admin who already holds the key and read by
+/// members who already hold it, so nothing about it needs to be legible to a
+/// non-member.
+///
+/// This is the single place that decision lives. A publisher that seals by its
+/// own judgement can disagree with the receiver about which ops are sealed, and
+/// that disagreement reads as a decode failure on a valid op rather than as a
+/// policy difference.
+/// Written as an exhaustive match with no wildcard, deliberately. `matches!`
+/// would read the same and behave differently on the next variant added: it
+/// would answer `false`, so a new root op that ought to be sealed would ship in
+/// the clear and nothing would say so. This way it does not compile until
+/// somebody decides.
+#[must_use]
+pub const fn root_op_is_sealable(op: &RootOp) -> bool {
+    match op {
+        // Published by an admin who already holds the namespace key.
+        RootOp::GroupCreated { .. }
+        | RootOp::GroupReparented { .. }
+        | RootOp::GroupDeleted { .. }
+        | RootOp::AdminChanged { .. }
+        | RootOp::PolicyUpdated { .. } => true,
+        // Published by a principal that does not hold the key yet.
+        RootOp::MemberJoined { .. }
+        | RootOp::MemberJoinedAt { .. }
+        | RootOp::MemberJoinedOpen { .. }
+        | RootOp::MemberJoinedViaTeeAttestation { .. } => false,
+        // How the key arrives; sealing it under that key is unsatisfiable, and
+        // its payload is already sealed to the recipient in `KeyEnvelope`.
+        RootOp::KeyDelivery { .. } => false,
+        // Genesis, before any key exists.
+        RootOp::NamespaceCreated { .. } => false,
+    }
 }
 
 /// Cleartext administrative operations that affect the entire namespace.
@@ -972,6 +1033,11 @@ impl NamespaceOp {
     #[must_use]
     pub fn op_kind_label(&self) -> &'static str {
         match self {
+            // Sealed ops collapse to one label: the kind is inside the
+            // ciphertext. Metrics broken down by root-op kind lose that
+            // breakdown for the five sealed variants, which is a real cost of
+            // sealing them and not an oversight here.
+            NamespaceOp::RootSealed { .. } => "root_sealed",
             NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
             NamespaceOp::Root(RootOp::GroupReparented { .. }) => "group_reparented",
             NamespaceOp::Root(RootOp::GroupDeleted { .. }) => "group_deleted",
@@ -1357,7 +1423,11 @@ impl SignedNamespaceOp {
     pub fn group_id(&self) -> Option<ContextGroupId> {
         match &self.op {
             NamespaceOp::Group { group_id, .. } => Some(*group_id),
-            NamespaceOp::Root(_) => None,
+            // A sealed root op may name a group inside — `GroupCreated` does —
+            // but not readably, and answering from the envelope would mean
+            // answering `None` for an op that has one. Callers that need it must
+            // decrypt first.
+            NamespaceOp::Root(_) | NamespaceOp::RootSealed { .. } => None,
         }
     }
 }
@@ -1529,6 +1599,23 @@ impl KeyRotation {
     }
 }
 
+impl EncryptedRootOp {
+    /// Bound the ciphertext, the only thing checkable without the key.
+    ///
+    /// The inner op's own `validate` cannot run here — it needs the plaintext, so
+    /// for a sealed op it runs after decryption instead of before apply. A
+    /// receiver that decrypts and skips it loses validation entirely for the five
+    /// sealed variants, silently, because nothing else in the pipeline notices
+    /// that a check moved.
+    pub fn validate(&self) -> Result<(), GovernanceError> {
+        check_bound(
+            "encrypted_root_op.ciphertext",
+            self.ciphertext.len(),
+            bounds::MAX_CIPHERTEXT_BYTES,
+        )
+    }
+}
+
 impl EncryptedGroupOp {
     /// Bound the ciphertext of an encrypted group op.
     pub fn validate(&self) -> Result<(), GovernanceError> {
@@ -1622,6 +1709,21 @@ impl GroupOp {
 }
 
 impl RootOp {
+    /// The op's own validation, for a receiver that has just unsealed it.
+    ///
+    /// `NamespaceOp::validate` runs before apply and, for a sealed op, can only
+    /// bound the ciphertext — the inner op is unreadable at that point. So these
+    /// checks have exactly one place left to run, and a receiver that unseals
+    /// without calling this loses validation for every sealed variant with
+    /// nothing to indicate it: no stage reports that a check moved.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the op's own validation rejects.
+    pub fn validate_after_unsealing(&self) -> Result<(), GovernanceError> {
+        self.validate()
+    }
+
     fn validate(&self) -> Result<(), GovernanceError> {
         match self {
             Self::GroupDeleted {
@@ -1655,6 +1757,9 @@ impl NamespaceOp {
     fn validate(&self) -> Result<(), GovernanceError> {
         match self {
             Self::Root(root) => root.validate(),
+            // Only the envelope. The inner op is validated after decryption —
+            // see `EncryptedRootOp::validate`.
+            Self::RootSealed { encrypted, .. } => encrypted.validate(),
             Self::Group {
                 encrypted,
                 key_rotation,

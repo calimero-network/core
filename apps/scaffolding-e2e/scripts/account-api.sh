@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Shared helpers for the account-identity e2e scripts. Sourced, not executed.
+# Shared helpers for account-pair-refusal-statuses.sh. Sourced, not executed.
 #
 # Uses curl against the admin API rather than meroctl: the merod image ships no
 # CLI, so a `target: local` script has none to call.
@@ -108,21 +108,4 @@ expect_status() {
         exit 1
     fi
     echo "${_what} refused with ${_want}, as it must be"
-}
-
-# A comma- or space-separated list as a JSON array of strings. `-` and the empty
-# string are the empty list, which is how "every application" is spelled on the
-# wire.
-json_array() {
-    if [ -z "$1" ] || [ "$1" = "-" ]; then
-        echo '[]'
-        return 0
-    fi
-    printf '%s' "$1" | jq -Rc '[splits("[, ]+")] | map(select(length > 0))'
-}
-
-# A comma- or space-separated list as sorted, space-separated words, so two
-# lists written in different orders compare equal.
-canonical() {
-    printf '%s' "$1" | tr ',' ' ' | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' '
 }

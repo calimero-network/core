@@ -1,10 +1,13 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::{env, fs};
 
 use bytes::Bytes;
-use cached_path::{Cache, Options};
+use calimero_build_utils::fetch_and_extract;
 use eyre::{bail, Context, OptionExt};
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -21,7 +24,7 @@ struct Release {
 }
 
 const USER_AGENT: &str = "calimero-server-build";
-const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
+const FRESHNESS_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
 const CALIMERO_WEBUI_VERSION: &str = "latest";
 const CALIMERO_WEBUI_DEFAULT_ASSET: &str = "admin-dashboard-build.zip";
@@ -80,11 +83,9 @@ fn try_main() -> eyre::Result<()> {
                 _ => None,
             });
 
-            let builder = reqwest::blocking::Client::builder()
-                .user_agent(USER_AGENT)
-                .build()?;
+            let client = Client::builder().user_agent(USER_AGENT).build()?;
 
-            let mut req = builder.get(&*release_url);
+            let mut req = client.get(&*release_url);
 
             if let Some(token) = token {
                 req = req.bearer_auth(token);
@@ -125,39 +126,27 @@ fn try_main() -> eyre::Result<()> {
     let webui_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
-        let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
-
-        let mut headers = reqwest_compat::header::HeaderMap::new();
-        headers.insert(
-            reqwest_compat::header::ACCEPT,
-            reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
-        );
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
 
         if let Some(token) = token {
             if src.starts_with("https://api.github.com/") {
                 let token_header = format!("Bearer {token}").try_into()?;
-                headers.insert(reqwest_compat::header::AUTHORIZATION, token_header);
+                headers.insert(AUTHORIZATION, token_header);
             }
         }
 
-        builder = builder.default_headers(headers);
-
-        let cache = Cache::builder()
-            .client_builder(builder)
-            .freshness_lifetime(FRESHNESS_LIFETIME)
-            .dir(target_dir()?.join("cache"))
+        let client = Client::builder()
+            .user_agent(USER_AGENT)
+            .default_headers(headers)
             .build()?;
-
-        let mut options = Options::default().subdir("webui").extract();
 
         let force = option_env!("CALIMERO_WEBUI_FETCH")
             .map_or(false, |c| matches!(c, "1" | "true" | "yes"));
 
-        if force {
-            options = options.force();
-        }
+        let cache_dir = target_dir()?.join("cache").join("webui");
 
-        let workdir = cached_path_with_retry(&cache, &src, &options)?;
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force)?;
 
         workdir.into()
     };
@@ -171,14 +160,24 @@ fn try_main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::Result<PathBuf> {
+/// Fetch the webui archive, retrying a failure that looks transient.
+///
+/// GitHub's codeload builds release archives on demand and can answer 404 for an
+/// asset that certainly exists, so a fresh release is worth a few seconds of
+/// patience. A genuinely missing asset still fails, just not instantly.
+fn fetch_with_retry(
+    client: &Client,
+    src: &str,
+    cache_dir: &Path,
+    force: bool,
+) -> eyre::Result<PathBuf> {
     let mut delay_secs = CALIMERO_WEBUI_FETCH_RETRY_INITIAL_DELAY_SECS;
 
     for attempt in 1..=CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS {
-        match cache.cached_path_with_options(src, options) {
+        match fetch_and_extract(client, src, cache_dir, FRESHNESS_LIFETIME, force) {
             Ok(path) => return Ok(path),
             Err(err) => {
-                let report = eyre::Report::new(err).wrap_err(format!(
+                let report = err.wrap_err(format!(
                     "failed to fetch CALIMERO_WEBUI_SRC from {src} (attempt {attempt}/{CALIMERO_WEBUI_FETCH_RETRY_ATTEMPTS})"
                 ));
 
@@ -188,7 +187,7 @@ fn cached_path_with_retry(cache: &Cache, src: &str, options: &Options) -> eyre::
 
                 eprintln!("cargo:warning={report:#}");
                 eprintln!("cargo:warning=retrying CALIMERO_WEBUI fetch in {delay_secs}s");
-                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+                std::thread::sleep(Duration::from_secs(delay_secs));
                 delay_secs = delay_secs.saturating_mul(2);
             }
         }

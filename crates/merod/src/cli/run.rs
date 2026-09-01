@@ -35,6 +35,20 @@ pub struct RunCommand {
     #[arg(long, value_name = "FD")]
     pub exit_on_eof: Option<i32>,
 
+    /// Stop when stdin reaches EOF. The portable form of `--exit-on-eof`: a
+    /// supervisor keeps merod's stdin open and closes it to ask for a graceful
+    /// stop, and the OS closes it anyway if the supervisor dies.
+    ///
+    /// This is the only graceful stop Windows has. There is no `SIGTERM` there,
+    /// and `taskkill` without `/F` posts `WM_CLOSE` to windows a console process
+    /// does not have — so a supervisor's only other option is `/F`, which is
+    /// `TerminateProcess` and runs none of the drain and flush below.
+    ///
+    /// Off by default: merod inherits a terminal's stdin when run by hand, and a
+    /// node must not exit because someone piped it from a finished command.
+    #[arg(long, default_value_t = false)]
+    pub exit_on_stdin_close: bool,
+
     /// DEV/TEST ONLY. Produce and accept MOCK TEE attestation quotes (no real TDX).
     /// Insecure — never use in production. Refuses to start alongside a real KMS.
     /// CLI-only flag (no env inheritance); the mock path is compiled in only under
@@ -246,9 +260,14 @@ impl RunCommand {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let data_dir = datastore_config.path.clone().into_std_path_buf();
             let parent_fd = self.exit_on_eof;
+            let stdin_close = self.exit_on_stdin_close;
             drop(tokio::spawn(async move {
                 let cause = tokio::select! {
                     detail = crate::watchdog::parent_closed(parent_fd) => {
+                        warn!("{detail}; shutting down");
+                        StopCause::ParentExited
+                    }
+                    detail = crate::watchdog::stdin_closed(stdin_close) => {
                         warn!("{detail}; shutting down");
                         StopCause::ParentExited
                     }
@@ -264,8 +283,21 @@ impl RunCommand {
             }));
             Some(rx)
         };
+        // Off unix this is the whole watchdog. `parent_closed` needs an inherited
+        // fd and `data_dir_replaced` identifies a directory by `(dev, ino)`, so
+        // both stay unix-only; stdin EOF needs neither.
         #[cfg(not(unix))]
-        let stop_watch = None;
+        let stop_watch = if self.exit_on_stdin_close {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            drop(tokio::spawn(async move {
+                let detail = crate::watchdog::stdin_closed(true).await;
+                warn!("{detail}; shutting down");
+                let _ = tx.send(StopCause::ParentExited);
+            }));
+            Some(rx)
+        } else {
+            None
+        };
 
         start(NodeConfig {
             home: path.clone(),
