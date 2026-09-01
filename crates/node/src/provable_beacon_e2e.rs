@@ -1,12 +1,17 @@
-//! Node-level tests for the provable non-member beacon, both directions.
+//! Node-level tests for beacons carrying an admission proof.
 //!
-//! These boot a real `NodeManager` over the shared in-process harness. The
-//! receive-path cases hand it a synthesized gossipsub `NetworkEvent`, covering
-//! the wiring the pure unit tests in `handlers::network_event::readiness` cannot
-//! reach: which peer the unlocked pull targets, that a stale beacon unlocks
-//! nothing, and that a beacon accepted on this path never enters the readiness
-//! cache. The emit-path case runs a real `ReadinessManager` over the same
-//! harness and decodes what it actually published.
+//! These boot a real `NodeManager` over the shared in-process harness. What they
+//! still cover is the emit path: a real `ReadinessManager`, and what it actually
+//! published, decoded off the wire.
+//!
+//! The receive-path cases are gone with the behaviour they described. A beacon
+//! that failed membership but carried a valid invitation used to unlock a
+//! governance pull; direct admission replaced that, so those three tests now
+//! assert a path that no longer exists.
+//!
+//! `unprovable_beacon_pulls_nothing` survives and is now trivially true — no
+//! beacon unlocks a pull. It is kept as a regression guard against the unlock
+//! being reintroduced, and it retires with `admission_proof` itself.
 //!
 //! Every case is `#[serial(boot_test_node)]` for the reason the sibling
 //! `boot_test_node` modules are: booting a node rebinds process-global
@@ -158,135 +163,6 @@ fn stream_opens(node: &TestNode) -> Vec<PeerId> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
-}
-
-/// Whether the established-member arm currently holds `NS`'s debounce slot.
-fn member_slot_claimed(node: &TestNode) -> bool {
-    node.ns_beacon_sync_debounce
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains_key(&NS)
-}
-
-#[actix::test]
-#[serial(boot_test_node)]
-async fn provable_beacon_pulls_from_its_signer_and_never_caches() {
-    let node = boot_test_node().await;
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    seed_established_namespace(&node.store, &admin_sk);
-
-    let inv = signed_invitation(&admin_sk, ContextGroupId::from(NS));
-    let joiner_peer = PeerId::random();
-
-    // A beacon whose wall-clock is a minute-plus behind ours is a replay
-    // candidate, so it must unlock nothing - even carrying the same valid
-    // invitation the fresh beacon below is accepted with.
-    let stale = signed_beacon(
-        &joiner_sk,
-        now_millis().saturating_sub(61_000),
-        Some(inv.clone()),
-    );
-    deliver(&node, joiner_peer, stale).await;
-    assert!(
-        stream_opens(&node).is_empty(),
-        "a stale beacon must not trigger a pull"
-    );
-
-    // Same beacon, current clock: the pull fires, and it goes to the beacon's
-    // own publisher - the only peer holding its not-yet-gossiped join op.
-    let fresh = signed_beacon(&joiner_sk, now_millis(), Some(inv));
-    deliver(&node, joiner_peer, fresh).await;
-    assert_eq!(
-        stream_opens(&node),
-        vec![joiner_peer],
-        "the pull must target the beacon's signer, not an arbitrary mesh peer"
-    );
-
-    // The whole point of the path: it unlocks a pull and writes nothing. A
-    // non-member's advertised state must never become peer readiness state.
-    assert!(
-        node.readiness_cache
-            .fresh_peers(NS, Duration::from_secs(60))
-            .is_empty(),
-        "a provable non-member beacon must never enter the readiness cache"
-    );
-}
-
-#[actix::test]
-#[serial(boot_test_node)]
-async fn provable_pull_does_not_consume_the_member_debounce_slot() {
-    let node = boot_test_node().await;
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    seed_established_namespace(&node.store, &admin_sk);
-
-    // A seeded member's beacon verifies, so it takes the established-member arm
-    // and claims that arm's slot. Nothing releases it: the member pull is not
-    // targeted, so a zero-op result says nothing about the peer that beaconed.
-    //
-    // It pulls from `member_peer` because there are no namespace-topic
-    // subscribers in this harness, and that arm now names the beacon's own signer
-    // as its fallback rather than giving up — the whole point of the fallback.
-    let member_peer = PeerId::random();
-    deliver(
-        &node,
-        member_peer,
-        signed_beacon(&admin_sk, now_millis(), None),
-    )
-    .await;
-    assert!(
-        member_slot_claimed(&node),
-        "the member arm must have claimed a slot for this to be a real test"
-    );
-
-    // Same namespace, same debounce window: the provable arm has its own slot,
-    // so a joiner still gets its pull. Sharing one slot would mean these two
-    // arms could silence each other, whichever beaconed first.
-    let inv = signed_invitation(&admin_sk, ContextGroupId::from(NS));
-    let joiner_peer = PeerId::random();
-    deliver(
-        &node,
-        joiner_peer,
-        signed_beacon(&joiner_sk, now_millis(), Some(inv)),
-    )
-    .await;
-    assert_eq!(
-        stream_opens(&node),
-        vec![member_peer, joiner_peer],
-        "an in-window member sync must not block the provable pull — and the \
-         member pull itself must have reached the beacon's signer, since \
-         discovery had nobody to offer"
-    );
-}
-
-#[actix::test]
-#[serial(boot_test_node)]
-async fn a_provable_pull_that_returns_nothing_gives_its_slot_back() {
-    let node = boot_test_node().await;
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    seed_established_namespace(&node.store, &admin_sk);
-
-    let inv = signed_invitation(&admin_sk, ContextGroupId::from(NS));
-    let joiner_peer = PeerId::random();
-
-    // The stub has no transport, so every pull comes back with zero ops. Both
-    // beacons land far inside the debounce window, and both must still pull:
-    // a pull that fetched nothing has corrected no divergence.
-    for _ in 0..2 {
-        deliver(
-            &node,
-            joiner_peer,
-            signed_beacon(&joiner_sk, now_millis(), Some(inv.clone())),
-        )
-        .await;
-    }
-    assert_eq!(
-        stream_opens(&node),
-        vec![joiner_peer, joiner_peer],
-        "a zero-op pull must not spend the window it claimed"
-    );
 }
 
 #[actix::test]

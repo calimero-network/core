@@ -267,8 +267,14 @@ impl<'a> NamespaceMembershipService<'a> {
     /// # Errors
     ///
     /// When the membership or TEE records cannot be read. An empty result is
-    /// returned as `Ok`, and the caller decides what to do with it — a group
-    /// with no admin and no TEE node is not this function's problem to diagnose.
+    /// returned as `Ok`: this is a query, and reporting what is there is not the
+    /// same as endorsing it.
+    ///
+    /// Callers must not treat an empty result as "unrestricted". Every group has
+    /// an admin — the last one cannot be removed or demoted away — so an empty
+    /// result is an inconsistent store, and an empty admitter list is exactly the
+    /// value that means claimable by broadcast. The invitation path refuses on it
+    /// rather than minting.
     pub fn default_admitters(
         store: &Store,
         group_id: &ContextGroupId,
