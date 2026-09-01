@@ -264,7 +264,7 @@ quote = "1.0.37"
 rand = "0.8.5"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 ring = "0.17.8"
-rocksdb = { version = "0.24.0", default-features = false, features = ["bindgen-runtime"] }
+rocksdb = { version = "0.25.0", default-features = false, features = ["bindgen-runtime"] }
 rpassword = "7.3"
 rust-embed = "8.5.0"
 rustc_version = "0.4"
