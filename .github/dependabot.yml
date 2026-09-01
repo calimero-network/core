@@ -27,8 +27,8 @@ updates:
         patterns: ["wasmer", "wasmer-*"]
       libp2p:
         patterns: ["libp2p", "libp2p-*", "multiaddr", "prometheus-client"]
-      tower:
-        patterns: ["tower", "tower-*"]
+      axum:
+        patterns: ["axum", "axum-*", "tower", "tower-*", "tokio-tungstenite"]
       cargo:
         patterns: ["*"]
         update-types: ["minor", "patch"]
