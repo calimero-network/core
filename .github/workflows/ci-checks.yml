@@ -137,8 +137,8 @@ jobs:
       - name: Cargo deny
         if: ${{ !cancelled() }}
         run: |
-          # Pin cargo-deny to 0.19.9: parses modern (CVSS 4.0) advisories and builds
-          # on Rust 1.88.0. 0.16.3 could not load the current advisory DB.
+          # Pin cargo-deny to 0.19.9 so an upstream release cannot red CI on its own
+          # schedule: it parses modern (CVSS 4.0) advisories, which 0.16.3 could not.
           cargo install cargo-deny --version 0.19.9 --locked
           cargo deny check advisories bans licenses sources
 
@@ -149,12 +149,8 @@ jobs:
           # before this gate existed, three of them listed as "key deps" in their
           # own crate's AGENTS.md — nobody had a reason to look.
           #
-          # It works from source references, so a dependency linked only through a
-          # feature reads as unused. There is exactly one of those
-          # (`wasmer-compiler-cranelift` in calimero-runtime); it is declared in
-          # that crate's `[package.metadata.cargo-machete] ignored`, with the
-          # reason beside it. Add to that list only after confirming removal
-          # actually breaks the build — otherwise the entry hides a real dead dep.
+          # A dep linked only through a feature reads as unused; the escape hatch is
+          # `[package.metadata.cargo-machete] ignored`, only once removal really breaks the build.
           cargo install cargo-machete --version 0.9.2 --locked
           cargo machete
 

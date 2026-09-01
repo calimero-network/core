@@ -250,8 +250,13 @@ pub fn load_rotation_log_direct(
         }
     };
     let mut entries = Vec::new();
-    if let Some(children) = index.children() {
-        for child in children {
+    {
+        // Children live in the anchor's ChildTrie, not inline in its index row,
+        // so walk the trie with the same raw reader this path already uses.
+        let _ = &index;
+        for child in
+            calimero_storage::child_trie::ChildTrie::<MainStorage>::children_with(map_id, read)
+        {
             let Some(bytes) = read(StorageKey::Entry(child.id())) else {
                 // The child is listed in the index but its value is unreadable
                 // (store error — already warned in `read` — or an absent value,
@@ -2494,10 +2499,12 @@ mod tests {
                     expiration_timestamp: 1_700_000_000,
                     invitation_nonce: [0x33; 32],
                     invited_role: 1, // Member
+                    admitters: Vec::new(),
                 },
                 inviter_signature: "deadbeef".to_string(),
                 application_id: None,
                 bytecode_id: None,
+                admitter_hints: Vec::new(),
             },
             account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
@@ -2573,10 +2580,12 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 0, // Admin
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_string(),
             application_id: None,
             bytecode_id: None,
+            admitter_hints: Vec::new(),
         };
 
         let account = test_join_account_for(member);

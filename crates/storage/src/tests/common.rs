@@ -329,6 +329,7 @@ pub fn create_signed_user_add_action(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
 
     // Create action for signing
@@ -487,6 +488,7 @@ pub fn build_signed_shared_action(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
     let mut action = if add {
         Action::Add {
@@ -546,6 +548,7 @@ pub fn build_signed_member_action(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
     let mut action = if add {
         Action::Add {
@@ -600,6 +603,7 @@ pub fn build_signed_member_delete(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
     let mut action = Action::DeleteRef {
         id,
@@ -647,6 +651,7 @@ pub fn create_signed_user_update_action(
         crdt_type: None,
         field_name: None,
         schema_version: None,
+        order: 0,
     };
 
     let mut action = Action::Update {

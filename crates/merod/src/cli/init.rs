@@ -3,6 +3,7 @@ use calimero_config::{
     NodeMode, ServerConfig, SyncConfig,
 };
 use calimero_context::config::ContextConfig;
+use calimero_governance_store::NodeDeviceRepository;
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -122,6 +123,35 @@ pub enum AuthStorageArg {
 /// Initialize node configuration
 #[derive(Debug, Parser)]
 pub struct InitCommand {
+    /// Start with no account root: this node's device is enabled by a
+    /// certificate its account root signed elsewhere.
+    ///
+    /// The posture the account/device split exists for — the root stays in cold
+    /// storage and signs certificates, and nothing else. A node started this way
+    /// holds no signing root at all, so it cannot certify a device (its own or
+    /// anyone's) and cannot be the holder half of a pairing. It gets its device
+    /// row by pairing into an account whose root lives elsewhere.
+    ///
+    /// Without this, `init` provisions a root, which is what every existing node
+    /// has.
+    #[arg(long)]
+    pub no_account_root: bool,
+
+    /// Hex-encoded epoch-0 root **public** key of the account this node's device
+    /// belongs to. Only meaningful with `--no-account-root`.
+    ///
+    /// Mints this node's device row under that account, so the three values a
+    /// certificate is signed over — device id, signing key, agreement key — exist
+    /// before anyone certifies them. Read them back with `meroctl account show`,
+    /// certify them wherever the root lives (`merod account sign-cert --from`), and
+    /// bring the result back with `merod account import-cert`.
+    ///
+    /// The **public** half only. Supplying it grants nothing: it is hashed into the
+    /// account id and travels in every genesis, and the device stays inert until a
+    /// certificate signed by the matching private root arrives.
+    #[arg(long, value_name = "HEX", requires = "no_account_root")]
+    pub account_root: Option<String>,
+
     /// List of bootstrap nodes
     #[clap(long, value_name = "ADDR")]
     pub boot_nodes: Vec<Multiaddr>,
@@ -533,9 +563,67 @@ impl InitCommand {
         // `config` is fully consumed below; `datastore_path` is cloned so the
         // store's owned copy is independent.
         let datastore_path = path.join(&config.datastore.path);
-        drop(Store::open::<RocksDB>(&StoreConfig::new(
-            datastore_path.clone(),
-        ))?);
+        let store = Store::open::<RocksDB>(&StoreConfig::new(datastore_path.clone()))?;
+
+        // The key this node signs ops with, minted here rather than on first join.
+        //
+        // For an ordinary node this only moves *when*: it self-signs its device
+        // certificate at join time either way. For a node whose account root
+        // lives elsewhere it is the difference between working and not — that
+        // certificate must be signed over this key BEFORE the join, by a root
+        // this node does not hold, and the key did not exist until the join it
+        // was meant to enable.
+        //
+        // `participate_in` notes participation and then reads the existing
+        // keypair, so this is reused at first join rather than replaced —
+        // `store_identity` refuses a replacement outright.
+        let signing_key = calimero_governance_store::NamespaceRepository::new(&store)
+            .provision_node_identity()
+            .wrap_err("could not provision this node's signing identity")?;
+        info!(signing_key = %signing_key, "Provisioned the node's signing identity");
+
+        // The one place a root is generated. Nothing mints lazily any more: what
+        // needs a root calls `require_account_root`, which errors when there is
+        // none. So a node has an account root because it was provisioned here,
+        // because one was imported, or not at all — and "not at all" is now a
+        // state the code can be in rather than one it quietly repairs.
+        if self.no_account_root {
+            // No root, by configuration. This node cannot certify a device — its
+            // own or anyone's — so it gets one from an account root that lives
+            // somewhere else, and every path needing a signing root fails with an
+            // error saying so.
+            info!(
+                "Initialized with no account root; this node's device must be \
+                 enabled by a certificate signed elsewhere",
+            );
+            // The device row, if the operator named the account it belongs to.
+            // Minted here for the same reason the root is: so there is a namable
+            // moment when this node acquired an identity, rather than one that
+            // depends on which request arrived first.
+            if let Some(given) = self.account_root.as_deref() {
+                let root_pk = parse_account_root_pk(given)?;
+                let genesis = calimero_account::AccountGenesis::new(root_pk);
+                let device = NodeDeviceRepository::new(&store)
+                    .adopt_account(genesis)
+                    .wrap_err("could not mint this node's device for that account")?;
+                info!(
+                    account = %device.account,
+                    device = %device.device(),
+                    "Minted this node's device under an account rooted elsewhere; \
+                     certify it with `merod account sign-cert` and bring it back with \
+                     `merod account import-cert`",
+                );
+            }
+        } else {
+            let account_root = NodeDeviceRepository::new(&store)
+                .provision_account_root()
+                .wrap_err("could not provision this node's account root")?;
+            info!(
+                account = %account_root.account(),
+                "Provisioned the node's account root",
+            );
+        }
+        drop(store);
 
         // RocksDB creates these files under the process umask, but they live
         // inside the now-0700 node home, so they were never reachable by other
@@ -550,11 +638,117 @@ impl InitCommand {
     }
 }
 
+/// Parse `--account-root` as hex.
+///
+/// Hex only. This accepted base58 too while both spellings were in circulation —
+/// `merod account root` printed one and the admin API the other. With a single
+/// encoding that leniency would be actively harmful: a base58 value arriving here
+/// means the caller is still on the old form, and quietly decoding it hides that
+/// instead of saying so.
+///
+/// # Errors
+/// If the value is not 64 hex characters.
+fn parse_account_root_pk(given: &str) -> EyreResult<calimero_primitives::identity::PublicKey> {
+    let given = given.trim();
+    let bytes = hex::decode(given).map_err(|_ignored| {
+        eyre::eyre!(
+            "--account-root is not hex. It is 64 hex characters, which is how both \
+             `merod account root` and `meroctl account show` print it"
+        )
+    })?;
+    let raw: [u8; 32] = bytes.try_into().map_err(|_ignored| {
+        eyre::eyre!("--account-root must be 32 bytes, i.e. 64 hex characters")
+    })?;
+    Ok(calimero_primitives::identity::PublicKey::from(raw))
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
     use super::InitCommand;
+
+    /// `init` must leave the node holding an account root.
+    ///
+    /// Nothing mints lazily any more, so this is the only way a default node gets
+    /// one: without it every path needing a signing root would fail.
+    #[tokio::test]
+    async fn init_provisions_an_account_root() {
+        use calimero_governance_store::NodeDeviceRepository;
+        use calimero_store::config::StoreConfig;
+        use calimero_store::Store;
+        use calimero_store_rocksdb::RocksDB;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let home = camino::Utf8PathBuf::from_path_buf(home.path().to_path_buf())
+            .expect("utf8 tempdir path");
+        let root_args = crate::cli::RootArgs {
+            home: home.clone(),
+            node_name: camino::Utf8PathBuf::from("provisioned"),
+        };
+
+        let init =
+            InitCommand::try_parse_from(["merod", "--server-port", "8428", "--swarm-port", "8528"])
+                .expect("parse init");
+        init.run(root_args).await.expect("init");
+
+        let store =
+            Store::open::<RocksDB>(&StoreConfig::new(home.join("provisioned").join("data")))
+                .expect("open the store init created");
+
+        let root = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read the root");
+        assert!(
+            root.is_some(),
+            "init must leave an account root behind, so nothing later has to mint one",
+        );
+    }
+
+    /// `--no-account-root` must actually leave the node without one.
+    ///
+    /// The flag only means something because nothing mints lazily any more. While
+    /// `ensure_account_root` existed, a node started this way would have been
+    /// handed a root by the first resolver that wanted one — the flag would have
+    /// been a lie, which is why it did not ship until now.
+    #[tokio::test]
+    async fn no_account_root_leaves_the_node_without_one() {
+        use calimero_governance_store::NodeDeviceRepository;
+        use calimero_store::config::StoreConfig;
+        use calimero_store::Store;
+        use calimero_store_rocksdb::RocksDB;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let home = camino::Utf8PathBuf::from_path_buf(home.path().to_path_buf())
+            .expect("utf8 tempdir path");
+        let root_args = crate::cli::RootArgs {
+            home: home.clone(),
+            node_name: camino::Utf8PathBuf::from("rootless"),
+        };
+
+        let init = InitCommand::try_parse_from([
+            "merod",
+            "--no-account-root",
+            "--server-port",
+            "8628",
+            "--swarm-port",
+            "8728",
+        ])
+        .expect("parse init");
+        assert!(init.no_account_root);
+        init.run(root_args).await.expect("init");
+
+        let store = Store::open::<RocksDB>(&StoreConfig::new(home.join("rootless").join("data")))
+            .expect("open the store init created");
+
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .account_root()
+                .expect("read")
+                .is_none(),
+            "--no-account-root must leave no root behind",
+        );
+    }
 
     // mDNS is opt-in: a fresh `merod init` must not write a config that
     // announces the node on the local network. `--mdns` is the way in, and the
@@ -588,5 +782,43 @@ mod tests {
                 "advertise_address should be set for {args:?}"
             );
         }
+    }
+
+    /// `--account-root` takes hex, and refuses the old base58 spelling.
+    ///
+    /// It accepted both while `merod account root` printed base58 and the admin
+    /// API printed hex. With one encoding, accepting base58 would hide a caller
+    /// still on the old form instead of telling them.
+    #[test]
+    fn account_root_is_hex_and_refuses_base58() {
+        use calimero_primitives::identity::{PrivateKey, PublicKey};
+
+        let expected: PublicKey = PrivateKey::from([9u8; 32]).public_key();
+        let raw = *AsRef::<[u8; 32]>::as_ref(&expected);
+
+        assert_eq!(
+            super::parse_account_root_pk(&hex::encode(raw)).expect("hex"),
+            expected
+        );
+        assert!(
+            super::parse_account_root_pk("11111111111111111111111111111112").is_err(),
+            "base58 must be refused now that every id is hex",
+        );
+    }
+
+    /// A rejection must name where to get the value, not just that it is wrong.
+    #[test]
+    fn a_bad_account_root_says_where_to_get_a_good_one() {
+        let err = super::parse_account_root_pk("not-a-key").expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("merod account root"), "{msg}");
+        assert!(msg.contains("meroctl account show"), "{msg}");
+    }
+
+    /// Hex of the wrong length is a distinct mistake from a wrong encoding.
+    #[test]
+    fn hex_of_the_wrong_length_says_so() {
+        let err = super::parse_account_root_pk(&hex::encode([1u8; 16])).expect_err("must refuse");
+        assert!(err.to_string().contains("32 bytes"), "{err}");
     }
 }

@@ -12,7 +12,6 @@ publish = true
 actix.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
-bs58.workspace = true
 either.workspace = true
 eyre.workspace = true
 semver.workspace = true
@@ -48,6 +47,12 @@ calimero-storage.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
 calimero-wasm-abi.workspace = true
+
+[dev-dependencies]
+# The actor harness in `test_support::actor` reuses the node fixture, which owns
+# the blobstore and the temp dirs a real `NodeClient` needs.
+calimero-node-primitives = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
 
 [features]
 profiling = ["calimero-runtime/profiling"]

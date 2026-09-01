@@ -1321,9 +1321,9 @@ fn test_rendezvous_key_for_group_topic() {
 
 #[test]
 fn test_rendezvous_key_for_bare_context_topic() {
-    // A bare topic is a context id (bs58). The network layer treats it
+    // A bare topic is a context id (hex). The network layer treats it
     // opaquely; both sides hold the identical string so the keys match.
-    let ctx = "3iBu7jgK54DETcmDzrJbwtexC74ykBpH84aRG6Hpvjqs";
+    let ctx = "284482933c3b8e1746586b3a9c3aa26c5b2ef060c3976c91ea85f0092a650ff2";
     let key = rendezvous_key_for_topic(ctx).expect("context key");
     assert_eq!(key, *format!("/calimero/ctx/{ctx}").as_str());
 }

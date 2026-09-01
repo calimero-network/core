@@ -550,35 +550,29 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 
 /// NamespaceOp::Root(RootOp::MemberJoined) — RootOp ordinal 5
 ///
-/// Encoding: member (32 bytes) + SignedGroupOpenInvitation with a minimal
+/// Regenerate with `emit_golden_root_op_vectors` rather than by hand: borsh
+/// offsets computed by eye are how a golden ends up asserting the wrong bytes
+/// with total confidence.
+///
+/// Encoding: member (32 bytes) + SignedGroupOpenInvitation — a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
-/// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8))
-/// + inviter_signature "" + application_id None + bytecode_id None.
+/// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8)
+/// + admitters len 0 (u32)) + inviter_signature "" + admitter_hints len 0 (u32)
+/// + application_id None + bytecode_id None — then the joiner credential.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
-    0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    160, 141, 155, 252, 204, 242, 97, 7, 27, 45, 55, 101, 100, 41, 67, 238, 227, 44, 150, 1, 160,
+    95, 101, 189, 216, 79, 108, 214, 26, 179, 18, 251, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// NamespaceOp::Root(RootOp::KeyDelivery) — RootOp ordinal 6
@@ -656,31 +650,20 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_OPEN: &[u8] = &[
 ///
 /// Same inner payload as MemberJoined plus joined_at u64 = 0 at the end.
 const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
-    0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 160, 141, 155, 252, 204, 242, 97, 7, 27, 45, 55, 101, 100, 41, 67, 238,
+    227, 44, 150, 1, 160, 95, 101, 189, 216, 79, 108, 214, 26, 179, 18, 251, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0,
 ];
 
 /// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
@@ -1537,10 +1520,12 @@ mod governance_op_storage_roundtrip {
                 expiration_timestamp: 1_900_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
+            admitter_hints: Vec::new(),
         }
     }
 
@@ -1711,4 +1696,187 @@ mod governance_op_storage_roundtrip {
         op.parent_op_hashes = vec![[0u8; 32]; 2];
         assert!(op.validate().is_ok(), "a small parent set must pass");
     }
+}
+
+/// All-zero credential, so the printed vector is reproducible.
+fn deterministic_credential() -> Box<JoinAccountCredential> {
+    let genesis = calimero_account::AccountGenesis::new(PublicKey::from([0u8; 32]));
+    Box::new(JoinAccountCredential {
+        statement: calimero_account::DeviceCert {
+            account: genesis.account_id(),
+            device: calimero_account::DeviceId::from([0u8; 32]),
+            sign_pk: PublicKey::from([0u8; 32]),
+            kem_pk: calimero_account::KemPublicKey::from([0u8; 32]),
+            key_epoch: 0,
+            device_epoch: 0,
+            signature: [0u8; 64],
+        },
+        genesis,
+        chain: Vec::new(),
+    })
+}
+
+#[test]
+#[ignore = "regeneration helper: run with --ignored to print golden vectors"]
+fn emit_golden_root_op_vectors() {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    // Regenerating by hand means computing borsh offsets by hand, which is how
+    // a golden vector ends up asserting the wrong thing confidently. This
+    // prints them instead.
+    let minimal_invitation = SignedGroupOpenInvitation {
+        inviter_account: None,
+        invitation: GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from([0u8; 32]),
+            group_id: ContextGroupId::from([0u8; 32]),
+            expiration_timestamp: 0,
+            invitation_nonce: [0u8; 32],
+            invited_role: 1,
+            admitters: Vec::new(),
+        },
+        inviter_signature: String::new(),
+        admitter_hints: Vec::new(),
+        application_id: None,
+        bytecode_id: None,
+    };
+
+    for (name, op) in [
+        (
+            "GOLDEN_ROOT_OP_MEMBER_JOINED",
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: AccountId::from([0u8; 32]),
+                signed_invitation: minimal_invitation.clone(),
+                account: deterministic_credential(),
+            }),
+        ),
+        (
+            "GOLDEN_ROOT_OP_MEMBER_JOINED_AT",
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member: AccountId::from([0u8; 32]),
+                signed_invitation: minimal_invitation.clone(),
+                joined_at: 0,
+                account: deterministic_credential(),
+            }),
+        ),
+    ] {
+        let bytes = borsh::to_vec(&op).expect("encode");
+        println!("{name} ({} bytes):", bytes.len());
+        println!("{bytes:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E1: sealing root ops
+// ---------------------------------------------------------------------------
+
+/// The claim that makes appending `RootSealed` safe: existing ops encode exactly
+/// as before.
+///
+/// Borsh numbers enum variants by declaration position, so appending is only
+/// safe while nothing is inserted ahead of the existing two. Pinned as bytes
+/// rather than trusted, because the failure is silent in the worst way — every
+/// op id in the namespace changes, and the first symptom is peers disagreeing
+/// about history rather than anything refusing to decode.
+#[test]
+fn appending_root_sealed_left_the_existing_discriminants_alone() {
+    let root = NamespaceOp::Root(RootOp::AdminChanged {
+        new_admin: calimero_account::AccountId::from([3u8; 32]),
+    });
+    let group = NamespaceOp::Group {
+        group_id: ContextGroupId::from([4u8; 32]),
+        key_id: KeyId::from([5u8; 32]),
+        encrypted: EncryptedGroupOp {
+            nonce: [6u8; 12],
+            ciphertext: vec![7, 8, 9],
+        },
+        key_rotation: None,
+    };
+    let sealed = NamespaceOp::RootSealed {
+        key_id: KeyId::from([5u8; 32]),
+        encrypted: EncryptedRootOp {
+            nonce: [6u8; 12],
+            ciphertext: vec![7, 8, 9],
+        },
+    };
+
+    assert_eq!(borsh::to_vec(&root).unwrap()[0], 0, "Root must stay 0");
+    assert_eq!(borsh::to_vec(&group).unwrap()[0], 1, "Group must stay 1");
+    assert_eq!(
+        borsh::to_vec(&sealed).unwrap()[0],
+        2,
+        "RootSealed must be appended, never inserted"
+    );
+}
+
+/// A sealed op and a group op with identical payloads must not encode alike.
+///
+/// They carry the same fields in the same order, so only the discriminant tells
+/// them apart. A receiver that read one as the other would look up the right key
+/// id in the wrong keyring and report a missing key rather than a mismatch.
+#[test]
+fn a_sealed_root_op_is_distinguishable_from_a_group_op() {
+    let key_id = KeyId::from([5u8; 32]);
+    let nonce = [6u8; 12];
+    let ciphertext = vec![7, 8, 9];
+
+    let sealed = borsh::to_vec(&NamespaceOp::RootSealed {
+        key_id,
+        encrypted: EncryptedRootOp {
+            nonce,
+            ciphertext: ciphertext.clone(),
+        },
+    })
+    .unwrap();
+    let group = borsh::to_vec(&NamespaceOp::Group {
+        group_id: ContextGroupId::from([5u8; 32]),
+        key_id,
+        encrypted: EncryptedGroupOp { nonce, ciphertext },
+        key_rotation: None,
+    })
+    .unwrap();
+
+    assert_ne!(sealed, group);
+}
+
+/// Every variant's sealability, asserted against the reasons rather than the
+/// implementation.
+///
+/// `root_op_is_sealable` is an exhaustive match, so a twelfth variant fails to
+/// compile until it is classified. This test states what the classification has
+/// to be for the five that carry no bootstrap constraint, so a future edit that
+/// reclassifies one has to argue with a test rather than only with a reviewer.
+#[test]
+fn only_the_admin_published_variants_are_sealable() {
+    assert!(root_op_is_sealable(&RootOp::AdminChanged {
+        new_admin: calimero_account::AccountId::from([1u8; 32]),
+    }));
+    assert!(root_op_is_sealable(&RootOp::PolicyUpdated {
+        policy_bytes: vec![1, 2, 3],
+    }));
+    assert!(root_op_is_sealable(&RootOp::GroupReparented {
+        child_group_id: ContextGroupId::from([2u8; 32]),
+        new_parent_id: ContextGroupId::from([3u8; 32]),
+    }));
+    assert!(root_op_is_sealable(&RootOp::GroupDeleted {
+        root_group_id: ContextGroupId::from([2u8; 32]),
+        cascade_group_ids: vec![],
+        cascade_context_ids: vec![],
+    }));
+    assert!(root_op_is_sealable(&RootOp::GroupCreated {
+        group_id: ContextGroupId::from([2u8; 32]),
+        parent_id: ContextGroupId::from([3u8; 32]),
+        restricted: true,
+        admin: calimero_account::AccountId::from([4u8; 32]),
+    }));
+
+    // `NamespaceCreated` is genesis: there is no namespace key yet to seal it
+    // under, and this op's own apply is what establishes the founder. Asserted
+    // because it is the variant most likely to look sealable to a future reader
+    // — it is admin-published, like the five, and differs only in when it runs.
+    assert!(!root_op_is_sealable(&RootOp::NamespaceCreated {
+        founder: calimero_account::AccountId::from([5u8; 32]),
+        account: deterministic_credential(),
+    }));
 }

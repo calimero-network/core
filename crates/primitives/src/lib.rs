@@ -7,6 +7,9 @@ pub mod common;
 pub mod content_hash;
 pub mod context;
 pub mod crdt;
+#[cfg(test)]
+#[path = "tests/encoding.rs"]
+mod encoding_tests;
 pub mod events;
 pub mod hash;
 pub mod identity;

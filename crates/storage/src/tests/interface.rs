@@ -23,11 +23,7 @@ fn recompute_full_hash(id: crate::address::Id) -> [u8; 32] {
     use crate::index::Index;
     use crate::store::MainStorage;
     let index = Index::<MainStorage>::get_index(id).unwrap().unwrap();
-    Index::<MainStorage>::calculate_full_hash_for_children(
-        index.own_hash(),
-        &index.children().map(<[_]>::to_vec),
-    )
-    .unwrap()
+    Index::<MainStorage>::full_hash_from_trie(id, index.own_hash())
 }
 
 #[cfg(test)]
@@ -392,6 +388,135 @@ mod interface__apply_actions {
         assert!(retrieved.is_none());
     }
 
+    /// The equal-timestamp case, which `apply_delete_ref_action` calls "the
+    /// SINGLE canonical equal-HLC delete-vs-update tiebreak for every storage
+    /// type" and which nothing pinned: strictly-older and strictly-newer were
+    /// covered either side of it, and the tie in the middle was not.
+    ///
+    /// The guard is `deleted_at < updated_at` — strict — so an equal-HLC delete
+    /// WINS. Relaxing it to `<=` would flip this silently, and both neighbours
+    /// would still pass.
+    #[test]
+    fn an_equal_timestamp_delete_wins_over_the_update() {
+        crate::tests::common::register_test_merge_functions();
+        let mut page = Page::new_from_element("Test Page", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        page.title = "Updated Page".to_owned();
+        page.element_mut().update();
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        let update_time = *page.element().metadata.updated_at;
+
+        let tie = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: update_time, // exactly equal
+            metadata: Metadata::default(),
+        };
+        assert!(MainInterface::apply_action(tie, &ApplyContext::empty()).is_ok());
+
+        assert!(
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_none(),
+            "an equal-HLC delete must win: the guard is `deleted_at < updated_at`, strict"
+        );
+    }
+
+    /// What merge-mode timestamp suppression actually decides.
+    ///
+    /// `Element::timestamp_for_operation` returns 0 under merge mode. Its
+    /// comment says that is "to ensure deterministic hashes" — which is not a
+    /// path that exists: `Element.metadata` is `#[borsh(skip)]`, so it reaches
+    /// neither `own_hash` (a hash of the serialized data) nor the child-trie
+    /// fold (`id ‖ merkle_hash`), and the timestamp does not feed `Id::random`
+    /// either.
+    ///
+    /// What it DOES decide is the delete-vs-update tiebreak, and the rule is
+    /// narrower than "merge zeroes timestamps":
+    ///
+    /// - `Element::new*` (construction) stamps 0 under merge mode.
+    /// - `Element::update` under merge mode leaves the existing timestamp
+    ///   ALONE — it does not zero it.
+    ///
+    /// Both are the same rule stated properly: a merge must not manufacture
+    /// time. The consequence pinned here is that an entity CONSTRUCTED during a
+    /// merge holds `updated_at == 0`, and `deleted_at < 0` is unsatisfiable, so
+    /// it loses the tiebreak to EVERY delete — including one at timestamp 0.
+    #[test]
+    fn an_entity_constructed_during_merge_loses_to_any_delete() {
+        crate::tests::common::register_test_merge_functions();
+
+        // Constructed INSIDE merge mode: this is what makes updated_at 0.
+        // Updating inside merge mode would not — `update` preserves.
+        // `Element::root()` rather than `Element::new(None)`: a non-root element
+        // has no parent to link to yet and `save` refuses the orphan. Root goes
+        // through the same `timestamp_for_operation`, which is the field under
+        // test.
+        let page = crate::env::with_merge_mode(|| {
+            let mut page = Page::new_from_element("Merged Page", Element::root());
+            assert!(MainInterface::save(&mut page).unwrap());
+            page
+        });
+
+        assert_eq!(
+            *page.element().metadata.updated_at,
+            0,
+            "merge mode must suppress the timestamp; the rest of this test rests on it"
+        );
+
+        // The weakest possible delete: timestamp 0.
+        let earliest = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: 0,
+            metadata: Metadata::default(),
+        };
+        assert!(MainInterface::apply_action(earliest, &ApplyContext::empty()).is_ok());
+
+        assert!(
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_none(),
+            "a merge-stamped entity loses to a delete at timestamp 0, because the \
+             tiebreak is strict and nothing can be older than 0"
+        );
+    }
+
+    /// The contrast that gives the test above its meaning: the SAME delete, at
+    /// timestamp 0, against an entity stamped outside merge mode, loses.
+    ///
+    /// Without this, `an_entity_stamped_during_merge_loses_to_any_delete` would
+    /// also pass if deletes simply always won.
+    #[test]
+    fn an_entity_stamped_outside_merge_survives_the_same_delete() {
+        crate::tests::common::register_test_merge_functions();
+
+        let mut page = Page::new_from_element("Live Page", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        page.title = "Live Update".to_owned();
+        page.element_mut().update();
+        assert!(MainInterface::save(&mut page).unwrap());
+
+        assert!(
+            *page.element().metadata.updated_at > 0,
+            "outside merge mode the timestamp must be real"
+        );
+
+        let earliest = Action::DeleteRef {
+            id: page.id(),
+            deleted_at: 0,
+            metadata: Metadata::default(),
+        };
+        assert!(MainInterface::apply_action(earliest, &ApplyContext::empty()).is_ok());
+
+        assert!(
+            MainInterface::find_by_id::<Page>(page.id())
+                .unwrap()
+                .is_some(),
+            "a delete at 0 must lose to a real update timestamp"
+        );
+    }
+
     #[test]
     fn apply_action__non_existent_update() {
         let page = Page::new_from_element("Test Page", Element::root());
@@ -595,6 +720,33 @@ mod snapshot_and_resync {
         let target_para = TargetInterface::find_by_id::<Paragraph>(para.id()).unwrap();
         assert!(target_para.is_some());
         assert_eq!(target_para.unwrap().text, "Source Para");
+
+        // The links, not just the values. Children live in `Key::ChildTrie`,
+        // their own keyspace — a snapshot that ships only entries and indexes
+        // installs every entity with no parent->child link at all. Asserting
+        // the two values above passes in exactly that state, which is how this
+        // went unnoticed: the target holds everything and can enumerate
+        // nothing, and cannot recover in place because re-applying
+        // byte-identical entities never re-links.
+        let source_children = Index::<SourceStorage>::get_children_of(page.id()).unwrap();
+        let target_children = Index::<TargetStorage>::get_children_of(page.id()).unwrap();
+        assert_eq!(
+            target_children.len(),
+            source_children.len(),
+            "the target must enumerate the same children as the source"
+        );
+        assert!(
+            target_children.iter().any(|c| c.id() == para.id()),
+            "the child must be reachable from its parent after the round trip"
+        );
+
+        // And the hash the parent commits to must match, since it folds the
+        // trie root — a link-less target hashes as childless.
+        assert_eq!(
+            Index::<TargetStorage>::get_hashes_for(page.id()).unwrap(),
+            Index::<SourceStorage>::get_hashes_for(page.id()).unwrap(),
+            "parent hashes must survive the round trip"
+        );
     }
 }
 
@@ -742,6 +894,7 @@ mod user_storage_signature_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -915,6 +1068,7 @@ mod user_storage_replay_protection {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         let mut action = Action::Add {
             id: page.id(),
@@ -1362,6 +1516,7 @@ mod shared_storage_rotation_authentication {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
         let payload = anonymous.payload_for_signing();
@@ -2128,6 +2283,7 @@ mod shared_storage_rotation_authentication {
                 crdt_type: Some(CrdtType::GCounter),
                 field_name: None,
                 schema_version: None,
+                order: 0,
             };
             let mut action = crate::action::Action::Add {
                 id: member,
@@ -2250,6 +2406,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2281,6 +2438,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2319,6 +2477,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -2341,6 +2500,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2379,6 +2539,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
         assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
@@ -2561,6 +2722,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2603,6 +2765,7 @@ mod frozen_storage_verification {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2642,6 +2805,7 @@ mod timestamp_drift_protection {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2677,6 +2841,7 @@ mod timestamp_drift_protection {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2706,6 +2871,7 @@ mod timestamp_drift_protection {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -2778,6 +2944,7 @@ mod storage_type_edge_cases {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
 
         let mut action = Action::DeleteRef {
@@ -2949,6 +3116,7 @@ mod storage_type_edge_cases {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -3038,6 +3206,7 @@ mod storage_type_edge_cases {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
         };
 
@@ -3162,6 +3331,7 @@ mod storage_type_edge_cases {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         let mut delete_action = Action::DeleteRef {
             id: page.id(),
@@ -3326,6 +3496,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         env::with_account_id(*owner.as_bytes(), || {
             assert!(!env::in_merge_mode(), "convert must run on the normal path");
@@ -3377,6 +3548,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         // Executor is NOT the owner: the local-owner stamp branch must not fire,
         // so the entry is never converted (schema stays None, no owner signature).
@@ -3415,6 +3587,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         // Guard O4: even an owner-keyed write must NOT drive the convert when it
         // runs inside a merge scope. Merge mode bypasses the replay-nonce check
@@ -3481,6 +3654,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         };
         let mut action = Action::Add {
             id,
@@ -3549,6 +3723,7 @@ mod owner_driven_convert {
             crdt_type: None,
             field_name: None,
             schema_version: Some(1),
+            order: before.order,
         };
         let mut update = Action::Update {
             id,

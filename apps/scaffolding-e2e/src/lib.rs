@@ -36,7 +36,6 @@ use thiserror::Error;
 // CONSTANTS
 
 const BLOB_ID_SIZE: usize = 32;
-const BASE58_ENCODED_MAX_SIZE: usize = 44;
 
 // HELPER TYPES
 
@@ -283,9 +282,13 @@ pub enum Event<'a> {
 
     // Authored Vector Events
     AuthoredVecPushed {
-        index: usize,
+        entry_id: &'a str,
         value: String,
         owner: String,
+    },
+    AuthoredVecUpdatedById {
+        entry_id: String,
+        value: String,
     },
     AuthoredVecUpdated {
         index: usize,
@@ -324,21 +327,15 @@ pub enum Error<'a> {
 // HELPER FUNCTIONS
 
 fn encode_identity(identity: &[u8; 32]) -> String {
-    bs58::encode(identity).into_string()
+    hex::encode(identity)
 }
 
-fn encode_blob_id_base58(blob_id_bytes: &[u8; BLOB_ID_SIZE]) -> String {
-    let mut buf = [0u8; BASE58_ENCODED_MAX_SIZE];
-    // Both unwraps are infallible for this input: a 32-byte value base58-encodes
-    // to at most 44 chars (== BASE58_ENCODED_MAX_SIZE), so `onto` never overflows
-    // the buffer, and the base58 alphabet is ASCII, so the bytes are always UTF-8.
-    let len = bs58::encode(blob_id_bytes).onto(&mut buf[..]).unwrap();
-    std::str::from_utf8(&buf[..len]).unwrap().to_owned()
+fn encode_blob_id_hex(blob_id_bytes: &[u8; BLOB_ID_SIZE]) -> String {
+    hex::encode(blob_id_bytes)
 }
 
-fn parse_blob_id_base58(blob_id_str: &str) -> app::Result<[u8; BLOB_ID_SIZE]> {
-    let bytes = bs58::decode(blob_id_str)
-        .into_vec()
+fn parse_blob_id_hex(blob_id_str: &str) -> app::Result<[u8; BLOB_ID_SIZE]> {
+    let bytes = hex::decode(blob_id_str)
         .map_err(|e| app::err!("Failed to decode blob ID '{blob_id_str}': {e}"))?;
 
     if bytes.len() != BLOB_ID_SIZE {
@@ -361,7 +358,7 @@ fn serialize_blob_id_bytes<S>(
 where
     S: calimero_sdk::serde::Serializer,
 {
-    let safe_string = encode_blob_id_base58(blob_id_bytes);
+    let safe_string = encode_blob_id_hex(blob_id_bytes);
     serializer.serialize_str(&safe_string)
 }
 
@@ -766,7 +763,7 @@ impl E2eKvStore {
         let guess_hash = Sha256::digest(guess.as_bytes());
         let guess_hash_hex = hex::encode(guess_hash);
         let who_b = env::device_id();
-        let who = bs58::encode(who_b).into_string();
+        let who = hex::encode(who_b);
         let success = guess_hash_hex == public_hash_hex;
         app::emit!(Event::Guessed {
             game_id,
@@ -799,14 +796,14 @@ impl E2eKvStore {
         size: u64,
         mime_type: String,
     ) -> app::Result<String> {
-        let blob_id = parse_blob_id_base58(&blob_id_str)?;
+        let blob_id = parse_blob_id_hex(&blob_id_str)?;
 
         let current_counter = *self.file_counter.get();
         let file_id = format!("file_{current_counter}");
         self.file_counter.set(current_counter + 1);
 
         let uploader_id = env::device_id();
-        let uploader = encode_blob_id_base58(&uploader_id);
+        let uploader = encode_blob_id_hex(&uploader_id);
         let timestamp = env::time_now();
 
         // Announce blob to network for peer discovery
@@ -876,9 +873,9 @@ impl E2eKvStore {
         Ok(file_record.clone())
     }
 
-    pub fn get_blob_id_b58(&self, file_id: String) -> app::Result<String> {
+    pub fn get_blob_id_hex(&self, file_id: String) -> app::Result<String> {
         let file_record = self.get_file(file_id)?;
-        Ok(encode_blob_id_base58(&file_record.blob_id))
+        Ok(encode_blob_id_hex(&file_record.blob_id))
     }
 
     pub fn search_files(&self, query: String) -> app::Result<Vec<FileRecord>> {
@@ -1179,7 +1176,7 @@ impl E2eKvStore {
     // AUTHORED MAP
 
     pub fn authored_insert(&mut self, key: String, value: String) -> app::Result<()> {
-        let owner = bs58::encode(env::device_id()).into_string();
+        let owner = hex::encode(env::device_id());
         self.authored_items
             .insert(key.clone(), value.clone().into())?;
         app::emit!(Event::AuthoredInserted {
@@ -1233,7 +1230,7 @@ impl E2eKvStore {
     // SHARED STORAGE
 
     pub fn shared_set(&mut self, value: String) -> app::Result<()> {
-        let by = bs58::encode(env::device_id()).into_string();
+        let by = hex::encode(env::device_id());
         self.shared_data.insert(LwwRegister::new(value.clone()))?;
         app::emit!(Event::SharedSet {
             value: value.clone(),
@@ -1305,15 +1302,39 @@ impl E2eKvStore {
 
     // AUTHORED VECTOR
 
-    pub fn authored_vec_push(&mut self, value: String) -> app::Result<usize> {
-        let index = self.authored_vec.push(LwwRegister::new(value.clone()))?;
-        let owner = bs58::encode(env::device_id()).into_string();
+    /// Returns the new entry's ID, not its index.
+    ///
+    /// An index describes where the entry currently sits in a set every peer
+    /// inserts into, so it goes stale as soon as anyone inserts ahead of it.
+    /// The id names the entry (core#3637).
+    pub fn authored_vec_push(&mut self, value: String) -> app::Result<String> {
+        let id = self.authored_vec.push(LwwRegister::new(value.clone()))?;
+        let entry_id = hex::encode(id.as_bytes());
+        let owner = hex::encode(env::device_id());
         app::emit!(Event::AuthoredVecPushed {
-            index,
+            entry_id: &entry_id,
             value,
             owner,
         });
-        Ok(index)
+        Ok(entry_id)
+    }
+
+    /// Update by ID — the address that survives a concurrent insert.
+    pub fn authored_vec_update_by_id(
+        &mut self,
+        entry_id: String,
+        value: String,
+    ) -> app::Result<()> {
+        let raw: [u8; 32] = hex::decode(&entry_id)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .ok_or_else(|| app::err!("bad entry id"))?;
+        self.authored_vec.update_by_id(
+            calimero_storage::address::Id::new(raw),
+            LwwRegister::new(value.clone()),
+        )?;
+        app::emit!(Event::AuthoredVecUpdatedById { entry_id, value });
+        Ok(())
     }
 
     pub fn authored_vec_get(&self, index: usize) -> app::Result<Option<String>> {

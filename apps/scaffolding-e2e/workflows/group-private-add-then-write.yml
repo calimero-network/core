@@ -305,10 +305,12 @@ steps:
 
   # ── Phase 5: the same add, named by ACCOUNT ───────────────────────
   # `GET /groups/:id/members` returns accounts and every verb on that
-  # resource except the add took one; the add took a bs58 key. The two
-  # are not interchangeable internally: a key is wrapped for that one
-  # key, while an account resolves to the account's live devices and is
-  # wrapped for each. Phases 1-4 pin the key; this pins the account.
+  # resource except the add took one; the add took a key. Both are 64 hex
+  # now, so the node tells them apart by looking the bytes up in its own
+  # bindings rather than by their spelling — but they still behave
+  # differently: a key is wrapped for that one key, while an account
+  # resolves to the account's live devices and is wrapped for each.
+  # Phases 1-4 pin the key; this pins the account.
 
   - name: Promote node-2 to Admin of the subgroup, named by account
     type: update_member_role

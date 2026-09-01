@@ -48,9 +48,10 @@ pub enum SyncProtocolKind {
 /// trade-offs in terms of bandwidth, latency, and computational overhead.
 ///
 /// See CIP §1 - Sync Protocol Types.
-#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, Default, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum SyncProtocol {
     /// No sync needed - root hashes already match.
+    #[default]
     None,
 
     /// Delta-based sync via DAG traversal.
@@ -111,12 +112,6 @@ pub enum SyncProtocol {
         /// Maximum depth to sync.
         max_depth: u32,
     },
-}
-
-impl Default for SyncProtocol {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl SyncProtocol {

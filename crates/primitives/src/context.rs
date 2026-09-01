@@ -67,13 +67,13 @@ impl fmt::Display for ContextId {
 
 impl From<ContextId> for String {
     fn from(id: ContextId) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
 impl From<&ContextId> for String {
     fn from(id: &ContextId) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
@@ -272,19 +272,21 @@ mod tests {
         let encoded_context_id = context_id.to_string();
 
         // Verify context id is an expected one
-        let expected_encoded_context_id = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
+        let expected_encoded_context_id =
+            "0101010101010101010101010101010101010101010101010101010101010101";
         assert!(!encoded_context_id.is_empty());
         assert_eq!(&encoded_context_id, expected_encoded_context_id);
     }
 
     #[test]
-    fn test_context_id_invalid_base58() {
-        // Try to decode an invalid context_id
+    fn test_context_id_invalid_hex() {
+        // "Invalid!" contains characters hex does not allow, so it fails on the
+        // alphabet rather than the length.
         let invalid_encoded_context_id = "Invalid!";
         let result = ContextId::from_str(invalid_encoded_context_id);
         assert!(matches!(
             result,
-            Err(InvalidContextId(HashError::DecodeError(_)))
+            Err(InvalidContextId(HashError::InvalidHex))
         ));
     }
 }

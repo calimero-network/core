@@ -326,12 +326,11 @@ async fn client_discovered_under_global_and_per_namespace_keys_additive() {
                                     phase = Phase::DiscoverPerNs;
                                 }
                             }
-                            Phase::DiscoverPerNs => {
-                                if found_a {
+                            Phase::DiscoverPerNs
+                                if found_a => {
                                     found_a_per_ns = true;
                                     return; // success
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -452,8 +451,8 @@ async fn cross_namespace_cookie_is_rejected_and_cookieless_discover_recovers() {
                     {
                         match phase {
                             Phase::RegisterGlobal => phase = Phase::RegisterPerNs,
-                            Phase::RegisterPerNs => {
-                                if b_connected {
+                            Phase::RegisterPerNs
+                                if b_connected => {
                                     b.behaviour_mut().rendezvous.discover(
                                         Some(per_ns.clone()),
                                         None,
@@ -462,7 +461,6 @@ async fn cross_namespace_cookie_is_rejected_and_cookieless_discover_recovers() {
                                     );
                                     phase = Phase::DiscoverPerNs;
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -501,11 +499,10 @@ async fn cross_namespace_cookie_is_rejected_and_cookieless_discover_recovers() {
                                          re-evaluate is_global_discovery_cookie"
                                     );
                                 }
-                                Phase::RecoveryGlobal => {
-                                    if found_a {
+                                Phase::RecoveryGlobal
+                                    if found_a => {
                                         return; // recovered: global discovery works again
                                     }
-                                }
                                 _ => {}
                             }
                         }

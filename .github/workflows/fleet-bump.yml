@@ -75,7 +75,7 @@ jobs:
       targets: ${{ steps.pick.outputs.targets }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Two surfaces move when core releases, and one repository can carry
       # either. `cargo` is a contract pinning the SDK by git tag; `tauri` is the
@@ -121,7 +121,7 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.targets) }}
     steps:
       - name: Check out this repository (for the bump script)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: producer
 
@@ -137,7 +137,7 @@ jobs:
           repositories: ${{ matrix.repo }}
 
       - name: Check out ${{ matrix.repo }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/${{ matrix.repo }}
           token: ${{ steps.token.outputs.token }}

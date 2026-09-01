@@ -19,6 +19,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         CreateGroupInvitationRequest {
             group_id,
             expiration_timestamp,
+            admitters,
         }: CreateGroupInvitationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -42,6 +43,49 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 "create group invitation",
             )?;
 
+            // An invitation nobody restricted is claimable by broadcast, which
+            // publishes it to every subscriber of the namespace topic. Callers
+            // that say nothing get the group's admins and TEE nodes rather than
+            // that, so the exposed case stops being the one you reach by
+            // omission.
+            let admitters = if admitters.is_empty() {
+                let defaulted =
+                    calimero_governance_store::NamespaceMembershipService::default_admitters(
+                        &datastore, &group_id,
+                    )?;
+                // A group always has at least one admin — losing the last one is
+                // refused by `ensure_not_last_admin_removal` and its demotion
+                // counterpart — so an empty result here is not a group without
+                // admins, it is a store that disagrees with an invariant.
+                //
+                // Refused rather than defaulted through. An empty admitter list is
+                // the one value that means "claimable by broadcast", so carrying
+                // on would answer an inconsistency by minting the least
+                // restricted credential the system can express, at exactly the
+                // moment there is reason to trust it least.
+                if defaulted.is_empty() {
+                    eyre::bail!(
+                        "refusing to mint an invitation for a group with no admin and no TEE node: \
+                         every group is supposed to have an admin, so this is an inconsistent \
+                         store rather than a group to issue an unrestricted invitation for"
+                    );
+                }
+
+                // Deliberately NOT the inviter. `CAN_INVITE_MEMBERS` grants
+                // creating an invitation, not seeing it through: admission stays
+                // with admins and TEE nodes, so a delegated inviter cannot
+                // complete a membership on its own.
+                //
+                // The cost is reachability, not authority. A non-admin inviter
+                // mints invitations it cannot admit, so the invitee has to reach
+                // an admin or TEE node rather than whoever handed it the
+                // invitation — which is what `admitter_hints` is for, and nothing
+                // populates those yet.
+                defaulted
+            } else {
+                admitters
+            };
+
             let private_key = PrivateKey::from(node_sk);
 
             let mut rng = rand::thread_rng();
@@ -51,8 +95,13 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock before epoch")
                 .as_secs();
-            let expiration_timestamp: u64 =
-                now_secs + expiration_timestamp.unwrap_or(365 * 24 * 3600);
+            // Clamped, not merely defaulted: a caller asking for longer is a
+            // caller extending how long a leaked bearer credential stays
+            // redeemable, and the request is not theirs to grant.
+            let requested = expiration_timestamp
+                .unwrap_or(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS)
+                .min(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS);
+            let expiration_timestamp: u64 = now_secs + requested;
 
             let inviter_signer_id = SignerId::from(*signer);
 
@@ -62,6 +111,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 expiration_timestamp,
                 invitation_nonce,
                 invited_role: 1, // Member
+                admitters,
             };
 
             let invitation_bytes = borsh::to_vec(&invitation)
@@ -96,6 +146,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
                     bytecode_id: Some(meta.bytecode_id),
+                    admitter_hints: Vec::new(),
                 },
                 group_name,
             ))

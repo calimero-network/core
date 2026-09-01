@@ -47,6 +47,7 @@ mod context_registration;
 mod context_tree;
 mod contexts;
 mod deny_list;
+pub mod device_link;
 mod errors;
 mod governance_signer;
 mod group_governance_publisher;
@@ -94,6 +95,7 @@ pub use self::contexts::{
     unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
+pub use self::device_link::{bind_device_everywhere, bind_known_devices};
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -126,15 +128,16 @@ pub use self::namespace::{
     build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
     known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
-    redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
-    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
-    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
-    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    redrive_buffered_ops_for_group, retry_encrypted_ops_for_group, seal_root_op_for_publish,
+    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
+    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
+    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
+    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
-    account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot, NodeDevice,
-    NodeDeviceRepository, RevocationTarget,
+    account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
+    KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::PermissionChecker;
@@ -202,7 +205,7 @@ pub fn placeholder_admin_identity() -> AccountId {
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceCreatedRejection, NamespaceError,
+    NamespaceCreatedRejection, NamespaceError, NodeDeviceError,
 };
 
 // ---------------------------------------------------------------------------
@@ -214,7 +217,7 @@ pub use self::errors::{
 ///
 /// This helper eliminates the repeated seek-iterate-prefix-check boilerplate
 /// used throughout this module.
-fn collect_keys_with_prefix<K>(
+pub(crate) fn collect_keys_with_prefix<K>(
     store: &Store,
     start: K,
     prefix_byte: u8,

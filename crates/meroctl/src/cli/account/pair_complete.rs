@@ -1,4 +1,4 @@
-use calimero_server_primitives::admin::PairDeviceCompleteApiRequest;
+use calimero_server_primitives::admin::AccountPairCompleteApiRequest;
 use clap::Parser;
 use eyre::Result;
 
@@ -26,12 +26,16 @@ use crate::cli::Environment;
 ///
 /// Only the *current* scope key is delivered. The paired device converges on
 /// forward state; it cannot decrypt ops sealed under retired key epochs.
+///
+/// `--application` is what decides where the link is published, and naming none
+/// means every namespace this node takes part in. Applications rather than
+/// namespaces because a namespace is an implementation unit nobody outside the
+/// node named, so this side resolves the one from the other. It need not agree
+/// with the namespaces the other device was told: a binding published where the
+/// device is not listening is picked up whenever it does subscribe.
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Certify and link a device minted by `account pair-init`")]
 pub struct PairCompleteCommand {
-    #[clap(name = "NAMESPACE_ID", help = "The hex-encoded namespace ID")]
-    pub namespace_id: String,
-
     #[clap(
         long,
         value_name = "HEX",
@@ -66,22 +70,27 @@ pub struct PairCompleteCommand {
         help = "The confirmation code read out from the pairing device, e.g. 7BC0-DAAC-CCB4-84A4"
     )]
     pub confirmation_code: String,
+
+    #[clap(
+        long = "application",
+        value_name = "APPLICATION_ID",
+        help = "Restrict the device to this application; repeat for several, omit for all"
+    )]
+    pub applications: Vec<String>,
 }
 
 impl PairCompleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
         let response = client
-            .pair_device_complete(
-                &self.namespace_id,
-                PairDeviceCompleteApiRequest {
-                    device_id: self.device_id,
-                    kem_public_key: self.kem_key,
-                    sign_public_key: self.sign_key,
-                    statement: self.statement,
-                    confirmation_code: self.confirmation_code,
-                },
-            )
+            .pair_device_complete(AccountPairCompleteApiRequest {
+                device_id: self.device_id,
+                kem_public_key: self.kem_key,
+                sign_public_key: self.sign_key,
+                statement: self.statement,
+                confirmation_code: self.confirmation_code,
+                applications: self.applications,
+            })
             .await?;
 
         environment.output.write(&response);

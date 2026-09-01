@@ -2,8 +2,13 @@ error[E0277]: the trait bound `Plain: AbiType` is not satisfied
   --> tests/macros/error_non_mergeable_field.rs:18:12
    |
 18 |     items: UnorderedMap<String, Plain>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `AbiType` is not implemented for `Plain`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
+help: the trait `AbiType` is not implemented for `Plain`
+  --> tests/macros/error_non_mergeable_field.rs:12:1
+   |
+12 | struct Plain {
+   | ^^^^^^^^^^^^
    = help: the following other types implement trait `AbiType`:
              &T
              &mut T
@@ -25,5 +30,9 @@ error[E0277]: (calimero)> `calimero_storage::collections::UnorderedMap<std::stri
    = help: the trait `Mergeable` is not implemented for `calimero_storage::collections::UnorderedMap<std::string::String, Plain>`
    = note: every `#[app::state]` field and every collection value must be `Mergeable` so replicas converge.
    = note: fixes: wrap a plain value in `LwwRegister<calimero_storage::collections::UnorderedMap<std::string::String, Plain>>` (last-write-wins) or `Counter`; use `UnorderedMap`/`UnorderedSet`/`Vector` for collections; or `#[derive(Mergeable)]` on your own struct (every field must itself be `Mergeable`).
-   = help: the trait `Mergeable` is implemented for `S`
+help: the trait `Mergeable` is implemented for `S`
+  --> tests/macros/error_non_mergeable_field.rs:16:1
+   |
+16 | #[app::state]
+   | ^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `app::state` (in Nightly builds, run with -Z macro-backtrace for more info)

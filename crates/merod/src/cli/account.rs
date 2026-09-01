@@ -1,8 +1,8 @@
 //! Back up and restore this node's account root.
 //!
 //! The account root is the one key that can certify a replacement device after
-//! every existing device is lost. It is generated on first use and written to the
-//! node's own store, so until this command existed the recovery property the
+//! every existing device is lost. `merod init` provisions it into the node's own
+//! store (unless `--no-account-root`), so until this command existed the recovery property the
 //! account model is built around was structurally available but not deliverable:
 //! the key survives a namespace-identity rotation and does not survive losing the
 //! disk, which is the case the whole story is about.
@@ -35,6 +35,10 @@ pub struct AccountCommand {
 
 #[derive(Debug, Subcommand)]
 enum AccountSubcommands {
+    /// Print an account's id and root PUBLIC key, revealing no secret
+    Root(RootCommand),
+    /// Print this node's device id and public keys — what `sign-cert` certifies
+    Device(DeviceCommand),
     /// Print this node's account root as a 24-word recovery phrase
     Export(ExportCommand),
     /// Restore an account root from a recovery phrase
@@ -43,6 +47,8 @@ enum AccountSubcommands {
     RevokeProof(RevokeProofCommand),
     /// Certify a device offline, for a client that holds no node
     SignCert(SignCertCommand),
+    /// Import a certificate this account's root signed elsewhere
+    ImportCert(ImportCertCommand),
     /// Sign a warrant offline, authorising one relay to perform one intent
     Warrant(WarrantCommand),
 }
@@ -114,10 +120,13 @@ pub struct RevokeProofCommand {
 impl AccountCommand {
     pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
         match self.action {
+            AccountSubcommands::Root(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::Device(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Export(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Import(cmd) => cmd.run(root_args).await,
             AccountSubcommands::RevokeProof(cmd) => cmd.run(root_args).await,
             AccountSubcommands::SignCert(cmd) => cmd.run(root_args).await,
+            AccountSubcommands::ImportCert(cmd) => cmd.run(root_args).await,
             AccountSubcommands::Warrant(cmd) => cmd.run(),
         }
     }
@@ -241,8 +250,22 @@ pub struct WarrantCommand {
     nonce: u64,
 
     /// Seconds from now that the warrant stays spendable.
-    #[arg(long, default_value_t = 300)]
+    ///
+    /// Read against this machine's clock when the command runs, so two mintings
+    /// never share a deadline. Use `--not-after` where the exact value matters.
+    #[arg(long, default_value_t = 300, conflicts_with = "not_after")]
     valid_for: u64,
+
+    /// Absolute deadline, unix seconds — the alternative to `--valid-for`.
+    ///
+    /// Exists so a warrant can be reproduced exactly. Every other input to the
+    /// signature is pinned by a flag; the deadline was the one field taken from
+    /// the clock, which made two mintings of "the same" warrant differ here and,
+    /// because the signature covers it, in the signature too. Given this, a
+    /// second implementation can be diffed against this one byte for byte
+    /// instead of inferred to agree from a node accepting its output.
+    #[arg(long, value_name = "UNIX_SECONDS")]
+    not_after: Option<u64>,
 
     /// The device's signing secret, 64 hex chars. Signs the warrant; never sent.
     #[arg(long, value_name = "HEX")]
@@ -289,10 +312,12 @@ impl WarrantCommand {
             serde_json::from_str(&self.args).wrap_err("--args is not valid JSON")?;
         let args_bytes = serde_json::to_vec(&args).wrap_err("--args could not be re-encoded")?;
 
-        let not_after = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-            .saturating_add(self.valid_for);
+        let not_after = self.not_after.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+                .saturating_add(self.valid_for)
+        });
 
         let warrant = calimero_account::Warrant::sign(
             &secret,
@@ -466,7 +491,7 @@ impl ExportCommand {
 
         let store = open_store(root_args).await?;
         let repo = NodeDeviceRepository::new(&store);
-        // Deliberately NOT `ensure_account_root`: generating one here would report
+        // Deliberately NOT `provision_account_root`: minting one here would report
         // a brand-new key as this node's backup, and the operator would keep it as
         // if it meant something.
         let Some(root) = repo
@@ -689,7 +714,7 @@ async fn resolve_root(
         }
         None => {
             let store = open_store(root_args).await?;
-            // Not `ensure_account_root`: minting one here would sign with a key
+            // Not `provision_account_root`: minting one here would sign with a key
             // that owns nothing, and the result would verify against itself while
             // authorising nothing anywhere.
             NodeDeviceRepository::new(&store)
@@ -707,8 +732,22 @@ async fn resolve_root(
 }
 
 /// Parse a 32-byte hex key, naming the argument it rejected.
+/// Parse a 32-byte key as hex.
+///
+/// Hex only. This accepted base58 as well while `GET /admin-api/identity` still
+/// rendered the signing key that way and hex-encoded the two beside it. Now that
+/// every id is hex, accepting base58 would hide a caller left on the old spelling
+/// rather than telling them.
+///
+/// # Errors
+/// If the value is not 64 hex characters.
 fn parse_key(raw: &str, arg: &str) -> EyreResult<[u8; 32]> {
-    let bytes = hex::decode(raw.trim()).wrap_err_with(|| format!("--{arg} is not hex"))?;
+    let bytes = hex::decode(raw.trim()).map_err(|_ignored| {
+        eyre::eyre!(
+            "--{arg} is not hex. It is 64 hex characters, which is how both \
+             `merod account device` and `meroctl account show` print it"
+        )
+    })?;
     bytes
         .try_into()
         .map_err(|_ignored| eyre::eyre!("--{arg} is not 32 bytes (64 hex characters)"))
@@ -835,51 +874,444 @@ mod tests {
         assert_eq!(device, DeviceId::from([0x42; 32]));
     }
 
-    /// A context is written in base58 and an account in hex, and the two are
-    /// not interchangeable even though both are 32 bytes.
+    /// Every id is hex, and the encoding no longer tells them apart.
     ///
-    /// This is a regression pin, not a hypothetical: `account warrant` parsed
-    /// `--context` as hex, which every hand-run happened to survive because a
-    /// hand-typed id came from a hex dump. It failed the moment a real context
-    /// id — base58, as every API and CLI surface prints one — reached it, and
-    /// only an end-to-end run found that. The assertion below is the same
-    /// check, for a hundredth of the wall clock.
+    /// This replaces a pin asserting the opposite — that a context was base58 and
+    /// an account hex, so the two could not interchange. That difference used to
+    /// do free validation: `account warrant` once parsed `--context` as hex, and
+    /// it failed loudly the moment a real base58 context id reached it.
+    ///
+    /// **Unifying on hex gives that up, deliberately.** A context id now parses
+    /// cleanly where an account id is expected, and vice versa — both are 32
+    /// bytes in the same spelling. The trade is made because the previous scheme
+    /// had a worse failure in the other direction: base58's alphabet contains
+    /// every hex digit except `0`, so a hex value handed to a base58 parser was
+    /// often *valid* and decoded to the wrong 32 bytes silently.
+    ///
+    /// What still separates the two is the type system inside Rust, and semantic
+    /// checks at the edges — "does this context exist" rather than "is this
+    /// shaped like a context". Anything taking both as strings has to validate
+    /// meaning, because spelling no longer will.
     #[test]
-    fn a_context_id_is_base58_and_an_account_id_is_hex() {
+    fn every_id_is_hex_and_encoding_no_longer_distinguishes_them() {
         use calimero_primitives::context::ContextId;
 
         let bytes: [u8; 32] = core::array::from_fn(|i| i as u8);
         let context = ContextId::from(bytes);
-
-        let base58 = context.to_string();
         let hex = hex::encode(bytes);
-        assert_ne!(
-            base58, hex,
-            "the two spellings must differ to be confusable"
-        );
 
-        // The spelling a context prints is the spelling it parses.
-        assert_eq!(
-            base58.parse::<ContextId>().expect("base58 must parse"),
-            context
-        );
-
-        // And the hex spelling is NOT accepted as a context. Were it accepted,
-        // the two would silently interchange and the bug this pins would be
-        // invisible rather than loud.
-        assert!(
-            hex.parse::<ContextId>().is_err(),
-            "hex must not parse as a context id, or nothing distinguishes the two"
-        );
-
-        // The account side, mirrored: hex parses, base58 does not.
+        assert_eq!(context.to_string(), hex, "a context prints as hex");
+        assert_eq!(hex.parse::<ContextId>().expect("parses"), context);
         assert!(
             hex.parse::<calimero_account::AccountId>().is_ok(),
-            "an account id is hex"
+            "and the same string is a valid account id — the encoding stopped \
+             being a type check, which is the cost of one spelling",
         );
-        assert!(
-            base58.parse::<calimero_account::AccountId>().is_err(),
-            "base58 must not parse as an account id"
+
+        // Base58 is refused everywhere now, so a caller still on the old form is
+        // told rather than silently misread.
+        let old_base58 = "11111111111111111111111111111112";
+        assert!(old_base58.parse::<ContextId>().is_err());
+    }
+
+    /// The two lines `account root` prints must describe the same account.
+    ///
+    /// They are pasted into different places — the public key into `init
+    /// --account-root`, the account id into a membership grant — so if they
+    /// disagreed an operator would provision a node under one account and grant
+    /// rights to another. Nothing would error; the node would simply never be a
+    /// member, and the cause would be two numbers that looked fine side by side.
+    #[test]
+    fn the_printed_root_key_and_account_describe_the_same_account() {
+        let root = root();
+
+        assert_eq!(
+            root.account(),
+            calimero_account::AccountGenesis::new(root.public_key()).account_id(),
+            "the account id must be the content address of the printed public key",
         );
+    }
+
+    /// The three values `account device` prints must be the ones a certificate is
+    /// signed over — and they must agree with what the store holds.
+    ///
+    /// Printing a plausible-but-wrong key here is the worst failure this command
+    /// has: the operator certifies it, the certificate verifies as a signature,
+    /// and a peer then refuses the binding. Nothing local points at the cause.
+    #[test]
+    fn the_printed_device_values_come_from_the_store() {
+        use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+        use calimero_store::config::StoreConfig;
+        use calimero_store::Store;
+        use calimero_store_rocksdb::RocksDB;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("data")).expect("utf8 path");
+        let store = Store::open::<RocksDB>(&StoreConfig::new(path)).expect("open");
+
+        // What `merod init --no-account-root --account-root <pk>` leaves behind.
+        let root_pk = PrivateKey::from([4u8; 32]).public_key();
+        let genesis = calimero_account::AccountGenesis::new(root_pk);
+        let device = NodeDeviceRepository::new(&store)
+            .adopt_account(genesis)
+            .expect("adopt");
+        let signing_key = NamespaceRepository::new(&store)
+            .provision_node_identity()
+            .expect("provision");
+
+        // The command reads exactly these, so assert the store agrees with itself
+        // rather than re-deriving anything: a second derivation could be wrong in
+        // the same way as the first.
+        let reread = NodeDeviceRepository::new(&store)
+            .get()
+            .expect("read")
+            .expect("device present");
+
+        assert_eq!(reread.device(), device.device());
+        assert_eq!(reread.account, genesis.account_id());
+        assert_eq!(
+            reread.kem_public_key().as_bytes(),
+            device.kem_public_key().as_bytes(),
+        );
+        assert_eq!(
+            NamespaceRepository::new(&store)
+                .node_identity()
+                .expect("read")
+                .expect("present")
+                .public_key,
+            signing_key,
+        );
+    }
+
+    /// `sign-cert`'s key arguments must accept both spellings in circulation.
+    ///
+    /// `GET /admin-api/identity` renders the signing key base58 — `PublicKey`'s own
+    /// Display — while hex-encoding the device id and agreement key beside it.
+    /// `merod account device` prints all three hex. So a caller pasting from the
+    /// API supplies base58 for one argument and hex for the others, which is
+    /// exactly what the offline-root e2e did before this.
+    #[test]
+    fn sign_cert_keys_accept_hex_and_base58() {
+        let key = PrivateKey::from([6u8; 32]).public_key();
+        let raw = *AsRef::<[u8; 32]>::as_ref(&key);
+
+        assert_eq!(
+            super::parse_key(&hex::encode(raw), "sign-pk").expect("hex"),
+            raw
+        );
+        assert_eq!(
+            super::parse_key(&key.to_string(), "sign-pk").expect("base58"),
+            raw,
+            "base58 is what the identity endpoint prints for this key",
+        );
+    }
+
+    /// A rejection must name both spellings and where each comes from.
+    #[test]
+    fn a_bad_key_says_which_spellings_are_accepted() {
+        let err = super::parse_key("not-a-key", "sign-pk").expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("merod account device"), "{msg}");
+        assert!(msg.contains("meroctl account show"), "{msg}");
+    }
+
+    /// Hex of the wrong length is a distinct mistake from a wrong encoding.
+    #[test]
+    fn a_short_hex_key_says_so() {
+        let err = super::parse_key(&hex::encode([1u8; 16]), "kem-pk").expect_err("must refuse");
+        assert!(err.to_string().contains("32 bytes"), "{err}");
+    }
+
+    /// `--not-after` and `--valid-for` cannot both be given.
+    ///
+    /// They set one field two ways, and letting either silently win would make a
+    /// reproducible mint depend on flag order.
+    #[test]
+    fn an_absolute_deadline_conflicts_with_a_relative_one() {
+        let err = WarrantCommand::try_parse_from([
+            "warrant",
+            "--context",
+            &"11".repeat(32),
+            "--method",
+            "set",
+            "--executor",
+            &"22".repeat(32),
+            "--nonce",
+            "1",
+            "--device-secret",
+            &"33".repeat(32),
+            "--credential",
+            "aa",
+            "--valid-for",
+            "300",
+            "--not-after",
+            "1800000000",
+        ])
+        .expect_err("both deadlines must be refused");
+
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "{err}"
+        );
+    }
+
+    /// `--not-after` alone parses, despite `--valid-for` carrying a default.
+    ///
+    /// This pins clap rather than the code above: `conflicts_with` fires on a
+    /// *provided* argument, and a defaulted one is not provided. Were that ever
+    /// untrue the new flag could not be used without also passing the flag it
+    /// exists to replace, so it is worth an assertion rather than a comment.
+    #[test]
+    fn an_absolute_deadline_alone_is_accepted() {
+        let cmd = WarrantCommand::try_parse_from([
+            "warrant",
+            "--context",
+            &"11".repeat(32),
+            "--method",
+            "set",
+            "--executor",
+            &"22".repeat(32),
+            "--nonce",
+            "1",
+            "--device-secret",
+            &"33".repeat(32),
+            "--credential",
+            "aa",
+            "--not-after",
+            "1800000000",
+        ])
+        .expect("an absolute deadline on its own must parse");
+
+        assert_eq!(cmd.not_after, Some(1_800_000_000));
+        assert_eq!(
+            cmd.valid_for, 300,
+            "the unused relative flag keeps its default"
+        );
+    }
+}
+
+/// Adopt a device certificate this account's root signed somewhere else.
+///
+/// The other half of `sign-cert`, and what makes a node with **no account root**
+/// usable rather than merely permitted: the root stays in cold storage, signs a
+/// certificate for this node's device, and this command is how the node starts
+/// presenting it.
+///
+/// The ordering is forced and worth stating, because getting it wrong wastes an
+/// air-gap trip: a certificate is signed **over** a device id, a signing key and an
+/// agreement key, so the device must already exist here before anybody can certify
+/// it. Read those three from `GET /admin-api/identity` (or `meroctl account show`),
+/// certify them on the machine holding the root, then import the result.
+///
+/// Opens the datastore directly, so the node must be **stopped** — RocksDB's lock
+/// is exclusive, exactly as for `export` and `import`.
+///
+/// Nothing here is secret. The certificate is public by construction: it travels in
+/// every device binding this node publishes, and it authorises nothing on its own —
+/// only the device holding the matching signing key can use it.
+#[derive(Debug, Parser)]
+pub struct ImportCertCommand {
+    /// The hex credential, as printed by `merod account sign-cert`.
+    ///
+    /// Read from stdin when absent, so a certificate can be piped in without
+    /// landing in shell history.
+    #[arg(value_name = "HEX")]
+    credential: Option<String>,
+}
+
+impl ImportCertCommand {
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let encoded = match self.credential {
+            Some(hex) => hex,
+            None => {
+                eprintln!("Paste the certificate, then press Ctrl-D:");
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .wrap_err("Failed to read the certificate from stdin")?;
+                buf
+            }
+        };
+        let bytes = hex::decode(encoded.trim())
+            .wrap_err("the credential is not hex; paste the line `sign-cert` printed")?;
+
+        let proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
+            borsh::from_slice(&bytes)
+                .wrap_err("the credential did not decode as a device certificate")?;
+
+        let store = open_store(root_args).await?;
+        let repo = NodeDeviceRepository::new(&store);
+
+        // The device row must already be here, and must be the one certified.
+        //
+        // Checked now rather than at the first join, because a mismatch is
+        // otherwise invisible until a peer refuses the join — and at that point
+        // nothing local points at a mistyped `--device`.
+        let device = repo
+            .get()
+            .wrap_err("could not read this node's device row")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has no device row yet, so there is nothing a certificate \
+                     could describe. A device is minted when the node first takes part \
+                     in a namespace, and it is those values a certificate is signed over"
+                )
+            })?;
+
+        // Authenticity against the account the ROW names, not the one the proof
+        // carries: a proof always verifies against its own genesis, so checking it
+        // against itself would admit a certificate for an unrelated account.
+        let verified = proof.verify(device.account).map_err(|err| {
+            eyre::eyre!(
+                "the certificate does not verify for this node's account {}: {err}",
+                device.account
+            )
+        })?;
+
+        eyre::ensure!(
+            verified.device == device.device(),
+            "the certificate is for device {} but this node is {}",
+            verified.device,
+            device.device(),
+        );
+        eyre::ensure!(
+            verified.kem_pk == device.kem_public_key(),
+            "the certificate names an agreement key that is not this device's, so scope \
+             keys wrapped to it could not be opened here",
+        );
+
+        repo.store_imported_certificate(&bytes)
+            .wrap_err("could not store the certificate")?;
+
+        println!("Imported a certificate for device {}", device.device());
+        println!("Account: {}", device.account);
+        println!();
+        println!(
+            "This node will present it when it joins, instead of signing one with an \
+             account root it does not hold."
+        );
+        Ok(())
+    }
+}
+
+/// Report an account's id and root **public** key. Reveals nothing secret.
+///
+/// The read the offline posture was missing. `merod init --no-account-root
+/// --account-root <HEX>` needs an account's root public key, and until now the only
+/// way to obtain one was from a **running holder node** — precisely the machine that
+/// posture says should not exist. With `--from` this answers from the phrase alone:
+/// no node, no store, no init.
+///
+/// Distinct from `export`, which prints the phrase — the whole account. This prints
+/// only what is public by construction: the root public key is hashed into the
+/// account id and travels in every genesis, so publishing it grants nothing. Two
+/// commands rather than a flag on one, because "show me the account" and "hand me
+/// the secret" should not be one keystroke apart.
+///
+/// Without `--from` it reads this node's own root, so the node must be **stopped**
+/// (RocksDB's lock is exclusive).
+#[derive(Debug, Parser)]
+pub struct RootCommand {
+    /// Read the root from a recovery phrase at PATH instead of this node's store.
+    ///
+    /// Opens no datastore, so it works on a machine with no node.
+    #[arg(long, value_name = "PATH")]
+    from: Option<camino::Utf8PathBuf>,
+}
+
+impl RootCommand {
+    #[expect(
+        clippy::print_stdout,
+        reason = "the values are what an operator pastes into `init --account-root`, \
+                  so they go to stdout for piping rather than through a formatter"
+    )]
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let root = resolve_root(root_args, self.from.as_ref()).await?;
+
+        println!("Account root public key: {}", root.public_key());
+        println!("Account:                 {}", root.account());
+        println!();
+        println!(
+            "Neither value is secret: the root public key is hashed into the account id \
+             and travels in every genesis. The private root leaves a node only via \
+             `merod account export`."
+        );
+        Ok(())
+    }
+}
+
+/// Report this node's device: the three values a certificate is signed over.
+///
+/// `merod account sign-cert` is offline by design — with `--from` it opens no
+/// store and contacts no node. Its **inputs** were not: the only way to learn
+/// what to certify was `GET /admin-api/identity`, which needs a *running* node.
+/// That is exactly the machine the cold-storage posture says should not be
+/// required, so an operator with a stopped node and a root on another machine
+/// could not assemble a `sign-cert` invocation at all.
+///
+/// Reads the datastore directly, so the node must be **stopped** — RocksDB's lock
+/// is exclusive, as for `export` and `import`.
+///
+/// Nothing here is secret. All three are published in this device's binding: the
+/// id names a replica, the signing key is what op signatures verify against, and
+/// the agreement key is what wrapped scope keys are addressed to. The secrets that
+/// match the latter two are reachable from no command and no route.
+#[derive(Debug, Parser)]
+pub struct DeviceCommand {}
+
+impl DeviceCommand {
+    #[expect(
+        clippy::print_stdout,
+        reason = "these are the values an operator pastes into `sign-cert`, so they \
+                  go to stdout for piping rather than through a formatter"
+    )]
+    pub async fn run(self, root_args: &RootArgs) -> EyreResult<()> {
+        let store = open_store(root_args).await?;
+
+        let device = NodeDeviceRepository::new(&store)
+            .get()
+            .wrap_err("could not read this node's device row")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has no device yet. One is minted by `merod init \
+                     --no-account-root --account-root <HEX>`, or the first time the \
+                     node takes part in a namespace"
+                )
+            })?;
+
+        // The signing key lives beside the device rather than in its row: it is
+        // the key ops verify against, and it is provisioned at init.
+        let signing_key = calimero_governance_store::NamespaceRepository::new(&store)
+            .node_identity()
+            .wrap_err("could not read this node's signing identity")?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "this node has a device but no signing identity, which should not \
+                     happen: `merod init` provisions one. A node initialised before \
+                     that mints it on its first namespace join"
+                )
+            })?
+            .public_key;
+
+        println!("Account:       {}", device.account);
+        println!("Device:        {}", hex::encode(device.device().as_bytes()));
+        println!(
+            "Signing key:   {}",
+            hex::encode(AsRef::<[u8; 32]>::as_ref(&signing_key))
+        );
+        println!(
+            "Agreement key: {}",
+            hex::encode(device.kem_public_key().as_bytes())
+        );
+        println!();
+        println!(
+            "Certify this device wherever its account root lives:\n\n  merod account \
+             sign-cert --device {} --sign-pk {} --kem-pk {} --from <phrase-file>\n",
+            hex::encode(device.device().as_bytes()),
+            hex::encode(AsRef::<[u8; 32]>::as_ref(&signing_key)),
+            hex::encode(device.kem_public_key().as_bytes()),
+        );
+        println!("Then bring the result back with `merod account import-cert`.");
+        Ok(())
     }
 }

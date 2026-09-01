@@ -5,17 +5,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
-};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
-use sha2::{Digest, Sha256};
-
-use crate::ReentryRepository;
 
 use super::*;
 
@@ -537,7 +532,6 @@ fn signed_beacon(
     namespace_id: NamespaceId,
     applied_through: u64,
     strong: bool,
-    admission_proof: Option<SignedGroupOpenInvitation>,
 ) -> SignedReadinessBeacon {
     let mut beacon = SignedReadinessBeacon {
         namespace_id,
@@ -546,7 +540,6 @@ fn signed_beacon(
         applied_through,
         ts_millis: 1_700_000_000_000,
         strong,
-        admission_proof,
         signature: [0u8; 64],
     };
     beacon.signature = sk
@@ -563,7 +556,7 @@ async fn verify_readiness_beacon_accepts_signed_member_beacon() {
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let beacon = signed_beacon(&sk, ns_id.into(), 17, true, None);
+    let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     assert!(
         verify_readiness_beacon(&store, &beacon),
         "signed beacon from a member must verify"
@@ -579,7 +572,7 @@ async fn verify_readiness_beacon_rejects_non_member_signer() {
     let sk = PrivateKey::random(&mut rand::thread_rng());
     let ns_id = [42u8; 32];
     // No plant_namespace_member call.
-    let beacon = signed_beacon(&sk, ns_id.into(), 17, true, None);
+    let beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
 
@@ -595,197 +588,10 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
     let ns_id = [42u8; 32];
     plant_namespace_member(&store, ns_id.into(), &sk.public_key());
 
-    let mut beacon = signed_beacon(&sk, ns_id.into(), 17, true, None);
+    let mut beacon = signed_beacon(&sk, ns_id.into(), 17, true);
     beacon.signature = [0u8; 64]; // clobber the signature
     assert!(!verify_readiness_beacon(&store, &beacon));
 }
-
-// ---------------------------------------------------------------------------
-// beacon_admission_provable
-// ---------------------------------------------------------------------------
-
-/// Build an inviter-signed open invitation to `group_id`, matching the
-/// `sha256(borsh(invitation))` payload `create_group_invitation` signs.
-fn invitation_from(
-    inviter_sk: &PrivateKey,
-    group_id: ContextGroupId,
-    expiration_timestamp: u64,
-) -> SignedGroupOpenInvitation {
-    let invitation = GroupInvitationFromAdmin {
-        inviter_identity: SignerId::from(*inviter_sk.public_key().digest()),
-        group_id,
-        expiration_timestamp,
-        invitation_nonce: [0x42; 32],
-        invited_role: 1,
-    };
-    let bytes = borsh::to_vec(&invitation).expect("borsh");
-    let signature = inviter_sk.sign(&Sha256::digest(&bytes)).expect("sign");
-    SignedGroupOpenInvitation {
-        inviter_account: None,
-        invitation,
-        inviter_signature: hex::encode(signature.to_bytes()),
-        application_id: None,
-        bytecode_id: None,
-    }
-}
-
-#[tokio::test]
-async fn admission_provable_accepts_valid_invitation_from_non_member() {
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-
-    let inv = invitation_from(&admin_sk, ContextGroupId::from(ns.to_bytes()), 0);
-    let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-
-    assert!(
-        !verify_readiness_beacon(&store, &beacon),
-        "the joiner holds no membership row yet"
-    );
-    assert!(beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_missing_proof() {
-    let store = empty_store();
-    let sk = PrivateKey::random(&mut rand::thread_rng());
-    let beacon = signed_beacon(&sk, [42u8; 32].into(), 17, true, None);
-    assert!(!beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_bad_beacon_signature() {
-    // The beacon signature is the only thing binding the invitation to
-    // `peer_pubkey`; a beacon whose signature does not verify must never
-    // unlock a pull, however valid the stapled invitation is.
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-
-    let inv = invitation_from(&admin_sk, ContextGroupId::from(ns.to_bytes()), 0);
-    let mut beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-    beacon.signature = [0u8; 64];
-    assert!(!beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_forged_inviter_signature() {
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-
-    let mut inv = invitation_from(&admin_sk, ContextGroupId::from(ns.to_bytes()), 0);
-    inv.inviter_signature = hex::encode([0u8; 64]);
-    let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-    assert!(!beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_wrong_namespace() {
-    // The inviter is an authorised admin of BOTH groups, so the only guard
-    // that can reject here is the namespace match: an invitation to a group
-    // outside the beacon's namespace vouches for nothing.
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    let other_ns: NamespaceId = [43u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-    plant_namespace_role(
-        &store,
-        other_ns,
-        &admin_sk.public_key(),
-        GroupMemberRole::Admin,
-    );
-
-    let inv = invitation_from(&admin_sk, ContextGroupId::from(other_ns.to_bytes()), 0);
-    let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-    assert!(!beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_unauthorised_inviter() {
-    // Signature is valid and the namespace matches; the inviter simply has
-    // no standing in our view of the namespace.
-    let store = empty_store();
-    let stranger_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-
-    let inv = invitation_from(&stranger_sk, ContextGroupId::from(ns.to_bytes()), 0);
-    let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-    assert!(!beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_expired_invitation() {
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-
-    // 1970-01-01T00:00:01Z - long past. `0` is the no-expiry sentinel and is
-    // what every accepting test above uses.
-    let inv = invitation_from(&admin_sk, ContextGroupId::from(ns.to_bytes()), 1);
-    let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-    assert!(!beacon_admission_provable(&store, &beacon));
-}
-
-#[tokio::test]
-async fn admission_provable_rejects_consumed_nonce() {
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let joiner_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-
-    let gid = ContextGroupId::from(ns.to_bytes());
-    // Bound, not a member: the consumption check resolves the beacon signer's
-    // key to an account before looking for a spent-invitation row, and a key it
-    // cannot resolve names no principal that could have spent anything — so
-    // without the binding this would pass by answering the wrong question.
-    let joiner_account = crate::test_fixtures::enrol_member(&store, &gid, &joiner_sk.public_key());
-    let inv = invitation_from(&admin_sk, gid, 0);
-    ReentryRepository::new(&store)
-        .mark_invitation_consumed(&gid, &joiner_account, inv.invitation.invitation_nonce)
-        .expect("mark consumed");
-    let beacon = signed_beacon(&joiner_sk, ns, 17, true, Some(inv));
-
-    assert!(
-        !beacon_admission_provable(&store, &beacon),
-        "a spent invitation must not vouch for a replayed beacon"
-    );
-}
-
-#[tokio::test]
-async fn admission_proof_is_bearer_not_bound_to_signer() {
-    // Open invitations carry no invitee field: they are bearer credentials,
-    // so the proof establishes possession, not issuance. The same invitation
-    // therefore vouches for any beacon signer that holds it - bounded by the
-    // fact that all it unlocks is a pull, which writes nothing.
-    let store = empty_store();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
-    let ns: NamespaceId = [42u8; 32].into();
-    plant_namespace_role(&store, ns, &admin_sk.public_key(), GroupMemberRole::Admin);
-
-    let inv = invitation_from(&admin_sk, ContextGroupId::from(ns.to_bytes()), 0);
-    for _ in 0..2 {
-        let bearer_sk = PrivateKey::random(&mut rand::thread_rng());
-        let beacon = signed_beacon(&bearer_sk, ns, 17, true, Some(inv.clone()));
-        assert!(beacon_admission_provable(&store, &beacon));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// verify_migration_heartbeat (PR-6c Task 6c.8)
-// ---------------------------------------------------------------------------
 
 /// Build a properly-signed migration heartbeat for `namespace_id`, signed
 /// by `sk`. Mirrors `signed_beacon` — the signed body is the canonical

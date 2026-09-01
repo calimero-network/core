@@ -75,13 +75,13 @@ impl Display for ApplicationId {
 
 impl From<ApplicationId> for String {
     fn from(id: ApplicationId) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
 impl From<&ApplicationId> for String {
     fn from(id: &ApplicationId) -> Self {
-        id.0.to_base58()
+        id.0.to_string()
     }
 }
 
