@@ -271,10 +271,21 @@ pub struct CreateGroupInvitationRequest {
     pub expiration_timestamp: Option<u64>,
     /// Accounts permitted to admit a claim of this invitation.
     ///
-    /// Empty leaves admission open to broadcast, which publishes the invitation
-    /// to every subscriber of the namespace topic. Signed into the invitation,
-    /// so it cannot be redirected afterwards.
+    /// Empty is filled in at mint from the group's admins and TEE nodes, and
+    /// refused if that yields nobody — an empty list on the wire authorizes any
+    /// node to admit, so it is not a value worth reaching by omission. Signed
+    /// into the invitation, so it cannot be redirected afterwards.
     pub admitters: Vec<calimero_account::AccountId>,
+    /// libp2p addresses for the admitters, for a caller that knows better than
+    /// this node does.
+    ///
+    /// Supplied addresses are used as given and are not merged with what the
+    /// node can work out for itself: a caller that names one is usually
+    /// correcting the node's view, not extending it. Empty asks the node to fill
+    /// them in best-effort.
+    ///
+    /// Unsigned, so a wrong value costs a failed dial and nothing more.
+    pub admitter_addrs: Vec<String>,
 }
 
 impl Message for CreateGroupInvitationRequest {

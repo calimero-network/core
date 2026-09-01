@@ -557,7 +557,7 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 /// Encoding: member (32 bytes) + SignedGroupOpenInvitation — a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
 /// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8)
-/// + admitters len 0 (u32)) + inviter_signature "" + admitter_hints len 0 (u32)
+/// + admitters len 0 (u32)) + inviter_signature "" + admitter_addrs len 0 (u32)
 /// + application_id None + bytecode_id None — then the joiner credential.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1525,7 +1525,7 @@ mod governance_op_storage_roundtrip {
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 
@@ -1675,6 +1675,70 @@ mod governance_op_storage_roundtrip {
         assert!(ok.validate().is_ok(), "a normal ciphertext must pass");
     }
 
+    /// Build a `MemberJoinedAt` around `invitation`, the shape a joiner sends.
+    fn join_op_with(invitation: SignedGroupOpenInvitation) -> SignedNamespaceOp {
+        let account = sample_join_account();
+        SignedNamespaceOp {
+            version: SIGNED_NAMESPACE_OP_SCHEMA_VERSION,
+            namespace_id: NamespaceId::from([0u8; 32]),
+            parent_op_hashes: vec![[0u8; 32]],
+            signer: PublicKey::from([0u8; 32]),
+            nonce: 1,
+            op: NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member: account.statement.account,
+                signed_invitation: invitation,
+                joined_at: 1_900_000_000,
+                account,
+            }),
+            signature: [0u8; 64],
+        }
+    }
+
+    #[test]
+    fn validate_bounds_admitter_addrs() {
+        // `admitter_addrs` is outside the inviter's signature, so anyone
+        // relaying an invitation may rewrite it — and a joiner acts on it by
+        // dialing. Unbounded, that is a way to point somebody else's node at a
+        // list of the sender's choosing.
+        let mut invitation = sample_invitation();
+        invitation.admitter_addrs =
+            vec!["/ip4/10.0.0.1/tcp/1".to_owned(); bounds::MAX_ADMITTER_ADDRS + 1];
+        assert!(
+            join_op_with(invitation).validate().is_err(),
+            "an invitation offering more addresses than the bound must be rejected"
+        );
+
+        let mut invitation = sample_invitation();
+        invitation.admitter_addrs = vec!["x".repeat(bounds::MAX_ADMITTER_ADDR_LEN + 1)];
+        assert!(
+            join_op_with(invitation).validate().is_err(),
+            "a single oversized address must be rejected too — a short list of \
+             enormous strings is the same attack"
+        );
+
+        let mut invitation = sample_invitation();
+        invitation.admitter_addrs = vec![
+            "/ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample".to_owned(),
+            "/ip4/198.51.100.4/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWTarget"
+                .to_owned(),
+        ];
+        assert!(
+            join_op_with(invitation).validate().is_ok(),
+            "a realistic pair of addresses, including a relay circuit, must pass"
+        );
+    }
+
+    #[test]
+    fn validate_bounds_admitters() {
+        let mut invitation = sample_invitation();
+        invitation.invitation.admitters =
+            vec![calimero_account::AccountId::from([1u8; 32]); bounds::MAX_ADMITTERS + 1];
+        assert!(
+            join_op_with(invitation).validate().is_err(),
+            "an invitation naming more admitters than the bound must be rejected"
+        );
+    }
+
     #[test]
     fn validate_bounds_parent_op_hashes() {
         let mut op = SignedNamespaceOp {
@@ -1737,7 +1801,7 @@ fn emit_golden_root_op_vectors() {
             admitters: Vec::new(),
         },
         inviter_signature: String::new(),
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
         application_id: None,
         bytecode_id: None,
     };

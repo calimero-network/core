@@ -256,7 +256,7 @@ parking_lot = "0.12.3"
 pastey = "0.2.3" # maintained drop-in for the unmaintained `paste`
 percent-encoding = "2.3"
 png = "0.18"
-prettyplease = "0.2.17"
+prettyplease = "0.3"
 proc-macro2 = "1.0"
 # pinned to the major libp2p-metrics uses; moves when libp2p does
 prometheus-client = "0.23"
@@ -264,7 +264,7 @@ quote = "1.0.37"
 rand = "0.8.5"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 ring = "0.17.8"
-rocksdb = { version = "0.24.0", default-features = false, features = ["bindgen-runtime"] }
+rocksdb = { version = "0.25.0", default-features = false, features = ["bindgen-runtime"] }
 rpassword = "7.3"
 rust-embed = "8.5.0"
 rustc_version = "0.4"
@@ -276,7 +276,7 @@ serde_with = "3.9.0"
 sha2 = "0.10.8"
 subtle = "2.6.1"
 strum = "0.28.0"
-syn = { version = "2.0", features = ["full"] }
+syn = { version = "3.0", features = ["full"] }
 tar = "0.4"
 tempfile = "3.10"
 windows-sys = "0.61"
@@ -287,7 +287,7 @@ thunderdome = "0.6.1"
 tokio = "1.47.1"
 tokio-stream = "0.1.17"
 tokio-test = "0.4.4"
-tokio-tungstenite = "0.29.0"
+tokio-tungstenite = "0.30.0"
 tokio-util = "0.7.11"
 toml = "1.1"
 toml_edit = "0.25"
@@ -300,6 +300,31 @@ trybuild = "1.0"
 ureq = "3.4.0"
 url = "2.5.2"
 velcro = "0.5.4"
+# PINNED TO 6.1.0 FOR WINDOWS. Do not bump to 7.x without reading this.
+#
+# wasmer 7 removed every compiler backend on Windows. All three carry the same
+# guard, from 7.0.0 onward -- this is the whole 7.x line, not one bad release:
+#
+#     #[cfg(target_os = "windows")]
+#     compile_error!("The <Cranelift|Singlepass|LLVM> compiler backend is not
+#                     supported on Windows. Use the V8 backend instead.");
+#
+# Taking that advice is not open to us. V8 is a runtime backend, not a compiler
+# one, so there is no `CompilerConfig` and therefore no `push_middleware` -- and
+# `wasmer_middlewares::Metering` is how a guest is stopped from running forever.
+# An unmetered Windows node would accept executions every other node rejects,
+# which is a divergence in what nodes agree on, not a performance trade-off.
+#
+# So on 7.x the choice is Windows or gas metering, and we need both. 6.1.0 is
+# the newest release that supports Windows: there is no 6.1.1 or 6.2.0, and
+# 7.0.0 already carries the guard.
+#
+# Bumping to 7.x drops `merod.exe` from the release entirely -- that is what
+# #3745 did, and it went unnoticed because the release matrix is Linux-only on
+# pull requests. #3771 adds the lane that catches it before merge.
+#
+# Revisit when wasmer restores a compiler backend on Windows, or if metering
+# ever moves off the middleware.
 wasmer = "6.1.0"
 wasmer-types = "6.1.0"
 wasmer-middlewares = "6.1.0"

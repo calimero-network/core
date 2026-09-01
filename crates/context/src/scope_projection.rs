@@ -2544,7 +2544,7 @@ mod tests {
                 inviter_signature: "deadbeef".to_string(),
                 application_id: None,
                 bytecode_id: None,
-                admitter_hints: Vec::new(),
+                admitter_addrs: Vec::new(),
             },
             account: test_join_account_for(PublicKey::from([0x55; 32])),
         }
@@ -2625,7 +2625,7 @@ mod tests {
             inviter_signature: "deadbeef".to_string(),
             application_id: None,
             bytecode_id: None,
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         };
 
         let account = test_join_account_for(member);

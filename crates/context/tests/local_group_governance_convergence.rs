@@ -60,7 +60,7 @@ fn sign_invitation(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 
@@ -327,7 +327,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
 
     let ns_op = SignedNamespaceOp::sign(
@@ -2154,7 +2154,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
 
     let ns_op = SignedNamespaceOp::sign(
