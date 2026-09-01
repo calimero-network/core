@@ -179,8 +179,15 @@ const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
 const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 /// Default maximum method name length in bytes.
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
-/// Default maximum WASM module size in MiB (20 MiB).
-const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
+/// Default maximum WASM module size in MiB (128 MiB).
+///
+/// Sized for the `app-profiling` build, not the shipped one. That profile keeps
+/// full debug info and skips `wasm-opt`, so its output is several times the
+/// `app-release` artifact and is what the fuzzy load test hands to a node. At 20
+/// MiB the largest such app had already reached 89% of the cap and a toolchain
+/// bump pushed it past — a limit a routine compiler upgrade can breach is too
+/// tight to be doing useful work.
+const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 128;
 /// Default maximum commit-artifact size in MiB (16 MiB).
 ///
 /// Bounds the binary artifact a guest hands to `env::commit`. The artifact is
@@ -192,10 +199,15 @@ const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
 const DEFAULT_MAX_ARTIFACT_SIZE_MIB: u64 = 16;
 /// Default maximum *precompiled* (serialized) module size in MiB (256 MiB).
 ///
-/// Generously larger than [`DEFAULT_MAX_MODULE_SIZE_MIB`] because a serialized
-/// artifact (native code + relocations + metadata) is materially bigger than
-/// the source WASM it was compiled from. This is a defense-in-depth ceiling on
+/// Larger than [`DEFAULT_MAX_MODULE_SIZE_MIB`] because a serialized artifact
+/// (native code + relocations + metadata) is materially bigger than the source
+/// WASM it was compiled from. This is a defense-in-depth ceiling on
 /// deserialization input, not a tight functional limit.
+///
+/// Note the headroom over the source limit is now 2x rather than the order of
+/// magnitude it once was. Today's modules are ~21 MiB, so nothing is close to
+/// either cap, but a module approaching the source limit could plausibly
+/// compile past this one.
 const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 /// Default maximum number of storage writes a single execution may perform.
 ///
@@ -275,8 +287,6 @@ pub(crate) const BLOB_WRITE_CHANNEL_CAPACITY: usize = 4;
 /// if serialization is ever added.
 #[derive(Debug, Clone, Copy)]
 pub struct VMLimits {
-    /// The maximum number of memory pages allowed.
-    pub max_memory_pages: u32,
     /// The maximum stack size in bytes.
     pub max_stack_size: usize,
     /// The maximum number of registers that can be used.
@@ -415,7 +425,6 @@ impl Default for VMLimits {
         }
 
         Self {
-            max_memory_pages: ONE_KIB,
             max_stack_size: DEFAULT_MAX_STACK_SIZE_KIB * ONE_KIB as usize,
             max_registers: DEFAULT_MAX_REGISTERS,
             max_register_size: is_valid(
@@ -517,6 +526,20 @@ pub struct VMLogic<'a> {
     /// Cumulative `key + value` bytes written to storage so far (same shared
     /// budget as `storage_writes`).
     storage_write_bytes: u64,
+    /// Number of guest storage reads performed so far.
+    ///
+    /// Telemetry, NOT a budget — unlike `storage_writes` there is no limit to
+    /// charge against, and gas never sees a read (a `storage_read` costs only
+    /// the ~4 wasm operators of the caller, independent of value size). It is
+    /// counted because read COUNT is the thing that predicts cost: each read
+    /// hands the guest bytes to borsh-decode, and that decode is what the
+    /// metered instruction count actually measures.
+    storage_reads: u64,
+    /// Cumulative bytes returned by those reads.
+    ///
+    /// The better cost predictor of the two: guest-side decode work scales with
+    /// bytes, not with call count.
+    storage_read_bytes: u64,
     /// Cumulative bytes streamed into blobs so far across all write handles.
     blob_bytes_written: u64,
     /// Gas the execution consumed, recorded by the runtime after the guest
@@ -623,6 +646,8 @@ impl<'a> VMLogic<'a> {
 
             storage_writes: 0,
             storage_write_bytes: 0,
+            storage_reads: 0,
+            storage_read_bytes: 0,
             blob_bytes_written: 0,
             gas_used: None,
         }
@@ -769,6 +794,20 @@ pub struct Outcome {
     /// the replicated artifact — surfaced so operators can size
     /// [`VMLimits::max_gas`] from the distribution of real workloads.
     pub gas_used: Option<u64>,
+    /// Guest storage reads this execution performed. Node-local telemetry, like
+    /// [`gas_used`](Self::gas_used) — never part of the replicated artifact.
+    ///
+    /// Exposed so a test can assert that a write's cost does not grow with the
+    /// collection it writes into. That class of regression is invisible to
+    /// correctness tests and has repeatedly shipped: reads are unmetered and
+    /// unlimited, so an O(n) read pattern shows up only as gas spent decoding.
+    pub storage_reads: u64,
+    /// Bytes returned by those reads.
+    pub storage_read_bytes: u64,
+    /// Guest storage writes this execution performed.
+    pub storage_writes: u64,
+    /// `key + value` bytes those writes carried.
+    pub storage_write_bytes: u64,
     //TODO: current storage usage of the app (???).
 }
 
@@ -784,6 +823,12 @@ impl VMLogic<'_> {
     /// * `err` - An optional `FunctionCallError` that occurred during execution (e.g., a trap).
     ///   If `None`, the outcome is determined by the `returns` field.
     #[must_use]
+    #[expect(
+        clippy::result_large_err,
+        reason = "`FunctionCallError` is large by design and travels in `Outcome`; \
+                  boxing it would change a public signature, so it is left for a \
+                  follow-up."
+    )]
     pub fn finish(mut self, err: Option<FunctionCallError>) -> Outcome {
         let log_count = self.logs.len();
         let event_count = self.events.len();
@@ -864,6 +909,10 @@ impl VMLogic<'_> {
             artifact: self.artifact,
             migration_witness: self.migration_witness,
             gas_used: self.gas_used,
+            storage_reads: self.storage_reads,
+            storage_read_bytes: self.storage_read_bytes,
+            storage_writes: self.storage_writes,
+            storage_write_bytes: self.storage_write_bytes,
         }
     }
 }
@@ -1379,8 +1428,7 @@ mod tests {
     #[test]
     fn test_default_limits() {
         let limits = VMLimits::default();
-        assert_eq!(limits.max_module_size, 20 << 20); // 20 MiB
-        assert_eq!(limits.max_memory_pages, 1 << 10);
+        assert_eq!(limits.max_module_size, 128 << 20); // 128 MiB
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);

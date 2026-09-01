@@ -1,5 +1,6 @@
 //! This module provides functionality for the vector data structure.
 
+use crate::address::Id;
 use core::borrow::Borrow;
 use core::fmt;
 use std::mem;
@@ -165,21 +166,29 @@ where
     /// Push a value with an explicit `StorageType` on the new entry's element.
     ///
     /// Used by `AuthoredVector` to stamp each push with the executor as owner.
-    /// Returns the index of the newly inserted entry.
+    /// Returns the id of the newly inserted entry.
     pub(crate) fn push_with_storage_type(
         &mut self,
         value: V,
         storage_type: crate::entities::StorageType,
-    ) -> Result<usize, StoreError> {
-        let _ignored = self
+    ) -> Result<Id, StoreError> {
+        let (id, _item) = self
             .inner
             .insert_with_storage_type(None, value, storage_type)?;
-        let len = self.inner.len()?;
-        debug_assert!(
-            len >= 1,
-            "Vector::push_with_storage_type: len must be >= 1 after a successful push",
-        );
-        Ok(len - 1)
+        // The id, not `len - 1`.
+        //
+        // `len - 1` meant "the new entry is last", which held only while
+        // `insert` materialised the child cache and appended there. It no
+        // longer does — that populate was an O(n) read per insert — so
+        // enumeration comes from the child trie in `(created_at, id)` order,
+        // and `created_at` does not advance within a call. Entries pushed in
+        // one call therefore tie and the random id decides position, so
+        // `len - 1` could address a different entry (core#3637).
+        //
+        // An id is what the caller actually meant: it names the entry rather
+        // than describing where it currently sits, so it stays correct across a
+        // remote insert, which no positional answer can.
+        Ok(id)
     }
 
     /// Returns the storage id of the entry at `index`, or `None` if out of bounds.
@@ -272,6 +281,56 @@ where
         let old = mem::replace(&mut *entry, value);
 
         Ok(Some(old))
+    }
+
+    /// Replace the value stored under `id`, whatever position it occupies.
+    ///
+    /// The positional [`update`](Self::update) resolves `index` to an id and
+    /// then does exactly this. Callers that already hold the id should not go
+    /// back through a position: enumeration is `(created_at, id)` ordered over
+    /// a set other replicas insert into, so an index is only valid for as long
+    /// as no one else has inserted.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub(crate) fn update_by_id(&mut self, id: Id, mut value: V) -> Result<Option<V>, StoreError>
+    where
+        V: 'static,
+    {
+        // Same re-key as the positional path: two nodes concurrently replacing
+        // the same element with a freshly-built nested CRDT would otherwise
+        // mint divergent random internal ids.
+        super::rekey::rekey_nested_value(&mut value, id);
+
+        let Some(mut entry) = self.inner.get_mut(id)? else {
+            return Ok(None);
+        };
+
+        let old = mem::replace(&mut *entry, value);
+        Ok(Some(old))
+    }
+
+    /// The id of the inner collection — the parent every entry of this vector
+    /// is a child of.
+    ///
+    /// Exposed so the authored layer can check that a caller-supplied entry id
+    /// actually belongs to THIS vector before acting on it. `Collection::get`
+    /// resolves an id through a global `find_by_id`, which is fine for the
+    /// positional API (an index can only ever name a child of self) and not
+    /// fine for the id-addressed one.
+    pub(crate) fn collection_id(&self) -> Id {
+        use crate::entities::Data as _;
+        self.inner.id()
+    }
+
+    /// Read the value stored under `id`, whatever position it occupies.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system.
+    pub(crate) fn get_by_id(&self, id: Id) -> Result<Option<ValueRef<V>>, StoreError> {
+        Ok(self.inner.get(id)?.map(ValueRef::new))
     }
 
     /// Get an iterator over the items in the vector.
@@ -534,8 +593,73 @@ where
 
 #[cfg(test)]
 mod tests {
+
     use crate::collections::{Root, Vector};
     use crate::store::MainStorage;
+
+    /// A `Vector` hands back what was pushed, in the order it was pushed.
+    ///
+    /// This reproduces the case that broke: several pushes inside ONE call.
+    /// `ChildInfo` sorts by `(created_at, order, id)`, and `created_at` cannot
+    /// separate them — it is the host's execution timestamp, identical for
+    /// every write in a call and pinned to 0 under merge mode. Before `order`
+    /// existed they tied and the random id decided, so this failed about five
+    /// runs in six: pushing k1, k2, k3 read back as k1, k3, k2.
+    ///
+    /// `with_merge_mode` pins the clock, which is what a migration does and
+    /// what the unit-test clock otherwise hides by advancing between calls.
+    #[test]
+    fn positional_reads_follow_insertion_order_within_one_call() {
+        crate::env::reset_for_testing();
+        let mut v: Vector<String> = Vector::new();
+
+        crate::env::with_merge_mode(|| {
+            for key in ["k1", "k2", "k3"] {
+                v.push(key.to_owned()).expect("push");
+            }
+        });
+
+        let read: Vec<String> = (0..3)
+            .map(|i| v.get(i).expect("get").expect("present").into_inner())
+            .collect();
+
+        assert_eq!(
+            read,
+            vec!["k1".to_owned(), "k2".to_owned(), "k3".to_owned()],
+            "positional reads did not follow insertion order",
+        );
+    }
+
+    /// Editing an entry must not move it.
+    ///
+    /// A position is taken once, when the child is first linked. Re-linking
+    /// happens on every update, so taking a fresh position there would send an
+    /// entry to the end of its own collection each time it was edited.
+    #[test]
+    fn updating_an_entry_leaves_it_where_it_was() {
+        crate::env::reset_for_testing();
+        let mut v: Vector<String> = Vector::new();
+
+        crate::env::with_merge_mode(|| {
+            for key in ["k1", "k2", "k3"] {
+                v.push(key.to_owned()).expect("push");
+            }
+        });
+
+        // Edited outside merge mode: that is an ordinary write, and merge mode
+        // is only used above to force the tie this test is about.
+        v.update(0, "k1-edited".to_owned()).expect("update");
+
+        let read: Vec<String> = (0..3)
+            .map(|i| v.get(i).expect("get").expect("present").into_inner())
+            .collect();
+
+        assert_eq!(
+            read,
+            vec!["k1-edited".to_owned(), "k2".to_owned(), "k3".to_owned()],
+            "an edited entry moved instead of staying put",
+        );
+    }
 
     #[test]
     fn test_vector_push() {

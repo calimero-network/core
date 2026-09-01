@@ -28,19 +28,21 @@ with `node use`), falling back to `http://127.0.0.1:2528`.
 
 Almost every command accepts an **alias** wherever it accepts an id. An alias is
 a human-readable name (max 50 characters) that the node resolves server-side to
-a `ContextId`, an `ApplicationId`, or a member `PublicKey`. Aliases live on the
-node, not in the CLI: they are created, looked up, and deleted through the
+a `ContextId`, an `ApplicationId`, a member `PublicKey`, or a `DeviceId`. Aliases
+live on the node, not in the CLI: they are created, looked up, and deleted
+through the
 [admin API alias endpoints](/operate/admin-api/#admin-api--identity--alias), so
 every client talking to the same node sees the same aliases.
 
-**Scoping is not uniform across the three target types:**
+**Scoping is not uniform across the four target types:**
 
 | Alias target     | Scope                | Created with                                              |
 | ---------------- | -------------------- | -------------------------------------------------------- |
 | `ContextId`      | Node-global          | `context alias add`, or `context create --name`          |
 | `ApplicationId`  | Node-global          | admin API `alias/create/application`                     |
+| `DeviceId`       | Node-global          | `account alias add`                                      |
 
-Context and application aliases are unique across the whole node.
+Context, application, and device aliases are unique across the whole node.
 
 A reserved `default` alias exists for contexts. Commands that take `--context`
 fall back to `default` when the flag is omitted, and `context use <CONTEXT>`
@@ -51,7 +53,7 @@ just points the `default` alias at a chosen target.
   connection name** — client-side state stored in `nodes.toml`
   (see [meroctl's own config](#meroctls-own-config-nodestoml)) that selects
   which node to talk to. It never reaches the node and has nothing to do with
-  the context/application aliases above.
+  the context/application/device aliases above.
 </Aside>
 
 ## Command groups
@@ -185,7 +187,7 @@ Alias: `ns`. Namespaces are root groups (application instances).
 | `create`                           | Create a new namespace.                           | `--application-id`, `--name`, `--bytecode-id` (alias: `--app-key`) |
 | `get <NAMESPACE_ID>`               | Get details about a namespace.                    | `NAMESPACE_ID`                                                |
 | `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`                                |
-| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive` |
+| `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive`, `--admitter`, `--admitter-addr` (see [below](#invitation-admitters-and-addresses)) |
 | `join <NAMESPACE_ID> <INVITATION>` | Join a namespace using an invitation.             | `NAMESPACE_ID`, invitation JSON                              |
 | `leave <NAMESPACE_ID>`             | Leave a namespace (cascades through descendants). | `NAMESPACE_ID`                                               |
 | `groups <NAMESPACE_ID>`            | List direct groups under a namespace.             | `NAMESPACE_ID`                                               |
@@ -199,6 +201,40 @@ meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
 ```
 
 ---
+
+
+### Invitation admitters and addresses
+
+`namespace invite` takes two optional flags that decide **who** may admit a joiner
+and **where** the joiner should look for them. Both are repeatable.
+
+| flag | value | what it does |
+| --- | --- | --- |
+| `--admitter` | account, 64 hex | Narrows who may admit this invitation. Omit and the node uses the group's admins plus its TEE nodes. **Signed**, so it cannot be redirected afterwards. |
+| `--admitter-addr` | `/ip4/…/tcp/…/p2p/<peer-id>` | Where a joiner can dial an admitter. **Unsigned**, and must include the `/p2p/` suffix. |
+
+**You usually need neither.** The node names the admitters itself and fills in
+addresses from what it already has on file. Reach for them when:
+
+- `--admitter` — you want a *narrower* set than every admin and TEE node.
+- `--admitter-addr` — the node's address for an admitter is stale or missing (it
+  has not seen that peer within the cache's 24-hour window).
+
+```bash
+# Ordinary case: let the node decide who admits and where they are.
+meroctl namespace invite $NS
+
+# Narrow admission to one account, and say where it is.
+meroctl namespace invite $NS \
+  --admitter 8f2c...e1 \
+  --admitter-addr /ip4/203.0.113.7/tcp/2528/p2p/12D3KooWExample
+```
+
+Addresses are **unsigned**, deliberately. A wrong one costs a failed dial and
+nothing more: libp2p authenticates the peer id on connect, and the signed
+`--admitter` list still decides who may answer. See
+[Direct Admission](/protocol/direct-admission/) for why an address travels
+unsigned while the admitter list cannot.
 
 ## blob
 

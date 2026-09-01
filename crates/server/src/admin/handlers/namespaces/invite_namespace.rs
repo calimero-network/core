@@ -43,7 +43,32 @@ pub async fn handler(
 
     info!(namespace_id=%namespace_id_str, recursive=?req.recursive, "Creating namespace invitation");
 
-    let expiration_secs = req.expiration_timestamp.unwrap_or(365 * 24 * 3600);
+    // Clamped, not merely defaulted — see MAX_INVITATION_VALIDITY_SECS. An
+    // invitation is redeemable by whoever holds it, so its lifetime is a
+    // security parameter rather than a caller preference.
+    let expiration_secs = req
+        .expiration_timestamp
+        .unwrap_or(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS)
+        .min(calimero_context_config::types::MAX_INVITATION_VALIDITY_SECS);
+
+    // Parsed before anything is signed: an admitter the caller cannot spell is
+    // a restriction that would silently not apply, and an invitation restricted
+    // to nobody reachable is worse than an unrestricted one.
+    let admitters = match req
+        .admitters
+        .iter()
+        .map(|a| a.parse::<calimero_account::AccountId>())
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(list) => list,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "admitters must each be 64 hex characters (32 bytes)".to_owned(),
+            }
+            .into_response();
+        }
+    };
 
     if req.recursive.unwrap_or(false) {
         // The node signs as itself, with the one key it holds.
@@ -94,6 +119,7 @@ pub async fn handler(
             &inviter_sk,
             expiration_secs,
             1,
+            &admitters,
         ) {
             Ok(entries) => entries,
             Err(err) => return parse_api_error(err).into_response(),
@@ -125,6 +151,8 @@ pub async fn handler(
         .create_group_invitation(CreateGroupInvitationRequest {
             group_id: namespace_id,
             expiration_timestamp: req.expiration_timestamp,
+            admitters,
+            admitter_addrs: req.admitter_addrs,
         })
         .await
         .map_err(parse_api_error);

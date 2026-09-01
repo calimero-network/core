@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{FromRequest, Json};
 use axum::http::{Request, StatusCode};
@@ -41,7 +40,6 @@ impl IntoResponse for ValidationError {
 /// Validated JSON extractor that performs input validation and sanitization
 pub struct ValidatedJson<T>(pub T);
 
-#[async_trait]
 impl<T, S> FromRequest<S> for ValidatedJson<T>
 where
     T: DeserializeOwned + Validate + Send + 'static,
@@ -94,6 +92,12 @@ mod tests {
 
     use super::*;
 
+    #[expect(
+        dead_code,
+        reason = "Never constructed: the fields exist so the `Validate` derive is \
+                  expanded against this mix of length/range/email rules, which is \
+                  what the tests below exercise."
+    )]
     #[derive(Debug, Deserialize, Validate)]
     struct TestInput {
         #[validate(length(min = 3, max = 50))]

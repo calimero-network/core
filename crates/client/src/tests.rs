@@ -53,14 +53,14 @@ const CID: &str = "test-ctx-id";
 /// Fixed test identity hex used in member path segments.
 const IDENT: &str = "test-ident";
 
-/// Base58 encoding of `[0u8; 32]` — used wherever a Hash-backed type is
-/// required in JSON response bodies.
-const ZERO_BS58: &str = "11111111111111111111111111111111";
-
-/// Hex encoding of `[0u8; 32]` — how an `AccountId` renders, deliberately not
-/// the bs58 above. A member is named by account and signs with a key, and the
-/// encodings differ precisely so one cannot stand in for the other.
-const ZERO_HEX_ACCOUNT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+/// Hex encoding of `[0u8; 32]` — how EVERY id renders now.
+///
+/// There were two of these: this one and a base58 `"1"`-repeated form, kept apart
+/// on the reasoning that "the encodings differ precisely so one cannot stand in
+/// for the other". They no longer differ, and the pair collapsing into a single
+/// constant is this change in miniature — what a member is named by is now carried
+/// by a tag (`key:`), not inferred from how the value happens to be spelled.
+const ZERO_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 // ---- Stub impls (node_name=None means these are never called) ----
 
@@ -120,13 +120,13 @@ async fn get_group_info() {
             "data": {
                 "groupId": GID,
                 "appKey": "testkey",
-                "targetApplicationId": ZERO_BS58,
+                "targetApplicationId": ZERO_HEX,
                 "memberCount": 0,
                 "contextCount": 0,
                 "activeUpgrade": null,
                 "defaultCapabilities": 0,
                 "subgroupVisibility": "open",
-                "metadata": { "name": null, "data": {}, "updatedAt": 0, "updatedBy": ZERO_BS58 },
+                "metadata": { "name": null, "data": {}, "updatedAt": 0, "updatedBy": ZERO_HEX },
                 "groupStateHash": "0000000000000000000000000000000000000000000000000000000000000000"
             }
         })))
@@ -193,10 +193,10 @@ async fn a_caller_finds_itself_by_matching_its_account() {
         .and(path("/admin-api/identity"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": {
-                "accountId": ZERO_HEX_ACCOUNT,
+                "accountId": ZERO_HEX,
                 "deviceId": null,
-                "publicKey": ZERO_BS58,
-                "accountRootPublicKey": ZERO_HEX_ACCOUNT,
+                "publicKey": ZERO_HEX,
+                "accountRootPublicKey": ZERO_HEX,
             }})),
         )
         .expect(1)
@@ -206,7 +206,7 @@ async fn a_caller_finds_itself_by_matching_its_account() {
         .and(path(format!("/admin-api/groups/{GID}/members")))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"members": [
-                {"identity": ZERO_HEX_ACCOUNT, "role": "Admin"},
+                {"identity": ZERO_HEX, "role": "Admin"},
             ]})),
         )
         .expect(1)
@@ -242,7 +242,7 @@ async fn add_group_members() {
             GID,
             AddGroupMembersApiRequest {
                 members: vec![GroupMemberApiInput {
-                    identity: MemberIdentity::Key(PublicKey::from([0u8; 32])),
+                    identity: MemberIdentity::from(PublicKey::from([0u8; 32])),
                     role: GroupMemberRole::Member,
                 }],
             },
@@ -342,8 +342,8 @@ async fn join_context() {
         .and(path(format!("/admin-api/contexts/{CID}/join")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
-                "contextId": ZERO_BS58,
-                "memberPublicKey": ZERO_BS58
+                "contextId": ZERO_HEX,
+                "memberPublicKey": ZERO_HEX
             }
         })))
         .expect(1)
@@ -449,7 +449,7 @@ async fn get_namespace() {
             "data": {
                 "namespaceId": GID,
                 "appKey": "testkey",
-                "targetApplicationId": ZERO_BS58,
+                "targetApplicationId": ZERO_HEX,
                 "createdAt": 0,
                 "name": null,
                 "memberCount": 0,
@@ -514,8 +514,10 @@ async fn create_namespace_invitation() {
         .create_namespace_invitation(
             GID,
             CreateGroupInvitationApiRequest {
+                admitter_addrs: Vec::new(),
                 expiration_timestamp: None,
                 recursive: None,
+                admitters: Vec::new(),
             },
         )
         .await
@@ -551,13 +553,13 @@ async fn join_namespace() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
                 "namespaceId": GID,
-                "memberIdentity": ZERO_BS58,
+                "memberIdentity": ZERO_HEX,
                 // The account the joiner joined as, beside the key it signs
                 // with. Both, because a caller needs the account to address the
                 // member it just became and the key for everything still keyed
                 // by one — and the two render differently, so a fixture carrying
                 // only one would not catch a field wired to the wrong space.
-                "memberAccount": ZERO_HEX_ACCOUNT
+                "memberAccount": ZERO_HEX
             }
         })))
         .expect(1)
@@ -688,7 +690,7 @@ async fn get_cascade_status() {
                     "fromVersion": "1.0.0",
                     "toVersion": "2.0.0",
                     "initiatedAt": 100,
-                    "initiatedBy": ZERO_BS58,
+                    "initiatedBy": ZERO_HEX,
                     "status": "pending",
                     "localContextsTotal": 3,
                     "localContextsSwapped": 1,
@@ -763,7 +765,7 @@ async fn get_migration_status() {
                 "membersPendingSignature": 0
             },
             "members": [{
-                "peer": ZERO_BS58,
+                "peer": ZERO_HEX,
                 "report": {
                     "schemaVersion": 1,
                     "residueAuto": 0,
@@ -881,7 +883,7 @@ async fn sync_group() {
             "data": {
                 "groupId": GID,
                 "appKey": "testkey",
-                "targetApplicationId": ZERO_BS58,
+                "targetApplicationId": ZERO_HEX,
                 "memberCount": 0,
                 "contextCount": 0
             }

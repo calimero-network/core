@@ -1167,8 +1167,41 @@ pub(crate) fn load_rotation_log_direct(
     >::rotation_log_child_id(entity_id);
     if let Some(index) = read_entity_index_direct(context_client, context_id, map_id)? {
         let mut entries = Vec::new();
-        if let Some(children) = index.children() {
-            for child in children {
+        {
+            let _ = &index;
+            // Walk the anchor's ChildTrie with the SAME direct reader the rest
+            // of this function uses.
+            //
+            // Not `Index::<MainStorage>::get_children_of`: `MainStorage` routes
+            // through the `RUNTIME_ENV` thread-local, which is not installed
+            // here — that is the entire reason this function exists. With no env
+            // it falls back to the process-local mock store, so the lookup misses
+            // and the log reads back EMPTY rather than erroring, collapsing the
+            // writer set on every delta apply.
+            let read_row = |key: StorageKey| -> Option<Vec<u8>> {
+                match read_entity_value_direct(context_client, context_id, key) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        // `children_with` reads `None` as "subtree absent" and
+                        // stops walking, so swallowing a store error here
+                        // silently SHORTENS the rotation log — and that log is
+                        // what resolves the writer set on every delta apply.
+                        // A quietly partial writer set is worse than a loud
+                        // failure, and every other partial-log case in this
+                        // function warns.
+                        warn!(
+                            %context_id, %entity_id, error = %e,
+                            "rotation-log trie row read failed; the writer set resolved \
+                             from this log may be INCOMPLETE"
+                        );
+                        None
+                    }
+                }
+            };
+            for child in calimero_storage::child_trie::ChildTrie::<
+                calimero_storage::store::MainStorage,
+            >::children_with(map_id, read_row)
+            {
                 // P3: each child is an `UnorderedMap` entry, so its stored value
                 // is `borsh(Entry<([u8;32], RotationLogEntry)>)` — decode the
                 // single entry it holds (NOT a bare `RotationLog` blob).
@@ -1198,7 +1231,7 @@ pub(crate) fn load_rotation_log_direct(
             }
         }
         // Canonical order so resolution is insertion-order invariant.
-        entries.sort_by(|a, b| a.delta_id.cmp(&b.delta_id));
+        entries.sort_by_key(|a| a.delta_id);
         return Ok(Some(RotationLog {
             snapshot: None,
             entries,
@@ -1759,7 +1792,7 @@ impl DeltaStore {
             let sample = remaining
                 .keys()
                 .take(3)
-                .map(|id| Hash::from(*id).to_base58())
+                .map(|id| Hash::from(*id).to_string())
                 .collect::<Vec<_>>()
                 .join(",");
 
@@ -1819,7 +1852,7 @@ impl DeltaStore {
                     Err(e) => warn!(
                         ?e,
                         context_id = %self.applier.context_id,
-                        delta_id = %Hash::from(delta_id).to_base58(),
+                        delta_id = %Hash::from(delta_id),
                         "Failed to re-drive a persisted-but-unapplied delta on load"
                     ),
                 }

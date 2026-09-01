@@ -16,7 +16,11 @@ error[E0277]: (calimero)> no method named `#[app::init]` found for type `MyType`
 4 | struct MyType;
   |        ^^^^^^ add an `#[app::init]` method to this type
   |
-  = help: the trait `AppStateInit` is not implemented for `MyType`
+help: the trait `AppStateInit` is not implemented for `MyType`
+ --> tests/macros/invalid_methods.rs:4:1
+  |
+4 | struct MyType;
+  | ^^^^^^^^^^^^^
 note: required by a bound in `AppState`
  --> src/state.rs
   |

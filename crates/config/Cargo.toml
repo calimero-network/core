@@ -11,6 +11,7 @@ publish = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+calimero-utils-fs.workspace = true
 bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true

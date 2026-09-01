@@ -271,7 +271,6 @@ The runtime enforces strict limits on memory operations:
 
 | Limit | Purpose | Default |
 |-------|---------|---------|
-| `max_memory_pages` | Total WASM memory (pages × 64KB) | 1024 pages (64MB) |
 | `max_storage_key_size` | Maximum key length | 1MB |
 | `max_storage_value_size` | Maximum value length | 10MB |
 | `max_register_size` | Maximum data in single register | 100MB |

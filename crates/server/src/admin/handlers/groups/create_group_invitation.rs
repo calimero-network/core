@@ -11,8 +11,10 @@ use calimero_server_primitives::admin::{
 use tracing::{error, info};
 
 use super::parse_group_id;
+use axum::http::StatusCode;
+
 use crate::admin::handlers::validation::ValidatedJson;
-use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
 pub async fn handler(
@@ -25,6 +27,25 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
+    // Parsed before anything is signed: an admitter the caller cannot spell is a
+    // restriction that would silently not apply, and this route previously
+    // accepted the field and dropped it, which is worse than refusing it.
+    let admitters = match req
+        .admitters
+        .iter()
+        .map(|a| a.parse::<calimero_account::AccountId>())
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(list) => list,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "admitters must each be 64 hex characters (32 bytes)".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     info!(group_id=%group_id_str, "Creating group invitation");
 
     let result = state
@@ -32,6 +53,8 @@ pub async fn handler(
         .create_group_invitation(CreateGroupInvitationRequest {
             group_id,
             expiration_timestamp: req.expiration_timestamp,
+            admitters,
+            admitter_addrs: req.admitter_addrs,
         })
         .await
         .map_err(parse_api_error);

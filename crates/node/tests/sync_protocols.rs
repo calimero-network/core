@@ -279,6 +279,7 @@ async fn test_snapshot_transfer_fresh_node() {
 
     // Create a mock snapshot
     let snapshot = Snapshot {
+        trie_rows: Vec::new(),
         entity_count: 5,
         index_count: 0,
         entries: vec![],
@@ -306,6 +307,7 @@ async fn test_snapshot_excludes_tombstones() {
     ];
 
     let snapshot = Snapshot {
+        trie_rows: Vec::new(),
         entity_count: 3,
         index_count: 0,
         entries: live_entries.clone(),
@@ -535,6 +537,7 @@ async fn test_recovery_via_full_resync() {
     // In production, would transfer actual snapshot
     // For test, just verify recovery mechanism
     let snapshot = Snapshot {
+        trie_rows: Vec::new(),
         entity_count: 1,
         index_count: 0,
         entries: vec![(Id::from([100; 32]), vec![1])],

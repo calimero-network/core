@@ -21,10 +21,44 @@ use calimero_store::Store;
 
 use super::super::test_fixtures::{
     bootstrap_namespace_with_admin, bootstrap_namespace_with_admin_account, enrol_member,
-    founder_account_for, namespace_genesis_for, namespace_genesis_naming, nest_for_test,
-    sample_meta_with_admin, test_group_id, test_meta, test_store,
+    founder_account_for, namespace_genesis_for, namespace_genesis_naming,
+    namespace_publish_fixture, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
+    test_store,
 };
 use super::super::*;
+
+/// Seal a root op the way a publisher does, so a test exercises the path
+/// production takes rather than one only tests can use.
+///
+/// Apply refuses a sealable root op that arrives in the clear, which is the whole
+/// point of that rule — so a test that hand-built `NamespaceOp::Root(GroupCreated
+/// { .. })` was constructing something no peer will accept. Sealing here keeps
+/// those tests about what they were about (parents, cascades, idempotency) while
+/// putting them on the real path.
+///
+/// Mints the namespace key if the fixture has not, because a fixture that skips it
+/// is under-building the namespace: production keys a namespace at creation, since
+/// its root is a group and `create_group` keys whatever group it creates.
+///
+/// Non-sealable variants pass through untouched, so genesis and the joins still
+/// travel in the clear exactly as they must.
+fn seal_for_test(
+    store: &Store,
+    ns_gid: ContextGroupId,
+    op: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    if crate::GroupKeyring::new(store, ns_gid)
+        .load_current_key()
+        .expect("read namespace keyring")
+        .is_none()
+    {
+        let _ = crate::GroupKeyring::new(store, ns_gid)
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omitted");
+    }
+    crate::seal_root_op_for_publish(store, ns_gid.to_bytes().into(), op)
+        .expect("seal a root op for a test")
+}
 
 /// A genesis whose founder credential is inadmissible establishes nothing.
 ///
@@ -113,6 +147,16 @@ fn test_signed_invitation(
     group_id: ContextGroupId,
     expiration_timestamp: u64,
 ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    test_signed_invitation_with_admitters(inviter_sk, group_id, expiration_timestamp, Vec::new())
+}
+
+/// As above, but restricting who may admit a claim of it.
+fn test_signed_invitation_with_admitters(
+    inviter_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    expiration_timestamp: u64,
+    admitters: Vec<calimero_account::AccountId>,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -124,6 +168,7 @@ fn test_signed_invitation(
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
+        admitters,
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = inviter_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -133,148 +178,8 @@ fn test_signed_invitation(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
+        admitter_addrs: Vec::new(),
     }
-}
-
-/// Stub `NetworkManager` for tests that call
-/// `NamespaceGovernance::sign_apply_and_publish[_returning_op]` end to end:
-/// resolves only the two `NetworkMessage` variants that path touches
-/// (`Publish`, `MeshPeerCount`) and drops the rest, so the publish step
-/// completes without a live libp2p swarm. Mirrors the `CountingNetworkActor`
-/// pattern in `calimero_node_primitives::client::publish_on_namespace_now_tests`.
-struct StubNetworkActor;
-
-impl actix::Actor for StubNetworkActor {
-    type Context = actix::Context<Self>;
-}
-
-impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for StubNetworkActor {
-    type Result = ();
-
-    fn handle(
-        &mut self,
-        msg: calimero_network_primitives::messages::NetworkMessage,
-        _ctx: &mut Self::Context,
-    ) -> Self::Result {
-        use calimero_network_primitives::messages::{MessageId, NetworkMessage};
-
-        match msg {
-            NetworkMessage::MeshPeerCount { outcome, .. } => {
-                let _ = outcome.send(0);
-            }
-            NetworkMessage::Publish { outcome, .. } => {
-                let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Captures every `NodeMessage` the publish path enqueues, so a test can assert
-/// on the signals it fires rather than on log output. Forwards on an unbounded
-/// channel: the test then AWAITS the message it expects instead of sleeping for
-/// the actor to run.
-struct CapturingNodeActor {
-    seen: tokio::sync::mpsc::UnboundedSender<calimero_node_primitives::messages::NodeMessage>,
-}
-
-impl actix::Actor for CapturingNodeActor {
-    type Context = actix::Context<Self>;
-}
-
-impl actix::Handler<calimero_node_primitives::messages::NodeMessage> for CapturingNodeActor {
-    type Result = ();
-
-    fn handle(
-        &mut self,
-        msg: calimero_node_primitives::messages::NodeMessage,
-        _ctx: &mut Self::Context,
-    ) -> Self::Result {
-        let _ = self.seen.send(msg);
-    }
-}
-
-/// Build a real `NodeClient`/`AckRouter` pair for tests that call
-/// `NamespaceGovernance::sign_apply_and_publish[_returning_op]`: a namespace
-/// with a bootstrapped admin (returned as the signing key), and a
-/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
-/// publish step resolves without a swarm. The `TempDir` keeps the stub
-/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
-/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
-async fn namespace_publish_fixture() -> (
-    Store,
-    calimero_node_primitives::client::NodeClient,
-    calimero_context_client::local_governance::AckRouter,
-    NamespaceId,
-    PrivateKey,
-    tempfile::TempDir,
-    tokio::sync::mpsc::UnboundedReceiver<calimero_node_primitives::messages::NodeMessage>,
-) {
-    use actix::Actor;
-    use calimero_network_primitives::client::NetworkClient;
-    use calimero_network_primitives::messages::NetworkMessage;
-    use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
-    use calimero_utils_actix::LazyRecipient;
-
-    let store = test_store();
-    let ns_id: [u8; 32] = [0x91; 32];
-    let (sk, _pk) = bootstrap_namespace_with_admin(&store, ns_id);
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let blob_cfg = calimero_blobstore::config::BlobStoreConfig::new(
-        tmp.path().to_path_buf().try_into().expect("utf8 blob path"),
-    );
-    let fs = calimero_blobstore::FileSystem::new(&blob_cfg)
-        .await
-        .expect("blob fs");
-    let blob_manager = BlobManager::new(calimero_blobstore::BlobManager::new(store.clone(), fs));
-
-    let network_recipient = LazyRecipient::<NetworkMessage>::new();
-    let network_client = NetworkClient::new(network_recipient.clone());
-    let _addr = StubNetworkActor::create(move |ctx| {
-        assert!(network_recipient.init(ctx), "network recipient init");
-        StubNetworkActor
-    });
-
-    let (event_sender, _) = tokio::sync::broadcast::channel(16);
-    let (ctx_sync_tx, _ctx_sync_rx) = tokio::sync::mpsc::channel(8);
-    let (ns_sync_tx, _ns_sync_rx) = tokio::sync::mpsc::channel(8);
-    let (ns_join_tx, _ns_join_rx) = tokio::sync::mpsc::channel(8);
-    let (open_subgroup_join_tx, _open_rx) = tokio::sync::mpsc::channel(8);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    // The node-manager side is wired to a capturing actor rather than left
-    // uninitialized: the publish path now enqueues the local-apply feed there,
-    // and a test that wants to see it needs a live recipient.
-    let (seen_tx, seen_rx) = tokio::sync::mpsc::unbounded_channel();
-    let node_recipient = LazyRecipient::<calimero_node_primitives::messages::NodeMessage>::new();
-    let capture_recipient = node_recipient.clone();
-    let _node_addr = CapturingNodeActor::create(move |ctx| {
-        assert!(capture_recipient.init(ctx), "node recipient init");
-        CapturingNodeActor { seen: seen_tx }
-    });
-
-    let node_client = NodeClient::new(
-        store.clone(),
-        blob_manager,
-        network_client,
-        node_recipient,
-        event_sender,
-        sync_client,
-        None,
-    );
-
-    let ack_router = calimero_context_client::local_governance::AckRouter::default();
-
-    (
-        store,
-        node_client,
-        ack_router,
-        ns_id.into(),
-        sk,
-        tmp,
-        seen_rx,
-    )
 }
 
 #[actix::test]
@@ -411,6 +316,127 @@ async fn the_publish_only_path_also_feeds_the_local_apply_path() {
         fed,
         "the publish-only path must feed the local apply path too"
     );
+}
+
+/// An unrestricted invitation is admissible by anyone, as before.
+#[test]
+fn any_node_may_admit_an_unrestricted_invitation() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let signed = test_signed_invitation(&admin_sk, gid, 1_000_000);
+    let stranger = calimero_account::AccountId::from([0x99; 32]);
+
+    assert!(
+        NamespaceMembershipService::require_may_admit(&signed, &stranger).is_ok(),
+        "an empty admitter list is every invitation minted before the field, and \
+         must keep working"
+    );
+}
+
+/// A restricted invitation names who may admit, and everyone else refuses.
+#[test]
+fn only_a_named_admitter_may_admit_a_restricted_invitation() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let named = calimero_account::AccountId::from([0x11; 32]);
+    let stranger = calimero_account::AccountId::from([0x22; 32]);
+
+    let signed = test_signed_invitation_with_admitters(&admin_sk, gid, 1_000_000, vec![named]);
+
+    assert!(
+        NamespaceMembershipService::require_may_admit(&signed, &named).is_ok(),
+        "the named admitter must be able to admit"
+    );
+    // The refusal is the whole point. A node that can validate the invitation
+    // perfectly well must still decline, or restricting admission buys nothing.
+    assert!(
+        NamespaceMembershipService::require_may_admit(&signed, &stranger).is_err(),
+        "a node the inviter did not name must refuse, however valid the invitation"
+    );
+}
+
+/// The admitter list is inside the signature, so it cannot be rewritten.
+///
+/// This is the property the whole design rests on: an unsigned list is one an
+/// attacker edits to name a node of its choosing, which would buy nothing at all.
+#[test]
+fn rewriting_the_admitters_invalidates_the_invitation() {
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let gid = test_group_id();
+    let named = calimero_account::AccountId::from([0x11; 32]);
+    let attacker = calimero_account::AccountId::from([0x22; 32]);
+
+    let mut signed = test_signed_invitation_with_admitters(&admin_sk, gid, 1_000_000, vec![named]);
+
+    // The signature was valid over the invitation as minted.
+    assert!(
+        NamespaceMembershipService::verify_open_invitation_signature(&signed).is_ok(),
+        "the invitation must verify before it is tampered with"
+    );
+
+    signed.invitation.admitters = vec![attacker];
+
+    assert!(
+        NamespaceMembershipService::verify_open_invitation_signature(&signed).is_err(),
+        "redirecting admission must break the inviter's signature"
+    );
+}
+
+#[test]
+fn default_admitters_names_admins_and_skips_everybody_else() {
+    let mut rng = rand::rngs::OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_account = enrol_member(&store, &gid, &admin_sk.public_key());
+    let reader_sk = PrivateKey::random(&mut rng);
+    let reader_account = enrol_member(&store, &gid, &reader_sk.public_key());
+
+    let repo = MembershipRepository::new(&store);
+    repo.add_member(&gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    repo.add_member(&gid, &reader_account, GroupMemberRole::ReadOnly)
+        .unwrap();
+
+    let admitters = NamespaceMembershipService::default_admitters(&store, &gid).unwrap();
+
+    // The admin, and only the admin. A read-only member appearing here would
+    // hand admission authority to everyone in the group, which is the opposite
+    // of restricting it.
+    assert_eq!(admitters, vec![admin_account]);
+    assert!(!admitters.contains(&reader_account));
+}
+
+#[test]
+fn default_admitters_reports_an_empty_set_rather_than_inventing_one() {
+    let store = test_store();
+    let gid = test_group_id();
+
+    // `Ok(vec![])`, not an error: this is a query, and an empty group truthfully
+    // has no admitters. Failing to read the membership rows is a different
+    // problem, and collapsing the two would hide the second.
+    //
+    // What that value MEANS is the caller's business, and there is only one
+    // sound reading of it. Every group has an admin —
+    // `ensure_not_last_admin_removal` and `ensure_not_last_admin_demotion`
+    // refuse to remove the last one — so an empty result is an inconsistent
+    // store, not a group to mint for. The invitation path therefore refuses
+    // instead of minting, because an empty admitter list is precisely the value
+    // that means "claimable by broadcast": defaulting through would answer an
+    // invariant violation with the least restricted credential the system can
+    // express.
+    let admitters = NamespaceMembershipService::default_admitters(&store, &gid).unwrap();
+    assert!(admitters.is_empty());
 }
 
 #[test]
@@ -1814,7 +1840,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // This exercises the realistic backfill order (genesis applied first, then a
     // non-owner KeyDelivery seed lands, then the owner's GroupCreated) against the
     // SAME apply path the backfill uses (`NamespaceGovernance::apply_signed_op`).
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -1904,12 +1930,16 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
          is the current head)"
     );
     let subgroup_id = [0xC5u8; 32];
-    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-        admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-        group_id: subgroup_id.into(),
-        parent_id: namespace_id.into(),
-        restricted: true,
-    });
+    let create_op = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
+            group_id: subgroup_id.into(),
+            parent_id: namespace_id.into(),
+            restricted: true,
+        },
+    );
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),
@@ -3696,7 +3726,7 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
         .unwrap();
 
     let invitations = NamespaceRepository::new(&store)
-        .create_recursive_invitations(&ns, &inviter_sk, 3600, 1)
+        .create_recursive_invitations(&ns, &inviter_sk, 3600, 1, &[])
         .unwrap();
     let invited: Vec<ContextGroupId> = invitations.iter().map(|(gid, _)| *gid).collect();
 
@@ -3726,7 +3756,7 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
 
 #[test]
 fn governance_group_reparented_via_signed_op() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -3772,12 +3802,16 @@ fn governance_group_reparented_via_signed_op() {
             ns_id.into(),
             vec![],
             (i + 1) as u64,
-            NamespaceOp::Root(RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: (*gid).into(),
-                parent_id: (*parent).into(),
-                restricted: true,
-            }),
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::GroupCreated {
+                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                    group_id: (*gid).into(),
+                    parent_id: (*parent).into(),
+                    restricted: true,
+                },
+            ),
         )
         .expect("sign create op");
         gov.apply_signed_op(&op).expect("apply create op");
@@ -3794,10 +3828,14 @@ fn governance_group_reparented_via_signed_op() {
         ns_id.into(),
         vec![],
         4,
-        NamespaceOp::Root(RootOp::GroupReparented {
-            child_group_id: leaf_id.into(),
-            new_parent_id: new_parent_id.into(),
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupReparented {
+                child_group_id: leaf_id.into(),
+                new_parent_id: new_parent_id.into(),
+            },
+        ),
     )
     .expect("sign reparent op");
     gov.apply_signed_op(&reparent_op)
@@ -3822,7 +3860,7 @@ fn governance_group_reparented_via_signed_op() {
 
 #[test]
 fn governance_apply_signed_op_is_idempotent_on_replay() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -3855,12 +3893,16 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: [0xC1; 32].into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: [0xC1; 32].into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign create op");
     let delta_id = op.content_hash().expect("content_hash");
@@ -3884,7 +3926,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
 
 #[test]
 fn governance_rejects_non_admin_signer() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -3920,12 +3962,16 @@ fn governance_rejects_non_admin_signer() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&intruder_sk.public_key()),
-            group_id: [0xBB; 32].into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&intruder_sk.public_key()),
+                group_id: [0xBB; 32].into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign op");
 
@@ -3935,7 +3981,7 @@ fn governance_rejects_non_admin_signer() {
 
 #[test]
 fn governance_group_created_is_idempotent() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -3969,12 +4015,16 @@ fn governance_group_created_is_idempotent() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: new_group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: new_group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign op1");
 
@@ -3987,12 +4037,16 @@ fn governance_group_created_is_idempotent() {
         ns_id.into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: new_group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: new_group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign op2");
 
@@ -4003,7 +4057,7 @@ fn governance_group_created_is_idempotent() {
 
 #[test]
 fn governance_group_created_rejects_cross_namespace_parent() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -4050,12 +4104,16 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         ns_a.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: new_group.into(),
-            parent_id: foreign.to_bytes().into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_a_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: new_group.into(),
+                parent_id: foreign.to_bytes().into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign GroupCreated");
 
@@ -4295,7 +4353,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
 /// via `is_open_chain_to_namespace`) will see Open immediately.
 #[test]
 fn governance_group_created_writes_birth_visibility() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -4334,12 +4392,16 @@ fn governance_group_created_writes_birth_visibility() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: open_group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: false,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: open_group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: false,
+            },
+        ),
     )
     .expect("sign born-open op");
     gov.apply_signed_op(&open_op)
@@ -4357,12 +4419,16 @@ fn governance_group_created_writes_birth_visibility() {
         ns_id.into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: restricted_group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: restricted_group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign born-restricted op");
     gov.apply_signed_op(&restricted_op)
@@ -4384,7 +4450,7 @@ fn governance_group_created_writes_birth_visibility() {
 /// `GroupCreated` op and assert the flip survives.
 #[test]
 fn governance_group_created_replay_does_not_reset_visibility() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -4423,12 +4489,16 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: false,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: false,
+            },
+        ),
     )
     .expect("sign create op");
     gov.apply_signed_op(&create_op)
@@ -4456,12 +4526,16 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         ns_id.into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: false,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: false,
+            },
+        ),
     )
     .expect("sign replay op");
     gov.apply_signed_op(&replay_op)
@@ -4485,7 +4559,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     // originating node — leaving it with no parent edge while remote peers
     // correctly populate the edges. This test simulates the originator flow
     // and asserts the parent edge IS written even when meta pre-exists.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -4526,12 +4600,16 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: new_group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: new_group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign op");
     gov.apply_signed_op(&op)
@@ -4560,7 +4638,7 @@ fn execute_group_created_rejects_self_parent() {
     // self-parent edge that made resolve_namespace cycle. The op handler
     // now rejects self-parent explicitly; the create_group handler skips
     // emitting GroupCreated entirely for root creation.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -4591,12 +4669,16 @@ fn execute_group_created_rejects_self_parent() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: ns_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: ns_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign op");
 
@@ -4620,7 +4702,7 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
     // remote-created subgroups even though the originator's local copy
     // had the right key (originator pre-populates meta with the derived
     // blob-id-based key; peers' copies come from this apply handler).
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -4657,12 +4739,16 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: sub_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: sub_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .expect("sign op");
 
@@ -4691,7 +4777,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     // subtree is a partial-delete state — smaller than the payload. An
     // exact-equality determinism check would permanently reject the retry,
     // stalling the namespace DAG. The subset check lets the retry resume.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     use super::NamespaceGovernance;
 
@@ -4749,11 +4835,15 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupDeleted {
-            root_group_id: a_id.into(),
-            cascade_group_ids: cascade_group_ids.into_iter().map(Into::into).collect(),
-            cascade_context_ids: vec![],
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupDeleted {
+                root_group_id: a_id.into(),
+                cascade_group_ids: cascade_group_ids.into_iter().map(Into::into).collect(),
+                cascade_context_ids: vec![],
+            },
+        ),
     )
     .expect("sign op");
     gov.apply_signed_op(&op)
@@ -4777,7 +4867,7 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
     // ids the payload omits — payload *extras* were merely warned about,
     // then deleted. The fix recomputes the subtree locally and deletes only
     // that; payload extras must survive.
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     use super::NamespaceGovernance;
 
@@ -4820,11 +4910,15 @@ fn execute_group_deleted_ignores_payload_groups_outside_local_subtree() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupDeleted {
-            root_group_id: a_id.into(),
-            cascade_group_ids: vec![b_id.into(), x_id.into()],
-            cascade_context_ids: vec![],
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupDeleted {
+                root_group_id: a_id.into(),
+                cascade_group_ids: vec![b_id.into(), x_id.into()],
+                cascade_context_ids: vec![],
+            },
+        ),
     )
     .expect("sign op");
     gov.apply_signed_op(&op)
@@ -5205,7 +5299,7 @@ fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
 
 #[test]
 fn governance_group_created_honors_can_create_subgroup_at_root_only() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -5251,12 +5345,16 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             ns_id.into(),
             vec![],
             nonce,
-            NamespaceOp::Root(RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&sk.public_key()),
-                group_id: group_id.into(),
-                parent_id: parent_id.into(),
-                restricted: true,
-            }),
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::GroupCreated {
+                    admin: crate::test_fixtures::account_for(&sk.public_key()),
+                    group_id: group_id.into(),
+                    parent_id: parent_id.into(),
+                    restricted: true,
+                },
+            ),
         )
         .unwrap()
     };
@@ -5344,7 +5442,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
 #[test]
 fn governance_group_deleted_owner_admin_or_cap_only() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
@@ -5423,11 +5521,15 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
             ns_id.into(),
             vec![],
             nonce,
-            NamespaceOp::Root(RootOp::GroupDeleted {
-                root_group_id: root_group_id.into(),
-                cascade_group_ids: vec![],
-                cascade_context_ids: vec![],
-            }),
+            seal_for_test(
+                &store,
+                ns_gid,
+                RootOp::GroupDeleted {
+                    root_group_id: root_group_id.into(),
+                    cascade_group_ids: vec![],
+                    cascade_context_ids: vec![],
+                },
+            ),
         )
         .unwrap()
     };
@@ -5509,7 +5611,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
 /// to re-drive, so apply must succeed cleanly and surface no divergence.
 #[test]
 fn group_created_with_no_key_skips_retry() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use rand::rngs::OsRng;
 
     use super::NamespaceGovernance;
@@ -5546,12 +5648,16 @@ fn group_created_with_no_key_skips_retry() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-            group_id: new_group_id.into(),
-            parent_id: ns_id.into(),
-            restricted: true,
-        }),
+        seal_for_test(
+            &store,
+            ns_gid,
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
+                group_id: new_group_id.into(),
+                parent_id: ns_id.into(),
+                restricted: true,
+            },
+        ),
     )
     .unwrap();
 
@@ -6744,12 +6850,16 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: false,
-        }),
+        seal_for_test(
+            &store,
+            ContextGroupId::from(namespace_id),
+            RootOp::GroupCreated {
+                admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
+                group_id: subgroup_id.into(),
+                parent_id: namespace_id.into(),
+                restricted: false,
+            },
+        ),
     )
     .expect("owner signs GroupCreated");
     gov.apply_signed_op(&create)
@@ -6783,7 +6893,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
 
 #[test]
 fn group_created_honors_at_cut_grant_over_live_denial() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use rand::rngs::OsRng;
 
     use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
@@ -6825,12 +6935,16 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 
     let head = gov.read_head_record().expect("read head");
     let subgroup_id = [0xE2u8; 32];
-    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-        admin: crate::test_fixtures::account_for(&creator_sk.public_key()),
-        group_id: subgroup_id.into(),
-        parent_id: namespace_id.into(),
-        restricted: true,
-    });
+    let create_op = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&creator_sk.public_key()),
+            group_id: subgroup_id.into(),
+            parent_id: namespace_id.into(),
+            restricted: true,
+        },
+    );
     let signed = SignedNamespaceOp::sign(
         &creator_sk,
         namespace_id.into(),
@@ -6856,7 +6970,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 
 #[test]
 fn group_created_honors_at_cut_denial_over_live_grant() {
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
     use rand::rngs::OsRng;
 
     use super::super::test_fixtures::{FixedAuthorizer, TEST_CUT};
@@ -6891,12 +7005,16 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
 
     let head = gov.read_head_record().expect("read head");
     let subgroup_id = [0xE4u8; 32];
-    let create_op = NamespaceOp::Root(RootOp::GroupCreated {
-        admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-        group_id: subgroup_id.into(),
-        parent_id: namespace_id.into(),
-        restricted: true,
-    });
+    let create_op = seal_for_test(
+        &store,
+        ns_gid,
+        RootOp::GroupCreated {
+            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
+            group_id: subgroup_id.into(),
+            parent_id: namespace_id.into(),
+            restricted: true,
+        },
+    );
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),
@@ -7715,4 +7833,74 @@ fn resolving_an_identity_does_not_enlist_the_node_but_get_or_create_does() {
         resolved.0, again.1,
         "one node, one signing key — a second call must not mint another"
     );
+}
+
+/// A key provisioned at init must be REUSED at first join, not replaced.
+///
+/// This is the assumption the cold-start fix rests on. `store_identity` refuses to
+/// replace a *different* key — deliberately, because one node signs with one key —
+/// so if `participate_in` minted a fresh keypair instead of finding this one, every
+/// first join on every node would fail outright. That is a much worse bug than the
+/// one being fixed, which is why it gets its own test rather than being assumed.
+#[test]
+fn a_preprovisioned_signing_key_survives_the_first_join() {
+    let store = test_store();
+    let repo = NamespaceRepository::new(&store);
+    let ns = test_group_id();
+
+    let provisioned = repo.provision_node_identity().expect("provision at init");
+
+    let (_, joined_pk, _) = repo
+        .participate_in(&ns)
+        .expect("first join must not refuse");
+
+    assert_eq!(
+        joined_pk, provisioned,
+        "the join must reuse the provisioned key, not mint a second one",
+    );
+    assert_eq!(
+        repo.node_identity()
+            .expect("read")
+            .expect("present")
+            .public_key,
+        provisioned,
+        "and the stored key is still the provisioned one",
+    );
+}
+
+/// Provisioning is idempotent: a second call returns the first key.
+///
+/// `merod init` is re-runnable, and a second keypair would silently change what
+/// every namespace signs with.
+#[test]
+fn provisioning_the_signing_key_twice_keeps_the_first() {
+    let store = test_store();
+    let repo = NamespaceRepository::new(&store);
+
+    let first = repo.provision_node_identity().expect("first");
+    let second = repo.provision_node_identity().expect("second");
+
+    assert_eq!(first, second);
+}
+
+/// Provisioning must NOT claim participation in anything.
+///
+/// The keypair and the participation marker answer different questions, and
+/// `participating_namespaces` is what the node walks to decide where to sync. A
+/// marker written at init would enlist the node in a namespace it has never seen.
+#[test]
+fn provisioning_the_signing_key_joins_nothing() {
+    let store = test_store();
+    let repo = NamespaceRepository::new(&store);
+    let ns = test_group_id();
+
+    let _ = repo.provision_node_identity().expect("provision");
+
+    assert!(
+        !repo.participates_in(&ns).expect("query"),
+        "provisioning a key must not enlist the node anywhere",
+    );
+    // The namespace-gated reader still answers None: "who am I here" is not yet a
+    // question this node can answer, even though it has a key.
+    assert!(repo.identity_record(&ns).expect("read").is_none());
 }

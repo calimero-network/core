@@ -1,15 +1,16 @@
-//! This node's own device identity, per namespace.
+//! This node's own device identity.
 //!
 //! Every other account row in this crate is *replicated* state — what the group
 //! collectively knows about who may author. This one is the opposite: it is the
 //! secret half, node-local, never gossiped, and the only thing that can open a
 //! scope key wrapped for this device.
 //!
-//! One row per namespace rather than one per node. A node is a distinct CRDT
-//! replica in each namespace it joins, and reusing one agreement secret across
-//! namespaces would let a peer in one namespace test whether a device in
-//! another is the same machine — a correlation the per-namespace identity model
-//! otherwise denies them.
+//! One row per node, not one per namespace. A device is the installation, and
+//! the certificate binds it to a signing key that is node-level too, so a row
+//! per namespace made one laptop into five devices for a distinction nothing
+//! downstream wanted. The cross-namespace correlation a per-namespace secret
+//! would have denied is available regardless: every genesis this node publishes
+//! names the same root key.
 //!
 //! The `DeviceId` is stored alongside the secret instead of being recomputed
 //! because it cannot be recomputed: it is `H(account ‖ nonce)` over a nonce
@@ -17,13 +18,17 @@
 //! lineage — its counter slots and HLC seed — even though the machine and its
 //! keys were unchanged.
 
-use calimero_account::{AccountGenesis, AccountId, DeviceId, KemPublicKey};
+use calimero_account::{
+    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::X25519SecretKey;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    NodeAccountRoot, NodeAccountRootValue, NodeDeviceIdentity, NodeDeviceIdentityValue,
+    NodeAccountDeviceCert, NodeAccountDeviceCertValue, NodeAccountRoot, NodeAccountRootValue,
+    NodeDeviceIdentity, NodeDeviceIdentityValue, NODE_ACCOUNT_DEVICE_CERT_PREFIX,
 };
 use calimero_store::slice::Slice;
 use calimero_store::tx::Transaction;
@@ -32,9 +37,9 @@ use eyre::Result as EyreResult;
 use rand::Rng as _;
 use zeroize::Zeroizing;
 
-use crate::NamespaceRepository;
+use crate::{collect_keys_with_prefix, NamespaceRepository};
 
-/// Serializes the generate-once in [`NodeDeviceRepository::ensure_account_root`],
+/// Serializes the generate-once in [`NodeDeviceRepository::provision_account_root`],
 /// for the same reason as the device mint below: two callers could both observe an
 /// absent row and both generate, and the second `put` would win — replacing the
 /// root that already certified this node's devices, which is unrecoverable.
@@ -339,7 +344,41 @@ pub fn account_for_group(store: &Store, group: &ContextGroupId) -> EyreResult<Ac
     // would let a read in the namespace that revoked this device destroy the device
     // it still holds in the others. Minting belongs to the enrolment path, which
     // knows which namespace it is enrolling into; a resolver only reports.
-    Ok(devices.ensure_account_root()?.account())
+    Ok(devices.require_account_root()?.account())
+}
+
+/// A device certificate this node's account has already authorized, kept so the
+/// binding can be re-published into namespaces the node gains later.
+///
+/// The certificate is root-signed once, at pairing, and says nothing about a
+/// namespace - so extending a device into a new one needs only this, a fresh
+/// endorsement, and a key wrap. Nothing about it expires, and the device need
+/// not be online.
+#[derive(Clone, Debug)]
+pub struct KnownDeviceCert {
+    /// The proof exactly as a link op carries it: genesis, handoff chain, cert.
+    pub proof: AccountProof<DeviceCert>,
+    /// Applications this device may speak for. **Empty means all of them.**
+    pub applications: Vec<ApplicationId>,
+}
+
+impl KnownDeviceCert {
+    /// The device this certificate names.
+    #[must_use]
+    pub const fn device(&self) -> DeviceId {
+        self.proof.statement.device
+    }
+
+    /// Does this device's scope reach a namespace serving `application`?
+    ///
+    /// `None` is a namespace whose metadata has not synced yet, so it names no
+    /// application - reachable only by an empty scope, which is the same answer
+    /// the pairing fan-out gives such a namespace.
+    #[must_use]
+    pub fn covers(&self, application: Option<ApplicationId>) -> bool {
+        self.applications.is_empty()
+            || application.is_some_and(|app| self.applications.contains(&app))
+    }
 }
 
 /// What a revocation of one device is about, resolved from the group's own
@@ -366,15 +405,55 @@ impl<'a> NodeDeviceRepository<'a> {
         Self { store }
     }
 
-    /// This node's account root, generating it once if absent.
+    /// This node's account root, or an error saying how to get one.
     ///
-    /// Idempotent, and the lock matters more here than anywhere else in this file:
-    /// replacing a root that has already certified devices cannot be undone, and
-    /// there is no second copy to recover from.
+    /// **Reads. Never mints.** This used to be `ensure_account_root`, which
+    /// generated a root when absent — from five call sites, one of them a
+    /// resolver. So a read could bring an identity into being as a side effect,
+    /// and the moment a node acquired an account depended on which request
+    /// arrived first.
+    ///
+    /// It also made a node that holds NO root impossible: root in cold storage,
+    /// this device enabled by a certificate the root signed elsewhere. That
+    /// posture is the whole reason the account/device split exists, and any lazy
+    /// mint silently defeats it.
+    ///
+    /// A root now comes from exactly two places — `merod init` (unless
+    /// `--no-account-root`) and `merod account import`. If neither has happened,
+    /// this is an error rather than a new key.
+    ///
+    /// Note a node can still name its account with no root at all: a certified
+    /// device row answers first in [`account_for_group`], which is what lets a
+    /// paired or certificate-enabled node work. This is only the fallback for
+    /// when there is no such row.
+    ///
+    /// # Errors
+    /// If this node holds no account root, or the store read fails.
+    pub fn require_account_root(&self) -> EyreResult<AccountRoot> {
+        self.account_root()?.ok_or_else(|| {
+            eyre::eyre!(
+                "this node holds no account root. Provision one with `merod init`, \
+                 import an existing one with `merod account import`, or — for a node \
+                 meant to hold none — enable its device with a certificate its \
+                 account root signed elsewhere"
+            )
+        })
+    }
+
+    /// Generate this node's account root, if it has none.
+    ///
+    /// The provisioning path, called from `merod init`. Idempotent, and the lock
+    /// matters more here than anywhere else in this file: replacing a root that
+    /// has already certified devices cannot be undone, and there is no second copy
+    /// to recover from.
+    ///
+    /// Everything that merely *needs* a root calls [`Self::require_account_root`]
+    /// instead. Minting is a deliberate act with a name, not a side effect of the
+    /// first read that wanted one.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
-    pub fn ensure_account_root(&self) -> EyreResult<AccountRoot> {
+    pub fn provision_account_root(&self) -> EyreResult<AccountRoot> {
         let _guard = ACCOUNT_ROOT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -419,11 +498,32 @@ impl<'a> NodeDeviceRepository<'a> {
 
         let existing = self.account_root()?;
         if let Some(previous) = &existing {
-            if !force {
+            // Gate on whether the root being replaced has CERTIFIED something, not
+            // merely on whether one exists.
+            //
+            // The cost this guard protects against is losing a root that devices
+            // depend on: replacing it orphans every certificate it signed, and
+            // there is no second copy. A root that has certified nothing carries
+            // none of that cost.
+            //
+            // That distinction became load-bearing when `init` started
+            // provisioning a root. The primary recovery flow is total loss — wipe
+            // the disk, `merod init`, restore the phrase — and the fresh node now
+            // always has a root, so gating on existence turned every restore into a
+            // `--force` ceremony. That trains an operator to reach for the flag
+            // precisely where it is dangerous: on a node where the root being
+            // replaced HAS certified devices and the loss is unrecoverable.
+            //
+            // One device row, so this is a read rather than a scan.
+            let certified_something = self
+                .get()?
+                .is_some_and(|row| row.account == previous.account());
+            if certified_something && !force {
                 eyre::bail!(
-                    "this node already has an account root ({}), and replacing it \
-                     cannot be undone: a root that has already certified devices \
-                     has no second copy",
+                    "this node already has an account root ({}) that has certified \
+                     a device, and replacing it cannot be undone: the certificates \
+                     it signed have no second copy. Export it first, then pass \
+                     --force to replace it",
                     previous.public_key()
                 );
             }
@@ -460,7 +560,7 @@ impl<'a> NodeDeviceRepository<'a> {
         // account from the root being discarded.
         //
         // **Deliberately not holding `NODE_DEVICE_MINT_LOCK` here.**
-        // `ensure_enrolled` takes that lock and then calls `ensure_account_root`,
+        // `ensure_enrolled` takes that lock and then calls `require_account_root`,
         // which takes this one, so acquiring them in the opposite order is an ABBA
         // deadlock. Serializing against a concurrent enrolment is not worth it
         // anyway: this runs from a CLI that opens the datastore directly, which
@@ -577,6 +677,90 @@ impl<'a> NodeDeviceRepository<'a> {
             }))
     }
 
+    /// Mint this node's device under an account whose root lives **elsewhere**.
+    ///
+    /// The cold-start half of the root-free posture: `merod init --no-account-root`
+    /// leaves the node with no signing root, and this is how it nonetheless gets a
+    /// device row — minted locally from the account's **public** genesis, which is
+    /// all that a `DeviceId` and an agreement keypair need. The certificate that
+    /// makes the device usable is signed elsewhere and arrives later, over exactly
+    /// the values minted here.
+    ///
+    /// Takes no namespace, unlike [`Self::ensure_enrolled_into`], because there is
+    /// no namespace yet — this runs before the node has joined anything. The
+    /// namespace in that method exists only to check an *existing* row against a
+    /// group's bindings, and a node at cold start has no row to check.
+    ///
+    /// Idempotent, and refuses to switch accounts: minting a second `DeviceId` for
+    /// one machine would strand the CRDT history held under the first, and adopting
+    /// a different account silently would make this node speak as someone else.
+    ///
+    /// # Errors
+    /// If a device row already exists for a different account, or the store read or
+    /// write fails.
+    pub fn adopt_account(&self, genesis: AccountGenesis) -> EyreResult<NodeDevice> {
+        let _guard = NODE_DEVICE_MINT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let account = genesis.account_id();
+        if let Some(existing) = self.get()? {
+            eyre::ensure!(
+                existing.account == account,
+                "this node's device already belongs to account {}, so it cannot adopt {} \
+                 as well — a device speaks for one account, and moving between them \
+                 means revoking this one first",
+                existing.account,
+                account,
+            );
+            return Ok(existing);
+        }
+
+        self.mint_device_locked(genesis)
+    }
+
+    /// Store a device certificate this node's account root signed **elsewhere**.
+    ///
+    /// The bytes are kept verbatim — the exact encoding `merod account sign-cert`
+    /// printed — because the proof is self-certifying and a decode/re-encode round
+    /// trip that is not byte-exact yields a signature that no longer verifies. The
+    /// failure would surface at a peer as a refused join, nowhere near here.
+    ///
+    /// Overwrites any previous one: re-certifying a device at a higher epoch is the
+    /// supported way to rotate its keys, and refusing the second import would make
+    /// rotation impossible on exactly the node that cannot self-certify.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn store_imported_certificate(&self, proof: &[u8]) -> EyreResult<()> {
+        let key = calimero_store::key::NodeDeviceCertificate::new();
+        self.store.handle().put(
+            &key,
+            &calimero_store::key::NodeDeviceCertificateValue {
+                proof: proof.to_vec(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// The certificate an account root signed for this device elsewhere, if one was
+    /// imported.
+    ///
+    /// `None` is the ordinary case and means "this node certifies itself": a node
+    /// holding an account root signs its own certificate at join time and never
+    /// reads this. Only a root-free node has anything to present.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn imported_certificate(&self) -> EyreResult<Option<Vec<u8>>> {
+        let key = calimero_store::key::NodeDeviceCertificate::new();
+        Ok(self
+            .store
+            .handle()
+            .get(&key)?
+            .map(|value: calimero_store::key::NodeDeviceCertificateValue| value.proof))
+    }
+
     /// Just what the unwrap paths need: this node's device id and agreement
     /// secret, without resolving the account that owns them.
     ///
@@ -629,11 +813,11 @@ impl<'a> NodeDeviceRepository<'a> {
         // recompute it without the row below. The row is a read cache, not the
         // source of truth — and it has to exist anyway, because a paired device's
         // genesis belongs to another node's root and cannot be derived here at all.
-        let genesis = self.ensure_account_root()?.genesis();
-        self.enroll_locked(namespace, genesis)
+        let genesis = self.require_account_root()?.genesis();
+        self.enroll_locked(std::slice::from_ref(namespace), genesis)
     }
 
-    /// This node's device identity for `namespace`, enrolling it into an
+    /// This node's device identity across `namespaces`, enrolling it into an
     /// **existing** account if absent.
     ///
     /// The pairing counterpart of [`ensure_enrolled`](Self::ensure_enrolled). The
@@ -641,8 +825,12 @@ impl<'a> NodeDeviceRepository<'a> {
     /// to: `DeviceId` is `H(account ‖ nonce)`, so this node cannot mint its own id
     /// until it knows the account, while the account holder cannot sign this
     /// device's certificate until it knows the id and KEM key. Pairing is therefore
-    /// a two-way exchange, and this is its first half — the half that produces the
+    /// a two-way exchange, and this is its first half - the half that produces the
     /// values the certificate will name.
+    ///
+    /// A set rather than one namespace: the certificate covers the account, so the
+    /// set decides whether the stored row may be kept - it must still serve every
+    /// namespace named, not merely the first that answers.
     ///
     /// Idempotent on the same terms as `ensure_enrolled`, and it applies the same
     /// rule to a stored row that names a different account.
@@ -652,21 +840,21 @@ impl<'a> NodeDeviceRepository<'a> {
     /// device is linked to a different account.
     pub fn ensure_enrolled_into(
         &self,
-        namespace: &ContextGroupId,
+        namespaces: &[ContextGroupId],
         genesis: AccountGenesis,
     ) -> EyreResult<NodeDevice> {
         let _guard = NODE_DEVICE_MINT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.enroll_locked(namespace, genesis)
+        self.enroll_locked(namespaces, genesis)
     }
 
     /// May the row already stored for `namespace` be handed back to an enrolment
     /// into `account`?
     ///
-    /// A node holds at most one device per namespace, so this one row is the whole
-    /// slot. `Ok(true)` keeps it, `Ok(false)` releases it to be re-minted, and an
-    /// error refuses the enrolment outright.
+    /// A node holds one device, so this one row is the whole slot. `Ok(true)`
+    /// keeps it, `Ok(false)` releases it to be re-minted, and an error refuses
+    /// the enrolment outright.
     ///
     /// **The default is to keep it**, because the device id is already the replica
     /// id in this namespace's CRDT state: counter slots and an HLC lineage are
@@ -708,13 +896,13 @@ impl<'a> NodeDeviceRepository<'a> {
             return Ok(true);
         }
         if bindings.is_device_linked(namespace, existing.device())? {
-            eyre::bail!(
-                "this node already holds device {} for account {} in {namespace:?}, and it \
-                 is linked — its replica state is held under that id. Moving a machine \
-                 between accounts means revoking the existing device first",
-                existing.device(),
-                existing.account,
-            );
+            // Typed so the admin API surfaces the pairing this refuses as a 403
+            // rather than a generic 500.
+            eyre::bail!(crate::errors::NodeDeviceError::LinkedToAnotherAccount {
+                device: existing.device().to_string(),
+                account: existing.account.to_string(),
+                namespace: format!("{namespace:?}"),
+            });
         }
         Ok(false)
     }
@@ -723,12 +911,21 @@ impl<'a> NodeDeviceRepository<'a> {
     /// [`NODE_DEVICE_MINT_LOCK`].
     fn enroll_locked(
         &self,
-        namespace: &ContextGroupId,
+        namespaces: &[ContextGroupId],
         genesis: AccountGenesis,
     ) -> EyreResult<NodeDevice> {
         let account = genesis.account_id();
         if let Some(existing) = self.get()? {
-            if self.stored_identity_still_serves(namespace, &existing, account)? {
+            // Every namespace is consulted, and the loop deliberately does not
+            // stop at the first `false`: releasing the row because one namespace
+            // released it, while another would have REFUSED, silently re-mints
+            // over a device whose replica state is real. Asking all of them is
+            // what keeps that refusal reachable.
+            let mut serves = true;
+            for namespace in namespaces {
+                serves &= self.stored_identity_still_serves(namespace, &existing, account)?;
+            }
+            if serves {
                 return Ok(existing);
             }
             // Deleting takes the KEM secret with it, which is only safe because
@@ -738,6 +935,18 @@ impl<'a> NodeDeviceRepository<'a> {
             self.delete()?;
         }
 
+        self.mint_device_locked(genesis)
+    }
+
+    /// Mint and store a fresh device row. Caller holds [`NODE_DEVICE_MINT_LOCK`].
+    ///
+    /// The single place a `DeviceId` and an agreement keypair come into being, so
+    /// the enrolment path and the root-free adoption path cannot drift on what a
+    /// device is made of — the certificate is signed over exactly these values, and
+    /// two mints that differed by a field would produce certificates that verify
+    /// nowhere.
+    fn mint_device_locked(&self, genesis: AccountGenesis) -> EyreResult<NodeDevice> {
+        let account = genesis.account_id();
         let mut rng = rand::thread_rng();
         let device = DeviceId::mint(account, rng.gen::<[u8; 16]>());
         let kem_secret = X25519SecretKey::random(&mut rng);
@@ -802,6 +1011,119 @@ impl<'a> NodeDeviceRepository<'a> {
             self_service,
         }))
     }
+    /// Remember a device certificate of this node's own account, and the scope
+    /// the pairing that minted it gave the device.
+    ///
+    /// Written where the certificate is signed, because that is the only moment
+    /// the root signature exists in full: the replicated binding row drops it, so
+    /// a link cannot be rebuilt from folded state without a DAG scan.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn remember_device_cert(
+        &self,
+        proof: &AccountProof<DeviceCert>,
+        applications: &[ApplicationId],
+    ) -> EyreResult<()> {
+        let key = NodeAccountDeviceCert::new(*proof.statement.device.as_bytes());
+        self.store.handle().put(
+            &key,
+            &NodeAccountDeviceCertValue {
+                proof: proof.clone(),
+                applications: applications.to_vec(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Remember a certificate that arrived on the wire, scoped to everything.
+    ///
+    /// The multi-holder case: another device of this same account certified a
+    /// third, and this node learns of it only by applying the link. Nothing on
+    /// the wire carries the pairing's application scope, so the widest scope is
+    /// the only honest guess - and it must not overwrite a narrower one this node
+    /// already knows, which is why an existing row wins.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn remember_device_cert_if_new(&self, proof: &AccountProof<DeviceCert>) -> EyreResult<()> {
+        if self.device_cert(proof.statement.device)?.is_some() {
+            return Ok(());
+        }
+        self.remember_device_cert(proof, &[])
+    }
+
+    /// The certificate this node holds for `device`, if it has one.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_cert(&self, device: DeviceId) -> EyreResult<Option<KnownDeviceCert>> {
+        let key = NodeAccountDeviceCert::new(*device.as_bytes());
+        Ok(self
+            .store
+            .handle()
+            .get(&key)?
+            .map(|value: NodeAccountDeviceCertValue| KnownDeviceCert {
+                proof: value.proof,
+                applications: value.applications,
+            }))
+    }
+
+    /// Every device certificate of this node's own account.
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn device_certs(&self) -> EyreResult<Vec<KnownDeviceCert>> {
+        let keys = collect_keys_with_prefix(
+            self.store,
+            NodeAccountDeviceCert::new([0u8; 32]),
+            NODE_ACCOUNT_DEVICE_CERT_PREFIX,
+            |_k| true,
+        )?;
+        let handle = self.store.handle();
+        let mut certs = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(value) = handle.get::<NodeAccountDeviceCert>(&key)? {
+                certs.push(KnownDeviceCert {
+                    proof: value.proof,
+                    applications: value.applications,
+                });
+            }
+        }
+        Ok(certs)
+    }
+
+    /// The namespaces, among those this node takes part in, where `device` is
+    /// tombstoned.
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn revoked_in(&self, device: DeviceId) -> EyreResult<Vec<ContextGroupId>> {
+        let bindings = crate::AccountBindingRepository::new(self.store);
+        let mut revoked = Vec::new();
+        for namespace in NamespaceRepository::new(self.store).participating_namespaces()? {
+            if bindings.is_revoked(&namespace, device)? {
+                revoked.push(namespace);
+            }
+        }
+        Ok(revoked)
+    }
+
+    /// This node's device, unless it has been revoked somewhere.
+    ///
+    /// A device revoked anywhere has a spent id: one row serves every namespace
+    /// while a tombstone is per-namespace, so re-enrolling mints a fresh id and a
+    /// reader presenting the old one names a device no peer will admit.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn unrevoked_device(&self) -> EyreResult<Option<NodeDevice>> {
+        let Some(held) = self.get()? else {
+            return Ok(None);
+        };
+        Ok(self.revoked_in(held.device())?.is_empty().then_some(held))
+    }
+
     /// Drop this node's device identity. Idempotent.
     ///
     /// Called by the namespace teardown for the same reason the group keyring is
@@ -821,8 +1143,10 @@ impl<'a> NodeDeviceRepository<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::test_fixtures::{test_group_id, test_store};
+    use crate::test_fixtures::{test_group_id, test_store, test_store_without_account_root};
     use crate::AccountBindingRepository;
     use calimero_account::AccountGenesis;
     use calimero_crypto::SharedKey;
@@ -830,6 +1154,159 @@ mod tests {
 
     fn root(seed: u8) -> PublicKey {
         PrivateKey::from([seed; 32]).public_key()
+    }
+
+    /// The proof this mints is what a link op carries, so it is what the store
+    /// has to hand back byte for byte.
+    fn certified(
+        root_sk: &PrivateKey,
+        device: [u8; 32],
+        kem: [u8; 32],
+    ) -> AccountProof<DeviceCert> {
+        let genesis = AccountGenesis::new(root_sk.public_key());
+        let account = genesis.account_id();
+        let cert = DeviceCert::sign(
+            root_sk,
+            account,
+            DeviceId::from(device),
+            &root(0x77),
+            &KemPublicKey::from(kem),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        AccountProof {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        }
+    }
+
+    /// The signature is the field that made this row necessary: the replicated
+    /// binding keeps the cert's payload and drops it, so a link cannot be rebuilt
+    /// from folded state. It has to survive the round trip, and so does the scope.
+    #[test]
+    fn the_cert_store_round_trips_the_signature_and_the_scope() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let proof = certified(&PrivateKey::from([0x31; 32]), [0x41; 32], [0x51; 32]);
+        let scope = vec![ApplicationId::from([0x61; 32])];
+
+        repo.remember_device_cert(&proof, &scope).expect("remember");
+
+        let held = repo
+            .device_cert(proof.statement.device)
+            .expect("read")
+            .expect("present");
+        assert_eq!(
+            held.proof, proof,
+            "every field, the root signature included"
+        );
+        assert_eq!(held.applications, scope);
+        assert_eq!(
+            held.proof.verify(proof.statement.account).map(|_| ()),
+            Ok(()),
+            "what comes back out must still verify as a credential"
+        );
+    }
+
+    /// The wire carries no application scope, so a cert learned by applying
+    /// somebody else's link is scoped to everything - and must not overwrite a
+    /// narrower scope this node set when it did the pairing itself.
+    #[test]
+    fn a_cert_learned_from_the_wire_does_not_widen_a_scope_already_known() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let narrow = certified(&PrivateKey::from([0x32; 32]), [0x42; 32], [0x52; 32]);
+        let scope = vec![ApplicationId::from([0x62; 32])];
+        repo.remember_device_cert(&narrow, &scope)
+            .expect("remember");
+
+        repo.remember_device_cert_if_new(&narrow).expect("re-learn");
+
+        assert_eq!(
+            repo.device_cert(narrow.statement.device)
+                .expect("read")
+                .expect("present")
+                .applications,
+            scope,
+        );
+
+        let fresh = certified(&PrivateKey::from([0x33; 32]), [0x43; 32], [0x53; 32]);
+        repo.remember_device_cert_if_new(&fresh).expect("learn");
+        assert!(
+            repo.device_cert(fresh.statement.device)
+                .expect("read")
+                .expect("present")
+                .applications
+                .is_empty(),
+            "a cert nothing else is known about reaches every namespace"
+        );
+        assert_eq!(repo.device_certs().expect("scan").len(), 2);
+    }
+
+    /// An empty scope is every application, and a named one is only its own -
+    /// including over a namespace whose metadata has not synced and so names none.
+    #[test]
+    fn an_empty_scope_covers_every_application_and_a_named_one_covers_its_own() {
+        let one = ApplicationId::from([0x71; 32]);
+        let two = ApplicationId::from([0x72; 32]);
+        let proof = certified(&PrivateKey::from([0x34; 32]), [0x44; 32], [0x54; 32]);
+
+        let everything = KnownDeviceCert {
+            proof: proof.clone(),
+            applications: Vec::new(),
+        };
+        assert!(everything.covers(Some(one)));
+        assert!(everything.covers(None));
+
+        let narrow = KnownDeviceCert {
+            proof,
+            applications: vec![one],
+        };
+        assert!(narrow.covers(Some(one)));
+        assert!(!narrow.covers(Some(two)));
+        assert!(
+            !narrow.covers(None),
+            "a namespace that names no application is reachable only by a scope that \
+             names none either"
+        );
+    }
+
+    /// A tombstone anywhere spends the id for good, so the read path must stop
+    /// presenting it - a paired node would otherwise go on naming an account it no
+    /// longer speaks for.
+    #[test]
+    fn a_revoked_device_is_no_longer_the_device_this_node_reports() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+        NamespaceRepository::new(&store)
+            .note_participation(&ns)
+            .expect("take part in the namespace");
+        let held = repo.ensure_enrolled(&ns).expect("mint");
+
+        assert_eq!(
+            repo.unrevoked_device()
+                .expect("read")
+                .expect("present")
+                .device(),
+            held.device(),
+        );
+
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, held.device())
+            .expect("tombstone the device");
+
+        assert!(
+            repo.unrevoked_device().expect("read").is_none(),
+            "a revoked device is spent; re-enrolling mints a fresh id"
+        );
+        assert!(
+            repo.get().expect("read").is_some(),
+            "and the row itself stays, because the KEM secret still opens keys \
+             already wrapped for it"
+        );
     }
 
     #[test]
@@ -871,7 +1348,7 @@ mod tests {
 
         let alice_sk = PrivateKey::from([1u8; 32]);
         let alice = AccountGenesis::new(alice_sk.public_key());
-        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let paired = repo.ensure_enrolled_into(&[ns], alice).expect("adopt");
 
         let cert = calimero_account::DeviceCert::sign(
             &alice_sk,
@@ -913,7 +1390,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let squatter = AccountGenesis::new(root(1));
-        let squatted = repo.ensure_enrolled_into(&ns, squatter).expect("adopt");
+        let squatted = repo.ensure_enrolled_into(&[ns], squatter).expect("adopt");
         assert_eq!(squatted.account, squatter.account_id());
 
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
@@ -948,7 +1425,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let paired = repo
-            .ensure_enrolled_into(&ns, AccountGenesis::new(root(1)))
+            .ensure_enrolled_into(&[ns], AccountGenesis::new(root(1)))
             .expect("adopt somebody else's account");
 
         let reusable = repo
@@ -1079,13 +1556,18 @@ mod tests {
     fn the_account_root_is_generated_once_and_survives_reads() {
         // Replacing a root that has already certified devices is unrecoverable —
         // there is no second copy — so generate-once is the whole contract.
-        let store = test_store();
+        //
+        // Starting root-free is the point: this has to watch the FIRST provision
+        // create one. "Survives reads" used to mean a read would not mint a second
+        // root; now no read mints at all, and what remains to prove is that
+        // provisioning twice keeps the first.
+        let store = test_store_without_account_root();
         let repo = NodeDeviceRepository::new(&store);
 
         assert!(repo.account_root().expect("read").is_none());
 
-        let first = repo.ensure_account_root().expect("generate");
-        let second = repo.ensure_account_root().expect("generate");
+        let first = repo.provision_account_root().expect("generate");
+        let second = repo.provision_account_root().expect("generate");
         assert_eq!(first.public_key(), second.public_key());
         assert_eq!(
             repo.account_root()
@@ -1103,7 +1585,7 @@ mod tests {
         // same answer in every namespace this root speaks in.
         let store = test_store();
         let root = NodeDeviceRepository::new(&store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
 
         assert_eq!(
@@ -1127,16 +1609,67 @@ mod tests {
     /// the invariant depending on it" shape this codebase has been burned by
     /// before. Any future caller (meroctl, an RPC handler, a test helper) would
     /// have silently destroyed an unrecoverable key.
+    /// Restoring a backup onto a freshly initialised node needs no `--force`.
+    ///
+    /// The primary recovery flow: total loss, wipe, `merod init`, import the
+    /// phrase. Since init provisions a root, the target always has one — so a
+    /// guard gated on mere existence made every restore a `--force` ceremony, and
+    /// that trains an operator to reach for the flag exactly where it is
+    /// dangerous. Gated on having certified something, the guard stays where the
+    /// loss actually is.
+    ///
+    /// This is what core's `account-root-backup-restore` e2e exercises, and what
+    /// caught the regression.
     #[test]
-    fn importing_over_an_existing_root_is_refused_unless_forced() {
+    fn restoring_a_backup_over_an_untouched_root_needs_no_force() {
         let store = test_store();
         let repo = NodeDeviceRepository::new(&store);
-        let original = repo.ensure_account_root().expect("generate");
+        let provisioned = repo.provision_account_root().expect("generate");
+        let provisioned_pk = provisioned.public_key();
+
+        // A backup taken from the node whose disk was lost.
+        let backup_store = test_store();
+        let backup = NodeDeviceRepository::new(&backup_store)
+            .provision_account_root()
+            .expect("generate");
+        let restored_pk = backup.public_key();
+        assert_ne!(provisioned_pk, restored_pk);
+
+        let outcome = repo
+            .try_import_account_root(&backup, false)
+            .expect("restoring over an uncertified root must not need --force");
+
+        assert_eq!(
+            outcome.replaced.map(|r| r.public_key()),
+            Some(provisioned_pk),
+            "the discarded root is still reported, so nothing is silent",
+        );
+        assert_eq!(
+            repo.account_root()
+                .expect("read")
+                .expect("present")
+                .public_key(),
+            restored_pk,
+            "and the backup is what the node now holds",
+        );
+    }
+
+    #[test]
+    fn importing_over_an_existing_root_is_refused_unless_forced() {
+        // Refused because the root has CERTIFIED a device, not merely because one
+        // exists. The uncertified case is
+        // `restoring_a_backup_over_an_untouched_root_needs_no_force`.
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+        let original = repo.provision_account_root().expect("generate");
         let original_pk = original.public_key();
+        // What makes replacing it costly: a certificate that would be orphaned.
+        repo.ensure_enrolled(&ns).expect("enrol under the root");
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
-                .ensure_account_root()
+                .provision_account_root()
                 .expect("generate")
                 .to_mnemonic()
                 .expect("export"),
@@ -1186,7 +1719,7 @@ mod tests {
     fn an_exported_root_recovers_the_same_account() {
         let original_store = test_store();
         let original = NodeDeviceRepository::new(&original_store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
         let before = original.account();
         let backup = original.to_mnemonic().expect("export");
@@ -1199,7 +1732,11 @@ mod tests {
 
         // The disk is gone. A fresh store shares nothing with the old one.
         drop(original);
-        let recovered_store = test_store();
+        // Root-free deliberately: the assert below is what proves the recovered
+        // account came from the phrase rather than from a root already sitting
+        // there. `restoring_a_backup_over_an_untouched_root_needs_no_force` covers
+        // the other shape, a restore onto a node that has its own.
+        let recovered_store = test_store_without_account_root();
         assert!(
             NodeDeviceRepository::new(&recovered_store)
                 .account_root()
@@ -1261,7 +1798,7 @@ mod tests {
 
         // Enrol under this node's own root, and LINK it: an unlinked row yields
         // anyway, so only a linked one exercises the refusal.
-        let discarded = repo.ensure_account_root().expect("generate");
+        let discarded = repo.provision_account_root().expect("generate");
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
         let cert = calimero_account::DeviceCert::sign(
             discarded.signing_key(),
@@ -1286,7 +1823,7 @@ mod tests {
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
-                .ensure_account_root()
+                .provision_account_root()
                 .expect("generate")
                 .to_mnemonic()
                 .expect("export"),
@@ -1340,7 +1877,7 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let root = repo.ensure_account_root().expect("generate");
+        let root = repo.provision_account_root().expect("generate");
         let mine = repo.ensure_enrolled(&ns).expect("enroll");
 
         // Round-tripped through the mnemonic, because that is how an operator
@@ -1375,17 +1912,17 @@ mod tests {
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
 
-        let _discarded = repo.ensure_account_root().expect("generate");
+        let _discarded = repo.provision_account_root().expect("generate");
 
         // Adopted into an account this node's root does not own, as pairing does.
         let elsewhere = AccountGenesis::new(root(3));
         let paired = repo
-            .ensure_enrolled_into(&ns, elsewhere)
+            .ensure_enrolled_into(&[ns], elsewhere)
             .expect("adopt the foreign account");
 
         let incoming = AccountRoot::from_mnemonic(
             &NodeDeviceRepository::new(&test_store())
-                .ensure_account_root()
+                .provision_account_root()
                 .expect("generate")
                 .to_mnemonic()
                 .expect("export"),
@@ -1436,7 +1973,7 @@ mod tests {
     fn a_retyped_backup_survives_ragged_whitespace() {
         let store = test_store();
         let root = NodeDeviceRepository::new(&store)
-            .ensure_account_root()
+            .provision_account_root()
             .expect("generate");
         let backup = root.to_mnemonic().expect("export");
         let ragged = backup
@@ -1513,7 +2050,7 @@ mod tests {
         let alice = AccountGenesis::new(alice_root);
 
         let paired = repo
-            .ensure_enrolled_into(&ns, alice)
+            .ensure_enrolled_into(&[ns], alice)
             .expect("adopt the account");
         assert_eq!(
             paired.account,
@@ -1571,9 +2108,21 @@ mod tests {
             .expect("store")
             .expect("the credential must be admissible");
 
-        assert!(repo
-            .ensure_enrolled_into(&ns, AccountGenesis::new(root(2)))
-            .is_err());
+        let refused = repo
+            .ensure_enrolled_into(&[ns], AccountGenesis::new(root(2)))
+            .expect_err("a linked row for another account must not be replaced");
+        // Typed, not opaque: the admin API answers this pairing 403, and only the
+        // variant tells it apart from a node that is genuinely broken.
+        assert!(matches!(
+            refused.downcast_ref::<crate::errors::NodeDeviceError>(),
+            Some(crate::errors::NodeDeviceError::LinkedToAnotherAccount { .. })
+        ));
+        assert!(
+            refused
+                .to_string()
+                .contains("revoking the existing device first"),
+            "the refusal has to say what to do next; got: {refused}"
+        );
         let reloaded = repo.get().expect("read").expect("present");
         assert_eq!(reloaded.device(), mine.device());
         assert_eq!(reloaded.account, mine.account);
@@ -1598,7 +2147,7 @@ mod tests {
 
         let alice_sk = PrivateKey::from([1u8; 32]);
         let alice = AccountGenesis::new(alice_sk.public_key());
-        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let paired = repo.ensure_enrolled_into(&[ns], alice).expect("adopt");
         let cert = calimero_account::DeviceCert::sign(
             &alice_sk,
             paired.account,
@@ -1635,7 +2184,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let alice = AccountGenesis::new(root(1));
-        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let paired = repo.ensure_enrolled_into(&[ns], alice).expect("adopt");
 
         assert_eq!(
             account_for_group(&store, &ns).expect("resolve"),
@@ -1669,7 +2218,7 @@ mod tests {
         let repo = NodeDeviceRepository::new(&store);
 
         let alice = AccountGenesis::new(root(1));
-        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let paired = repo.ensure_enrolled_into(&[ns], alice).expect("adopt");
         AccountBindingRepository::new(&store)
             .apply_revocation(&ns, paired.device())
             .expect("tombstone the device");
@@ -1759,7 +2308,11 @@ mod tests {
         // Ejecting a device is an admin's job and needs no account of their own.
         // Requiring a root here refused the whole admin path on any node that had
         // enrolled nowhere itself.
-        let store = test_store();
+        //
+        // This is now the guard that `revocation_target` never reaches for
+        // `require_account_root`: on a `--no-account-root` node that call would
+        // error, and the admin path would break exactly as it once did.
+        let store = test_store_without_account_root();
         let ns = test_group_id();
         let repo = NodeDeviceRepository::new(&store);
         assert!(repo.account_root().expect("read").is_none());
@@ -1826,7 +2379,7 @@ mod tests {
 
         let alice_sk = PrivateKey::from([1u8; 32]);
         let alice = AccountGenesis::new(alice_sk.public_key());
-        let paired = repo.ensure_enrolled_into(&ns, alice).expect("adopt");
+        let paired = repo.ensure_enrolled_into(&[ns], alice).expect("adopt");
         let cert = calimero_account::DeviceCert::sign(
             &alice_sk,
             paired.account,
@@ -1843,7 +2396,7 @@ mod tests {
             .expect("the credential must be admissible");
 
         // This node has a root of its own — it just is not alice's.
-        let _own_root = repo.ensure_account_root().expect("generate");
+        let _own_root = repo.provision_account_root().expect("generate");
 
         let target = repo
             .revocation_target(&ns, paired.device())
@@ -1990,7 +2543,7 @@ mod tests {
         );
 
         let right = calimero_account::DeviceCert::sign(
-            repo.ensure_account_root().expect("root").signing_key(),
+            repo.provision_account_root().expect("root").signing_key(),
             enrolled.account,
             enrolled.device(),
             &namespace_identity.public_key(),
@@ -2055,7 +2608,7 @@ mod tests {
             .participate_in_bundle(&paired)
             .expect("provision");
         let _ = repo
-            .ensure_enrolled_into(&paired, AccountGenesis::new(root(9)))
+            .ensure_enrolled_into(&[paired], AccountGenesis::new(root(9)))
             .expect("adopt");
 
         let mut listed = namespaces.participating_namespaces().expect("scan");
@@ -2063,5 +2616,317 @@ mod tests {
         let mut want = vec![mine, paired];
         want.sort_unstable();
         assert_eq!(listed, want);
+    }
+
+    /// A node with no root and no device row has no account, and says so.
+    ///
+    /// This is the state `--no-account-root` puts a node in before its device is
+    /// enabled. It used to be unreachable: the resolver minted a root and
+    /// answered, so "this node holds no account" was a state the code repaired
+    /// instead of reporting.
+    #[test]
+    fn naming_an_account_without_a_root_or_a_device_is_an_error() {
+        let store = test_store_without_account_root();
+        let ns = test_group_id();
+
+        let err = account_for_group(&store, &ns)
+            .expect_err("a node with neither a root nor a device has no account to name");
+        let msg = err.to_string();
+        assert!(msg.contains("no account root"), "{msg}");
+        // The message has to say how to get out of the state, not just that you
+        // are in it.
+        assert!(msg.contains("merod init"), "{msg}");
+        assert!(msg.contains("merod account import"), "{msg}");
+
+        assert!(
+            NodeDeviceRepository::new(&store)
+                .account_root()
+                .expect("read")
+                .is_none(),
+            "and asking must not have minted one — that is the whole point",
+        );
+    }
+
+    /// A root-free node CAN name its account, once its device is certified.
+    ///
+    /// The device row answers before the root fallback, which is what makes the
+    /// `--no-account-root` posture usable rather than merely permitted: the
+    /// account belongs to a root held somewhere else, and this node adopted a
+    /// device under it.
+    #[test]
+    fn a_certified_device_names_its_account_with_no_root_present() {
+        let store = test_store_without_account_root();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        // Adopting an account whose root lives elsewhere needs no root here — the
+        // genesis carries only its PUBLIC half.
+        let elsewhere = AccountGenesis::new(root(9));
+        let adopted = repo
+            .ensure_enrolled_into(&[ns], elsewhere)
+            .expect("adopt an account rooted on another machine");
+
+        assert_eq!(
+            account_for_group(&store, &ns).expect("resolve"),
+            elsewhere.account_id(),
+            "the device row answers, so no root is needed to name the account",
+        );
+        assert_eq!(adopted.account, elsewhere.account_id());
+        assert!(
+            repo.account_root().expect("read").is_none(),
+            "and none was minted along the way",
+        );
+    }
+
+    /// Self-enrolment is the one thing a root-free node cannot do.
+    ///
+    /// It has to certify its own device, and the root is what signs that. Erroring
+    /// is the honest answer: such a node gets its device from a certificate signed
+    /// elsewhere instead.
+    #[test]
+    fn self_enrolment_without_a_root_is_refused() {
+        let store = test_store_without_account_root();
+        let ns = test_group_id();
+
+        let err = NodeDeviceRepository::new(&store)
+            .ensure_enrolled(&ns)
+            .expect_err("a node with no root cannot certify its own device");
+        assert!(err.to_string().contains("no account root"), "{err}");
+    }
+    /// One `pair-init` across several namespaces mints one device, not one per
+    /// namespace: the certificate that follows covers the account rather than a
+    /// scope, so a device per namespace would hand the holder several ids to
+    /// certify and several codes to read aloud for one machine.
+    #[test]
+    fn one_device_serves_every_namespace_a_pairing_named() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let namespaces = [
+            ContextGroupId::from([0xA1; 32]),
+            ContextGroupId::from([0xB2; 32]),
+            ContextGroupId::from([0xC3; 32]),
+        ];
+
+        let alice = AccountGenesis::new(root(1));
+        let paired = repo
+            .ensure_enrolled_into(&namespaces, alice)
+            .expect("adopt across the whole set");
+
+        for namespace in &namespaces {
+            let again = repo
+                .ensure_enrolled_into(std::slice::from_ref(namespace), alice)
+                .expect("the stored row still serves this namespace on its own");
+            assert_eq!(again.device(), paired.device());
+            assert_eq!(again.kem_public_key(), paired.kem_public_key());
+        }
+
+        // The confirmation code is a hash over the minted material, so one device
+        // and one KEM key is one code for the whole set - the operator reads a
+        // single value aloud however many namespaces the pairing covered.
+        let sign_pk = root(4);
+        let codes: BTreeSet<String> = namespaces
+            .iter()
+            .map(|_| {
+                calimero_account::PairingOffer::new(
+                    paired.account,
+                    paired.device(),
+                    paired.kem_public_key(),
+                    sign_pk,
+                )
+                .confirmation_code()
+            })
+            .collect();
+        assert_eq!(codes.len(), 1);
+    }
+
+    /// The refusal has to survive being asked alongside a namespace that would
+    /// have released the row. Stopping at the first `false` would delete a device
+    /// whose replica state is real in the namespace that refused - counter slots
+    /// and an HLC lineage stranded under an id nothing points at any more.
+    #[test]
+    fn a_namespace_that_refuses_outvotes_one_that_would_release() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+        let releases = ContextGroupId::from([0xA1; 32]);
+        let refuses = ContextGroupId::from([0xB2; 32]);
+
+        let alice_sk = PrivateKey::from([1u8; 32]);
+        let alice = AccountGenesis::new(alice_sk.public_key());
+        let paired = repo
+            .ensure_enrolled_into(&[releases, refuses], alice)
+            .expect("adopt");
+
+        // Linked in one namespace only, so the other still holds an unlinked row
+        // and would hand the slot over.
+        let cert = calimero_account::DeviceCert::sign(
+            &alice_sk,
+            paired.account,
+            paired.device(),
+            &root(9),
+            &paired.kem_public_key(),
+            0,
+            0,
+        )
+        .expect("sign the certificate");
+        let _binding = AccountBindingRepository::new(&store)
+            .apply_link(&refuses, &paired.genesis, &[], &cert)
+            .expect("store")
+            .expect("the credential must be admissible");
+
+        assert!(repo
+            .ensure_enrolled_into(&[releases, refuses], AccountGenesis::new(root(2)))
+            .is_err());
+        let reloaded = repo.get().expect("read").expect("present");
+        assert_eq!(reloaded.device(), paired.device());
+        assert_eq!(reloaded.account, paired.account);
+    }
+
+    /// The agreement key a caller reads must be the one the certificate publishes.
+    ///
+    /// `GET /admin-api/identity` reports this so an operator holding an offline
+    /// account root can run `merod account sign-cert`. If it ever reported a
+    /// different key than the certificate names, scope keys would be wrapped to a
+    /// key this node cannot open — and the failure would look like key delivery
+    /// being broken, not like a wrong field in a read-only endpoint.
+    #[test]
+    fn the_agreement_key_survives_the_store_round_trip() {
+        let store = test_store();
+        let ns = test_group_id();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let minted = repo.ensure_enrolled(&ns).expect("enrol");
+        let reloaded = repo.get().expect("read").expect("a row was just written");
+
+        assert_eq!(
+            minted.kem_public_key().as_bytes(),
+            reloaded.kem_public_key().as_bytes(),
+            "the key read back must match the one minted, or a certificate signed \
+             from it addresses deliveries this node cannot open",
+        );
+        // And it really is the public half of the secret that opens deliveries,
+        // rather than an independently stored value that could drift from it.
+        assert_eq!(
+            reloaded.kem_public_key().as_bytes(),
+            reloaded.secret.kem_secret.public_key().as_bytes(),
+        );
+    }
+
+    /// The stored bytes must come back byte-identical.
+    ///
+    /// Not a tautology about the store: the certificate is self-certifying, so its
+    /// signature is over its own encoding. A round trip that normalised anything —
+    /// re-encoded a vec, reordered a field — yields a proof that no longer
+    /// verifies, and the failure would appear at a peer as a refused join rather
+    /// than here.
+    #[test]
+    fn an_imported_certificate_round_trips_verbatim() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+
+        assert!(
+            repo.imported_certificate().expect("read").is_none(),
+            "absence is the ordinary state: a node with a root certifies itself",
+        );
+
+        // Deliberately not a valid proof. This method stores bytes and asks no
+        // questions — verification belongs to `import-cert`, which has the device
+        // row to check against. Using arbitrary bytes here is what proves the
+        // storage layer is not quietly parsing them.
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        repo.store_imported_certificate(&bytes).expect("store");
+
+        assert_eq!(
+            repo.imported_certificate().expect("read").as_deref(),
+            Some(bytes.as_slice()),
+        );
+    }
+
+    /// Re-importing must replace, not refuse.
+    ///
+    /// Re-certifying a device at a higher epoch is how its keys rotate, and a
+    /// root-free node is exactly the node that cannot self-certify — so refusing
+    /// the second import would make rotation impossible on the only node that needs
+    /// the command.
+    #[test]
+    fn a_second_import_replaces_the_first() {
+        let store = test_store();
+        let repo = NodeDeviceRepository::new(&store);
+
+        repo.store_imported_certificate(&[1u8; 8]).expect("first");
+        repo.store_imported_certificate(&[2u8; 8]).expect("second");
+
+        assert_eq!(
+            repo.imported_certificate().expect("read").as_deref(),
+            Some(&[2u8; 8][..]),
+            "the newer certificate must win, or a rotation silently does nothing",
+        );
+    }
+
+    /// A root-free node keeps its imported certificate across a reopen.
+    ///
+    /// The whole posture depends on it surviving a restart: a node that lost the
+    /// certificate on reboot would need another air-gap trip to rejoin anything.
+    #[test]
+    fn an_imported_certificate_outlives_the_repository_handle() {
+        let store = test_store_without_account_root();
+        NodeDeviceRepository::new(&store)
+            .store_imported_certificate(&[7u8; 16])
+            .expect("store");
+
+        // A fresh repository over the same store, which is what a restart is.
+        assert_eq!(
+            NodeDeviceRepository::new(&store)
+                .imported_certificate()
+                .expect("read")
+                .as_deref(),
+            Some(&[7u8; 16][..]),
+        );
+    }
+
+    /// Cold start: a root-free node adopts an account from its PUBLIC root key.
+    ///
+    /// The gap this closes is the whole reason `--no-account-root` was not usable
+    /// on a fresh node: a certificate is signed over a device id, a signing key and
+    /// an agreement key, so the device has to exist before anyone can certify it —
+    /// and every path that minted one wanted a root this node does not have.
+    #[test]
+    fn a_root_free_node_adopts_an_account_from_its_public_key_alone() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        let elsewhere = AccountGenesis::new(root(11));
+
+        let device = repo.adopt_account(elsewhere).expect("adopt");
+
+        assert_eq!(device.account, elsewhere.account_id());
+        assert!(
+            repo.account_root().expect("read").is_none(),
+            "adopting must not mint a root — the point is that it lives elsewhere",
+        );
+        // Idempotent: a second init must not mint a second DeviceId, which would
+        // strand whatever CRDT history the first accumulated.
+        assert_eq!(
+            repo.adopt_account(elsewhere).expect("again").device(),
+            device.device(),
+        );
+    }
+
+    /// Adopting a second account must be refused, not silently applied.
+    #[test]
+    fn adopting_a_different_account_is_refused() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+
+        let first = AccountGenesis::new(root(11));
+        let _ = repo.adopt_account(first).expect("adopt the first");
+
+        let err = repo
+            .adopt_account(AccountGenesis::new(root(12)))
+            .expect_err("a device speaks for one account");
+        let msg = err.to_string();
+        assert!(msg.contains("already belongs"), "{msg}");
+        assert!(
+            msg.contains("revoking"),
+            "the message must say the way out: {msg}"
+        );
     }
 }

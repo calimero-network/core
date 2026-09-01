@@ -92,7 +92,7 @@ pub(crate) fn rendezvous_key_for_topic(topic: &str) -> Option<Namespace> {
         format!("{RENDEZVOUS_CTX_PREFIX}{topic}")
     };
     // `Namespace::new` rejects keys over `MAX_NAMESPACE` (255). All our
-    // ids are <= 64 hex / ~44 bs58 chars plus a short prefix, so this
+    // ids are <= 64 hex chars plus a short prefix, so this
     // only trips on a pathological topic; drop it rather than panic.
     Namespace::new(raw).ok()
 }

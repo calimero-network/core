@@ -134,6 +134,7 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
 /// The SIGNER-authority an apply gate requires, for the apply-auth projection
 /// shadow (F5 #28). `Admin` = the live `require_admin`/`require_namespace_admin`
 /// gate; `AdminOrCap(bits)` = `is_authorized_with_capability` (admin OR the bit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApplyAuthReq {
     Admin,
     AdminOrCap(u32),
@@ -150,31 +151,55 @@ enum ApplyAuthReq {
 /// authored), `KeyDelivery`/`Noop`/metadata/context-registration ops. These are
 /// covered by later, more specific shadows; the conservative subset here is the
 /// unambiguous admin/capability gates.
+fn root_auth_requirement(
+    root: &calimero_context_client::local_governance::RootOp,
+    ns_root: calimero_context_config::types::ContextGroupId,
+) -> Option<(calimero_context_config::types::ContextGroupId, ApplyAuthReq)> {
+    use calimero_context_client::local_governance::RootOp;
+    use calimero_context_config::MemberCapabilities as Cap;
+
+    match root {
+        RootOp::AdminChanged { .. }
+        | RootOp::PolicyUpdated { .. }
+        | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
+        RootOp::GroupCreated { parent_id, .. } => Some((
+            *parent_id,
+            ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP.bits()),
+        )),
+        // GroupDeleted authorizes the subgroup OWNER or a
+        // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
+        // admin — owner authority isn't in this admin/cap model, so skip.
+        _ => None,
+    }
+}
+
 fn apply_auth_requirement(
     signed: &calimero_context_client::local_governance::SignedNamespaceOp,
     decrypted: Option<&calimero_context_client::local_governance::GroupOp>,
+    opened_root: Option<&calimero_context_client::local_governance::RootOp>,
 ) -> Option<(calimero_context_config::types::ContextGroupId, ApplyAuthReq)> {
-    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp};
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities as Cap;
 
     match &signed.op {
         NamespaceOp::Root(root) => {
-            let ns_root = ContextGroupId::from(signed.namespace_id.to_bytes());
-            match root {
-                RootOp::AdminChanged { .. }
-                | RootOp::PolicyUpdated { .. }
-                | RootOp::GroupReparented { .. } => Some((ns_root, ApplyAuthReq::Admin)),
-                RootOp::GroupCreated { parent_id, .. } => Some((
-                    *parent_id,
-                    ApplyAuthReq::AdminOrCap(Cap::CAN_CREATE_SUBGROUP.bits()),
-                )),
-                // GroupDeleted authorizes the subgroup OWNER or a
-                // `CAN_DELETE_SUBGROUP` holder at the root, NOT only the root
-                // admin — owner authority isn't in this admin/cap model, so skip.
-                _ => None,
-            }
+            root_auth_requirement(root, ContextGroupId::from(signed.namespace_id.to_bytes()))
         }
+        // Sealing an op must not decide whether it gets shadowed. Four of the
+        // five sealable variants are exactly the admin/capability gates this
+        // shadow exists to check, so matching only the cleartext shape would
+        // have retired that coverage for them the moment they started being
+        // sealed — silently, because a skipped shadow reports nothing.
+        //
+        // A node that could not open the op still skips, and must: it has no
+        // requirement to compare, and the projection folded that op as a hole,
+        // so both sides are blind in the same place and there is nothing to
+        // disagree about.
+        NamespaceOp::RootSealed { .. } => root_auth_requirement(
+            opened_root?,
+            ContextGroupId::from(signed.namespace_id.to_bytes()),
+        ),
         NamespaceOp::Group { group_id, .. } => {
             let group = *group_id;
             match decrypted? {
@@ -482,6 +507,26 @@ fn shadow_fold_and_compare(
         // op has nothing to decrypt and folds as `Noop`.
         _ => None,
     };
+    // The shadow must fold exactly what the live apply folded. A sealed root
+    // op this node could not open folded nothing there, so it must fold as a
+    // visible hole here too — otherwise the shadow reports a complete ancestry
+    // the live side never had.
+    let opened_root = match &signed_op.op {
+        calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => {
+            calimero_governance_store::open_sealed_root_op(
+                store,
+                ns_id,
+                key_id.as_bytes(),
+                encrypted,
+            )
+            .map_err(|err| {
+                tracing::warn!(%err, "unified-op shadow: sealed root-op open failed; folded as a hole");
+            })
+            .ok()
+            .flatten()
+        }
+        _ => None,
+    };
     // Resolved from the store, not derived from the key: the op
     // has just applied, and it could not have unless the signer's
     // binding was present — so every node agrees on this value.
@@ -493,6 +538,7 @@ fn shadow_fold_and_compare(
     let shadow_op = calimero_governance_store::op_from_namespace_op_with_binding(
         signed_op,
         decrypted.as_ref(),
+        opened_root.as_ref(),
         signer_binding,
         delta_id,
         delta_hlc,
@@ -684,7 +730,9 @@ fn shadow_fold_and_compare(
         // that reason alone, so `Some(false)` would name the lag
         // rather than a real disagreement.
         if fed {
-            if let Some((auth_group, req)) = apply_auth_requirement(signed_op, decrypted.as_ref()) {
+            if let Some((auth_group, req)) =
+                apply_auth_requirement(signed_op, decrypted.as_ref(), opened_root.as_ref())
+            {
                 let verdict = match scope_projections.read() {
                     Ok(projections) => match req {
                         ApplyAuthReq::Admin => projections.is_admin_at_cut(
@@ -744,10 +792,72 @@ mod tests {
     use core::num::NonZeroU128;
 
     use super::{
-        compare_result, membership_touched, shadow_fold_applied, AppliedOp, ComparePremise,
-        MembershipOpKind,
+        apply_auth_requirement, compare_result, membership_touched, shadow_fold_applied, AppliedOp,
+        ApplyAuthReq, ComparePremise, MembershipOpKind,
     };
     use crate::scope_projection::ScopeProjections;
+
+    fn sealed_envelope(namespace: [u8; 32]) -> SignedNamespaceOp {
+        SignedNamespaceOp {
+            version: 1,
+            namespace_id: namespace.into(),
+            parent_op_hashes: Vec::new(),
+            signer: PublicKey::from([7u8; 32]),
+            nonce: 0,
+            op: NamespaceOp::RootSealed {
+                key_id: [0u8; 32].into(),
+                encrypted: calimero_governance_types::EncryptedRootOp {
+                    nonce: [0u8; 12],
+                    ciphertext: Vec::new(),
+                },
+            },
+            signature: [0u8; 64],
+        }
+    }
+
+    #[test]
+    fn an_opened_sealed_root_op_carries_the_same_requirement_as_its_cleartext_form() {
+        // Sealing is an encoding decision; it must not change which ops this
+        // shadow checks. `AdminChanged` is an admin gate whether or not the
+        // bytes were encrypted, and a node that opened it can compare.
+        let ns = [0x11; 32];
+        let root = RootOp::AdminChanged {
+            new_admin: calimero_account::AccountId::from([0x5A; 32]),
+        };
+
+        let cleartext = {
+            let mut e = sealed_envelope(ns);
+            e.op = NamespaceOp::Root(root.clone());
+            e
+        };
+        let sealed = sealed_envelope(ns);
+
+        let from_cleartext = apply_auth_requirement(&cleartext, None, None);
+        let from_sealed = apply_auth_requirement(&sealed, None, Some(&root));
+
+        assert!(
+            matches!(from_cleartext, Some((_, ApplyAuthReq::Admin))),
+            "the cleartext form is an admin gate"
+        );
+        assert_eq!(
+            from_cleartext, from_sealed,
+            "sealing must not change which authority the shadow checks"
+        );
+    }
+
+    #[test]
+    fn a_sealed_root_op_this_node_cannot_open_is_skipped() {
+        // The other direction, and it must stay a skip. With no opened op there
+        // is no requirement to compare, and the projection folded that op as a
+        // hole — both sides are blind in the same place, so there is nothing to
+        // disagree about. Reporting here would be reporting the missing key.
+        let sealed = sealed_envelope([0x11; 32]);
+        assert_eq!(
+            apply_auth_requirement(&sealed, None, None),
+            None,
+            "an unopened sealed root op yields no requirement to shadow"
+        );
+    }
 
     /// Drives the DAG's ordering machinery without a governance apply: this test
     /// is about which deltas the fold SEES, and a real applier would make the

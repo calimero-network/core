@@ -15,9 +15,7 @@ use sha2::{Digest, Sha256};
 use tar::{Archive, Builder};
 use tempfile::TempDir;
 
-mod common;
-
-use common::{hex_lower, node_client, pack_entries};
+use calimero_node_primitives::test_fixtures::{hex_lower, node_client, pack_entries};
 
 /// Sign a manifest exactly the way `cargo mero bundle` does: real lowercase-hex
 /// SHA-256 per artifact, then an Ed25519 signature over the canonical manifest.
@@ -141,8 +139,8 @@ async fn tampered_wasm_is_rejected_even_though_manifest_signature_verifies() {
 
     // Separate nodes so neither install observes the other's state: both bundles
     // carry the same package and signer, hence the same application row.
-    let (honest_node, _d1, _b1) = node_client().await;
-    let (victim_node, _d2, _b2) = node_client().await;
+    let (honest_node, _store, _d1, _b1) = node_client().await;
+    let (victim_node, _store, _d2, _b2) = node_client().await;
 
     let (honest_id, honest_bytes) = install(&honest_node, honest).await.expect("honest install");
     assert_eq!(honest_bytes, honest_wasm);
@@ -196,7 +194,7 @@ async fn manifest_without_artifact_hash_is_rejected() {
         wasm,
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a hashless manifest must not install");
@@ -242,7 +240,7 @@ async fn oversized_manifest_is_refused_before_any_signature_check() {
     );
     let bundle = pack(&dir, "bigmanifest.mpk", &manifest_bytes, wasm);
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("an oversized manifest must not install");
@@ -264,7 +262,7 @@ async fn normal_manifest_still_installs() {
     let manifest = signed_manifest("com.example.normal", "1.0.0", wasm, &key);
     let bundle = pack(&dir, "normal.mpk", &manifest, wasm);
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(served, wasm);
 }
@@ -312,7 +310,7 @@ async fn services_sharing_an_artifact_path_each_get_the_right_bytes() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (blob_id, _) = node
         .add_blob(
             Cursor::new(bundle.as_slice()),
@@ -403,7 +401,7 @@ async fn a_shared_path_is_checked_against_every_service_digest() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a service whose declared digest does not match must not install");
@@ -440,7 +438,7 @@ async fn manifest_past_the_tenth_entry_is_a_bundle_on_both_paths() {
         "detection must find the same manifest the verified read finds"
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(
         served, wasm,
@@ -477,7 +475,7 @@ async fn an_unmatchable_entry_ahead_of_the_manifest_installs_on_both_paths() {
         "detection must step over an entry it cannot match, not answer `false`"
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(
         served, wasm,
@@ -510,7 +508,7 @@ async fn decoy_entry_cannot_satisfy_the_digest_check_for_another_entry() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     match install(&node, bundle).await {
         // The decoy must be skipped outright, leaving the real `app.wasm` hashed
         // and refused; any other rejection means the decoy was still reached.
@@ -540,7 +538,7 @@ async fn install_writes_no_extracted_directory() {
     let manifest = signed_manifest("com.example.noextract", "1.0.0", wasm, &key);
     let bundle = pack(&dir, "noextract.mpk", &manifest, wasm);
 
-    let (node, _data, blob_dir) = node_client().await;
+    let (node, _store, _data, blob_dir) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(served, wasm, "the blob must still serve the right bytes");
 
@@ -573,7 +571,7 @@ async fn a_nested_manifest_is_never_the_bundle_manifest() {
         &[("old/manifest.json", &old), ("old/app.wasm", old_wasm)],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a bundle whose only manifest is nested must not install");
@@ -617,7 +615,7 @@ async fn a_nested_manifest_cannot_roll_the_install_back_to_an_older_release() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(
         served, new_wasm,
@@ -653,7 +651,7 @@ async fn duplicate_top_level_manifest_entries_are_refused() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a duplicated manifest entry must not install");
@@ -680,7 +678,7 @@ async fn a_bundle_larger_than_the_manifest_scan_cap_still_installs() {
         &[("manifest.json", &manifest), ("app.wasm", &wasm)],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert!(
         served == wasm,
@@ -719,7 +717,7 @@ async fn a_manifest_declaring_no_wasm_is_refused_at_install() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a bundle with no wasm artifact must not install");
@@ -753,7 +751,7 @@ async fn duplicate_entries_at_the_manifest_path_are_refused() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a duplicated artifact entry must not install");
@@ -786,7 +784,7 @@ async fn a_bundle_written_with_leading_dot_slash_installs_on_both_paths() {
         "a `./`-spelled archive is a bundle, not raw bytes"
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(
         served, wasm,
@@ -815,7 +813,7 @@ async fn a_manifest_declaring_a_dot_slash_path_matches_a_plain_entry() {
         &[("manifest.json", &manifest), ("app.wasm", wasm)],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (_app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(served, wasm, "the declared `./app.wasm` must resolve");
 }
@@ -858,7 +856,7 @@ async fn a_dot_slash_archive_still_refuses_a_nested_manifest_rollback() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let (app_id, served) = install(&node, bundle).await.expect("install");
     assert_eq!(
         served, new_wasm,
@@ -893,7 +891,7 @@ async fn a_dot_slash_duplicate_of_the_manifest_is_refused() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("a manifest duplicated under another spelling must not install");
@@ -925,7 +923,7 @@ async fn a_dot_slash_duplicate_of_an_artifact_is_refused() {
         ],
     );
 
-    let (node, _d, _b) = node_client().await;
+    let (node, _store, _d, _b) = node_client().await;
     let err = install(&node, bundle)
         .await
         .expect_err("an artifact duplicated under another spelling must not install");

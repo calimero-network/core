@@ -1,4 +1,4 @@
-use calimero_server_primitives::admin::PairDeviceInitApiRequest;
+use calimero_server_primitives::admin::AccountPairInitApiRequest;
 use clap::Parser;
 use eyre::Result;
 
@@ -27,11 +27,22 @@ use crate::cli::Environment;
 /// membership. That is
 /// the point — a paired device is a device of somebody else's account and a
 /// member of nothing.
+///
+/// Name every namespace this device should listen on. One device is minted for
+/// the whole set — one id, one key pair and one code to read out — because the
+/// certificate covers the account rather than a scope. The set has to be given:
+/// a member of nothing can neither read its account's namespaces off a DAG nor
+/// derive them, so only the device that holds the account knows them.
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Mint a device on this node for an existing account")]
 pub struct PairInitCommand {
-    #[clap(name = "NAMESPACE_ID", help = "The hex-encoded namespace ID")]
-    pub namespace_id: String,
+    #[clap(
+        name = "NAMESPACE_ID",
+        num_args = 1..,
+        required = true,
+        help = "The hex-encoded namespace IDs this device will listen on"
+    )]
+    pub namespace_ids: Vec<String>,
 
     #[clap(
         long,
@@ -45,12 +56,10 @@ impl PairInitCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;
         let response = client
-            .pair_device_init(
-                &self.namespace_id,
-                PairDeviceInitApiRequest {
-                    account_root_public_key: self.root_key,
-                },
-            )
+            .pair_device_init(AccountPairInitApiRequest {
+                account_root_public_key: self.root_key,
+                namespaces: self.namespace_ids,
+            })
             .await?;
 
         environment.output.write(&response);

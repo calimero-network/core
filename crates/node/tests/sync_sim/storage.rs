@@ -82,9 +82,17 @@ impl std::fmt::Debug for SimStorage {
 
 impl SimStorage {
     /// Create a new in-memory storage instance.
+    ///
+    /// The store carries an account root, because the node this simulates has one:
+    /// `merod init` provisions it. Nothing mints one lazily any more, so a
+    /// root-free store here fails on setup — `join_target_group` reaches
+    /// `require_account_root` — rather than exercising the sync path under test.
     pub fn new(context_id: ContextId, executor_id: PublicKey) -> Self {
         let db = InMemoryDB::owned();
         let store = Store::new(Arc::new(db));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("provision the account root an initialised node has");
         Self {
             store,
             context_id,
@@ -245,16 +253,13 @@ impl SimStorage {
     /// Recursively count entities in the tree.
     #[allow(clippy::only_used_in_recursion, reason = "test tree-walk helper")]
     fn count_entities_recursive(&self, id: Id) -> usize {
-        let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
-            Some(idx) => idx,
-            None => return 0,
-        };
+        if Index::<MainStorage>::get_index(id).ok().flatten().is_none() {
+            return 0;
+        }
 
         let mut count = 1; // Count this entity
-        if let Some(children) = index.children() {
-            for child in children {
-                count += self.count_entities_recursive(child.id());
-            }
+        for child in Index::<MainStorage>::get_children_of(id).unwrap_or_default() {
+            count += self.count_entities_recursive(child.id());
         }
         count
     }
@@ -271,18 +276,15 @@ impl SimStorage {
     /// Recursively count leaf nodes.
     #[allow(clippy::only_used_in_recursion, reason = "test tree-walk helper")]
     fn count_leaves_recursive(&self, id: Id, is_root: bool) -> usize {
-        let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
-            Some(idx) => idx,
-            None => return 0,
-        };
+        if Index::<MainStorage>::get_index(id).ok().flatten().is_none() {
+            return 0;
+        }
 
-        let children = index.children();
-        let has_children = children.as_ref().is_some_and(|c| !c.is_empty());
+        let children = Index::<MainStorage>::get_children_of(id).unwrap_or_default();
 
-        if has_children {
+        if !children.is_empty() {
             // Internal node: count children recursively
             children
-                .unwrap()
                 .iter()
                 .map(|child| self.count_leaves_recursive(child.id(), false))
                 .sum()
@@ -318,20 +320,18 @@ impl SimStorage {
     /// Recursively compute depth of the tree.
     #[allow(clippy::only_used_in_recursion, reason = "test tree-walk helper")]
     fn compute_depth_recursive(&self, id: Id) -> u32 {
-        let index = match Index::<MainStorage>::get_index(id).ok().flatten() {
-            Some(idx) => idx,
-            None => return 0,
-        };
+        if Index::<MainStorage>::get_index(id).ok().flatten().is_none() {
+            return 0;
+        }
 
-        let children = index.children();
-        if children.is_none() || children.as_ref().is_none_or(|c| c.is_empty()) {
+        let children = Index::<MainStorage>::get_children_of(id).unwrap_or_default();
+        if children.is_empty() {
             // Leaf node
             return 1;
         }
 
         // Internal node: 1 + max depth of children
         let max_child_depth = children
-            .unwrap()
             .iter()
             .map(|child| self.compute_depth_recursive(child.id()))
             .max()

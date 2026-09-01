@@ -53,7 +53,7 @@ pub struct DetachContextCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
 
-    #[clap(name = "CONTEXT_ID", help = "The context ID (base58)")]
+    #[clap(name = "CONTEXT_ID", help = "The context ID (64 hex)")]
     pub context_id: ContextId,
 }
 

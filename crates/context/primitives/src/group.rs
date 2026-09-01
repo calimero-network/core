@@ -266,9 +266,26 @@ impl Message for RetryGroupUpgradeRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationRequest {
     pub group_id: ContextGroupId,
-    /// Duration in seconds for the invitation validity.
-    /// Defaults to 1 year when not provided.
+    /// Duration in seconds for the invitation validity. Defaults to, and is
+    /// clamped at, `MAX_INVITATION_VALIDITY_SECS`.
     pub expiration_timestamp: Option<u64>,
+    /// Accounts permitted to admit a claim of this invitation.
+    ///
+    /// Empty is filled in at mint from the group's admins and TEE nodes, and
+    /// refused if that yields nobody — an empty list on the wire authorizes any
+    /// node to admit, so it is not a value worth reaching by omission. Signed
+    /// into the invitation, so it cannot be redirected afterwards.
+    pub admitters: Vec<calimero_account::AccountId>,
+    /// libp2p addresses for the admitters, for a caller that knows better than
+    /// this node does.
+    ///
+    /// Supplied addresses are used as given and are not merged with what the
+    /// node can work out for itself: a caller that names one is usually
+    /// correcting the node's view, not extending it. Empty asks the node to fill
+    /// them in best-effort.
+    ///
+    /// Unsigned, so a wrong value costs a failed dial and nothing more.
+    pub admitter_addrs: Vec<String>,
 }
 
 impl Message for CreateGroupInvitationRequest {
@@ -704,34 +721,12 @@ impl Message for AdmitTeeNodeRequest {
     type Result = eyre::Result<()>;
 }
 
-/// Enroll this node's device into a namespace under a fresh account, and publish
-/// the link so peers learn the binding.
-///
-/// The first thing in the account feature that publishes an account op, and the
-/// only way any of the account plane becomes reachable at runtime.
-///
-/// Must run AFTER the node holds the namespace's scope key: the link travels as an
-/// encrypted `GroupOp`, so a node with no key cannot publish one. That is not an
-/// implementation detail to be tidied away later — it is why `KeyEnvelope` can
-/// Adopt an **existing** account on this node and mint a device for it — the
-/// first half of pairing.
-///
-/// Pairing has to be a two-way exchange, and this is the half that produces the
-/// values the other half signs: a device cannot mint its `DeviceId` until it
-/// knows the account (`H(account ‖ nonce)`), while the account holder cannot
-/// certify that device until it knows the id and KEM key.
-///
-/// Deliberately does **not** require a scope key: nothing is published here.
-/// A pairing device holds none — obtaining one is what the second half is for —
-/// and it publishes nothing here, so there is no encrypted op to gate on.
+/// Adopt an existing account on this node and mint a device for it - the first
+/// half of pairing, which produces the values the holder's half then signs.
 #[derive(Debug)]
 pub struct PairDeviceInitRequest {
-    /// The namespace to enroll in.
-    pub namespace_id: ContextGroupId,
-    /// The genesis of the account being joined, carried from the device that
-    /// already holds it. The nonce has to travel because the id is a hash over
-    /// it, so it cannot be recovered from the account id alone.
-    pub genesis: AccountGenesis,
+    pub namespaces: Vec<ContextGroupId>, // what the device subscribes to; only the holder knows the set
+    pub genesis: AccountGenesis,         // the nonce travels because the device id hashes over it
 }
 
 /// What the pairing device minted, for the account holder to certify.
@@ -803,8 +798,14 @@ impl Message for PairDeviceInitRequest {
 /// this side holds.
 #[derive(Debug)]
 pub struct PairDeviceCompleteRequest {
-    /// The namespace the device is being paired into.
-    pub namespace_id: ContextGroupId,
+    /// Which applications the link is published for, resolved to the namespaces
+    /// this node takes part in that target one of them. Empty is every namespace,
+    /// which is what a caller who names no application asks for.
+    ///
+    /// Applications rather than namespaces because a user can answer "which apps
+    /// may this device use" and cannot answer "which namespaces" - a namespace is
+    /// an implementation unit they never named.
+    pub applications: Vec<ApplicationId>,
     /// The replica id the other node minted.
     pub device: DeviceId,
     /// The agreement key to wrap the scope key under.
@@ -882,6 +883,65 @@ impl PairDeviceCompleteResponse {
             credential,
         }
     }
+}
+
+/// What binding one device into one namespace came to.
+///
+/// Not `#[non_exhaustive]` on purpose: the admin API gives every variant a wire
+/// name, so a new one falling into a catch-all would be reported as the wrong thing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindOutcome {
+    Linked { key_delivered: bool }, // false: link landed, key did not; the device's sync pull retries
+    OutOfScope,   // the device's scope does not reach this namespace's application
+    Revoked,      // terminal: a revoked id can never be linked again, in any account
+    AlreadyBound, // a live binding already
+    NoScopeKey,   // no current scope key here, so nothing can be published or delivered
+    OwnDevice,    // ordinary enrolment already covers it
+    Failed,       // nothing published; the node log names the cause
+}
+
+/// Repair or widen the reach of a device this account already certified, re-running
+/// pairing's fan-out against the namespaces this node takes part in *now*.
+#[derive(Debug)]
+pub struct RelinkDeviceRequest {
+    pub device: DeviceId, // must be one this node holds a certificate for
+    /// Applications to add to the stored scope. Empty repairs without widening;
+    /// it is not overloaded to mean "every application" so the accidental request
+    /// is not the widest one.
+    pub applications: Vec<ApplicationId>,
+}
+
+/// What the relink repaired, and what it left alone.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RelinkDeviceResponse {
+    pub account: AccountId,               // the account the device speaks for
+    pub device: DeviceId,                 // the device that was repaired
+    pub applications: Vec<ApplicationId>, // scope after the request; later namespace gains are judged against it
+    pub outcomes: Vec<(ContextGroupId, BindOutcome)>, // per namespace: publication is per-DAG, so a gap must be visible
+}
+
+impl RelinkDeviceResponse {
+    /// Exists because the struct is `#[non_exhaustive]` and the producer lives in
+    /// another crate.
+    #[must_use]
+    pub const fn new(
+        account: AccountId,
+        device: DeviceId,
+        applications: Vec<ApplicationId>,
+        outcomes: Vec<(ContextGroupId, BindOutcome)>,
+    ) -> Self {
+        Self {
+            account,
+            device,
+            applications,
+            outcomes,
+        }
+    }
+}
+
+impl Message for RelinkDeviceRequest {
+    type Result = eyre::Result<RelinkDeviceResponse>;
 }
 
 /// Withdraw a device from an account, terminally.

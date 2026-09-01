@@ -1,0 +1,243 @@
+---
+title: Direct Admission
+description: How an account with no node joins a namespace, and why an invitation names who may admit it.
+sidebar:
+  order: 46
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+## Two ways in, for two different callers
+
+A member joins a namespace by getting one op onto the governance DAG:
+`MemberJoinedAt`, carrying the invitation it claims and a credential proving the
+account is its own. Every peer applies that op the same way regardless of how it
+arrived.
+
+What differs is who can *publish* it.
+
+- **`POST /admin-api/namespaces/:id/join`** — the caller **is** the node that
+  becomes the member. It holds a device key, builds the credential from its own
+  store, signs, applies locally, and publishes to the namespace topic. One call,
+  no third party.
+- **`POST /admin-api/namespaces/:id/admit`** — the caller holds **only a key**. It
+  signs the op itself and hands it to a node the inviter named, which publishes on
+  its behalf.
+
+The second exists because a keyholder — a browser tab, a phone, an agent — has an
+account, a [device certificate it signed offline](/protocol/accounts/), and nowhere
+to publish from. `/join` cannot serve it, because `/join` assumes the caller is the
+node that will become the member.
+
+## Why invitations name their admitters
+
+An open invitation used to be claimable by broadcast: the joiner announced itself
+on the namespace topic and any ready peer answered. That published the whole
+invitation, in the clear, to every subscriber of that topic — and because the
+consumed-invitation row is keyed by account, a thief and the intended joiner both
+succeeded, silently.
+
+So `GroupInvitationFromAdmin` carries an `admitters` list, **inside the inviter's
+signature**. Being named is permission to carry a valid claim, and nothing else.
+
+<SeqDiagram
+  id="d-admit"
+  title="A keyholder joins through an admitter"
+  lanes={[
+    { label: 'Keyholder (key only)', color: '#f0883e' },
+    { label: 'Admitter node', color: '#3fb950' },
+    { label: 'Peers', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'sign device cert with the account root, offline', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'sign MemberJoinedAt with the DEVICE key', color: '#a5ff11' },
+    { from: 0, to: 1, label: 'POST admit { invitation, signedOp }' },
+    { from: 1, to: 1, label: 'verify the op signature' },
+    { from: 1, to: 1, label: 'refuse unless named in signed admitters', color: '#ff7b72' },
+    { from: 1, to: 1, label: 'validate invitation: inviter, group, expiry' },
+    { from: 1, to: 1, label: 'apply locally, then publish' },
+    { from: 1, to: 2, label: 'broadcast MemberJoinedAt' },
+    { from: 2, to: 2, label: 'check signer == credential.sign_pk, then fold' },
+  ]}
+/>
+
+<Steps>
+
+1. **The credential is signed offline.** The account root signs a device
+   certificate naming the device's signing and KEM keys. No node participates, and
+   nothing is published.
+
+2. **The op is signed by the device key** the credential names. This is what makes
+   handing it over safe: every peer checks `signer == credential.statement.sign_pk`
+   when applying a join, so an admitter cannot substitute a different account.
+
+3. **The admitter checks what it can, then applies before publishing.** It
+   verifies the op's signature, that it is named in the signed `admitters` list,
+   and that the invitation is genuinely the inviter's and unexpired. It applies to
+   its own state first, so only an op its own state accepted reaches the network
+   under its name.
+
+4. **Peers fold it normally.** The op is an ordinary `MemberJoinedAt`; nothing
+   about the admit path relaxes what applying one requires.
+
+</Steps>
+
+## What an admitter can and cannot do
+
+It can **decline to publish**. That is the whole of its power.
+
+It cannot admit a different account, change the group, or grant a role, because
+all of that sits inside a signature it does not hold. The check that stops
+substitution — `signer == credential.statement.sign_pk` — lives at apply on every
+peer, deliberately rather than at the endpoint, because it has to hold for ops the
+endpoint never sees.
+
+A hostile admitter is therefore a liveness problem, not an authority one, which is
+why an invitation naming several is worth more than one naming a single node.
+
+## Who is an admitter by default
+
+Admins and TEE nodes. A caller that names none gets that set; the inviter is
+**not** added to it.
+
+That is a deliberate separation of duties. `CAN_INVITE_MEMBERS` lets a non-admin
+member create an invitation, but not see it through — admission stays with admins
+and TEE nodes, so a delegated inviter cannot complete a membership alone.
+
+The cost is reachability rather than authority: a non-admin inviter mints
+invitations it cannot itself admit, so the invitee has to reach an admin or TEE
+node rather than whoever handed it the invitation.
+
+An invitation with an **empty** admitter list is the one that means "claimable by
+broadcast", so minting refuses when the default set comes back empty. Every group
+has an admin — the last one cannot be removed or demoted away — so an empty result
+means the node's own state is inconsistent, and answering that by issuing the least
+restricted credential the system can express would be the wrong response.
+
+## Finding an admitter
+
+`admitters` names **accounts**. Connecting needs a peer id, and a joiner that has
+synced nothing has no governance state to resolve one from. So
+`SignedGroupOpenInvitation` also carries `admitter_addrs`, **outside** the
+signature: libp2p multiaddrs, each including its `/p2p/<peer-id>` suffix, e.g.
+`/ip4/203.0.113.7/tcp/2528/p2p/12D3KooW…`.
+
+The peer id has to travel with the address. Resolving an account to a peer needs
+governance state, and a joiner that has synced nothing has none — that
+circularity is why the field exists at all.
+
+Unsigned on purpose. A hint is only *where* to look; who may admit stays inside the
+signature, so a wrong or stale hint costs a failed connection and nothing more —
+the admitting node still has to be in the signed list for its admission to count.
+
+### Where hints come from
+
+A caller can supply them, and otherwise the node resolves them:
+
+| case | what you get |
+| --- | --- |
+| caller passes `admitterAddrs` | used exactly as given, never merged with the node's own view — a caller naming an address is usually correcting that view, not extending it |
+| the minting node is itself an admitter | its confirmed external addresses, each with its peer id appended, including the relay-circuit form a NAT'd node is reachable on |
+| any other admitter | its last known address, resolved through the node's durable caches |
+
+That last row is what makes a **delegated** invitation usable. `CAN_INVITE_MEMBERS`
+lets a member mint invitations it may not admit, so the admitters are other nodes
+— and a joiner that has synced nothing cannot look up where those are.
+
+Resolution runs account → signing keys of the account's live devices → peers those
+keys have been seen on → last known addresses of those peers. The first link is
+governance state; the other two are node-local caches that persist across restarts
+and expire after 24 hours, which is also the longest an invitation can live. So a
+hint can never outlive the credential carrying it.
+
+Best-effort at every link. An admitter not seen recently is simply not hinted — one
+fewer address for the joiner to try, never a wrong one, because the signed
+`admitters` list still decides who may answer. A mint that can hint nobody says so
+in the log rather than issuing a credential that quietly cannot be redeemed.
+
+### Why the field holds addresses and not URLs
+
+It carries libp2p multiaddrs only, and that is a deliberate narrowing rather than
+a gap.
+
+A multiaddr ends in `/p2p/<peer-id>`, which libp2p authenticates during the
+handshake — dial the wrong host and it fails having disclosed nothing. An HTTPS
+URL has no equivalent: it proves a domain, not a node. An invitation is a bearer
+credential, so an address that can be wrong *and* still be talked to is a way to
+hand a redeemable credential to whatever answers.
+
+A node could not derive its own URL anyway. It terminates no TLS and
+`AuthMode::Proxy` is the default, so the address callers should use belongs to a
+reverse proxy — different host, port and scheme from anything `listen` describes.
+
+For the hosted tier this is answered outside the invitation. A keyholder with no
+node writes through delegated execution, which runs via hosted TEE relays, so the
+client asks whether the namespace has a TEE policy and presents its claim to the
+known relay endpoint. Asking first is what keeps a self-hosted namespace's
+invitation from being handed to a cloud with no business holding it.
+
+A third-party TEE deployment would want its endpoint recorded per node, alongside
+the attestation record that already names it. Nothing stores that yet.
+
+## The two joining flows
+
+Which path a joiner takes is decided by one thing: whether it runs a node.
+
+### A joiner that runs a node
+
+1. It receives the invitation out of band (the inviter sends it however it likes).
+2. It signs its own `MemberJoinedAt` op — the invitation authorises the join, but
+   the joiner authors it, so no admitter ever signs on its behalf.
+3. It publishes that op on the namespace topic.
+4. Any node in the signed `admitters` list that sees it applies it. Every peer
+   re-checks `join_op_proves_ownership` at apply, so an admitter relays a join, it
+   never grants one.
+
+`admitter_addrs` exists to make step 3 reliable when the joiner is not already
+connected to an admitter. **Today the addresses are written into the invitation
+but nothing dials them yet** — a joiner still depends on gossip reaching an
+admitter. Consuming them is a separate change.
+
+### A joiner holding only a key
+
+This is the case direct admission exists for: a keyholder with no node, no swarm,
+and no governance state.
+
+1. It mints its account root and signs its device certificate **offline**.
+2. It signs its own `MemberJoinedAt`, exactly as a node joiner would.
+3. It `POST`s that op to `/admin-api/namespaces/:namespace_id/admit` on a node that
+   is named in `admitters`.
+4. That node verifies the signature, checks it may admit, applies the membership
+   locally, and publishes.
+
+Step 3 needs an address, and `admitter_addrs` is no use here — those are
+multiaddrs, and there is no swarm to dial one from. This path is answered outside
+the invitation, on the client.
+
+For the hosted tier that is resolved on the client rather than in the invitation:
+a keyholder writes through delegated execution, which runs via hosted TEE relays,
+so the client can ask whether the namespace has a TEE policy and present its claim
+to the known relay endpoint. Asking first matters — it keeps a self-hosted
+namespace's invitation from being handed to a cloud that has no business with it.
+
+## Invitations expire within a day
+
+`MAX_INVITATION_VALIDITY_SECS` is 24 hours, clamped where invitations are minted
+rather than at the API edge, so an internal caller cannot ask for longer.
+
+An invitation is a bearer credential: possession is enough. A long-lived one keeps
+a leak redeemable for as long as it lasts, and guarantees any address hint shipped
+with it has gone stale.
+
+## Known gap
+
+`/admit` sits behind the admin API's auth guard, so a keyholder presenting a signed
+op to **somebody else's** node still needs a credential on that node. Everything
+else in the flow works without one — the account, the certificate, and the op are
+all produced offline — but the last hop is not yet answered for a node the
+keyholder has no relationship with.
+
+The same guard covers the TEE-admission-policy lookup a client would use to decide
+where to present a claim, so both are unblocked by one piece of work rather than
+two.

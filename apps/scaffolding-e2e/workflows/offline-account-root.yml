@@ -1,0 +1,261 @@
+name: E2E Scaffolding - Offline Account Root
+description: >
+  A node that holds NO account root joins a namespace and writes, under a
+  certificate its account root signed on another machine.
+
+  This is the posture the account/device split exists for: the root signs
+  certificates and nothing else, so it can stay in cold storage. Until now it was
+  describable but not reachable — every path that a node needed for joining signed
+  its own certificate with a root it had to hold.
+
+  Each step is shaped so it can only pass for the right reason:
+
+    1. node-2 is initialized with `--no-account-root`, so there is no root in its
+       store to fall back on. If the certificate were not doing the work, the join
+       below would fail rather than quietly self-sign.
+    2. The certificate is signed from a PHRASE, by a `merod` that opens no
+       datastore — the air-gapped case, not a second node lending its root.
+    3. The device material is read from the node itself. A fixture would prove
+       nothing about whether the values a certificate is signed over are the ones
+       the node actually holds; getting that wrong is invisible locally and shows
+       up at a peer as a refused join.
+    4. The write is read back from node-1, which is what proves peers accepted a
+       delta from a device certified out-of-band. node-2 could satisfy everything
+       local and still be producing deltas the network drops.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: offline-root-node
+  # node-2 holds no root of its own, only the PUBLIC half of the account whose
+  # root lives elsewhere. The value is a constant because it is derived from the
+  # fixed phrase below — `merod account root --from` prints it, and it is public
+  # by construction: hashed into the account id and carried in every genesis.
+  #
+  # Hex, which is what `merod account root` prints, so this file exercises the
+  # encoding an operator actually copies. It was base58 for the same reason until
+  # every id became hex; the bytes are unchanged, so the account asserted below is
+  # the same one.
+  init_args:
+    offline-root-node-2:
+      - --no-account-root
+      - --account-root
+      - b2a942ff4c98718bed76e255987f6d59b1a72d3b2cd2510003e6170ac63a9ffb
+
+steps:
+  - name: Login on offline-root-node-1
+    type: login
+    node: offline-root-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on offline-root-node-2
+    type: login
+    node: offline-root-node-2
+    username: dev
+    password: dev-password
+
+  # OAR-1: the premise. If node-2 had a root, everything below could pass while
+  # proving nothing — it would simply self-sign as any node always has.
+  - name: Node-2 holds a device but no root of its own
+    type: node_identity
+    node: offline-root-node-2
+    outputs:
+      device_2: deviceId
+      sign_pk_2: publicKey
+      kem_pk_2: deviceAgreementKey
+      account_2: accountId
+
+  - name: Its account is the one whose root lives elsewhere
+    type: assert
+    statements:
+      # The account id is the content address of the root public key above, so
+      # this is what proves `--account-root` was honoured rather than ignored.
+      - "{{account_2}} == 0e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e30"
+      - "is_set({{device_2}})"
+      - "is_set({{kem_pk_2}})"
+
+  # --- Setup on node-1, which holds its own root as any ordinary node does ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: offline-root-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: offline-root-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create a context in the namespace
+    type: create_context
+    node: offline-root-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      context_id: contextId
+
+  # --- OAR-2: certify node-2's device from the phrase, with no node involved ---
+  #
+  # `sign-cert --from` opens no datastore, which is why `allow_running` is safe
+  # here and why this models the air-gapped machine rather than a second node.
+  # The three values come from the node itself (OAR-1), so the certificate is
+  # signed over exactly what node-2 holds.
+
+  - name: Certify node-2's device from the phrase alone
+    type: node_exec
+    node: offline-root-node-2
+    allow_running: true
+    files:
+      # Under /app/data because that is the node's data directory, and it is the
+      # only path merobox mounts into the container — anything else is written on
+      # the host where the container cannot see it, and the step says so.
+      /app/data/phrase.txt: >-
+        legal winner thank year wave sausage worth useful legal winner thank year
+        wave sausage worth useful legal winner thank year wave sausage worth title
+    args:
+      - account
+      - sign-cert
+      - --device
+      - '{{device_2}}'
+      - --sign-pk
+      - '{{sign_pk_2}}'
+      - --kem-pk
+      - '{{kem_pk_2}}'
+      - --from
+      - /app/data/phrase.txt
+    capture:
+      credential_2: '^([0-9a-f]{100,})$'
+    outputs:
+      credential_2: credential_2
+
+  # OAR-3: importing opens the datastore, so the node must be stopped. Unlike
+  # `sign-cert --from`, there is no store-free variant and there should not be —
+  # the certificate has to land in the store the node will read at join time.
+  - name: Stop node-2 to import the certificate
+    type: stop_node
+    nodes: offline-root-node-2
+
+  - name: Import the certificate signed elsewhere
+    type: node_exec
+    node: offline-root-node-2
+    args: [account, import-cert, '{{credential_2}}']
+
+  - name: Start node-2 again
+    type: start_node
+    nodes: offline-root-node-2
+
+  - name: Login again after the restart
+    type: login
+    node: offline-root-node-2
+    username: dev
+    password: dev-password
+
+  # --- OAR-4: the join. This is the step the whole file is for ---
+  #
+  # `join_credential::build` runs here. On a node with a root it signs its own
+  # certificate; node-2 has none, so it must present the imported one. A
+  # regression that reintroduced lazy root minting would make this pass for the
+  # wrong reason — which is why OAR-5 re-checks that no root appeared.
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: offline-root-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_2: invitation
+
+  - name: Node-2 joins, presenting the imported certificate
+    type: join_namespace
+    node: offline-root-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_2}}'
+
+  - name: Node-2 joins the context
+    type: join_context
+    node: offline-root-node-2
+    context_id: '{{context_id}}'
+
+  - name: Both nodes are in the context
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - offline-root-node-1
+      - offline-root-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # OAR-5: joining must not have minted a root. Nothing provisions one lazily any
+  # more, and this is the end-to-end guard on that: a node that acquired a root
+  # here would be speaking for a different account than the one it was certified
+  # under, and every assertion above would still pass.
+  - name: Node-2 still holds no root, and still names the same account
+    type: node_identity
+    node: offline-root-node-2
+    outputs:
+      account_after: accountId
+
+  - name: The account did not change across the join
+    type: assert
+    statements:
+      - "{{account_after}} == 0e2cd2d3dc84e1db5088e32510ca45bc491e4033bbb0f6bbb733bc0c7b7f5e30"
+
+  # --- OAR-6: it can actually write, and peers accept it ---
+
+  - name: Node-2 writes as the certified device
+    type: call
+    node: offline-root-node-2
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: offline-root
+      value: written-under-an-imported-cert
+
+  - name: The write reaches node-1
+    type: wait_for_sync
+    context_id: '{{context_id}}'
+    nodes:
+      - offline-root-node-1
+      - offline-root-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: offline-root
+      # The ENVELOPE, not the value. A `call` result is `{"output": ...}`, so a bare
+      # string never matches and the gate reports "sync verification failed" while
+      # printing both nodes holding the right value — which reads as a propagation
+      # bug rather than a comparison one. Same shape as `json_assert` needs.
+      equals:
+        output: written-under-an-imported-cert
+
+  - name: Node-1 reads back what the root-free node wrote
+    type: call
+    node: offline-root-node-1
+    context_id: '{{context_id}}'
+    method: get
+    args:
+      key: offline-root
+    outputs:
+      readback: result
+
+  # The ENVELOPE, not the value. `outputs: <name>: result` captures merobox's
+  # whole result object, so the captured value is `{"output": ...}` and comparing
+  # it to a bare string never matches — see the same note in
+  # `delegated-authorship.yml`.
+  - name: A peer accepted a delta from a device certified out-of-band
+    type: json_assert
+    statements:
+      - 'json_equal({{readback}}, {"output": "written-under-an-imported-cert"})'

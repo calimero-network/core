@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::application::ApplicationId;
 use crate::context::ContextId;
-use crate::identity::PublicKey;
+use crate::identity::{DeviceId, PublicKey};
 
 const MAX_ALIAS_LEN: usize = 50;
 
@@ -40,6 +40,13 @@ impl ScopedAlias for PublicKey {
 }
 
 impl ScopedAlias for ApplicationId {
+    type Scope = ();
+}
+
+// A device belongs to an account, not to a context, so its alias is
+// node-global like Context/Application rather than context-scoped like
+// Identity.
+impl ScopedAlias for DeviceId {
     type Scope = ();
 }
 

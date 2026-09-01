@@ -105,24 +105,35 @@ pub struct ChildInfo {
     pub metadata: Metadata,
 }
 
-// Sort by `(created_at, id)`. This order is load-bearing for
-// collections that preserve insertion semantics — `Vector::get(idx)`
-// iterates children in this order, so each push() must end up after
-// previous pushes. `created_at` is an HLC at write time, which is
-// roughly monotonic per writer, so this gives insertion-order
-// iteration. `id` is the tiebreaker for entries written at the same
-// HLC.
+// Sort by `(created_at, order, id)`. This is load-bearing for collections that
+// preserve insertion semantics — `Vector::get(idx)` iterates children in this
+// order, so each push() must end up after the pushes before it.
 //
-// The merkle full_hash computation in `Index::calculate_full_hash_for_children`
-// deliberately re-sorts by `id` alone before hashing, so the hash
-// content is independent of this ordering — peers that disagree on
+// `created_at` alone cannot do it. It is the host's EXECUTION timestamp, which
+// is identical for every write in a call and pinned to 0 under merge mode, so
+// everything written together tied and the random `id` decided: pushing k1, k2,
+// k3 read back as k1, k3, k2. (An earlier version of this comment claimed
+// `created_at` was "an HLC at write time, roughly monotonic per writer" — it
+// describes what the ordering needed, not what was stamped.)
+//
+// `order` is the writer-assigned position among its parent's children, so
+// entries written in one call separate. `id` remains the final tiebreak for
+// entries written concurrently by different replicas, where no order exists to
+// agree on and only determinism matters.
+//
+// The merkle full_hash does not use this order at all: a parent commits
+// to its children through its `ChildTrie`, whose buckets hold entries
+// id-sorted and fold only `id` + `merkle_hash`. No part of `Metadata`
+// — `created_at` included — reaches the root, so peers that disagree on
 // `created_at` (e.g. locally-created entities like `Root<T>`) still
 // compute the same parent hash. The two concerns (storage iteration
-// order vs hash content) are intentionally decoupled.
+// order vs hash content) are intentionally decoupled; see
+// `child_trie::tests::the_root_does_not_depend_on_when_each_child_was_created`.
 impl Ord for ChildInfo {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.created_at()
             .cmp(&other.created_at())
+            .then_with(|| self.metadata.order.cmp(&other.metadata.order))
             .then_with(|| self.id.cmp(&other.id))
     }
 }
@@ -221,6 +232,7 @@ impl Element {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
             merkle_hash: [0; 32],
         }
@@ -241,6 +253,7 @@ impl Element {
                 crdt_type: None,
                 field_name,
                 schema_version: None,
+                order: 0,
             },
             merkle_hash: [0; 32],
         }
@@ -265,6 +278,7 @@ impl Element {
                 crdt_type: Some(crdt_type),
                 field_name,
                 schema_version: None,
+                order: 0,
             },
             merkle_hash: [0; 32],
         }
@@ -284,6 +298,7 @@ impl Element {
                 crdt_type: None,
                 field_name: None,
                 schema_version: None,
+                order: 0,
             },
             merkle_hash: [0; 32],
         }
@@ -596,9 +611,14 @@ pub const fn storage_type_name(storage_type: &StorageType) -> &'static str {
 
 /// Defines the type of storage and its associated authorization rules.
 /// Enum to define the storage domain and its associated data.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+// `Public` is the default for backward compatibility: entries written before the
+// storage domain was recorded decode as public.
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
+)]
 pub enum StorageType {
     /// Public data, accessible to all members of context.
+    #[default]
     Public,
     /// Verifiable, user-signed, synchronized storage.
     User {
@@ -668,13 +688,6 @@ pub enum StorageType {
     },
 }
 
-// Default to `Public` for backward compatibility
-impl Default for StorageType {
-    fn default() -> Self {
-        Self::Public
-    }
-}
-
 /// System metadata (timestamps in u64 nanoseconds).
 #[derive(
     BorshSerialize, BorshDeserialize, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
@@ -714,6 +727,31 @@ pub struct Metadata {
     ///   (`own_hash = Sha256(value bytes)` only, `interface.rs`), so tagging an
     ///   entry never diverges its leaf hash between peers.
     pub schema_version: Option<u32>,
+
+    /// Position of this entity among its parent's children, assigned by the
+    /// WRITER at the moment it is first linked.
+    ///
+    /// Collections that preserve insertion order — `Vector`, `AuthoredVector` —
+    /// enumerate children through `ChildInfo`'s `Ord`, which sorts by
+    /// `(created_at, order, id)`. `created_at` alone cannot separate them: it is
+    /// the host's execution timestamp, identical for every write in a call and
+    /// pinned to 0 under merge mode, so elements written together tied and a
+    /// random id decided. `Vector::get(0)` could return the third push.
+    ///
+    /// It must be assigned by the writer and travel in `Action`'s metadata: a
+    /// node applying a synced `Add` would otherwise derive the position from
+    /// ITS OWN child count, which need not match the writer's, and the two
+    /// replicas would order the same collection differently.
+    ///
+    /// **Merkle-invisible**, like `schema_version`: `Metadata` is
+    /// `#[borsh(skip)]` on `Element`, so this never reaches
+    /// `own_hash = Sha256(to_vec(child))`, and the child fold covers
+    /// `id ‖ merkle_hash` only. Ordering can therefore change without moving a
+    /// single hash.
+    ///
+    /// `0` for entities written before this field existed, and for those whose
+    /// parent does not care about order — they keep tying, exactly as now.
+    pub order: u64,
 }
 
 impl Metadata {
@@ -727,6 +765,7 @@ impl Metadata {
             crdt_type: None,
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -740,6 +779,7 @@ impl Metadata {
             crdt_type: Some(crdt_type),
             field_name: None,
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -753,6 +793,7 @@ impl Metadata {
             crdt_type: None,
             field_name: Some(field_name),
             schema_version: None,
+            order: 0,
         }
     }
 
@@ -771,6 +812,7 @@ impl Metadata {
             crdt_type: Some(crdt_type),
             field_name: Some(field_name),
             schema_version: None,
+            order: 0,
         }
     }
 

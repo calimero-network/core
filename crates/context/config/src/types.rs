@@ -573,6 +573,20 @@ pub struct SignedOpenInvitation {
 }
 
 /// An open invitation payload for joining a context group.
+/// Longest an invitation may be valid for, and the default when none is asked
+/// for: **24 hours**.
+///
+/// An invitation is a bearer credential. Anyone holding it can redeem it, and
+/// until admission is direct it is broadcast on the namespace topic in
+/// cleartext, so "anyone holding it" is wider than the inviter intends. The
+/// default was a *year*, which meant a single leak stayed redeemable for a year
+/// and that any address hint shipped alongside it had long since gone stale.
+///
+/// A ceiling rather than a default: a caller asking for longer is clamped, not
+/// obeyed. A default alone protects only the callers who never pass a value,
+/// and those are not the ones that make an invitation dangerous.
+pub const MAX_INVITATION_VALIDITY_SECS: u64 = 24 * 60 * 60;
+
 /// Created and signed by a group admin.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct GroupInvitationFromAdmin {
@@ -591,6 +605,28 @@ pub struct GroupInvitationFromAdmin {
     /// cannot escalate. Defaults to 1 (Member) for backward compat.
     #[serde(default = "default_invited_role")]
     pub invited_role: u8,
+    /// Accounts permitted to admit a claim of this invitation.
+    ///
+    /// Empty means the legacy path: the joiner announces itself on the
+    /// namespace topic and any `*Ready` peer may admit it. That is how every
+    /// invitation minted before this field worked, and it is why this is a
+    /// widening rather than a migration.
+    ///
+    /// Non-empty names the only nodes a claim may be presented to, and the
+    /// joiner reaches one of them directly instead of broadcasting. The reason
+    /// to bother: admission by broadcast staples the whole invitation to a
+    /// readiness beacon, and beacons go out on the namespace topic as plain
+    /// borsh, to any peer that cares to subscribe.
+    ///
+    /// **Signed**, which is the entire point. An unsigned list is one an
+    /// attacker rewrites to a node of its choosing, which buys nothing.
+    ///
+    /// Accounts rather than `PeerId`s: an account survives the node re-keying,
+    /// and governance names accounts everywhere else. Where to *reach* them is a
+    /// separate, unsigned question — see
+    /// [`SignedGroupOpenInvitation::admitter_addrs`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitters: Vec<calimero_account::AccountId>,
 }
 
 fn default_invited_role() -> u8 {
@@ -664,6 +700,30 @@ pub struct SignedGroupOpenInvitation {
     /// existed and costs only a slower cold start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inviter_account: Option<calimero_account::AccountId>,
+    /// libp2p addresses for the accounts in
+    /// [`GroupInvitationFromAdmin::admitters`] (unsigned bootstrap field).
+    ///
+    /// Each is a full multiaddr including the `/p2p/<peer-id>` suffix, e.g.
+    /// `/ip4/10.0.0.1/tcp/2528/p2p/12D3KooW...`. The peer id travels with the
+    /// address because a joiner cannot derive it: resolving an account to a peer
+    /// needs governance state, which is exactly what a joiner has not synced yet.
+    ///
+    /// Outside the signature deliberately. An account is reached through a peer,
+    /// so requiring the address to be signed would mean the inviter had to know
+    /// every admitter's current address at mint time and re-mint whenever one
+    /// moved. Carrying it unsigned is what makes the signed list usable at all.
+    ///
+    /// Unsigned is safe here in a way it would not be for `admitters` itself: a
+    /// wrong address costs a failed dial, because libp2p authenticates the peer
+    /// id on connect and the admitting node still has to be in the signed list
+    /// for its admission to count. It can misdirect where you knock, never who
+    /// may answer.
+    ///
+    /// Best-effort and possibly empty. An address recorded at mint may have
+    /// moved by the time it is used — survivable because an invitation lives at
+    /// most [`MAX_INVITATION_VALIDITY_SECS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitter_addrs: Vec<String>,
     /// Application ID for the group (unsigned bootstrap field).
     /// `None` for backwards compatibility with invitations created before
     /// this field was added; joiners fall back to zero when absent.
@@ -806,11 +866,13 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_owned(),
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
+            admitter_addrs: Vec::new(),
         };
 
         // Round-tripping unchanged JSON is what pins the wire name; swapping in
@@ -839,11 +901,13 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_owned(),
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
+            admitter_addrs: Vec::new(),
         };
 
         let json = serde_json::to_string(&signed).expect("serialize");
@@ -867,11 +931,13 @@ mod tests {
                 expiration_timestamp: 1_700_000_000,
                 invitation_nonce: [0x33; 32],
                 invited_role: 1,
+                admitters: Vec::new(),
             },
             inviter_signature: "deadbeef".to_owned(),
             inviter_account: None,
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x66; 32]),
+            admitter_addrs: Vec::new(),
         };
 
         let mut value = serde_json::to_value(&signed).expect("serialize");

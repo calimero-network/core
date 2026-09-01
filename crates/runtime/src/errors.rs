@@ -320,8 +320,16 @@ impl From<RuntimeError> for FunctionCallError {
             ) => Self::WasmTrap(WasmTrap::IllegalArithmetic),
             Some(TrapCode::UnreachableCodeReached) => Self::WasmTrap(WasmTrap::Unreachable),
             Some(TrapCode::UnalignedAtomic) => Self::WasmTrap(WasmTrap::UnalignedAtomic),
-            Some(TrapCode::UncaughtException) => Self::WasmTrap(WasmTrap::Indeterminate),
-            None => Self::WasmTrap(WasmTrap::Indeterminate),
+            // Exception handling, async yields, host interrupts and read-only tables
+            // are features this runtime never enables, so no guest can reach them.
+            Some(
+                TrapCode::UncaughtException
+                | TrapCode::UninitializedExnRef
+                | TrapCode::YieldOutsideAsyncContext
+                | TrapCode::HostInterrupt
+                | TrapCode::ReadonlyTableModified,
+            )
+            | None => Self::WasmTrap(WasmTrap::Indeterminate),
         }
     }
 }

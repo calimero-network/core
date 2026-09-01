@@ -290,6 +290,54 @@ steps:
   # milliseconds before a pending delta finishes applying. Waiting on the read
   # itself cannot pass early, which matters more here than anywhere: a delegated
   # delta is the one thing a peer might verify, authorize, and then still refuse.
+  # DAR-14: expiry, the one rule in this feature that a clock decides.
+  #
+  # Deliberately isolated. The capability is already granted and this nonce has
+  # never been presented, so neither of the other two refusals can explain a
+  # failure here — `not_after` is the only thing left. Minted at `valid_for: 1`
+  # and then waited out, because the CLI takes a duration rather than an absolute
+  # instant, so there is no way to mint something already stale.
+  #
+  # Worth an e2e at all because expiry is checked in exactly one place
+  # (`perform_intent`, the relay side) and never by a peer at apply: wall-clock at
+  # apply is node-dependent, so a receiver checking it would accept a delta on one
+  # node and refuse it on another, and authorization would stop converging.
+  - name: The author mints a warrant that expires almost immediately
+    type: sign_warrant
+    context_id: '{{context_id}}'
+    executor: '{{relay_account}}'
+    method: set
+    args:
+      key: delegated
+      value: this-one-should-never-land
+    device_secret: '{{author_secret}}'
+    credential: '{{author_credential}}'
+    nonce: 2
+    valid_for: 1
+    outputs:
+      # `<exported name>: <field on the response>`, which is the opposite of what
+      # it reads like. Getting it backwards fails at capture with the field list in
+      # the message, not at use with an unresolved `{{...}}`.
+      expiring_warrant: warrant
+
+  - name: Let it go stale
+    type: wait
+    seconds: 4
+    message: Waiting out the warrant's 1s validity
+
+  - name: The expired warrant is refused
+    type: perform_intent
+    node: delegated-node-1
+    context_id: '{{context_id}}'
+    method: set
+    args:
+      key: delegated
+      value: this-one-should-never-land
+    warrant: '{{expiring_warrant}}'
+    author_proof: '{{author_credential}}'
+    expected_failure: true
+    expected_error: expired
+
   - name: The delegated write reaches the other node
     type: wait_for_sync
     context_id: '{{context_id}}'
