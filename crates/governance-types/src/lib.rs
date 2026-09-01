@@ -1524,6 +1524,23 @@ pub mod bounds {
     /// well over two years to reach it.
     pub const MAX_ROOT_KEY_HANDOFFS: usize = 1_024;
     /// Max entries in a metadata map (`GroupOp::*MetadataSet.data`).
+    /// Admitters named in an invitation, and addresses offered for them.
+    ///
+    /// Both are small by nature — the default set is a group's admins plus its
+    /// TEE nodes — so the cap is about what a *hostile* invitation may claim
+    /// rather than what a real one needs.
+    ///
+    /// `admitter_addrs` matters more than its size suggests. It sits outside the
+    /// inviter's signature, so anyone relaying an invitation may rewrite it, and
+    /// a joiner acts on it by dialing. Unbounded, that turns a relayed invitation
+    /// into a way to point somebody else's node at a list of the sender's
+    /// choosing.
+    pub const MAX_ADMITTERS: usize = 256;
+    /// See [`MAX_ADMITTERS`].
+    pub const MAX_ADMITTER_ADDRS: usize = 256;
+    /// See [`MAX_ADMITTERS`]. Long enough for a relay-circuit multiaddr, which
+    /// names two peers and a transport, with room to spare.
+    pub const MAX_ADMITTER_ADDR_LEN: usize = 512;
     pub const MAX_METADATA_ENTRIES: usize = 1_024;
     /// Max byte length of a metadata name / key / value string.
     pub const MAX_METADATA_STRING_LEN: usize = 8_192;
@@ -1713,9 +1730,46 @@ impl RootOp {
                 bounds::MAX_BLOB_BYTES,
             ),
             Self::KeyDelivery { envelope, .. } => envelope.validate(),
+            // The join variants carry an invitation, and its two admitter lists
+            // are the only attacker-shaped things in one: `admitter_addrs` is
+            // outside the inviter's signature, so a relay may rewrite it, and a
+            // joiner acts on it by dialing.
+            Self::MemberJoined {
+                signed_invitation, ..
+            }
+            | Self::MemberJoinedAt {
+                signed_invitation, ..
+            } => validate_invitation_bounds(signed_invitation),
             _ => Ok(()),
         }
     }
+}
+
+/// Bound the lists an invitation carries.
+///
+/// Split out because two `RootOp` variants embed the same structure, and a bound
+/// applied to one of them is not a bound.
+fn validate_invitation_bounds(
+    signed: &calimero_context_config::types::SignedGroupOpenInvitation,
+) -> Result<(), GovernanceError> {
+    check_bound(
+        "invitation.admitters",
+        signed.invitation.admitters.len(),
+        bounds::MAX_ADMITTERS,
+    )?;
+    check_bound(
+        "invitation.admitter_addrs",
+        signed.admitter_addrs.len(),
+        bounds::MAX_ADMITTER_ADDRS,
+    )?;
+    for addr in &signed.admitter_addrs {
+        check_bound(
+            "invitation.admitter_addrs[]",
+            addr.len(),
+            bounds::MAX_ADMITTER_ADDR_LEN,
+        )?;
+    }
+    Ok(())
 }
 
 impl NamespaceOp {
