@@ -444,6 +444,7 @@ mod tests {
         NamespaceRepository,
     };
     use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobRequest};
+    use calimero_node_primitives::test_fixtures::node_client;
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -455,39 +456,6 @@ mod tests {
     /// The application's own bytes, and an unrelated blob on the same node.
     const BYTECODE: &[u8] = b"raw wasm, not a bundle";
     const USER_DATA: &[u8] = b"a user's blob, nothing to do with any application";
-
-    async fn serving_node(blob_dir: &tempfile::TempDir) -> NodeClient {
-        use calimero_blobstore::config::BlobStoreConfig;
-        use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-        use calimero_node_primitives::client::{BlobManager, SyncClient};
-
-        let datastore = test_store();
-        // Nest one level down: the node derives its root as the blob root's
-        // parent, so a bare TempDir would make every node share the OS temp dir.
-        let blob_root = blob_dir.path().join("blobs");
-        let blob_manager = BlobManager::new(BlobStore::new(
-            datastore.clone(),
-            FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
-                .await
-                .unwrap(),
-        ));
-        let (event_sender, _) = tokio::sync::broadcast::channel(16);
-        let (ctx_tx, _) = tokio::sync::mpsc::channel(1);
-        let (ns_tx, _) = tokio::sync::mpsc::channel(1);
-        let (join_tx, _) = tokio::sync::mpsc::channel(1);
-        let (subgroup_tx, _) = tokio::sync::mpsc::channel(1);
-        NodeClient::new(
-            datastore,
-            blob_manager,
-            calimero_network_primitives::client::NetworkClient::new(
-                calimero_utils_actix::LazyRecipient::new(),
-            ),
-            calimero_utils_actix::LazyRecipient::new(),
-            event_sender,
-            SyncClient::new(ctx_tx, ns_tx, join_tx, subgroup_tx),
-            None,
-        )
-    }
 
     /// Whether the responder reported `blob_id` as held.
     async fn served(node_client: &NodeClient, blob_id: BlobId) -> bool {
@@ -522,8 +490,7 @@ mod tests {
         use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
         use calimero_primitives::application::{ApplicationId, ApplicationSource};
 
-        let blob_dir = tempfile::TempDir::new().unwrap();
-        let node_client = serving_node(&blob_dir).await;
+        let (node_client, _store, _data_dir, _blob_dir) = node_client().await;
 
         let (bytecode, size) = node_client
             .add_blob(BYTECODE, Some(BYTECODE.len() as u64), None)

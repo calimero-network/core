@@ -1,7 +1,6 @@
 //! One route from a named `bytecode_id` to an installed application, from the
 //! single source this node is configured with. See AGENTS.md for the contract.
 
-pub mod http;
 pub mod port;
 pub mod registry;
 pub mod source;

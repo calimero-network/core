@@ -7,13 +7,12 @@ use std::sync::Arc;
 
 use actix::{Actor, Addr, Context as ActorContext, Handler};
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
-use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::ContextMessage;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
-use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::test_fixtures::{node_client, node_client_over};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
@@ -22,7 +21,6 @@ use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
 use libp2p::PeerId;
 use tempfile::TempDir;
-use tokio::sync::{broadcast, mpsc};
 
 /// Any syntactically valid peer id; nothing below ever dials it.
 const PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh";
@@ -75,41 +73,11 @@ impl Handler<ContextMessage> for SyncSink {
     }
 }
 
-async fn blob_manager(dir: &TempDir, store: &Store) -> BlobManager {
-    // Nested one level down: the node derives its root as the blob root's
-    // parent, so a bare TempDir would make every node share the OS temp dir.
-    let root = dir.path().join("blobs");
-    let filesystem = FileSystem::new(&BlobStoreConfig::new(root.try_into().expect("utf8 path")))
-        .await
-        .expect("blob filesystem");
-    BlobManager::new(BlobStore::new(store.clone(), filesystem))
-}
-
-fn node_client(store: Store, blobs: BlobManager, network: NetworkClient) -> NodeClient {
-    let (events, _) = broadcast::channel(16);
-    let (ctx_sync_tx, _) = mpsc::channel(16);
-    let (ns_sync_tx, _) = mpsc::channel(16);
-    let (ns_join_tx, _) = mpsc::channel(16);
-    let (open_subgroup_join_tx, _) = mpsc::channel(16);
-
-    NodeClient::new(
-        store,
-        blobs,
-        network,
-        LazyRecipient::new(),
-        events,
-        SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx),
-        None,
-    )
-}
-
 /// The blob id `WASM` gets once stored - a hash over chunk ids, not content,
 /// so it cannot be computed by hashing the bytes directly.
 async fn published_blob_id() -> BlobId {
-    let dir = TempDir::new().expect("temp dir");
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let blobs = blob_manager(&dir, &store).await;
-    let (blob_id, _size) = node_client(store, blobs, NetworkClient::new(LazyRecipient::new()))
+    let (node, _store, _data, _blobs) = node_client().await;
+    let (blob_id, _size) = node
         .add_blob(WASM, Some(WASM.len() as u64), None)
         .await
         .expect("store bytes");
@@ -122,7 +90,7 @@ struct Joiner {
     queries: Arc<AtomicUsize>,
     _peer: Addr<BlobPeer>,
     _manager: Addr<SyncSink>,
-    _dir: TempDir,
+    _dirs: (TempDir, TempDir),
 }
 
 impl Joiner {
@@ -137,7 +105,6 @@ impl Joiner {
     }
 
     async fn with_registry(registry: RegistryConfig) -> Self {
-        let dir = TempDir::new().expect("temp dir");
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let queries = Arc::new(AtomicUsize::new(0));
 
@@ -165,9 +132,9 @@ impl Joiner {
             }
         });
 
-        let blobs = blob_manager(&dir, &store).await;
-        let node =
-            node_client(store.clone(), blobs, NetworkClient::new(network)).with_registry(registry);
+        let (node, data_dir, blob_dir) =
+            node_client_over(store.clone(), NetworkClient::new(network)).await;
+        let node = node.with_registry(registry);
 
         Self {
             client: ContextClient::new(store, node.clone(), context_manager),
@@ -175,7 +142,7 @@ impl Joiner {
             queries,
             _peer: peer,
             _manager: manager,
-            _dir: dir,
+            _dirs: (data_dir, blob_dir),
         }
     }
 

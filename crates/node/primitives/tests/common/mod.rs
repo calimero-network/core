@@ -2,20 +2,18 @@
 //! own crate, so a helper only some of them call reads as dead code elsewhere.
 #![allow(dead_code)]
 
-use std::fs;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use actix::{Actor, Context, Handler};
-use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_node_primitives::bundle::{
     derive_signer_id_did_key, sign_manifest_json, BundleArtifact, BundleManifest, BundleService,
 };
-use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
+use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::test_fixtures::node_client_over;
+pub use calimero_node_primitives::test_fixtures::{hex_lower, pack_entries};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_store::db::InMemoryDB;
@@ -23,56 +21,13 @@ use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use libp2p::PeerId;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
-use tar::Builder;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use url::Url;
-
-pub fn hex_lower(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub async fn node_client() -> (NodeClient, TempDir, TempDir) {
-    let data_dir = TempDir::new().unwrap();
-    let blob_dir = TempDir::new().unwrap();
-    let datastore = Store::new(Arc::new(InMemoryDB::owned()));
-
-    // Nested one level down: the node derives its root as the blob root's
-    // parent, so a bare TempDir would make every node share the OS temp dir.
-    let blob_root = blob_dir.path().join("blobs");
-    let blob_store = BlobStore::new(
-        datastore.clone(),
-        FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
-            .await
-            .unwrap(),
-    );
-    let blob_manager = BlobManager::new(blob_store);
-
-    let (event_sender, _) = broadcast::channel(256);
-    let (ctx_sync_tx, _) = mpsc::channel(64);
-    let (ns_sync_tx, _) = mpsc::channel(64);
-    let (ns_join_tx, _) = mpsc::channel(16);
-    let (open_subgroup_join_tx, _) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    let node_client = NodeClient::new(
-        datastore,
-        blob_manager,
-        NetworkClient::new(LazyRecipient::new()),
-        LazyRecipient::new(),
-        event_sender,
-        sync_client,
-        None,
-    );
-    (node_client, data_dir, blob_dir)
-}
 
 /// Any syntactically valid peer id; the fakes below are never dialled.
 pub const FAKE_PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh";
@@ -220,24 +175,6 @@ pub async fn blob_id_of(bytes: &[u8]) -> BlobId {
     blob_id
 }
 
-/// Pack a `.mpk` from explicit tar entries, so a test can ship a decoy the way
-/// a hostile mirror would. Generic over the path to allow non-`str` ones.
-pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[u8])]) -> Vec<u8> {
-    let path = dir.path().join(name);
-    let encoder = GzEncoder::new(fs::File::create(&path).unwrap(), Compression::default());
-    let mut tar = Builder::new(encoder);
-    for (entry_path, content) in entries {
-        let mut header = tar::Header::new_gnu();
-        header.set_path(entry_path).unwrap();
-        header.set_size(content.len() as u64);
-        header.set_cksum();
-        tar.append(&header, *content).unwrap();
-    }
-    tar.finish().unwrap();
-    drop(tar);
-    fs::read(&path).unwrap()
-}
-
 /// A test NodeClient with temporary directories. `datastore` injects a custom
 /// Store; `None` defaults to `InMemoryDB`.
 pub async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempDir, TempDir) {
@@ -250,41 +187,8 @@ pub async fn create_test_node_client_with(
     datastore: Option<Store>,
     network_client: NetworkClient,
 ) -> (NodeClient, TempDir, TempDir) {
-    let data_dir = TempDir::new().unwrap();
-    let blob_dir = TempDir::new().unwrap();
-
     let datastore = datastore.unwrap_or_else(|| Store::new(Arc::new(InMemoryDB::owned())));
-
-    // Nest the blobstore one level down: the node derives its root as the blob
-    // root's parent, so a bare TempDir would make every node share the OS temp
-    // dir as its root.
-    let blob_root = blob_dir.path().join("blobs");
-    let blob_store = BlobStore::new(
-        datastore.clone(),
-        FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
-            .await
-            .unwrap(),
-    );
-    let blob_manager = BlobManager::new(blob_store);
-
-    let (event_sender, _) = broadcast::channel(256);
-    let (ctx_sync_tx, _) = mpsc::channel(64);
-    let (ns_sync_tx, _) = mpsc::channel(64);
-    let (ns_join_tx, _) = mpsc::channel(16);
-    let (open_subgroup_join_tx, _) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    let node_client = NodeClient::new(
-        datastore,
-        blob_manager,
-        network_client,
-        LazyRecipient::new(),
-        event_sender,
-        sync_client,
-        None,
-    );
-
-    (node_client, data_dir, blob_dir)
+    node_client_over(datastore, network_client).await
 }
 
 /// Create a test bundle archive with manifest.json, app.wasm, abi.json, and migrations.
@@ -296,30 +200,26 @@ pub fn create_test_bundle(
     abi_content: Option<&[u8]>,
     migrations: Vec<(&str, &[u8])>,
 ) -> Utf8PathBuf {
-    let bundle_path = temp_dir.path().join(format!("{package}-{version}.mpk"));
-    let bundle_file = fs::File::create(&bundle_path).unwrap();
-    let encoder = GzEncoder::new(bundle_file, Compression::default());
-    let mut tar = Builder::new(encoder);
-
     let signing_key = SigningKey::generate(&mut OsRng);
-    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
 
     let manifest = BundleManifest {
-        version: "1.0".to_string(),
-        package: package.to_string(),
-        app_version: version.to_string(),
-        signer_id: Some(signer_id),
-        min_runtime_version: "0.1.0".to_string(),
+        version: "1.0".to_owned(),
+        package: package.to_owned(),
+        app_version: version.to_owned(),
+        signer_id: Some(derive_signer_id_did_key(
+            signing_key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
         metadata: None,
         handlers: None,
         interfaces: None,
         wasm: Some(BundleArtifact {
-            path: "app.wasm".to_string(),
+            path: "app.wasm".to_owned(),
             hash: hex_lower(&Sha256::digest(wasm_content)),
             size: wasm_content.len() as u64,
         }),
         abi: abi_content.map(|content| BundleArtifact {
-            path: "abi.json".to_string(),
+            path: "abi.json".to_owned(),
             hash: hex_lower(&Sha256::digest(content)),
             size: content.len() as u64,
         }),
@@ -327,42 +227,20 @@ pub fn create_test_bundle(
         services: None,
         signature: None,
     };
-
     let mut manifest_json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
     sign_manifest_json(&mut manifest_json, &signing_key).unwrap();
-
     let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
-    let mut manifest_header = tar::Header::new_gnu();
-    manifest_header.set_path("manifest.json").unwrap();
-    manifest_header.set_size(manifest_bytes.len() as u64);
-    manifest_header.set_cksum();
-    tar.append(&manifest_header, manifest_bytes.as_slice())
-        .unwrap();
 
-    let mut wasm_header = tar::Header::new_gnu();
-    wasm_header.set_path("app.wasm").unwrap();
-    wasm_header.set_size(wasm_content.len() as u64);
-    wasm_header.set_cksum();
-    tar.append(&wasm_header, wasm_content).unwrap();
+    let mut entries: Vec<(&str, &[u8])> = vec![
+        ("manifest.json", manifest_bytes.as_slice()),
+        ("app.wasm", wasm_content),
+    ];
+    entries.extend(abi_content.map(|content| ("abi.json", content)));
+    entries.extend(migrations);
 
-    if let Some(abi_content) = abi_content {
-        let mut abi_header = tar::Header::new_gnu();
-        abi_header.set_path("abi.json").unwrap();
-        abi_header.set_size(abi_content.len() as u64);
-        abi_header.set_cksum();
-        tar.append(&abi_header, abi_content).unwrap();
-    }
-
-    for (path, content) in migrations {
-        let mut migration_header = tar::Header::new_gnu();
-        migration_header.set_path(path).unwrap();
-        migration_header.set_size(content.len() as u64);
-        migration_header.set_cksum();
-        tar.append(&migration_header, content).unwrap();
-    }
-
-    tar.finish().unwrap();
-    bundle_path.try_into().unwrap()
+    let name = format!("{package}-{version}.mpk");
+    let _bytes = pack_entries(temp_dir, &name, &entries);
+    temp_dir.path().join(name).try_into().unwrap()
 }
 
 /// A minimal signed `.mpk` plus the `ApplicationId` it derives - built

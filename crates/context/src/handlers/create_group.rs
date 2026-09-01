@@ -236,7 +236,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     // `GroupOp::TransferOwnership`.
                     owner_identity: admin_account,
                     migration: None,
-                    auto_join: true,};
+                    auto_join: true,
+                };
 
                 // Write the group's local rows. If any write fails partway,
                 // unwind the rows already written before returning so a retry
