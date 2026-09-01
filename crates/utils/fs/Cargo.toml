@@ -8,9 +8,6 @@ license.workspace = true
 description.workspace = true
 publish = true
 
-[dependencies]
-eyre.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

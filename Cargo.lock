@@ -1708,7 +1708,6 @@ dependencies = [
 name = "calimero-utils-fs"
 version = "0.0.0"
 dependencies = [
- "eyre",
  "tempfile",
  "windows-sys 0.61.2",
 ]
