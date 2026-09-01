@@ -111,7 +111,7 @@ impl WatchCommand {
         };
 
         let subscribe_msg = serde_json::to_string(&request)?;
-        write.send(WsMessage::Text(subscribe_msg)).await?;
+        write.send(WsMessage::Text(subscribe_msg.into())).await?;
 
         environment
             .output

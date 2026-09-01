@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,7 +5,7 @@ use std::sync::{Arc, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
-use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
@@ -386,7 +385,11 @@ async fn handle_socket(
             Message::Ping(payload) => {
                 debug!(%connection_id, "Received ping message, responding with pong");
                 // Respond to ping with pong to keep connection alive
-                if let Err(err) = connection_state.commands.send(Command::Pong(payload)).await {
+                if let Err(err) = connection_state
+                    .commands
+                    .send(Command::Pong(payload.into()))
+                    .await
+                {
                     error!(%connection_id, %err, "Failed to send pong response");
                 }
             }
@@ -540,7 +543,7 @@ async fn handle_commands(
             Command::Close(code, reason) => {
                 let close_frame = Some(CloseFrame {
                     code,
-                    reason: Cow::from(reason),
+                    reason: reason.into(),
                 });
                 if let Err(err) = socket_sender.send(Message::Close(close_frame)).await {
                     error!(
@@ -570,27 +573,27 @@ async fn handle_commands(
                         continue;
                     }
                 };
-                if let Err(err) = socket_sender.send(Message::Text(response)).await {
+                if let Err(err) = socket_sender.send(Message::Text(response.into())).await {
                     error!(%connection_id, %err, "Failed to send Message::Text");
                 }
             }
             Command::SendSerialized(message) => {
-                // One copy of the shared bytes into the frame's `String` — the
+                // One copy of the shared bytes into the frame's payload - the
                 // serialization itself already happened once, upstream.
                 if let Err(err) = socket_sender
-                    .send(Message::Text((*message).to_owned()))
+                    .send(Message::Text(Utf8Bytes::from(&*message)))
                     .await
                 {
                     error!(%connection_id, %err, "Failed to send Message::Text");
                 }
             }
             Command::Ping(payload) => {
-                if let Err(err) = socket_sender.send(Message::Ping(payload)).await {
+                if let Err(err) = socket_sender.send(Message::Ping(payload.into())).await {
                     error!(%connection_id, %err, "Failed to send ws::Message::Ping");
                 }
             }
             Command::Pong(payload) => {
-                if let Err(err) = socket_sender.send(Message::Pong(payload)).await {
+                if let Err(err) = socket_sender.send(Message::Pong(payload.into())).await {
                     error!(%connection_id, %err, "Failed to send ws::Message::Pong");
                 }
             }
@@ -755,7 +758,7 @@ mod health_check_tests {
 async fn handle_text_message(
     connection_id: ConnectionId,
     state: Arc<ServiceState>,
-    message: String,
+    message: Utf8Bytes,
 ) {
     // One correlation id per inbound message. The server-generated `request_id`
     // is the primary trace key (always present, globally unique); the client's
@@ -1161,7 +1164,7 @@ mod tests {
                 group_ids: vec![],
             }),
         };
-        Message::Text(serde_json::to_string(&req).unwrap())
+        Message::Text(serde_json::to_string(&req).unwrap().into())
     }
 
     fn subscribe_group_msg(id: u64, group: Hash) -> Message {
@@ -1172,7 +1175,7 @@ mod tests {
                 group_ids: vec![group],
             }),
         };
-        Message::Text(serde_json::to_string(&req).unwrap())
+        Message::Text(serde_json::to_string(&req).unwrap().into())
     }
 
     fn group_membership_event(group: Hash) -> NodeEvent {
@@ -1327,7 +1330,7 @@ mod tests {
         // SubscribeRequest built from a Hash on both ends.
         let raw =
             format!(r#"{{"id":1,"method":"subscribe","params":{{"groupIds":["{group_hex}"]}}}}"#);
-        write.send(Message::Text(raw)).await.unwrap();
+        write.send(Message::Text(raw.into())).await.unwrap();
 
         let sub_resp = next_json(&mut read, Duration::from_secs(5))
             .await
@@ -1766,7 +1769,7 @@ mod tests {
             }),
         };
         write
-            .send(Message::Text(serde_json::to_string(&unsub).unwrap()))
+            .send(Message::Text(serde_json::to_string(&unsub).unwrap().into()))
             .await
             .unwrap();
         let resp = next_json(&mut read, Duration::from_secs(5))
@@ -1784,7 +1787,10 @@ mod tests {
         let server = spawn_test_ws().await;
         let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
 
-        write.send(Message::Ping(vec![1, 2, 3])).await.unwrap();
+        write
+            .send(Message::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
 
         let got_pong = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(Ok(msg)) = read.next().await {
@@ -1947,7 +1953,7 @@ mod tests {
             )),
         };
         write
-            .send(Message::Text(serde_json::to_string(&req).unwrap()))
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
             .await
             .unwrap();
 

@@ -105,7 +105,7 @@ impl WsSession {
         };
         let payload = serde_json::to_string(&ws_request)?;
         self.write
-            .send(WsMessage::Text(payload))
+            .send(WsMessage::Text(payload.into()))
             .await
             .wrap_err("failed to send execute request over WebSocket")?;
 
