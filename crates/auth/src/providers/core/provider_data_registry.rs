@@ -84,7 +84,7 @@ pub fn get_all_auth_data_types() -> HashMap<String, Value> {
 #[macro_export]
 macro_rules! register_auth_data_type {
     ($auth_type:expr) => {
-        #[ctor::ctor]
+        #[ctor::ctor(unsafe)]
         fn register_this_auth_data_type() {
             $crate::providers::core::provider_data_registry::register_auth_data_type(Box::new(
                 $auth_type,

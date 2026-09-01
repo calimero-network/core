@@ -5,7 +5,7 @@
 #[macro_export]
 macro_rules! register_auth_provider {
     ($registration:expr) => {
-        #[ctor::ctor]
+        #[ctor::ctor(unsafe)]
         fn register_this_provider() {
             use std::sync::Arc;
             $crate::providers::core::provider_registry::register_provider(Arc::new($registration));
