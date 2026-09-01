@@ -229,7 +229,8 @@ async fn a_registry_redirect_is_refused() {
     .await
     .expect_err("a redirect must be refused, not followed");
     let _ignored = entry_server.await;
-    let _ignored = target_server.await;
+    // Nothing reaches the redirect target, so its accept never returns.
+    target_server.abort();
 
     assert!(
         err.to_string().contains("302"),
