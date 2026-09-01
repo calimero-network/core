@@ -16,6 +16,22 @@ pub enum NodeMessage {
         request: GetBlobBytesRequest,
         outcome: oneshot::Sender<<GetBlobBytesRequest as Message>::Result>,
     },
+    /// Last known dialable addresses for the given member identities of a
+    /// group, each paired with the peer that answers there.
+    ///
+    /// Two caches away from the caller and both are node-local, which is why
+    /// this crosses the actor boundary: identity-to-peer lives on `NodeState`,
+    /// peer-to-address lives in the network manager, and neither is reachable
+    /// from `crates/context`.
+    ///
+    /// Best-effort by construction. Both caches expire entries, so an empty
+    /// answer means "nothing fresh to offer" and never "this identity does not
+    /// exist" — a caller must treat it as a missing hint, not a missing member.
+    PeerAddrsForIdentities {
+        group_id: calimero_context_config::types::ContextGroupId,
+        identities: Vec<calimero_primitives::identity::PublicKey>,
+        outcome: oneshot::Sender<Vec<(libp2p::PeerId, libp2p::Multiaddr)>>,
+    },
     /// Forward a `NamespaceOpApplied` signal from the publisher path
     /// (which lives in `crates/context`, with no direct line into the
     /// node-side `ReadinessManager` actor) to the readiness FSM. The

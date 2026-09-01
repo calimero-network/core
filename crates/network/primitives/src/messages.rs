@@ -111,6 +111,11 @@ pub enum NetworkMessage {
         request: OpenStream,
         outcome: oneshot::Sender<<OpenStream as actix::Message>::Result>,
     },
+    /// Last known dialable addresses for a peer, from the persistent cache.
+    PeerAddrs {
+        request: PeerAddrs,
+        outcome: oneshot::Sender<<PeerAddrs as actix::Message>::Result>,
+    },
     /// Get the count of connected peers.
     PeerCount {
         request: PeerCount,
@@ -288,6 +293,23 @@ pub struct OpenStream(pub PeerId);
 
 impl actix::Message for OpenStream {
     type Result = eyre::Result<Stream>;
+}
+
+/// Request the last known dialable addresses for a peer.
+///
+/// Answered from the persistent peer-address cache, not from the live swarm, so
+/// it works for a peer this node is not currently connected to — which is the
+/// whole point: an address is worth handing out precisely when the holder is not
+/// already talking to that peer.
+///
+/// Empty when the cache has nothing fresh. Entries expire, so a peer last seen
+/// beyond the cache TTL answers the same as one never seen; both mean "no
+/// address to offer" rather than "no such peer".
+#[derive(Clone, Copy, Debug)]
+pub struct PeerAddrs(pub libp2p::PeerId);
+
+impl actix::Message for PeerAddrs {
+    type Result = Vec<libp2p::Multiaddr>;
 }
 
 /// Request to get the count of connected peers.
