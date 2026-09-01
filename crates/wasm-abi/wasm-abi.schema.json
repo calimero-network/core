@@ -331,6 +331,11 @@
             },
             "target": {
               "$ref": "#/definitions/TypeRef"
+            },
+            "pattern": {
+              "type": "string",
+              "format": "regex",
+              "minLength": 1
             }
           }
         },

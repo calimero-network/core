@@ -14,7 +14,6 @@ mod defaults;
 mod kms;
 mod kms_policy;
 mod version;
-#[cfg(unix)]
 mod watchdog;
 
 use cli::RootCommand;

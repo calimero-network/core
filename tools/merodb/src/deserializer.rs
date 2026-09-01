@@ -80,7 +80,7 @@ fn deserialize_type_def(
                 Ok(json!(String::from_utf8_lossy(&bytes)))
             }
         }
-        TypeDef::Alias { target } => deserialize_type_ref(cursor, target, manifest),
+        TypeDef::Alias { target, .. } => deserialize_type_ref(cursor, target, manifest),
     }
 }
 
@@ -679,6 +679,7 @@ mod tests {
             "BoolType",
             TypeDef::Alias {
                 target: TypeRef::bool(),
+                pattern: None,
             },
         );
         let data = borsh::to_vec(&true)?;
@@ -690,6 +691,7 @@ mod tests {
             "I32Type",
             TypeDef::Alias {
                 target: TypeRef::i32(),
+                pattern: None,
             },
         );
         let data = borsh::to_vec(&42_i32)?;
@@ -701,6 +703,7 @@ mod tests {
             "U64Type",
             TypeDef::Alias {
                 target: TypeRef::u64(),
+                pattern: None,
             },
         );
         let data = borsh::to_vec(&12345_u64)?;
@@ -712,6 +715,7 @@ mod tests {
             "StringType",
             TypeDef::Alias {
                 target: TypeRef::string(),
+                pattern: None,
             },
         );
         let data = borsh::to_vec(&"hello".to_owned())?;
@@ -852,6 +856,7 @@ mod tests {
             "Numbers",
             TypeDef::Alias {
                 target: TypeRef::list(TypeRef::u32()),
+                pattern: None,
             },
         );
 
@@ -871,6 +876,7 @@ mod tests {
             "StringToU32Map",
             TypeDef::Alias {
                 target: TypeRef::map(TypeRef::u32()),
+                pattern: None,
             },
         );
 
@@ -966,6 +972,7 @@ mod tests {
             "DynamicBytes",
             TypeDef::Alias {
                 target: TypeRef::bytes(),
+                pattern: None,
             },
         );
         let bytes = vec![0x01_u8, 0x02_u8, 0x03_u8];
@@ -1062,6 +1069,7 @@ mod tests {
             "U32Type",
             TypeDef::Alias {
                 target: TypeRef::u32(),
+                pattern: None,
             },
         );
 
@@ -1083,6 +1091,7 @@ mod tests {
             "UnitType",
             TypeDef::Alias {
                 target: TypeRef::unit(),
+                pattern: None,
             },
         );
 
@@ -1171,6 +1180,7 @@ mod tests {
             "EmptyList",
             TypeDef::Alias {
                 target: TypeRef::list(TypeRef::string()),
+                pattern: None,
             },
         );
 
@@ -1189,6 +1199,7 @@ mod tests {
             "EmptyMap",
             TypeDef::Alias {
                 target: TypeRef::map(TypeRef::u32()),
+                pattern: None,
             },
         );
 
@@ -1219,6 +1230,7 @@ mod tests {
                     crdt_type: Some(CrdtCollectionType::AuthoredMap),
                     inner_type: Some(Box::new(TypeRef::u32())),
                 },
+                pattern: None,
             },
         );
 
@@ -1268,6 +1280,7 @@ mod tests {
                     crdt_type: Some(CrdtCollectionType::AuthoredMap),
                     inner_type: Some(Box::new(TypeRef::u32())),
                 },
+                pattern: None,
             },
         );
 
@@ -1295,6 +1308,7 @@ mod tests {
                     crdt_type: Some(CrdtCollectionType::AuthoredVector),
                     inner_type: Some(Box::new(TypeRef::u32())),
                 },
+                pattern: None,
             },
         );
 
@@ -1326,6 +1340,7 @@ mod tests {
                     crdt_type: Some(CrdtCollectionType::AuthoredMap),
                     inner_type: Some(Box::new(TypeRef::u32())),
                 },
+                pattern: None,
             },
         );
         let data = vec![0_u8; 4];
@@ -1350,6 +1365,7 @@ mod tests {
                     crdt_type: Some(CrdtCollectionType::AuthoredVector),
                     inner_type: Some(Box::new(TypeRef::u32())),
                 },
+                pattern: None,
             },
         );
         let data = vec![0_u8; 4];

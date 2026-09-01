@@ -14,6 +14,14 @@ path = "src/lib.rs"
 [dependencies]
 rustc_version.workspace = true
 toml.workspace = true
+eyre = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+
+[features]
+fetch = ["dep:eyre", "dep:reqwest", "dep:sha2", "dep:tempfile", "dep:zip"]
 
 [dev-dependencies]
 tempfile.workspace = true

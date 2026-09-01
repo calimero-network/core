@@ -19,14 +19,7 @@ ignore = [
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
-    # The shipped path IS fixed: hyper 1.x's h2 is bumped to 0.4.16 in this same
-    # change. What remains is h2 0.3.27 under reqwest 0.11, reached only as a
-    # BUILD dep (cached-path, in calimero-server / mero-auth) and a DEV dep
-    # (jsonschema, in calimero-wasm-abi) - neither is in merod or meroctl. The
-    # 0.3 line is unpatched upstream (the fix landed only in 0.4.16), so this
-    # cannot be lock-bumped; clearing it means moving cached-path 0.8 -> 0.10 and
-    # jsonschema 0.17 -> 0.49, both breaking, tracked separately.
-    { id = "RUSTSEC-2026-0258", reason = "h2 0.3.27 via reqwest 0.11, build+dev only; 0.3 unpatched upstream. Runtime h2 is 0.4.16" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3.27 via reqwest 0.11, dev only; 0.3 unpatched upstream. Runtime h2 is 0.4.16" },
 ]
 
 [bans]
