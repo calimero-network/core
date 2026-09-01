@@ -45,6 +45,17 @@ env:
     cargo-mero
   DOCKER_PLATFORMS: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
   INCLUDE_AARCH64: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+  # Windows is built from the same matrix but publishes a narrower set than the
+  # unix targets: `merod`, because the desktop app bundles it and its in-app
+  # version switcher downloads `merod_x86_64-pc-windows-msvc.tar.gz` straight
+  # from these releases, and `meroctl`, because a Windows user driving a node
+  # needs the CLI. The rest (`mero-abi`, `cargo-mero`, `mero-auth`) have never
+  # been compiled for Windows, and a break in any of them would red the whole
+  # release rather than the one binary nobody asked for.
+  WINDOWS_BINARIES: |-
+    merod
+    meroctl
+  INCLUDE_WINDOWS: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
 
 jobs:
   prepare:
@@ -197,9 +208,23 @@ jobs:
     strategy:
       matrix:
         # Keep legacy check names for required status checks.
-        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}]') }}
+        #
+        # TEMPORARY (remove before merge): the pull_request arm normally stays
+        # Linux-only for cost, exactly as aarch64 and macOS are excluded. The
+        # Windows entry is duplicated into it here only so THIS pull request
+        # proves a Windows build green before it reaches master, since no
+        # Windows build has ever run in this repository.
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
       fail-fast: false
     runs-on: ${{ matrix.runner }}
+
+    # Every `run:` below is bash (readarray, tar, $BINARIES). Windows runners
+    # default to pwsh, where those scripts are not merely unportable but
+    # silently different, so the shell is pinned for the whole job rather than
+    # per step.
+    defaults:
+      run:
+        shell: bash
 
     env:
       CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -222,6 +247,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libclang-dev
 
+      # `rocksdb` is pulled with `bindgen-runtime`, so librocksdb-sys needs a
+      # libclang at build time on every platform. Linux installs one above;
+      # the Windows image already ships LLVM, but nothing points bindgen at it.
+      - name: Point bindgen at the image's LLVM (Windows)
+        if: runner.os == 'Windows'
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      # aws-lc-sys (rustls' provider, reached via libp2p-tls) assembles its
+      # x86_64 primitives with NASM on windows-msvc and fails the build if it
+      # is absent. Not needed on unix, which uses the system assembler.
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
       - name: Update Bash
         if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
         run: brew install bash
@@ -239,12 +278,20 @@ jobs:
           fi
           echo "OK: mock-attestation is not enabled in the production merod build"
 
+      # Windows ships a narrower set than the unix targets (see
+      # WINDOWS_BINARIES above), so the list the steps below iterate is
+      # resolved once here instead of each step re-deriving it and drifting.
+      - name: Resolve the binaries this target publishes
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$WINDOWS_BINARIES" >> "$GITHUB_ENV"
+          else
+            printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\n%s\nCALIMERO_EOF\n' "$BINARIES" "$AUTH_BINARIES" >> "$GITHUB_ENV"
+          fi
+
       - name: Build binaries
         run: |
-          readarray -t binaries <<< "$BINARIES"
-          readarray -t auth_binaries <<< "$AUTH_BINARIES"
-
-          binaries+=("${auth_binaries[@]}")
+          readarray -t binaries <<< "$TARGET_BINARIES"
 
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
@@ -254,13 +301,20 @@ jobs:
         run: |
           mkdir -p artifacts
 
-          readarray -t binaries <<< "$BINARIES"
-          readarray -t auth_binaries <<< "$AUTH_BINARIES"
+          readarray -t binaries <<< "$TARGET_BINARIES"
 
-          binaries+=("${auth_binaries[@]}")
+          # Only the file inside the archive gains Windows' mandatory `.exe`.
+          # The archive itself keeps the `<binary>_<target>.tar.gz` name every
+          # consumer already resolves by target triple - the desktop app's
+          # in-app merod switcher among them - so adding a platform does not
+          # change how any of them find an asset.
+          suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            suffix=".exe"
+          fi
 
           for binary in "${binaries[@]}"; do
-            tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
+            tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary$suffix"
           done
 
       - name: Build profiling binaries (with frame pointers and debug symbols)
@@ -342,6 +396,13 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: artifacts-aarch64-apple-darwin
+          path: artifacts/
+
+      - name: Download x86_64 Windows artifacts
+        if: ${{ env.INCLUDE_WINDOWS == 'true' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: artifacts-x86_64-pc-windows-msvc
           path: artifacts/
 
       - name: Upload binaries to release
