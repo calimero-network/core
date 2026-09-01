@@ -2703,7 +2703,7 @@ mod join_target_tests {
             inviter_signature: hex::encode(signature.to_bytes()),
             application_id: None,
             bytecode_id: None,
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 

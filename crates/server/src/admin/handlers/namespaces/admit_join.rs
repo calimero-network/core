@@ -280,7 +280,7 @@ mod tests {
                 admitters: Vec::new(),
             },
             inviter_signature: String::new(),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
             application_id: None,
             bytecode_id: None,
         };
