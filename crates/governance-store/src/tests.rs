@@ -11469,19 +11469,23 @@ mod target_application_row_seeding {
             .save(&ns_gid, &parent_meta)
             .unwrap();
 
-        let op = SignedNamespaceOp::sign(
-            &admin_sk,
+        // GroupCreated is published under the namespace key, so the apply path
+        // refuses it in the clear and the fixture has to hold one to seal with.
+        let _ = crate::GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omits");
+        let sealed = crate::seal_root_op_for_publish(
+            &store,
             ns_id.into(),
-            vec![],
-            1,
-            NamespaceOp::Root(RootOp::GroupCreated {
+            RootOp::GroupCreated {
                 admin: admin_account,
                 group_id: sub_id.into(),
                 parent_id: ns_id.into(),
                 restricted: false,
-            }),
+            },
         )
-        .unwrap();
+        .expect("seal the subgroup-creation op");
+        let op = SignedNamespaceOp::sign(&admin_sk, ns_id.into(), vec![], 1, sealed).unwrap();
         NamespaceGovernance::new(&store, ns_id.into())
             .apply_signed_op(&op)
             .unwrap();
