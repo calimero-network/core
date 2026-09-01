@@ -272,19 +272,28 @@ steps:
     dev: true
 
   # Scoped to every application, which is what naming none means and is all this
-  # node serves anyway. The script asserts the exchange end to end - the same
-  # account on both sides, the code echoed back, and the scope key delivered -
-  # so a pairing that half-landed fails here rather than three steps later.
+  # node serves anyway. The step asserts the exchange end to end - the same
+  # account on both sides, the code echoed back, and what was certified being
+  # what was minted - so a pairing that half-landed fails here rather than three
+  # steps later.
   - name: Pair node-3 onto Alice's account
-    type: script
-    script: scripts/account-pair.sh
-    target: local
-    args:
-      - shared-account-node-3
-      - shared-account-node-2
-      - '{{root_key}}'
-      - '-'
+    type: account_pair
+    node: shared-account-node-3
+    holder: shared-account-node-2
+    root_key: '{{root_key}}'
+    namespaces:
       - '{{namespace_id}}'
+    outputs:
+      key_delivered: keyDelivered
+      credential: credential
+
+  # The phone's write below rests on both: the link is what confers authority,
+  # and the key is what makes the device able to read what it writes into.
+  - name: The pairing delivered a scope key and minted a credential
+    type: json_assert
+    statements:
+      - 'json_equal({{key_delivered}}, true)'
+      - 'json_not_equal({{credential}}, "")'
 
   # Following the context writes the keyless identity marker the RPC layer
   # resolves an executor from. A paired device is a member of nothing, so this
