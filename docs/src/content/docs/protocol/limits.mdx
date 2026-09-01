@@ -14,10 +14,9 @@ Cross-links: [Build gotchas](/build/gotchas/) (the limits you hit in practice), 
 
 These bound a single WASM execution. Defaults live in `crates/runtime/src/logic.rs` (`VMLimits::default`); a node may override them, but these are what ship.
 
-Guest memory is not among them: it is bounded by the `maximum` the module itself declares and, in practice, by gas: growing and touching memory costs gas, so an execution runs out of gas before it can exhaust the host.
-
 | Limit (`VMLimits` field) | Default | Notes |
 | --- | --- | --- |
+| `max_memory_pages` | 1024 pages = **64 MiB** | One WASM page is 64 KiB; `1024 × 64 KiB`. |
 | `max_stack_size` | **200 KiB** | Guest call stack. |
 | `max_registers` | **100** | Number of host-call registers. |
 | `max_register_size` | **100 MiB** | Per-register data cap (constrained `< u64::MAX`). |
