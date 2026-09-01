@@ -210,10 +210,10 @@ async fn a_failed_bind_writes_no_row_and_releases_every_blob() {
     );
 }
 
-/// Redirect-to-object-storage is how a registry serves artifacts, and a private
-/// registry's storage host is private too. The blob id stays the byte authority.
+/// An artifact lives at its coordinates on the one configured registry, so a
+/// redirect has nowhere legitimate to point and is refused rather than followed.
 #[tokio::test]
-async fn a_registry_redirect_to_a_private_host_is_followed() {
+async fn a_registry_redirect_is_refused() {
     let (bundle, named_id) = common::minimal_signed_bundle_bytes(PACKAGE, VERSION);
     let expected_blob = common::blob_id_of(&bundle).await;
 
@@ -221,21 +221,21 @@ async fn a_registry_redirect_to_a_private_host_is_followed() {
     let (target, target_server) = common::serve_once(bundle).await;
     let (entry, entry_server) = common::redirect_once(&target).await;
 
-    assert_eq!(
-        download(
-            &node_client,
-            &base_of(&entry),
-            &req(expected_blob, named_id)
-        )
-        .await
-        .expect("the walk must not fault"),
-        Outcome::Installed,
-        "the operator's own registry must be able to redirect"
-    );
+    let err = download(
+        &node_client,
+        &base_of(&entry),
+        &req(expected_blob, named_id),
+    )
+    .await
+    .expect_err("a redirect must be refused, not followed");
     let _ignored = entry_server.await;
     let _ignored = target_server.await;
 
-    assert!(node_client.has_blob(&expected_blob).expect("blob lookup"));
+    assert!(
+        err.to_string().contains("302"),
+        "error must report the redirect status, got: {err}"
+    );
+    assert!(!node_client.has_blob(&expected_blob).expect("blob lookup"));
 }
 
 /// A node whose registry is `base`, for the bare install-by-coordinates path.
