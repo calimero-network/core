@@ -169,3 +169,25 @@ async fn a_rejected_coordinate_names_itself_in_the_error() {
         "error must name the offending coordinate, got: {err}"
     );
 }
+
+/// An artifact lives at its coordinates on the configured registry, so there is
+/// nowhere legitimate for a redirect to point. Following one would let whatever
+/// answers the base choose the next address this node connects to.
+#[tokio::test]
+async fn http_source_refuses_a_redirect_rather_than_following_it() {
+    let (base, server) = respond_once(
+        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/evil\r\nContent-Length: 0\r\n\r\n"
+            .to_vec(),
+    )
+    .await;
+    let err = HttpRegistry::new(base)
+        .expect("client")
+        .fetch(&req(None))
+        .await
+        .expect_err("a redirect must be refused, not followed");
+    let _ignored = server.await;
+    assert!(
+        err.to_string().contains("302"),
+        "error must report the redirect status, got: {err}"
+    );
+}

@@ -507,6 +507,16 @@ v11 op - not only those three - loudly, rather than mis-decoding one.
 Governance stops converging across a mixed fleet, and ops already signed under v10 are
 rejected rather than migrated.
 Upgrade every node in a namespace together.
+
+The same release also changes the on-disk layout of the group governance rows:
+`GroupMeta` replaces its flat `bytecode_id` / `target_application_id` fields with a
+nested `target: GroupTarget { application_id, bytecode_id, package, version }`, and
+`LadderRung` gains trailing `package` and `version` fields.
+Borsh is positional, so a row written by a pre-upgrade binary fails to decode - loudly,
+not silently - and `MetaRepository::load` returns that error for every existing group.
+A coordinated restart does not fix this on its own: each node also needs its datastore
+reset, or its existing groups stay unreadable.
+The upgrade is a coordinated restart **and** a state reset, not a restart alone.
 </Aside>
 
 <SeqDiagram

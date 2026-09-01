@@ -2778,7 +2778,6 @@ fn xcall_same_owning_group(
 
 #[cfg(test)]
 mod tests {
-    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -2790,6 +2789,7 @@ mod tests {
     use calimero_primitives::identity::PublicKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::GroupMetaValue;
+    use calimero_store::key::GroupTarget;
     use calimero_store::Store;
 
     use std::collections::HashMap;

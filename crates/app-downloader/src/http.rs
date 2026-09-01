@@ -1,29 +1,21 @@
-//! Fetching an application artifact over HTTP: the client, the redirect guard
-//! it applies, and the capped body read every caller shares.
+//! Fetching an application artifact over HTTP: the client and the capped body
+//! read every caller shares.
 
 use eyre::bail;
 
-const MAX_REDIRECTS: usize = 10; // hop cap for a downloaded application
 const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300); // generous for large bundles, bounded against a slowloris host
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15); // connect timeout for an artifact fetch
 /// Maximum size of a fetched application artifact; bounds memory against a hostile or lying `Content-Length`.
 pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// The one artifact client. Its target is the operator's own registry - often
-/// private - so redirects enforce only the scheme and the hop cap.
+/// The one artifact client. An artifact lives at its coordinates on the one
+/// configured registry, so a redirect is refused rather than followed to
+/// wherever a server names - which is the whole of this client's SSRF surface.
 pub fn registry_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(TOTAL_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if !matches!(attempt.url().scheme(), "http" | "https") {
-                attempt.error("redirect to a non-http(s) scheme is blocked")
-            } else if attempt.previous().len() >= MAX_REDIRECTS {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
 }
 
