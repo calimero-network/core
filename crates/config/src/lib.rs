@@ -550,14 +550,12 @@ pub async fn write_atomic(path: &Utf8Path, content: String) -> EyreResult<()> {
         let mut tmp = tempfile::NamedTempFile::new_in(dir)
             .wrap_err_with(|| format!("failed to create temp file in {dir:?}"))?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // Set explicitly so 0600 holds if tempfile's default ever changes.
-            tmp.as_file()
-                .set_permissions(std::fs::Permissions::from_mode(0o600))
-                .wrap_err("failed to set temp file permissions")?;
-        }
+        // Narrowed before the rename, not after: a rename carries the file's own
+        // permissions with it, so the config is never briefly readable at its
+        // real path. On Windows this replaces an inherited ACL with one naming
+        // only this user, which is the whole difference on that platform.
+        calimero_utils_fs::restrict_existing_to_owner(tmp.path())
+            .wrap_err("failed to restrict temp file permissions")?;
 
         std::io::Write::write_all(&mut tmp, content.as_bytes())
             .wrap_err("failed to write config contents")?;

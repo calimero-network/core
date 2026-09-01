@@ -156,6 +156,22 @@ impl<'a> NamespaceOpLogService<'a> {
             _ => None,
         };
 
+        // The same question for a sealed root op. `None` here is what makes the
+        // persisted op fold as a visible hole rather than as "nothing happened",
+        // which is the difference between a reader abstaining and a reader
+        // deciding an admin question it could not see the answer to.
+        let opened_root = match &signed.op {
+            NamespaceOp::RootSealed { key_id, encrypted } => crate::open_sealed_root_op(
+                self.store,
+                self.namespace_id,
+                key_id.as_bytes(),
+                encrypted,
+            )
+            .ok()
+            .flatten(),
+            _ => None,
+        };
+
         let signer_binding = crate::unified_op_decode::signer_binding_for(
             self.store,
             &self.namespace_id.to_bytes().into(),
@@ -164,6 +180,7 @@ impl<'a> NamespaceOpLogService<'a> {
         let unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
             signed,
             decrypted.as_ref(),
+            opened_root.as_ref(),
             signer_binding,
             delta.id,
             delta.hlc,
