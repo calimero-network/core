@@ -1,5 +1,6 @@
 use core::time::Duration;
 
+use calimero_app_downloader::registry::RegistryConfig;
 use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_runtime::RuntimeConfig;
@@ -79,7 +80,7 @@ pub struct ConfigFile {
     /// Where bytecode comes from. An absent section is `http` with no `base_url`,
     /// resolving and serving nothing; `merod init` writes it, an upgrade must add it.
     #[serde(default)]
-    pub registry: calimero_app_downloader::registry::RegistryConfig,
+    pub registry: RegistryConfig,
 }
 
 /// Configuration for TEE (Trusted Execution Environment) features.
@@ -503,7 +504,7 @@ impl ConfigFile {
             runtime: RuntimeConfig::default(),
             tee: None,
             dag_compaction: DagCompactionConfig::default(),
-            registry: calimero_app_downloader::registry::RegistryConfig::default(),
+            registry: RegistryConfig::default(),
         }
     }
 

@@ -4,6 +4,7 @@ use crate::{
     CapabilitiesRepository, DenyListRepository, GroupKeyring, KeyRequester, MembershipRepository,
     MetaRepository, NamespaceRepository, PermissionChecker,
 };
+use calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE;
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, EnvelopeRecipient, GroupOp, KeyEnvelope,
     KeyRotation, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
@@ -58,7 +59,7 @@ pub(super) fn effective_stub_source(op_source: &str) -> &str {
     if op_source.starts_with("http://") || op_source.starts_with("https://") {
         op_source
     } else {
-        calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE
+        PENDING_BLOB_SHARE_SOURCE
     }
 }
 

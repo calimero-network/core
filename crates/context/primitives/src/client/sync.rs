@@ -1,7 +1,7 @@
 //! Context configuration synchronization: the join bootstrap that writes a
 //! context's store entries and acquires the bytecode its group named.
 
-use calimero_app_downloader::registry::stored_coords;
+use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::{AppRequest, Outcome};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -211,9 +211,7 @@ impl ContextClient {
                     &types::ApplicationMeta::new(
                         zero_blob,
                         0,
-                        calimero_app_downloader::registry::PENDING_BLOB_SHARE_SOURCE
-                            .to_owned()
-                            .into_boxed_str(),
+                        PENDING_BLOB_SHARE_SOURCE.to_owned().into_boxed_str(),
                         Box::default(),
                         zero_blob,
                         types::PackageInfo {
