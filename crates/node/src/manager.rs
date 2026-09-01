@@ -135,7 +135,7 @@ pub struct NodeManager {
     /// is a member of a group in the namespace but holds no key for it, pulling
     /// off the *unverifiable* beacon that just arrived.
     ///
-    /// Separate for the same reason the provable arm is: a stranded node cannot
+    /// Separate for the same reason the other arms are: a stranded node cannot
     /// verify any beacon, so every beacon it receives would contend for the
     /// slot, and sharing would let that starve the two arms above. Keyed on the
     /// namespace rather than the peer, so a Sybil swarm shares one budget — the
