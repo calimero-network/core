@@ -29,6 +29,25 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
+  # The one thing about this repository that cannot be checked on Linux: whether
+  # a secret written on Windows is readable by other local users. `calimero-utils-fs`
+  # has no C dependencies, so this is a small, fast job rather than a second full
+  # Windows build -- and without it the ACL claim is asserted nowhere.
+  windows-secrets:
+    name: Windows secret permissions
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Test the owner-only file helper
+        run: cargo test -p calimero-utils-fs
+
   rust:
     name: Rust
     runs-on: big-machine
