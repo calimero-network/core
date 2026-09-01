@@ -2,6 +2,7 @@ name: Benchmarks
 
 permissions:
   contents: read
+  pull-requests: write
 
 # Post-merge on master, plus opt-in per PR via the `run-benchmarks` label.
 # Deliberately NOT on every pull_request: a full sweep is tens of minutes, and
@@ -15,15 +16,26 @@ on:
 
 jobs:
   criterion:
-    name: Criterion trend
+    name: Criterion trend (${{ matrix.crate }})
     # Never blocks a merge. Timing on shared runners is too noisy to gate on;
-    # the blocking storage-cost gate lives in ci-checks.yml.
+    # the blocking gates live in ci-checks.yml.
     if: >-
       github.event_name == 'push' ||
       github.event.label.name == 'run-benchmarks'
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - storage-cost
+          - calimero-storage
+          - calimero-store
+          - calimero-blobstore
+          - calimero-crypto
+          - calimero-runtime
+          - calimero-dag
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -32,15 +44,116 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: stable
-          shared-key: storage-cost
+          shared-key: bench-${{ matrix.crate }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Run benchmarks
-        run: cargo bench -p storage-cost -- --save-baseline ${{ github.sha }}
+        run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
 
       - name: Upload criterion baseline
         uses: actions/upload-artifact@v4
         with:
-          name: criterion-baseline-${{ github.sha }}
+          name: criterion-${{ matrix.crate }}-${{ github.sha }}
           path: target/criterion
           retention-days: 30
+
+  compare:
+    name: Compare against master
+    needs: criterion
+    # Only runs on the labelled-PR path, where a master baseline to compare
+    # against might exist. On a push to master there is nothing to compare.
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-24.04-8cpu
+    # actions/download-artifact@v4 only looks at the artifacts of the CURRENT
+    # workflow run by default. Master's baseline was uploaded by a different,
+    # earlier, push-triggered run of this same workflow, so reaching it needs
+    # that run's numeric id plus a token scoped to read Actions metadata --
+    # hence `actions: read` here, on top of the workflow-level `contents:
+    # read` and `pull-requests: write`.
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download this run's baselines
+        uses: actions/download-artifact@v4
+        with:
+          pattern: criterion-*-${{ github.sha }}
+          path: target/criterion
+          merge-multiple: true
+
+      # Resolve the base commit's own benchmarks.yml run, if one exists. A PR
+      # based on a commit that predates this workflow, or whose run's
+      # artifacts expired (30-day retention), or whose run failed outright,
+      # has none -- that is expected, not an error, and must not fail the
+      # job. This is a lookup, not a download: it only produces a run id (or
+      # nothing) for the next step to act on.
+      - name: Find master's benchmark run
+        id: master-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow benchmarks.yml \
+            --commit "${{ github.event.pull_request.base.sha }}" \
+            --status success \
+            --json databaseId \
+            --jq '.[0].databaseId // empty')
+          if [ -n "$run_id" ]; then
+            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+            echo "found benchmarks.yml run $run_id for base commit ${{ github.event.pull_request.base.sha }}"
+          else
+            echo "no successful benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} -- it predates this workflow, or its run failed, or (past 30 days) its artifacts have expired"
+          fi
+
+      # Only attempted when the lookup above found a run id. Passing run-id +
+      # github-token is what makes download-artifact reach into a DIFFERENT
+      # workflow run instead of silently matching nothing in the current one.
+      - name: Download master's baselines
+        if: steps.master-run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          pattern: criterion-*-${{ github.event.pull_request.base.sha }}
+          path: target/criterion
+          merge-multiple: true
+          run-id: ${{ steps.master-run.outputs.run_id }}
+          github-token: ${{ github.token }}
+        continue-on-error: true
+
+      - name: Install critcmp
+        run: cargo install critcmp --locked
+
+      # A table, not a verdict. Criterion's own significance threshold is ~5%
+      # and a shared runner beats that on cache state alone, so this is read by
+      # a human deciding whether a number is worth chasing.
+      #
+      # Three distinct "nothing to compare" cases get three distinct
+      # messages, so the posted comment never reads as a comparison that
+      # quietly ran and found no difference: (1) no run at all for the base
+      # commit, (2) a run existed but its artifacts didn't download (expired,
+      # or the download step itself failed), (3) artifacts downloaded but
+      # critcmp still found nothing to diff (baseline name mismatch, empty
+      # dir, etc).
+      - name: Compare
+        run: |
+          if [ -z "${{ steps.master-run.outputs.run_id }}" ]; then
+            echo "no comparison: no benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} (see the 'Find master's benchmark run' step log)" > /tmp/critcmp.txt
+          elif ! find target/criterion -type d -name "${{ github.event.pull_request.base.sha }}" -print -quit | grep -q .; then
+            echo "no comparison: found benchmarks.yml run ${{ steps.master-run.outputs.run_id }} for the base commit, but its baseline artifacts did not download (expired past 30-day retention, or the download step failed -- see its log)" > /tmp/critcmp.txt
+          elif critcmp ${{ github.event.pull_request.base.sha }} ${{ github.sha }} > /tmp/critcmp.txt 2>&1; then
+            :
+          else
+            echo "no comparison: baselines downloaded for both commits but critcmp found nothing to diff" > /tmp/critcmp.txt
+          fi
+          cat /tmp/critcmp.txt
+
+      - name: Post the comparison
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: /tmp/critcmp.txt
+          comment-tag: criterion-comparison
