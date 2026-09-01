@@ -2087,17 +2087,27 @@ async fn restricted_ctx_redriven_after_group_created() {
     // ---- Step 3: GroupCreated for the subgroup applies LAST ------------------
     // On master this does NOT re-drive the stranded op. The #2848 fix makes
     // GroupCreated re-trigger the buffered-op retry.
+    // The namespace key production mints at creation; this fixture builds
+    // its rows directly and would otherwise have nothing to seal under.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("mint the namespace key");
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),
         vec![],
         3,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
-            group_id: sub_gid.to_bytes().into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::GroupCreated {
+                admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
+                group_id: sub_gid.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+            },
+        )
+        .expect("seal the root op"),
     )
     .expect("sign GroupCreated");
 
@@ -2301,12 +2311,17 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         namespace_id.into(),
         vec![],
         2,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
-            group_id: sub_gid.to_bytes().into(),
-            parent_id: namespace_id.into(),
-            restricted: false,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::GroupCreated {
+                admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
+                group_id: sub_gid.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: false,
+            },
+        )
+        .expect("seal the root op"),
     )
     .expect("sign GroupCreated{restricted:false}");
 
@@ -2589,17 +2604,27 @@ async fn tee_matrix_restricted_late_join() {
     let mut events = calimero_governance_store::op_events::subscribe();
 
     // ---- Step 1 (late-join): the subgroup EXISTS first (GroupCreated) -------
+    // The namespace key production mints at creation; this fixture builds
+    // its rows directly and would otherwise have nothing to seal under.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x5Au8; 32])
+        .expect("mint the namespace key");
     let group_created_op = SignedNamespaceOp::sign(
         &owner_sk,
         namespace_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::GroupCreated {
-            admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
-            group_id: sub_gid.to_bytes().into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        }),
+        calimero_governance_store::seal_root_op_for_publish(
+            &store,
+            ns_gid.to_bytes().into(),
+            RootOp::GroupCreated {
+                admin: calimero_context::test_support::account_for(&owner_sk.public_key()),
+                group_id: sub_gid.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+            },
+        )
+        .expect("seal the root op"),
     )
     .expect("sign GroupCreated");
     apply_signed_namespace_op(&store, &group_created_op).expect("apply GroupCreated");
