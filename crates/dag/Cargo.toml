@@ -16,10 +16,25 @@ thiserror.workspace = true
 calimero-storage.workspace = true
 tracing.workspace = true
 
+[lib]
+bench = false
+
 [dev-dependencies]
 calimero-storage = { workspace = true, features = ["testing"] }
+criterion.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
 
 [features]
 testing = []
+
+# `pending` deliberately does NOT need `required-features = ["testing"]`.
+# Its fixture builds `CausalDelta` via the ungated `CausalDelta::new`
+# constructor instead of the `testing`-gated `CausalDelta::new_test` — see
+# the bench's module docs for why that's a safe, equivalent substitution.
+# `required-features` would make a bare `cargo bench -p calimero-dag --bench
+# pending` silently *skip* the target instead of building it, which is
+# exactly the rot Task 1's workspace-wide compile gate exists to catch.
+[[bench]]
+name = "pending"
+harness = false

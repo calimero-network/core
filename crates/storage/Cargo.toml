@@ -33,12 +33,67 @@ rand.workspace = true
 
 [dev-dependencies]
 claims.workspace = true
+criterion.workspace = true
 hex.workspace = true
 serial_test.workspace = true
 trybuild.workspace = true
 velcro.workspace = true
 
 calimero-sdk.workspace = true
+
+# A crate that gains a [[bench]] needs `bench = false` on its [lib], [[bin]]
+# and [[test]] targets, or `cargo bench -p calimero-storage` (no --bench
+# filter) hands those to libtest, which rejects criterion's own CLI flags.
+[lib]
+bench = false
+
+[[test]]
+name = "abi_crdt_shapes"
+bench = false
+
+[[test]]
+name = "abi_mergeable_coverage"
+bench = false
+
+[[test]]
+name = "compile_fail"
+bench = false
+
+[[test]]
+name = "converge"
+bench = false
+
+[[test]]
+name = "crdt_contract"
+bench = false
+
+[[test]]
+name = "derive_mergeable"
+bench = false
+
+[[test]]
+name = "multi_device_account"
+bench = false
+
+[[test]]
+name = "read_cost_profile"
+bench = false
+
+[[test]]
+name = "root_fanout_shape"
+bench = false
+
+[[test]]
+name = "sorted_index_convergence"
+bench = false
+
+[[test]]
+name = "trie_scaling"
+bench = false
+
+[[test]]
+name = "write_cost_profile"
+bench = false
 
 [features]
 default = []
@@ -59,11 +114,22 @@ testing = []
 [[test]]
 name = "merge_registry_concurrent"
 required-features = ["testing"]
+bench = false
 
 [[test]]
 name = "merge_registry_integration"
 required-features = ["testing"]
+bench = false
 
 [[test]]
 name = "rekey_record"
 required-features = ["testing"]
+bench = false
+
+[[bench]]
+name = "child_trie"
+harness = false
+
+[[bench]]
+name = "merge_root_state"
+harness = false

@@ -24,6 +24,26 @@ calimero-account.workspace = true
 calimero-primitives.workspace = true
 calimero-storage.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+camino.workspace = true
+calimero-store-rocksdb.workspace = true
+
+# A crate that gains a [[bench]] needs `bench = false` on its [lib], [[bin]]
+# and [[test]] targets, or `cargo bench -p calimero-store` (no --bench
+# filter) hands those to libtest, which rejects criterion's own CLI flags.
+[lib]
+bench = false
+
+[[test]]
+name = "rocksdb"
+bench = false
+
+[[bench]]
+name = "db_ops"
+harness = false
+
 [features]
 borsh = ["borsh/derive"]
 serde = ["dep:serde", "dep:serde_json"]

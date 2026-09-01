@@ -842,6 +842,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bulk-write-bench"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -989,6 +997,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "camino",
+ "criterion",
  "eyre",
  "futures-util",
  "serde",
@@ -1166,6 +1175,7 @@ name = "calimero-crypto"
 version = "0.0.0"
 dependencies = [
  "calimero-primitives",
+ "criterion",
  "curve25519-dalek",
  "ed25519-dalek",
  "eyre",
@@ -1182,6 +1192,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "calimero-storage",
+ "criterion",
  "rand 0.8.5",
  "serde",
  "thiserror 1.0.69",
@@ -1489,6 +1500,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-storage",
  "calimero-sys",
+ "criterion",
  "ed25519-dalek",
  "eyre",
  "fragile",
@@ -1626,6 +1638,7 @@ dependencies = [
  "calimero-storage-macros",
  "calimero-wasm-abi",
  "claims",
+ "criterion",
  "ed25519-dalek",
  "eyre",
  "fixedstr",
@@ -1657,12 +1670,15 @@ dependencies = [
  "calimero-account",
  "calimero-primitives",
  "calimero-storage",
+ "calimero-store-rocksdb",
  "camino",
+ "criterion",
  "eyre",
  "generic-array 1.3.5",
  "serde",
  "serde_json",
  "strum 0.26.3",
+ "tempfile",
  "thiserror 1.0.69",
  "thunderdome",
  "zeroize",
