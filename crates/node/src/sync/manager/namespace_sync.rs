@@ -1126,6 +1126,38 @@ impl SyncManager {
         Ok(ops)
     }
 
+    /// Peer ids for the admitters an invitation names, read out of its addresses.
+    ///
+    /// The addresses carry `/p2p/<peer-id>` precisely so a joiner that has synced
+    /// nothing can name the peer without resolving an account against governance
+    /// state it does not have. That suffix is what makes them usable here.
+    ///
+    /// Best-effort and possibly empty: the field is unsigned and optional, an
+    /// address may be stale, and a malformed one is skipped rather than failing the
+    /// join. An empty result simply leaves peer selection as it was.
+    fn admitter_peer_ids(invitation_bytes: &[u8]) -> Vec<PeerId> {
+        let Ok(invitation) = borsh::from_slice::<
+            calimero_context_config::types::SignedGroupOpenInvitation,
+        >(invitation_bytes) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        for addr in &invitation.admitter_addrs {
+            let Ok(parsed) = addr.parse::<libp2p::Multiaddr>() else {
+                continue;
+            };
+            // The peer id is the only part of the address this cares about; the
+            // transport half is the dialer's problem, and it has already run.
+            if let Some(libp2p::multiaddr::Protocol::P2p(peer)) = parsed.iter().last() {
+                if !out.contains(&peer) {
+                    out.push(peer);
+                }
+            }
+        }
+        out
+    }
+
     /// Initiator side: open a stream to a mesh peer and perform the
     /// NamespaceJoinRequest / NamespaceJoinResponse exchange.
     pub(super) async fn initiate_namespace_join(
@@ -1167,17 +1199,30 @@ impl SyncManager {
         // typical 1–3 mesh peers plus headroom.
         const MAX_PROTOCOL_RETRIES: usize = 5;
 
+        // The peers the invitation named as admitters, if it named any
+        // reachable ones. Derived here rather than passed in because the
+        // invitation is already in `params` — the addresses ride along with it,
+        // outside the inviter's signature.
+        //
+        // Only an admitter can complete this join, so trying one first is not a
+        // preference so much as the difference between a round trip that can
+        // succeed and one that can only be refused.
+        let admitter_peers = Self::admitter_peer_ids(&params.invitation_bytes);
+
         for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
             let (mut stream, peer) = match super::namespace_join::open_namespace_join_stream(
                 &*self.sync_network,
                 params.namespace_id,
-                self.sync_config.open_stream_timeout,
-                crate::sync::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
-                std::time::Duration::from_millis(
-                    crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
-                ),
-                self.sync_config.namespace_discovery_wait,
+                super::namespace_join::ConnectBudget {
+                    open_timeout: self.sync_config.open_stream_timeout,
+                    mesh_retries: crate::sync::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+                    mesh_retry_delay: std::time::Duration::from_millis(
+                        crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+                    ),
+                    discovery_wait: self.sync_config.namespace_discovery_wait,
+                },
                 &rejected_peers,
+                &admitter_peers,
             )
             .await
             {
