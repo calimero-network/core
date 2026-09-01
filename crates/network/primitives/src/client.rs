@@ -51,6 +51,14 @@ impl NetworkClient {
         Self { network_manager }
     }
 
+    /// Dial a peer.
+    ///
+    /// Unlike its siblings here, this reports a closed mailbox as an error
+    /// rather than panicking on it. Those assume the network actor outlives the
+    /// caller, which holds for anything running while the node is up — but a
+    /// dial can be issued on a path that races shutdown, and a node tearing down
+    /// is not a reason to panic a node. The signature already carries an error;
+    /// this uses it.
     pub async fn dial(&self, peer_addr: Multiaddr) -> eyre::Result<()> {
         let (tx, rx) = oneshot::channel();
 
@@ -60,9 +68,10 @@ impl NetworkClient {
                 outcome: tx,
             })
             .await
-            .expect("Mailbox not to be dropped");
+            .map_err(|e| eyre::eyre!("network mailbox unavailable: {e}"))?;
 
-        rx.await.expect("Mailbox not to be dropped")
+        rx.await
+            .map_err(|e| eyre::eyre!("network dropped the dial response: {e}"))?
     }
 
     pub async fn listen_on(&self, addr: Multiaddr) -> eyre::Result<()> {
