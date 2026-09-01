@@ -2223,16 +2223,22 @@ pub struct CreateGroupInvitationApiRequest {
     pub recursive: Option<bool>,
     /// Accounts permitted to admit a claim of this invitation, 64 hex each.
     ///
-    /// Empty or absent keeps the existing behaviour: the joiner announces
-    /// itself on the namespace topic and any ready peer may admit it.
-    ///
-    /// Naming admitters means the joiner presents the invitation to one of them
-    /// directly instead. Worth doing because the broadcast path staples the
-    /// whole invitation to a readiness beacon, and those go out on the namespace
-    /// topic as plain borsh to any peer that subscribes — so an invitation that
-    /// travels that way is readable by more than its intended holder.
+    /// Empty or absent is filled in at mint from the group's admins and TEE
+    /// nodes. Naming them explicitly narrows that set; it cannot widen it past
+    /// what the caller is entitled to name, because the list is signed and
+    /// checked against the account an admitter proves it holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admitters: Vec<String>,
+    /// libp2p addresses for those admitters, each a full multiaddr including
+    /// the `/p2p/<peer-id>` suffix.
+    ///
+    /// Empty or absent asks the node to fill them in from addresses it already
+    /// has on file. Supplied values are used as given rather than merged.
+    ///
+    /// Unsigned: a wrong address misdirects where a joiner knocks, never who may
+    /// answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitter_addrs: Vec<String>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {

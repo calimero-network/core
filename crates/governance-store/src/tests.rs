@@ -4145,7 +4145,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
 
     let signed = SignedNamespaceOp::sign(
@@ -5424,7 +5424,7 @@ fn signed_invitation_for(
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     }
 }
 
@@ -11248,7 +11248,7 @@ mod target_application_row_seeding {
     use super::*;
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
-    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+    use calimero_context_client::local_governance::RootOp;
     use calimero_context_config::types::BytecodeId;
     use calimero_governance_types::GroupOp;
     use calimero_primitives::application::ApplicationSource;

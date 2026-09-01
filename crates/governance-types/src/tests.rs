@@ -689,7 +689,7 @@ const GOLDEN_ROOT_OP_POLICY_UPDATED: &[u8] = &[
 /// Encoding: member (32 bytes) + SignedGroupOpenInvitation — a minimal
 /// GroupInvitationFromAdmin (inviter_identity[0;32] + group_id[0;32] +
 /// expiration_timestamp 0 (u64) + invitation_nonce[0;32] + invited_role 1 (u8)
-/// + admitters len 0 (u32)) + inviter_signature "" + admitter_hints len 0 (u32)
+/// + admitters len 0 (u32)) + inviter_signature "" + admitter_addrs len 0 (u32)
 /// + application_id None + bytecode_id None — then the joiner credential.
 const GOLDEN_ROOT_OP_MEMBER_JOINED: &[u8] = &[
     0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -1753,7 +1753,7 @@ mod governance_op_storage_roundtrip {
             inviter_signature: "deadbeef".to_string(),
             application_id: Some([0x44; 32]),
             bytecode_id: Some([0x55; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 
@@ -2200,7 +2200,7 @@ fn emit_golden_root_op_vectors() {
             admitters: Vec::new(),
         },
         inviter_signature: String::new(),
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
         application_id: None,
         bytecode_id: None,
     };

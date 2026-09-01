@@ -492,7 +492,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
         bytecode_id: None,
-        admitter_hints: Vec::new(),
+        admitter_addrs: Vec::new(),
     };
 
     let gov = NamespaceGovernance::new(&store, ns_bytes.into());

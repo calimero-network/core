@@ -103,6 +103,13 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             NetworkMessage::MeshStats { outcome, .. } => {
                 let _ = outcome.send(Vec::new());
             }
+            // No swarm here, so no peer has ever been observed at an address.
+            // Empty is the honest answer and the one a caller must already
+            // handle: the real cache expires, so "no address for this peer" is
+            // an ordinary result rather than a harness artefact.
+            NetworkMessage::PeerAddrs { outcome, .. } => {
+                let _ = outcome.send(Vec::new());
+            }
             NetworkMessage::PeerCount { outcome, .. } => {
                 let _ = outcome.send(0);
             }

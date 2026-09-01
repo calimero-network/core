@@ -816,7 +816,7 @@ mod tests {
             inviter_account: None,
             application_id: Some(APP),
             bytecode_id: Some([0xD5; 32]),
-            admitter_hints: Vec::new(),
+            admitter_addrs: Vec::new(),
         }
     }
 

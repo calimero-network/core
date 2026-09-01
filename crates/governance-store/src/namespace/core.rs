@@ -380,7 +380,7 @@ impl<'a> NamespaceRepository<'a> {
                 inviter_account: Some(inviter_account),
                 application_id,
                 bytecode_id,
-                admitter_hints: Vec::new(),
+                admitter_addrs: Vec::new(),
             };
 
             result.push((gid, signed));
