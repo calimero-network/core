@@ -582,6 +582,46 @@ impl NodeClient {
     /// Snapshot of the local node's libp2p connectivity state — relays,
     /// rendezvous registrations, DCUtR upgrade outcomes, AutoNAT v2
     /// reachability. Backs `GET /admin-api/network/status`.
+    /// Last known dialable addresses for one peer, from the persistent cache.
+    ///
+    /// Thin delegation to the network client, exposed here because the node
+    /// actor resolving identities to addresses holds a `NodeClient`, not a
+    /// `NetworkClient`.
+    pub async fn peer_addrs(&self, peer_id: libp2p::PeerId) -> Vec<libp2p::Multiaddr> {
+        self.network_client.peer_addrs(peer_id).await
+    }
+
+    /// Where the given member identities of `group_id` were last reachable.
+    ///
+    /// Each address is paired with the peer that answers there, because an
+    /// address alone does not say who is at it and the caller — a joiner that
+    /// has synced nothing — is exactly the party that cannot look that up.
+    ///
+    /// Empty is an ordinary answer: both caches behind this expire, so a member
+    /// not seen recently is indistinguishable from one never seen.
+    pub async fn peer_addrs_for_identities(
+        &self,
+        group_id: calimero_context_config::types::ContextGroupId,
+        identities: Vec<calimero_primitives::identity::PublicKey>,
+    ) -> Vec<(libp2p::PeerId, libp2p::Multiaddr)> {
+        let (tx, rx) = oneshot::channel();
+
+        if self
+            .node_manager
+            .send(NodeMessage::PeerAddrsForIdentities {
+                group_id,
+                identities,
+                outcome: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+
+        rx.await.unwrap_or_default()
+    }
+
     pub async fn network_status(
         &self,
     ) -> calimero_network_primitives::network_status::NetworkStatusSnapshot {

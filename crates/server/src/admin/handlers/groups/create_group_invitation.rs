@@ -54,6 +54,7 @@ pub async fn handler(
             group_id,
             expiration_timestamp: req.expiration_timestamp,
             admitters,
+            admitter_hints: req.admitter_hints,
         })
         .await
         .map_err(parse_api_error);

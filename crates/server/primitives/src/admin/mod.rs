@@ -2283,16 +2283,23 @@ pub struct CreateGroupInvitationApiRequest {
     pub recursive: Option<bool>,
     /// Accounts permitted to admit a claim of this invitation, 64 hex each.
     ///
-    /// Empty or absent keeps the existing behaviour: the joiner announces
-    /// itself on the namespace topic and any ready peer may admit it.
-    ///
-    /// Naming admitters means the joiner presents the invitation to one of them
-    /// directly instead. Worth doing because the broadcast path staples the
-    /// whole invitation to a readiness beacon, and those go out on the namespace
-    /// topic as plain borsh to any peer that subscribes — so an invitation that
-    /// travels that way is readable by more than its intended holder.
+    /// Empty or absent is filled in at mint from the group's admins and TEE
+    /// nodes. Naming them explicitly narrows that set; it cannot widen it past
+    /// what the caller is entitled to name, because the list is signed and
+    /// checked against the account an admitter proves it holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admitters: Vec<String>,
+    /// Where to reach those admitters, for a caller that knows better than the
+    /// node does.
+    ///
+    /// `{"multiaddr": "/ip4/.../p2p/12D3Koo..."}` for a joiner that runs a node,
+    /// `{"url": "https://..."}` for one holding only a key. Empty or absent asks
+    /// the node to fill them in from what it knows.
+    ///
+    /// Unsigned: a wrong endpoint misdirects where a joiner knocks, never who
+    /// may answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admitter_hints: Vec<calimero_context_config::types::AdmitterEndpoint>,
 }
 
 impl Validate for CreateGroupInvitationApiRequest {

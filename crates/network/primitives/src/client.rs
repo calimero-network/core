@@ -34,8 +34,8 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
-    NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob, SetPeerScore, Subscribe,
-    SubscribedPeers, Unsubscribe,
+    NetworkStatus, OpenStream, PeerAddrs, PeerCount, Publish, QueryBlob, RequestBlob, SetPeerScore,
+    Subscribe, SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
@@ -154,6 +154,24 @@ impl NetworkClient {
         self.network_manager
             .send(NetworkMessage::OpenStream {
                 request: OpenStream(peer_id),
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Last known dialable addresses for `peer_id`, from the persistent cache.
+    ///
+    /// Empty means "no address to offer", never "no such peer" — a cache entry
+    /// expires, so a peer last seen long ago answers the same as one never seen.
+    pub async fn peer_addrs(&self, peer_id: libp2p::PeerId) -> Vec<libp2p::Multiaddr> {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::PeerAddrs {
+                request: PeerAddrs(peer_id),
                 outcome: tx,
             })
             .await

@@ -129,8 +129,98 @@ Unsigned on purpose. A hint is only *where* to look; who may admit stays inside 
 signature, so a wrong or stale hint costs a failed connection and nothing more —
 the admitting node still has to be in the signed list for its admission to count.
 
-Nothing populates hints yet, which is tracked separately. Until it does, a joiner
-needs the address out of band.
+### Where hints come from
+
+A caller can supply them, and otherwise the node resolves them:
+
+| case | what you get |
+| --- | --- |
+| caller passes `admitterHints` | used exactly as given, never merged with the node's own view — a caller naming endpoints is usually correcting that view, not extending it |
+| the minting node is itself an admitter | its confirmed external addresses, each with its peer id appended, including the relay-circuit form a NAT'd node is reachable on |
+| any other admitter | its last known address, resolved through the node's durable caches |
+
+That last row is what makes a **delegated** invitation usable. `CAN_INVITE_MEMBERS`
+lets a member mint invitations it may not admit, so the admitters are other nodes
+— and a joiner that has synced nothing cannot look up where those are.
+
+Resolution runs account → signing keys of the account's live devices → peers those
+keys have been seen on → last known addresses of those peers. The first link is
+governance state; the other two are node-local caches that persist across restarts
+and expire after 24 hours, which is also the longest an invitation can live. So a
+hint can never outlive the credential carrying it.
+
+Best-effort at every link. An admitter not seen recently is simply not hinted — one
+fewer address for the joiner to try, never a wrong one, because the signed
+`admitters` list still decides who may answer. A mint that can hint nobody says so
+in the log rather than issuing a credential that quietly cannot be redeemed.
+
+### Why no `{ url }` hint is generated
+
+Only `{ multiaddr }` hints are produced. That is a deliberate stop, not a missing
+feature, and the two kinds are not equally safe to guess.
+
+A multiaddr carries `/p2p/<peer-id>`, which libp2p authenticates during the
+handshake — dial the wrong host and it fails having disclosed nothing. A URL has no
+such property: HTTPS authenticates a domain, not a node. An invitation is a bearer
+credential, so a guessed URL risks presenting a redeemable credential to whatever
+answers there.
+
+A node also cannot derive its own. It terminates no TLS and `AuthMode::Proxy` is
+the default, so the address callers should use is a reverse proxy's — different
+host, different port, `https` where the node speaks plain HTTP. `listen` says where
+the process binds, which under a proxy is not an address to send anyone to.
+
+For the hosted tier this is resolved on the client instead: a keyholder with no node
+writes through delegated execution, which goes via hosted TEE relays, so the client
+falls back to the known relay endpoint when no multiaddr is usable. Note the
+invitation cannot inform that decision — `admitters` are plain accounts with no
+marker saying which are TEE-admitted — so it is an unconditional fallback rather
+than a conditional one.
+
+A third-party TEE deployment would need its endpoint recorded per node, alongside
+the attestation record that already names it. Nothing stores that yet. Until then,
+pass `--admitter-url` if you know it.
+
+## The two joining flows
+
+Which path a joiner takes is decided by one thing: whether it runs a node.
+
+### A joiner that runs a node
+
+1. It receives the invitation out of band (the inviter sends it however it likes).
+2. It signs its own `MemberJoinedAt` op — the invitation authorises the join, but
+   the joiner authors it, so no admitter ever signs on its behalf.
+3. It publishes that op on the namespace topic.
+4. Any node in the signed `admitters` list that sees it applies it. Every peer
+   re-checks `join_op_proves_ownership` at apply, so an admitter relays a join, it
+   never grants one.
+
+`admitter_hints` exists to make step 3 reliable when the joiner is not already
+connected to an admitter. **Today the hints are written into the invitation but
+nothing dials them yet** — a joiner still depends on gossip reaching an admitter.
+Consuming them is a separate change.
+
+### A joiner holding only a key
+
+This is the case direct admission exists for: a keyholder with no node, no swarm,
+and no governance state.
+
+1. It mints its account root and signs its device certificate **offline**.
+2. It signs its own `MemberJoinedAt`, exactly as a node joiner would.
+3. It `POST`s that op to `/admin-api/namespaces/:namespace_id/admit` on a node that
+   is named in `admitters`.
+4. That node verifies the signature, checks it may admit, applies the membership
+   locally, and publishes.
+
+Step 3 needs an address, and a multiaddr is no use here — there is no swarm to dial
+one from. So this path wants a `{ url }` hint, which is the one kind a node never
+generates.
+
+For the hosted tier that is resolved on the client rather than in the invitation:
+a keyholder writes through delegated execution, which runs via hosted TEE relays,
+so the client can ask whether the namespace has a TEE policy and present its claim
+to the known relay endpoint. Asking first matters — it keeps a self-hosted
+namespace's invitation from being handed to a cloud that has no business with it.
 
 ## Invitations expire within a day
 
@@ -148,3 +238,7 @@ op to **somebody else's** node still needs a credential on that node. Everything
 else in the flow works without one — the account, the certificate, and the op are
 all produced offline — but the last hop is not yet answered for a node the
 keyholder has no relationship with.
+
+The same guard covers the TEE-admission-policy lookup a client would use to decide
+where to present a claim, so both are unblocked by one piece of work rather than
+two.

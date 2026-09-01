@@ -1,3 +1,4 @@
+use calimero_context_config::types::AdmitterEndpoint;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
 use clap::Parser;
 use eyre::Result;
@@ -24,25 +25,58 @@ pub struct InviteCommand {
 
     /// Accounts permitted to admit a claim of this invitation.
     ///
-    /// Without any, the joiner announces itself on the namespace topic and any
-    /// ready peer may admit it — which means the invitation is published to
-    /// every subscriber of that topic. Naming admitters keeps it off the topic:
-    /// the joiner presents it to one of them directly.
+    /// Without any, the node fills the list in from the group's admins and TEE
+    /// nodes. Naming them narrows that set.
     #[clap(
         long = "admitter",
         value_name = "ACCOUNT_HEX",
         help = "Account permitted to admit this invitation (repeatable). \
-                Without it, admission is by broadcast."
+                Without it, the node uses the group's admins and TEE nodes."
     )]
     pub admitters: Vec<String>,
+
+    /// Where a joining NODE can dial an admitter.
+    ///
+    /// Only worth passing when this node cannot work the address out itself —
+    /// it has no entry for that account, or the one it has is stale.
+    #[clap(
+        long = "admitter-multiaddr",
+        value_name = "MULTIADDR",
+        help = "libp2p multiaddr (with peer id) for an admitter, for a joiner \
+                that runs a node (repeatable)."
+    )]
+    pub admitter_multiaddrs: Vec<String>,
+
+    /// Where a joining KEYHOLDER can reach an admitter over HTTPS.
+    ///
+    /// The one that survives restarts, and the one a joiner with no node of its
+    /// own can actually use.
+    #[clap(
+        long = "admitter-url",
+        value_name = "URL",
+        help = "https:// base URL of an admitter's admin API, for a joiner \
+                holding only a key (repeatable)."
+    )]
+    pub admitter_urls: Vec<String>,
 }
 
 impl InviteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        // Passed through as given. The two kinds are not interchangeable — a
+        // keyholder has no swarm to dial a multiaddr from — so they stay
+        // separate flags rather than one the node has to guess the shape of.
+        let admitter_hints: Vec<AdmitterEndpoint> = self
+            .admitter_multiaddrs
+            .into_iter()
+            .map(AdmitterEndpoint::Multiaddr)
+            .chain(self.admitter_urls.into_iter().map(AdmitterEndpoint::Url))
+            .collect();
+
         let request = CreateGroupInvitationApiRequest {
             expiration_timestamp: self.expiration_timestamp,
             recursive: Some(self.recursive),
             admitters: self.admitters,
+            admitter_hints,
         };
 
         let client = environment.client()?;
