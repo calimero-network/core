@@ -300,8 +300,6 @@ trybuild = "1.0"
 ureq = "3.4.0"
 url = "2.5.2"
 velcro = "0.5.4"
-# Pinned exact: a wasmer minor can change memory strategy (7.4 made every static
-# memory reserve 8 GiB of address space), so crossing one is a deliberate review.
 wasmer = "=7.4.0"
 wasmer-types = "=7.4.0"
 wasmer-middlewares = "=7.4.0"
