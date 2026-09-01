@@ -244,7 +244,7 @@ impl BorshDeserialize for CrdtType {
             1 => Ok(Self::GCounter),
             2 => Ok(Self::PnCounter),
             3 => Ok(Self::Rga),
-            4 | 5 | 6 | 7 | 8 => {
+            4..=8 => {
                 if legacy {
                     let payloads = if variant <= 5 { 2 } else { 1 };
                     for _ in 0..payloads {

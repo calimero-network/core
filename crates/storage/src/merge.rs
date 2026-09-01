@@ -383,16 +383,16 @@ pub fn merge_by_crdt_type(
         CrdtType::LwwRegister { .. } => Ok(incoming.to_vec()),
 
         // Collections - with type info we can merge them
-        CrdtType::UnorderedMap { .. } => merge_unordered_map(existing, incoming),
+        CrdtType::UnorderedMap => merge_unordered_map(existing, incoming),
         // SortedMap stores and merges exactly like UnorderedMap (entries sync
         // separately; ordering is a read-time concern derived from `K: Ord`), so
         // the container merge is the same add-wins structural pass.
-        CrdtType::SortedMap { .. } => merge_unordered_map(existing, incoming),
-        CrdtType::UnorderedSet { .. } => merge_unordered_set(existing, incoming),
+        CrdtType::SortedMap => merge_unordered_map(existing, incoming),
+        CrdtType::UnorderedSet => merge_unordered_set(existing, incoming),
         // SortedSet stores/merges exactly like UnorderedSet (union; ordering is a
         // read-time concern derived from `T: Ord`).
-        CrdtType::SortedSet { .. } => merge_unordered_set(existing, incoming),
-        CrdtType::Vector { .. } => merge_vector(existing, incoming),
+        CrdtType::SortedSet => merge_unordered_set(existing, incoming),
+        CrdtType::Vector => merge_vector(existing, incoming),
 
         // UserStorage - LWW per user (same as LwwRegister)
         CrdtType::UserStorage => Ok(incoming.to_vec()),
