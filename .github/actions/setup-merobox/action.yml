@@ -9,56 +9,6 @@ runs:
       run: |
         set -euo pipefail
 
-        # An exact pin, not a floor. This used to install whatever merobox had
-        # published most recently, so a merobox release reached every core CI run
-        # within minutes of being cut, with nothing gating it: when 0.6.59 turned
-        # unknown scenario-YAML keys from ignored into fatal, every open PR went
-        # red at once and none of them had touched a scenario. Bumping is now a
-        # deliberate edit here, and the PR that makes it runs the full e2e suite
-        # against the new version before it becomes everyone's problem.
-        # 0.6.60 added `topology: { type: bootstrap }`, which
-        # workflows/discovery-rendezvous-3node.yml needs — on 0.6.59 that key
-        # fails schema validation ("only 'nat' is implemented") before any node
-        # starts.
-        #
-        # 0.6.62 is the first release with a working `wait_for_sync` `expect:`
-        # block, which the three convergence barriers in
-        # apps/scaffolding-e2e/workflows/group-subgroup.yml use. It took three
-        # merobox changes: #358 added it, #359 registered the key in the step
-        # schema (without which the block fails validation as unknown), and #361
-        # fixed it comparing the JSON-RPC envelope instead of the inner `result`
-        # — which no `equals` can match, so the gate timed out at 60s reporting
-        # a value as absent while every node had returned it. 0.6.61 carries the
-        # first two only, so `expect` is unusable there.
-        #
-        # Unknown scenario keys are fatal as of 0.6.59, so on anything older that
-        # scenario does not merely lose its barrier — it fails to validate.
-        #
-        # Both are the deliberate bump the note above describes, and the PR
-        # carrying it runs the full suite against the new version.
-        #
-        # 0.6.67 adds `nodes.init_args` — per-node `merod init` flags — and
-        # exports `deviceAgreementKey` from `node_identity`. Both are needed by
-        # `offline-account-root.yml`, which cannot boot a single node with
-        # `--no-account-root` without the first and cannot read the third input
-        # `sign-cert` needs without the second (merobox#383).
-        #
-        # 0.6.68 is what makes that second half actually arrive. The export was
-        # dead code at 0.6.67: merobox reaches the node through `calimero-client`
-        # compiled into the `calimero-client-py` wheel it bundles, and that wheel
-        # pinned a core rev predating #3672 — so the field was dropped on
-        # deserialization before any step could capture it. client-py 0.6.35 pins a
-        # rev carrying it, and 0.6.68 was built after that published.
-        #
-        # Adding a field to an admin-api response therefore does not reach a
-        # scenario until this pin moves. It is the same chain a `crates/client` fix
-        # travels, for the same reason.
-        #
-        # 0.6.72 is what lets the account scenarios drop their shell wrappers:
-        # `expect_status` on the account steps and `where`/`not_match`/`contains`/
-        # `retries` on the reads (merobox#386), plus the dispatch fix without which
-        # `account_relink` and `account_applications` validate and then fail to run
-        # (merobox#391 - they had been unreachable since 0.6.68).
         MEROBOX_VERSION="0.6.72"
         TAG="v${MEROBOX_VERSION}"
 
