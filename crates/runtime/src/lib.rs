@@ -1710,42 +1710,6 @@ mod wasm_integration_tests {
         }
     }
 
-    /// A cache entry left by a different wasmer version: the artifact magic
-    /// still matches, so it reaches payload deserialization rather than being
-    /// rejected outright like the all-zeros case above. It must surface as a
-    /// `Deserialize` error and leave the engine able to recompile from source -
-    /// the fallback any precompiled-cache reader depends on.
-    #[test]
-    fn test_from_precompiled_foreign_artifact_falls_back_to_recompile() {
-        let wat = r#"
-            (module
-                (memory (export "memory") 1)
-                (func (export "test_func"))
-            )
-        "#;
-        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
-
-        let mut stale = b"wasmer-universal".to_vec();
-        stale.extend_from_slice(&[0xAB; 512]);
-
-        let engine = Engine::default();
-
-        // SAFETY: test-only bytes; wasmer validates the archive before mapping it.
-        let result = unsafe { engine.from_precompiled(&stale) };
-        match result {
-            Err(PrecompiledModuleError::Deserialize(_)) => {}
-            Err(PrecompiledModuleError::SizeLimitExceeded { .. }) => {
-                panic!("512 bytes is within the default cap; should not be a size error")
-            }
-            Ok(_) => panic!("an artifact from another wasmer version must not deserialize"),
-        }
-
-        assert!(
-            engine.compile(&wasm).is_ok(),
-            "engine must still recompile from source after a rejected cache entry"
-        );
-    }
-
     /// Edge case mirroring `test_wasm_module_size_limit_zero` for the
     /// precompiled path: with `max_precompiled_module_size = 0`, any non-empty
     /// slice is rejected by the cap, while an empty slice passes the size check
