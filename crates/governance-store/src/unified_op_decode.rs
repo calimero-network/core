@@ -173,7 +173,7 @@ pub fn op_from_namespace_op(
     hlc: HybridTimestamp,
     parents: &[[u8; 32]],
 ) -> Op {
-    op_from_namespace_op_with_binding(signed, decrypted_group_op, None, id, hlc, parents)
+    op_from_namespace_op_with_binding(signed, decrypted_group_op, None, None, id, hlc, parents)
 }
 
 /// [`op_from_namespace_op`], told who the signer is.
@@ -186,6 +186,7 @@ pub fn op_from_namespace_op(
 pub fn op_from_namespace_op_with_binding(
     signed: &SignedNamespaceOp,
     decrypted_group_op: Option<&GroupOp>,
+    opened_root: Option<&RootOp>,
     signer_binding: Option<(AccountId, DeviceId)>,
     id: [u8; 32],
     hlc: HybridTimestamp,
@@ -219,6 +220,22 @@ pub fn op_from_namespace_op_with_binding(
             Some(group_op) => payload_from_group_op(*group_id, group_op).unwrap_or(OpPayload::Noop),
             None => OpPayload::Opaque {
                 group: calimero_context_config::types::ContextGroupId::from(group_id.to_bytes()),
+            },
+        },
+        // A sealed root op is the same "second nothing" as an undecryptable
+        // group op above, and folds the same way. Getting this wrong is not a
+        // missing optimisation: the root admin arrives on a root op, so a node
+        // that folded an unopened one as `Noop` would report a whole ancestry
+        // and then answer an admin-or-capability question from a fold with an
+        // invisible hole — deciding "denied" where the honest answer is "I
+        // cannot see". The group here is the namespace root, which is the group
+        // every root op speaks for.
+        NamespaceOp::RootSealed { .. } => match opened_root {
+            Some(root) => payload_from_root_op(root).unwrap_or(OpPayload::Noop),
+            None => OpPayload::Opaque {
+                group: calimero_context_config::types::ContextGroupId::from(
+                    signed.namespace_id.to_bytes(),
+                ),
             },
         },
         // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op folds as a

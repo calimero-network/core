@@ -2236,6 +2236,29 @@ pub fn decrypt_group_op(
     }
 }
 
+/// Open a sealed root op, or `None` when this node holds no key for it.
+///
+/// The root analogue of [`decrypt_group_op`], and deliberately namespace-only:
+/// a root op is sealed under the namespace key, so unlike the group path there
+/// is no subgroup keyring to fall back to.
+///
+/// `None` is an ordinary answer, not a fault — a member that has not yet been
+/// delivered the namespace key cannot read these, and says so rather than
+/// guessing. Callers must fold that `None` as a hole the reader can see, never
+/// as "nothing happened here".
+pub fn open_sealed_root_op(
+    store: &Store,
+    namespace_id: NamespaceId,
+    key_id: &[u8; 32],
+    encrypted: &calimero_governance_types::EncryptedRootOp,
+) -> EyreResult<Option<RootOp>> {
+    let ns_group = ContextGroupId::from(namespace_id.to_bytes());
+    match GroupKeyring::new(store, ns_group).load_key_by_id(key_id)? {
+        Some(key) => Ok(Some(GroupKeyring::decrypt_root_op(&key, encrypted)?)),
+        None => Ok(None),
+    }
+}
+
 /// Build an ECDH-wrapped group key to deliver to `requester` in response
 /// to a `GroupKeyRequest`. See
 /// [`NamespaceGovernance::build_group_key_delivery`].
