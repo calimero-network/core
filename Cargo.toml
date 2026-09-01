@@ -300,11 +300,11 @@ trybuild = "1.0"
 ureq = "3.4.0"
 url = "2.5.2"
 velcro = "0.5.4"
-# Pinned exact: the family exact-pins itself internally, and 7.4 drops the
-# BaseTunables memory knobs `WasmerTunables` needs (every memory becomes 8 GiB static).
-wasmer = "=7.3.0"
-wasmer-types = "=7.3.0"
-wasmer-middlewares = "=7.3.0"
+# Pinned exact: a wasmer minor can change memory strategy (7.4 made every static
+# memory reserve 8 GiB of address space), so crossing one is a deliberate review.
+wasmer = "=7.4.0"
+wasmer-types = "=7.4.0"
+wasmer-middlewares = "=7.4.0"
 wasm-opt = "0.116"
 wasmparser = "0.258"
 wat = "1.243.0"
