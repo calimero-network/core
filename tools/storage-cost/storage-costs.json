@@ -228,22 +228,22 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 466,
+        "rows_read": 464,
         "rows_written": 169,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 3976,
+        "rows_read": 3974,
         "rows_written": 1429,
         "rows_removed": 0
       },
       "00001000": {
-        "rows_read": 39076,
+        "rows_read": 39074,
         "rows_written": 14029,
         "rows_removed": 0
       },
       "00010000": {
-        "rows_read": 390076,
+        "rows_read": 390074,
         "rows_written": 140029,
         "rows_removed": 0
       }
@@ -253,22 +253,22 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 1548,
+        "rows_read": 1384,
         "rows_written": 410,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 37281,
+        "rows_read": 27381,
         "rows_written": 3785,
         "rows_removed": 0
       },
       "00000500": {
-        "rows_read": 641272,
+        "rows_read": 423375,
         "rows_written": 18785,
         "rows_removed": 0
       },
       "00002000": {
-        "rows_read": 8740864,
+        "rows_read": 5560603,
         "rows_written": 75035,
         "rows_removed": 0
       }
@@ -278,22 +278,22 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 629,
+        "rows_read": 559,
         "rows_written": 189,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 14624,
+        "rows_read": 9424,
         "rows_written": 1629,
         "rows_removed": 0
       },
       "00000500": {
-        "rows_read": 272824,
+        "rows_read": 146824,
         "rows_written": 8029,
         "rows_removed": 0
       },
       "00002000": {
-        "rows_read": 4091074,
+        "rows_read": 2087074,
         "rows_written": 32029,
         "rows_removed": 0
       }
@@ -303,22 +303,22 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 484,
+        "rows_read": 464,
         "rows_written": 169,
         "rows_removed": 0
       },
       "00000100": {
-        "rows_read": 4174,
+        "rows_read": 3974,
         "rows_written": 1429,
         "rows_removed": 0
       },
       "00001000": {
-        "rows_read": 41074,
+        "rows_read": 39074,
         "rows_written": 14029,
         "rows_removed": 0
       },
       "00010000": {
-        "rows_read": 410074,
+        "rows_read": 390074,
         "rows_written": 140029,
         "rows_removed": 0
       }

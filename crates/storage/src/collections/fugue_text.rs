@@ -55,10 +55,15 @@
 //! like the whole-document read. Run-length blocks are what keep that
 //! affordable: `blocks` counts *runs*, not characters.
 //!
-//! What survives from that work is [`tombstone_repairs`], which is not an index:
-//! it writes the authoritative delete-wins join back into overlapping stored
-//! copies of one run, so two replicas holding the same node set also hold the
-//! same bytes for it.
+//! A second, later pass — `normalise_blocks`, which rebuilt the tree after
+//! every mutating call to write the delete-wins join back into overlapping
+//! stored copies of a run — is gone for a related reason. It was not
+//! node-dependent (it ran unconditionally, so gas stayed uniform), but it was
+//! repairing a condition that can no longer arise: overlap was reachable only
+//! while a mid-run insert SPLIT the run it landed in, and that stopped. See
+//! [`find_block`] for the invariant that replaced it. It had been doubling the
+//! cost of every write, because a second full `load` + `build_tree` is the same
+//! `O(entities)` the operation had already paid once.
 //!
 //! ## Example
 //!
@@ -403,9 +408,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         for (offset, content) in s.chars().enumerate() {
             self.insert_one(pos + offset, replica, content)?;
         }
-        // Unconditional, once per call: see the module doc on why a
-        // marker-conditional rebuild would make write gas node-dependent.
-        self.normalise_blocks()
+        Ok(())
     }
 
     /// Delete the character at the given visible position.
@@ -453,30 +456,24 @@ impl<S: StorageAdaptor> FugueText<S> {
             }
         }
         if targets.is_empty() {
-            return self.normalise_blocks();
+            return Ok(());
         }
 
-        // Overlapping copies of one run can both define a node (a split that
-        // raced a remote unsplit copy). Set the bit in EVERY copy: a tombstone
-        // recorded in only one of them would be dropped by a later merge with a
-        // peer that holds the other.
+        // Exactly one stored block defines any given node — see [`find_block`]
+        // for why runs of one replica always partition its counter space — so
+        // one bitmap write per node is the whole of the delete.
         let mut touched: BTreeMap<usize, TextBlock> = BTreeMap::new();
         for raw in targets {
             let id = BlockId::from_raw(raw);
-            let mut covered = false;
-            for index in blocks_containing(&loaded, id) {
-                covered = true;
-                let block = touched
-                    .entry(index)
-                    .or_insert_with(|| loaded[index].block.clone());
-                tomb_set(
-                    &mut block.tombstones,
-                    (id.counter - loaded[index].id.counter) as usize,
-                );
-            }
-            if !covered {
-                return Err(invalid("deleted node has no block"));
-            }
+            let index =
+                find_block(&loaded, id).ok_or_else(|| invalid("deleted node has no block"))?;
+            let block = touched
+                .entry(index)
+                .or_insert_with(|| loaded[index].block.clone());
+            tomb_set(
+                &mut block.tombstones,
+                (id.counter - loaded[index].id.counter) as usize,
+            );
         }
 
         for (index, mut block) in touched {
@@ -484,7 +481,7 @@ impl<S: StorageAdaptor> FugueText<S> {
             self.put_block(BlockKey::new(loaded[index].id), block)?;
         }
 
-        self.normalise_blocks()
+        Ok(())
     }
 
     /// The document text, tombstones excluded.
@@ -665,24 +662,6 @@ impl<S: StorageAdaptor> FugueText<S> {
         Ok(())
     }
 
-    /// Normalise the stored blocks against the authoritative join.
-    ///
-    /// Called **unconditionally** at the end of every mutating operation. Where
-    /// two overlapping stored copies of one run disagree about a tombstone, the
-    /// authoritative join (delete-wins, what [`build_tree`] computes) is written
-    /// back into the owning copy, so two replicas that hold the same node set
-    /// also hold the same BYTES for it. Cost is `O(nodes)` on a path that has
-    /// already loaded every block and built the tree.
-    fn normalise_blocks(&mut self) -> Result<(), StoreError> {
-        let loaded = self.load()?;
-        let tree = build_tree(&loaded)?;
-
-        for (index, block) in tombstone_repairs(&loaded, &tree)? {
-            self.put_block(BlockKey::new(loaded[index].id), block)?;
-        }
-        Ok(())
-    }
-
     /// Every stored block, ascending by id, with its node count.
     fn load(&self) -> Result<Vec<LoadedBlock>, StoreError> {
         let mut loaded: Vec<LoadedBlock> = self
@@ -732,7 +711,7 @@ impl<S: StorageAdaptor> FugueText<S> {
             }
             self.put_block(key, incoming)?;
         }
-        self.normalise_blocks()
+        Ok(())
     }
 
     /// Join two stored ENTRIES of the block map, given as the raw bytes the
@@ -789,39 +768,6 @@ fn join_block(mine: &mut TextBlock, incoming: TextBlock) {
     }
 }
 
-/// The tombstone repairs that make the stored blocks agree with the
-/// authoritative join, as `(index into `loaded`, repaired block)`.
-///
-/// Ownership of a node is [`find_block`]'s rule — the tightest (most finely
-/// split) covering block — so overlapping copies of one run never double-count a
-/// node, and two replicas holding the same block set derive the same repairs.
-///
-/// Liveness comes from the TREE (delete-wins across every copy), not from the
-/// owning block's bitmap; where the two disagree the bitmap is repaired, so two
-/// replicas that agree on the node set also agree on the stored bytes.
-fn tombstone_repairs(
-    loaded: &[LoadedBlock],
-    tree: &FugueTree,
-) -> Result<Vec<(usize, TextBlock)>, StoreError> {
-    let mut repairs: BTreeMap<usize, TextBlock> = BTreeMap::new();
-
-    for raw in tree.ordered_ids() {
-        let id = BlockId::from_raw(raw);
-        let index = find_block(loaded, id).ok_or_else(|| invalid("ordered node has no block"))?;
-        let lb = &loaded[index];
-        let offset = (id.counter - lb.id.counter) as usize;
-        let live = tree.node(raw).is_some_and(|node| node.value.is_some());
-
-        if !live && !tomb_get(&lb.block.tombstones, offset) {
-            let block = repairs.entry(index).or_insert_with(|| lb.block.clone());
-            tomb_set(&mut block.tombstones, offset);
-            tomb_trim(&mut block.tombstones);
-        }
-    }
-
-    Ok(repairs.into_iter().collect())
-}
-
 /// A stored block plus the read-time facts derived from its neighbours.
 struct LoadedBlock {
     /// The id of the run's first node.
@@ -841,30 +787,35 @@ fn coalesces_into(lb: &LoadedBlock, id: BlockId) -> bool {
     lb.id.replica == id.replica && u64::from(lb.id.counter) + lb.len as u64 == u64::from(id.counter)
 }
 
-/// Every block whose run covers `id`, ascending by block id.
+/// The block whose run covers `id`, if the stored state defines that node.
 ///
-/// More than one can: a split that raced a remote copy of the unsplit run
-/// leaves overlapping definitions of the same nodes. They agree on value,
-/// parent and side by construction, so overlap is harmless for reads — but a
-/// tombstone must be written to all of them.
-fn blocks_containing(loaded: &[LoadedBlock], id: BlockId) -> Vec<usize> {
-    loaded
-        .iter()
-        .enumerate()
-        .filter(|(_, lb)| {
-            lb.id.replica == id.replica
-                && lb.id.counter <= id.counter
-                && u64::from(id.counter) < u64::from(lb.id.counter) + lb.len as u64
-        })
-        .map(|(index, _)| index)
-        .collect()
-}
-
-/// The tightest block covering `id` — the one with the largest start id, i.e.
-/// the most finely split definition. Deterministic, so two replicas that hold
-/// the same block set make the same split and coalescing decisions.
+/// There is at most one, and that is a structural invariant, not an assumption:
+///
+/// * [`materialize`](FugueText::materialize) mints a new block at
+///   [`next_counter`], which is one past the end of every span the replica has
+///   defined, so a fresh block never touches an existing one.
+/// * Coalescing extends a run by one node only when the run ENDS at that same
+///   high-water mark, so it can only ever grow into unclaimed counter space.
+/// * Once any later block of that replica exists, the high-water mark is past
+///   the earlier run's end forever, so that run's length is frozen — its final
+///   length is exactly the gap to the next block's start.
+/// * [`join_block`] grows a run by taking the longer `text`, and every copy of
+///   a run anywhere is a PREFIX of that frozen final length, so the join can
+///   never push a run past its successor's start.
+/// * `delete_range` rewrites only tombstone bitmaps, never a run's length.
+///
+/// So a replica's runs always partition its counter space, and a binary search
+/// for the last block starting at or before `id` finds the only candidate.
+/// (An earlier version scanned every block and took the tightest of several
+/// overlapping covers. Overlap was reachable only while a mid-run insert SPLIT
+/// the run it landed in; that stopped, and with it the last producer of
+/// overlap.)
 fn find_block(loaded: &[LoadedBlock], id: BlockId) -> Option<usize> {
-    blocks_containing(loaded, id).into_iter().next_back()
+    let position = loaded.partition_point(|lb| lb.id <= id).checked_sub(1)?;
+    let lb = loaded.get(position)?;
+    (lb.id.replica == id.replica
+        && u64::from(id.counter) < u64::from(lb.id.counter) + lb.len as u64)
+        .then_some(position)
 }
 
 /// The next unused counter for `replica`, one past the highest node of that
@@ -1643,10 +1594,7 @@ mod model_tests {
 /// layout, which is free to change.
 #[cfg(test)]
 mod positional_read_tests {
-    use super::{
-        blocks_containing, build_tree, find_block, BlockId, BlockKey, BlockSide, FugueText,
-        TextBlock, UnorderedMap,
-    };
+    use super::{build_tree, find_block, BlockId, FugueText, UnorderedMap};
     use crate::collections::fugue::Rng;
     use crate::collections::Root;
     use crate::env;
@@ -1779,8 +1727,14 @@ mod positional_read_tests {
     ///
     /// This is the invariant the ordered index used to assert about itself.
     /// It survives the index because it is a property of the STORED FORM, not
-    /// of a cache: `find_block`'s tightest-cover rule must partition the node
-    /// set even when overlapping copies of one run are present.
+    /// of a cache.
+    ///
+    /// It is also the invariant that lets [`find_block`] be a binary search and
+    /// that made `normalise_blocks` dead: a replica's runs PARTITION its counter
+    /// space, so exactly one stored block defines any node, and no two blocks
+    /// can disagree about one. Asserted directly below — if a future change
+    /// reintroduces overlapping runs, this fails rather than silently making
+    /// `find_block` pick one of several covers.
     #[test]
     fn stored_blocks__cover_every_authoritative_node_exactly_once() {
         env::reset_for_testing();
@@ -1793,6 +1747,22 @@ mod positional_read_tests {
 
             let loaded = doc.load().unwrap();
             let tree = build_tree(&loaded).unwrap();
+
+            // The partition: same-replica runs never overlap.
+            for (position, earlier) in loaded.iter().enumerate() {
+                for later in loaded.iter().skip(position + 1) {
+                    if earlier.id.replica == later.id.replica {
+                        assert!(
+                            u64::from(earlier.id.counter) + earlier.len as u64
+                                <= u64::from(later.id.counter),
+                            "seed {seed}: runs {:?}+{} and {:?} overlap",
+                            earlier.id,
+                            earlier.len,
+                            later.id
+                        );
+                    }
+                }
+            }
 
             let mut owned: std::collections::BTreeSet<BlockId> = std::collections::BTreeSet::new();
             for raw in tree.ordered_ids() {
@@ -1816,103 +1786,6 @@ mod positional_read_tests {
                 "seed {seed}: live count"
             );
         }
-    }
-
-    /// THE WRINKLE. Overlapping stored copies of one run — two blocks that both
-    /// define the same nodes — must still read exactly, and the tightest-cover
-    /// ownership rule must not double-count them.
-    ///
-    /// Local editing can no longer produce this: nothing splits a run any more,
-    /// so a replica's blocks partition its own node space. It remains reachable
-    /// from a PEER (a differently-blocked copy of the same nodes off the wire,
-    /// including one written by an older or divergent implementation), which is
-    /// exactly why `blocks_containing` and `find_block`'s tightest-cover rule
-    /// are still load-bearing. So the overlap here is injected directly into the
-    /// block map rather than staged through the insert path.
-    #[test]
-    fn overlapping_blocks__ordered_reads_stay_exact() {
-        type A = MockedStorage<884>;
-        type B = MockedStorage<885>;
-        type M = MockedStorage<886>;
-        env::reset_for_testing();
-
-        let mut a = doc_in::<A>("ov");
-        a.insert_str_with_replica(0, 2, "abcd").unwrap();
-        let mut b = doc_in::<B>("ov");
-        b.insert_str_with_replica(0, 2, "abcd").unwrap();
-
-        // B coalesces onto the run; A edits inside it twice.
-        b.insert_str_with_replica(4, 2, "ef").unwrap();
-        a.insert_str_with_replica(1, 1, "Q").unwrap();
-        a.insert_str_with_replica(4, 1, "R").unwrap();
-
-        let mut merged = doc_in::<M>("ov-m");
-        merged.merge_blocks_from(&a).unwrap();
-        merged.merge_blocks_from(&b).unwrap();
-        let text = merged.get_text().unwrap();
-        assert_eq!(text, "aQbcRdef");
-
-        // Inject a second, differently-blocked copy of the SAME nodes: the tail
-        // of run (2,0) restated as its own block, with exactly the edges
-        // `build_tree` synthesises for those nodes.
-        merged
-            .put_block(
-                BlockKey::new(BlockId::new(2, 2)),
-                TextBlock {
-                    start_id: BlockId::new(2, 2),
-                    text: "cdef".to_owned(),
-                    parent: Some(BlockId::new(2, 1)),
-                    side: BlockSide::R,
-                    tombstones: Vec::new(),
-                },
-            )
-            .unwrap();
-
-        // Overlap really is present in the STORED form.
-        let loaded = merged.load().unwrap();
-        let overlapping = loaded
-            .iter()
-            .filter(|lb| {
-                blocks_containing(&loaded, BlockId::new(lb.id.replica, lb.id.counter)).len() > 1
-            })
-            .count();
-        assert!(
-            overlapping > 0,
-            "this scenario is supposed to produce overlapping stored blocks"
-        );
-
-        // ... and changes nothing about what the document says.
-        let text = merged.get_text().unwrap();
-        assert_eq!(text, "aQbcRdef");
-        assert_eq!(merged.text_range(0, merged.len().unwrap()).unwrap(), text);
-        for index in 0..text.chars().count() + 2 {
-            assert_eq!(merged.char_at(index).unwrap(), text.chars().nth(index));
-        }
-        for start in 0..text.chars().count() {
-            for end in start..text.chars().count() + 2 {
-                let expected: String = text.chars().skip(start).take(end - start).collect();
-                assert_eq!(merged.text_range(start, end).unwrap(), expected);
-            }
-        }
-
-        let tree = build_tree(&loaded).unwrap();
-        let ordered = tree.ordered_ids();
-        assert!(
-            ordered
-                .iter()
-                .all(|raw| find_block(&loaded, BlockId::from_raw(*raw)).is_some()),
-            "every ordered node must be owned by a stored block"
-        );
-        assert_eq!(
-            ordered.len(),
-            tree.nodes().count(),
-            "overlap must not double-count"
-        );
-
-        // A delete must reach EVERY covering copy, or the join would resurrect
-        // the node from the copy that still calls it live.
-        merged.delete(3).unwrap();
-        assert_eq!(merged.get_text().unwrap(), "aQbRdef");
     }
 
     /// `len` and `is_empty` agree with `get_text`.
