@@ -315,34 +315,32 @@ steps:
   # calimero-storage/tests/custom_merge_e2e.rs proves the mechanism, and the
   # convergence harness cannot do it at all (see tests/converge.rs).
   # ---------------------------------------------------------------------------
-  - name: Node 1 awards its own badge
+  # Explicit badge numbers, one per node. An earlier version derived the badge
+  # from the node's own device id, which is what a CONVERGENCE HARNESS needs —
+  # there every replica runs the same op list, so an op taking an explicit
+  # argument cannot make two replicas diverge. That constraint does not exist
+  # here: every merobox step names the node it runs on, so the two calls are
+  # already different. Deriving it instead bought nothing and made the test
+  # flaky, since two device ids can agree in the byte the badge came from — CI
+  # duly produced badge 61 on both nodes and the run failed on a collision
+  # rather than on anything about merging.
+  - name: Node 1 awards badge 0
     type: call
     node: team-custom-node-1
     context_id: "{{context_id}}"
-    method: award_own_badge
+    method: award_badge
     args:
       team_id: team-alpha
-    outputs:
-      own_badge_node1: result.output
+      badge: 0
 
-  - name: Node 2 awards its own badge concurrently
+  - name: Node 2 awards badge 1 concurrently
     type: call
     node: team-custom-node-2
     context_id: "{{context_id}}"
-    method: award_own_badge
+    method: award_badge
     args:
       team_id: team-alpha
-    outputs:
-      own_badge_node2: result.output
-
-  # Precondition, not decoration. If both nodes picked the same bit, a merged
-  # count of 1 is CORRECT and the assertion below would fail for a reason that
-  # has nothing to do with merging. Checking it here means a failure downstream
-  # can only mean the merge did not happen.
-  - name: Assert the two nodes picked different badges
-    type: assert
-    statements:
-      - "{{own_badge_node1}} != {{own_badge_node2}}"
+      badge: 1
 
   - name: Wait for the badge blobs to merge
     type: wait_for_sync

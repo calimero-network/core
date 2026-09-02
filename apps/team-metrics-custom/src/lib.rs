@@ -152,27 +152,6 @@ impl TeamMetricsApp {
         Ok(stats.badges)
     }
 
-    /// Award the badge that belongs to the CALLING device, derived from its
-    /// device id.
-    ///
-    /// This exists to be testable, and the reason is worth stating. A
-    /// convergence harness applies the same op list to every replica, so an op
-    /// taking an explicit badge number leaves every replica computing the same
-    /// value — no conflict, nothing for a merge to do, and a test that passes
-    /// with the merge rule deleted. A counter avoids that by being per-writer;
-    /// this makes the badge per-writer for the same reason, so identical ops
-    /// still produce divergent blobs that only a union can reconcile.
-    pub fn award_own_badge(&mut self, team_id: String) -> app::Result<u64> {
-        let badge = u64::from(calimero_sdk::env::device_id()[0] % 64);
-        let _ = self.award_badge(team_id, badge)?;
-
-        // Returns the BIT, not the mask. A workflow has to be able to check
-        // that two nodes awarded DIFFERENT badges before it can read anything
-        // into a merged count of one: without that, "the merge never ran" and
-        // "both nodes happened to pick the same bit" look identical.
-        Ok(badge)
-    }
-
     /// How many badges the team holds.
     ///
     /// Exposed so an e2e assertion can be a plain integer comparison: the
