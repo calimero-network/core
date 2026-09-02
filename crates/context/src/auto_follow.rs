@@ -551,13 +551,21 @@ async fn handle_context_registered(
     group_id: [u8; 32],
     context_id: calimero_primitives::context::ContextId,
 ) {
-    // Before the follow decision, because the two answer different questions:
-    // that one is whether to REPLICATE this context, this one is whether the
-    // node can run its application at all. A device of a member's account that
-    // follows nothing still has to end up with the bytecode, and the apply that
-    // raised this event is what first names it here.
+    // The join needs membership, not bytecode: sync fetches the bytecode on its
+    // own rounds, so a slow or failing acquisition must not hold the join back.
+    follow_registered_context(store, context_client, limiter, group_id, context_id).await;
+    // Regardless of the decision: a node that follows nothing still has to be
+    // able to run the application, and this apply is what first names it here.
     acquire_application(store, context_client, group_id, context_id).await;
+}
 
+async fn follow_registered_context(
+    store: &Store,
+    context_client: &ContextClient,
+    limiter: &Arc<RateLimiter>,
+    group_id: [u8; 32],
+    context_id: calimero_primitives::context::ContextId,
+) {
     match decide_on_context_registered(store, group_id, &context_id) {
         ContextRegisteredDecision::NotMember | ContextRegisteredDecision::NotAutoFollowing => {
             return;

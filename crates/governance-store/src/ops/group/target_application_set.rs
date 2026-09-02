@@ -4,7 +4,7 @@
 use super::context::{seed_target_application_row, GroupApplyCtx};
 use crate::{MetaRepository, MetadataRepository};
 use calimero_app_downloader::registry::RegistryCoords;
-use calimero_primitives::application::ApplicationId;
+use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_store::key::ApplicationMeta;
 use eyre::Result as EyreResult;
 
@@ -18,20 +18,28 @@ pub(crate) fn apply(
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    // The group's pre-upgrade target, for the announcement's `from` side. Read
-    // before the mutation below overwrites it. Announcing is observational, so
-    // every read it needs stays non-fatal: a failed one drops the event, it
-    // never fails the apply and diverges this replica.
-    let previous_application_id = MetaRepository::new(store)
+    // Read before the mutation overwrites it. Announcing is observational, so a
+    // failed read drops the event rather than failing the apply.
+    let previous_target = MetaRepository::new(store)
         .load(group_id)
         .ok()
         .flatten()
-        .map(|meta| meta.target.application_id);
+        .map(|meta| meta.target);
 
     ctx.settings()
         .set_target_application(signer, bytecode_id, target_application_id, coords)?;
 
     seed_target_application_row(store, target_application_id, bytecode_id, coords)?;
+
+    // A group's first target, or a restated one, is not a migration.
+    let moved = previous_target.as_ref().is_none_or(|previous| {
+        previous.application_id != ZERO_APPLICATION_ID
+            && (previous.application_id != *target_application_id
+                || previous.bytecode_id != *bytecode_id)
+    });
+    if !moved {
+        return Ok(());
+    }
 
     // A multi-hop upgrade emits one of these ops per ladder rung, all naming
     // the same target application. Announce on the rung that actually lands the
@@ -51,7 +59,9 @@ pub(crate) fn apply(
         .count_contexts(group_id)
         .unwrap_or_default() as u32;
     ctx.queue_migration_started(
-        previous_application_id.as_ref(),
+        previous_target
+            .as_ref()
+            .map(|target| &target.application_id),
         target_application_id,
         None,
         local_contexts_total,

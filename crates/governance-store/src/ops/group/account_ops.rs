@@ -133,6 +133,13 @@ pub(crate) fn apply_device_linked(
                 device_epoch = binding.device_epoch,
                 "account device linked"
             );
+            // The device saw the group's earlier context registrations as
+            // nobody; the sweep a new member row starts catches it up.
+            if let Some(event) =
+                crate::build_auto_follow_set_if_enabled(ctx.store(), &group_id, &binding.account)?
+            {
+                ctx.queue_event(event);
+            }
         }
         Err(reason) => {
             // Deterministically inadmissible: every replica reaches the same

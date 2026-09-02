@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
-use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use calimero_context_config::types::{BytecodeId, ContextGroupId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
@@ -565,6 +565,32 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             }
                         }
                     }
+
+                    // Put the target on the DAG so a node that only backfills
+                    // (a paired device) learns it too. Best effort: it is applied
+                    // locally before the publish.
+                    match calimero_governance_store::sign_apply_and_publish(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        &group_id,
+                        &signer_sk,
+                        GroupOp::TargetApplicationSet {
+                            bytecode_id,
+                            target_application_id: effective_application_id,
+                            package: app_package.to_string(),
+                            version: app_version.to_string(),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(report) => report.observe("create_group", "TargetApplicationSet"),
+                        Err(e) => warn!(
+                            ?e,
+                            ?group_id,
+                            "failed to publish the namespace's target application"
+                        ),
+                    }
                 }
 
                 // Every device this account already certified belongs in the
@@ -987,6 +1013,47 @@ mod tests {
                 .expect("read the bindings"),
             "the device this account already certified has to be bound in the \
              namespace the creation just gained"
+        );
+    }
+
+    /// The ladder rung is written only by the target op, so it proves the op applied.
+    #[actix::test]
+    async fn creating_a_namespace_records_its_target_in_governance_state() {
+        let store = store();
+        install_application(&store, ApplicationId::from(APP));
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root the founder's credential is minted from");
+
+        let harness = actor::over(store.clone()).await;
+        let created = harness
+            .manager
+            .send(CreateGroupRequest {
+                group_id: Some(GROUP.into()),
+                bytecode_id: None,
+                application_id: ApplicationId::from(APP),
+                name: None,
+                parent_group_id: None,
+                restricted: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created");
+
+        let rungs = calimero_governance_store::UpgradeLadderRepository::new(&store)
+            .load(&created.group_id)
+            .expect("read the ladder");
+        let [rung] = rungs.as_slice() else {
+            panic!("the creation must record exactly one target rung, got {rungs:?}");
+        };
+        assert_eq!(
+            rung.application_id,
+            ApplicationId::from(APP),
+            "the rung names the application the namespace was created for"
+        );
+        assert_eq!(
+            rung.bytecode_id, [0x01; 32],
+            "the rung names the bytecode blob the application row resolves to"
         );
     }
 }

@@ -109,12 +109,6 @@ description: >
   this one is which namespaces the pairing reaches and what the device can do
   without being a member of any of them.
 
-  Also not asserted: that node-2's `bytecode_id` for the namespace matches the
-  members'. `GET /admin-api/namespaces` withholds a summary from a non-member by
-  design, and `GET /admin-api/account/applications` - the one namespace-shaped
-  read a paired device does get - reports no bytecode id. Asserting it needs the
-  admin API to expose one to a non-member, which is a change rather than a test.
-
   User-visible failure modes this guards against: "I paired my phone for one app
   and it turned up in every team I am in", its mirror, "I paired my phone and
   the project I started afterwards was invisible to it", and "pairing failed
@@ -512,8 +506,6 @@ steps:
     retries: 45
     interval: 2
 
-  # The only route by which a member of nothing learns this: a namespace summary
-  # is withheld from non-members.
   - name: The device is told which namespace its account speaks app A in
     type: account_applications
     node: account-scope-node-2
@@ -522,6 +514,19 @@ steps:
     contains:
       namespaces:
         - '{{ns_a1}}'
+
+  # A linked device resolves to its account, which is a member, so it reads the
+  # same namespace summary the members do.
+  - name: The device's namespace summary names app A
+    type: assert_api_response
+    node: account-scope-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{ns_a1}}'
+    match:
+      targetApplicationId: '{{app_a}}'
+    retries: 45
+    interval: 2
 
   # ── Revoke, naming one namespace ───────────────────────────────────
 
