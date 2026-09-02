@@ -674,6 +674,17 @@ fn test_signed_op() -> SignedNamespaceOp {
             signed_invitation: test_invitation(),
             joined_at: 0,
             account: test_join_account(),
+            // A shape test, so this only has to be well formed — the apply is
+            // what checks an endorsement actually names an admitter.
+            admitter_endorsement: Box::new(
+                calimero_governance_types::AdmitterEndorsement::sign(
+                    &calimero_primitives::identity::PrivateKey::from([5u8; 32]),
+                    &[7u8; 32],
+                    &test_join_account().statement.account,
+                    &[0u8; 32],
+                )
+                .expect("sign endorsement"),
+            ),
         }),
         signature: [9u8; 64],
     }

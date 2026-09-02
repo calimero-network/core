@@ -34,11 +34,13 @@ impl<'a> NamespaceMembershipService<'a> {
         signed_invitation: &SignedGroupOpenInvitation,
         joined_at: Option<u64>,
         account: &JoinAccountCredential,
+        admitter_endorsement: Option<&calimero_governance_types::AdmitterEndorsement>,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         let inv = &signed_invitation.invitation;
         let group_id = inv.group_id;
 
         self.verify_member_join_signature(signer, member, signed_invitation, account)?;
+        self.verify_admitter_endorsement(member, signed_invitation, admitter_endorsement)?;
 
         // Deterministic expiry gate: reject when the joiner's signed
         // claimed join time is past expiry, comparing the op's own field
@@ -216,11 +218,15 @@ impl<'a> NamespaceMembershipService<'a> {
 
     /// Whether this node may admit a claim of `invitation`.
     ///
-    /// An empty `admitters` list is every invitation minted before the field
-    /// existed, and means the legacy behaviour: any peer that can validate the
-    /// invitation may admit. A non-empty list means the inviter chose who may,
-    /// and everyone else must refuse — including a node that would otherwise
-    /// have validated it perfectly well.
+    /// The list names who may, and everyone else must refuse — including a node
+    /// that would otherwise have validated the invitation perfectly well.
+    ///
+    /// An empty list is refused rather than treated as open season. It used to
+    /// mean the opposite, and that reading cannot survive the endorsement
+    /// requirement: the apply only accepts a join endorsed by an account the
+    /// invitation named, so an empty list is one no endorsement can satisfy.
+    /// Reading empty as permissive here would just mean this node does the
+    /// admission work and produces a join every replica rejects.
     ///
     /// The check has to live here rather than at the transport, because
     /// refusing is the *point*: an invitation restricted to named admitters is
@@ -229,17 +235,24 @@ impl<'a> NamespaceMembershipService<'a> {
     ///
     /// # Errors
     ///
-    /// When the list is non-empty and does not name `self_account`.
+    /// When the list is empty, or does not name `self_account`.
     pub fn require_may_admit(
         signed_invitation: &SignedGroupOpenInvitation,
         self_account: &AccountId,
     ) -> EyreResult<()> {
         let admitters = &signed_invitation.invitation.admitters;
-        if admitters.is_empty() || admitters.contains(self_account) {
+        if admitters.is_empty() {
+            bail!(
+                "the invitation names no admitter, so no endorsement of it can be \
+                 accepted; it cannot be used to admit anyone"
+            );
+        }
+        if admitters.contains(self_account) {
             return Ok(());
         }
         bail!(
-            "this node is not an admitter for the invitation ({} named);              the joiner must present it to one of them",
+            "this node is not an admitter for the invitation ({} named); the \
+             joiner must present it to one of them",
             admitters.len()
         );
     }
@@ -305,6 +318,90 @@ impl<'a> NamespaceMembershipService<'a> {
     /// as one; the proof now runs through the credential the op carries — see
     /// [`join_op_proves_ownership`](crate::ops::namespace::member_joined_open::join_op_proves_ownership)
     /// for why both of its halves are needed.
+    /// Check that somebody entitled to admit actually agreed to this join.
+    ///
+    /// The joiner signs its own join op, so its signature proves who is joining
+    /// and nothing about whether they were let in. `admitters` inside the
+    /// invitation names who may let them in — and a member holding only
+    /// `CAN_INVITE_MEMBERS` is deliberately not among them. Without this check
+    /// that list restricts nothing at all: the holder of a valid invitation
+    /// could publish its own join and every peer would fold it.
+    ///
+    /// Verified from the op alone, deliberately. Consulting local state — "am I
+    /// an admitter", "is this signer a peer I know" — would make the verdict
+    /// depend on which replica was asking, and a replica refusing a membership
+    /// its peers accepted is divergence, not policy.
+    fn verify_admitter_endorsement(
+        &self,
+        member: &AccountId,
+        signed_invitation: &SignedGroupOpenInvitation,
+        endorsement: Option<&calimero_governance_types::AdmitterEndorsement>,
+    ) -> EyreResult<()> {
+        // `MemberJoined` — the pre-`joined_at` variant — has nowhere to carry
+        // consent. Refused rather than waved through: a variant that cannot be
+        // endorsed cannot authorise a membership once `admitters` means
+        // anything, and accepting it would leave the whole gate bypassable by
+        // choosing the older op.
+        let Some(endorsement) = endorsement else {
+            bail!(
+                "join op carries no admitter endorsement; the legacy MemberJoined variant \
+                 cannot express one and is no longer sufficient to admit a member"
+            );
+        };
+        let inv = &signed_invitation.invitation;
+
+        // An empty list would mean "anybody may admit", which is not a value
+        // this can be permissive about: minting refuses to produce one, so an
+        // empty list on the wire is a hand-built op rather than a legitimate
+        // unrestricted invitation. Fail closed.
+        if inv.admitters.is_empty() {
+            bail!(
+                "invitation names no admitters, so no endorsement of it can be checked; \
+                 refusing the join rather than treating an unrestricted list as consent"
+            );
+        }
+
+        let payload = calimero_governance_types::admitter_endorsement_payload(
+            &self.namespace_id.to_bytes(),
+            member,
+            &inv.invitation_nonce,
+        );
+
+        // The same primitive the inviter's signature uses, so both halves of an
+        // invitation are checked the one way.
+        endorsement
+            .signer
+            .verify_raw_signature(&payload, &endorsement.signature)
+            .map_err(|e| eyre::eyre!("admitter endorsement signature is invalid: {e}"))?;
+
+        // The signature is by a KEY; the list names ACCOUNTS. Resolve through
+        // the device bindings, the same direction every other authority check
+        // here reads — a signer that spells an account it does not hold a
+        // binding for is not that account.
+        let endorser = crate::member_account_in_namespace(
+            self.store,
+            &ContextGroupId::from(self.namespace_id.to_bytes()),
+            &endorsement.signer,
+        )?
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "admitter endorsement is signed by {}, which speaks for no account in this \
+                 namespace",
+                endorsement.signer
+            )
+        })?;
+
+        if !inv.admitters.contains(&endorser) {
+            bail!(
+                "join endorsed by {endorser:?}, which the invitation does not name as an \
+                 admitter ({} named)",
+                inv.admitters.len()
+            );
+        }
+
+        Ok(())
+    }
+
     fn verify_member_join_signature(
         &self,
         signer: &PublicKey,

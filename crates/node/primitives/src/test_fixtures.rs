@@ -23,6 +23,8 @@ use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use tar::Builder;
 use tempfile::TempDir;
+
+use crate::join_bundle::JoinBundle;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::bundle::{derive_signer_id_did_key, sign_manifest_json, BundleArtifact, BundleManifest};
@@ -73,6 +75,59 @@ pub async fn node_client_over(
     let (ns_join_tx, _) = mpsc::channel(16);
     let (open_subgroup_join_tx, _) = mpsc::channel(16);
     let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+    let node_client = NodeClient::new(
+        datastore,
+        blob_manager,
+        network_client,
+        LazyRecipient::new(),
+        event_sender,
+        sync_client,
+        None,
+    );
+    (node_client, data_dir, blob_dir)
+}
+
+/// [`node_client_over`], with a responder that answers every namespace-join
+/// request with `bundle`.
+///
+/// The plain fixture drops the join receiver, so `request_namespace_join`
+/// fails and the handler takes its no-peer fallback. That fallback no longer
+/// records a membership — a join has to carry an admitter's endorsement, and
+/// only a peer can produce one — so a test that means to exercise what happens
+/// *after* a join succeeds has to stand a responder up rather than relying on
+/// the fallback to get there.
+pub async fn node_client_over_answering_joins(
+    datastore: Store,
+    network_client: NetworkClient,
+    bundle: JoinBundle,
+) -> (NodeClient, TempDir, TempDir) {
+    let data_dir = TempDir::new().unwrap();
+    let blob_dir = TempDir::new().unwrap();
+
+    let blob_root = blob_dir.path().join("blobs");
+    let blob_store = BlobStore::new(
+        datastore.clone(),
+        FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
+            .await
+            .unwrap(),
+    );
+    let blob_manager = BlobManager::new(blob_store);
+
+    let (event_sender, _) = broadcast::channel(256);
+    let (ctx_sync_tx, _) = mpsc::channel(64);
+    let (ns_sync_tx, _) = mpsc::channel(64);
+    let (ns_join_tx, mut ns_join_rx) = mpsc::channel(16);
+    let (open_subgroup_join_tx, _) = mpsc::channel(16);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+    // Detached: the client awaits the oneshot, so the answer has to come from
+    // somewhere other than the task making the request.
+    let _responder = tokio::spawn(async move {
+        while let Some((_params, reply)) = ns_join_rx.recv().await {
+            let _ignored = reply.send(Ok(bundle.clone()));
+        }
+    });
 
     let node_client = NodeClient::new(
         datastore,

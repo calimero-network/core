@@ -488,11 +488,38 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // it belongs to. That is what closes the window a separate
                 // `AccountDeviceLinked` left open.
                 let join_account = crate::join_credential::build(&datastore, &namespace_id.into(), &joiner_identity)?;
+
+                // No endorsement, no join. The peer that served the exchange
+                // either was not named in the invitation's `admitters` or was
+                // never reached at all, and neither leaves anything worth
+                // publishing: every peer refuses an unendorsed join at apply,
+                // so emitting one would trade a clear failure here for a
+                // membership that silently never materialises anywhere.
+                //
+                // This is the shape of the guarantee. `CAN_INVITE_MEMBERS` mints
+                // invitations without being able to complete them, and that only
+                // holds if reaching an admitter is a requirement rather than a
+                // preference.
+                let Some(endorsement_bytes) = join_result.admitter_endorsement_bytes.as_ref()
+                else {
+                    return Err(eyre::eyre!(
+                        "join could not be endorsed: no admitter named by this invitation was \
+                         reached, so the membership cannot be authorised"
+                    ));
+                };
+                let admitter_endorsement = Box::new(
+                    borsh::from_slice::<calimero_governance_types::AdmitterEndorsement>(
+                        endorsement_bytes,
+                    )
+                    .map_err(|e| eyre::eyre!("admitter endorsement did not decode: {e}"))?,
+                );
+
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoinedAt {
                     member: join_account.statement.account,
                     signed_invitation: invitation,
                     joined_at: now_secs,
                     account: join_account,
+                    admitter_endorsement,
                 });
                 match calimero_governance_store::sign_apply_and_publish_namespace_op_returning_op(
                     &datastore,
@@ -803,7 +830,7 @@ mod tests {
             expiration_timestamp: 0,
             invitation_nonce: [0xD4; 32],
             invited_role: 1,
-            admitters: Vec::new(),
+            admitters: vec![calimero_account::AccountId::from([0xD7; 32])],
         };
         let signature = inviter_sk
             .sign(&Sha256::digest(
@@ -835,7 +862,24 @@ mod tests {
             .expect("hold the scope key");
         let device = certify_device(&store, 0xD6, &[]);
 
-        let harness = actor::over(store.clone()).await;
+        // A peer that answers the join, because the endorsement it carries is
+        // what authorises the membership — the auto-bind asserted below runs
+        // only on a join that got that far.
+        let mut bundle = calimero_node_primitives::join_bundle::JoinBundle::empty();
+        bundle.admitter_endorsement_bytes = Some(
+            borsh::to_vec(
+                &calimero_governance_types::AdmitterEndorsement::sign(
+                    &PrivateKey::from([0xD3; 32]),
+                    &GROUP,
+                    &calimero_account::AccountId::from([0xD7; 32]),
+                    &[0xD4; 32],
+                )
+                .expect("sign the endorsement"),
+            )
+            .expect("borsh the endorsement"),
+        );
+
+        let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
         let _joined = harness
             .manager
             .send(JoinGroupRequest {

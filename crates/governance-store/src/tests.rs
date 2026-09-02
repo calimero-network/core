@@ -4135,7 +4135,7 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
-        admitters: Vec::new(),
+        admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -4153,10 +4153,20 @@ fn member_joined_clears_deny_list_for_rejoiner() {
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member,
             signed_invitation,
+            joined_at: 1,
             account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+            admitter_endorsement: Box::new(
+                calimero_governance_types::AdmitterEndorsement::sign(
+                    &admin_sk,
+                    &ns_id,
+                    &member,
+                    &[0x42; 32],
+                )
+                .expect("the admin endorses the rejoin"),
+            ),
         }),
     )
     .unwrap();
@@ -5414,7 +5424,9 @@ fn signed_invitation_for(
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: 1,
-        admitters: Vec::new(),
+        // The inviter names itself, which is what the mint's default would
+        // produce for an admin issuing its own invitation.
+        admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
     };
     let inv_bytes = borsh::to_vec(&invitation).unwrap();
     let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
@@ -5428,30 +5440,51 @@ fn signed_invitation_for(
     }
 }
 
-/// Apply a `RootOp::MemberJoined` signed by the joiner themselves.
+/// Apply a `RootOp::MemberJoinedAt` signed by the joiner themselves, endorsed
+/// by `admitter_sk`.
+///
+/// The admitter's key is a separate parameter from the joiner's because the two
+/// signatures answer different questions: the joiner's proves it owns the
+/// account being admitted, the admitter's proves somebody entitled to admit
+/// agreed. Passing one key for both would make every test's join self-endorsed
+/// and hide that distinction.
 fn apply_member_joined(
     store: &Store,
     ns_id: [u8; 32],
     member_sk: &PrivateKey,
     signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation,
     nonce: u64,
+    admitter_sk: &PrivateKey,
 ) -> EyreResult<()> {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+    let admitter_endorsement = Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            admitter_sk,
+            &ns_id,
+            &member,
+            &signed_invitation.invitation.invitation_nonce,
+        )
+        .expect("sign admitter endorsement"),
+    );
 
     let signed = SignedNamespaceOp::sign(
         member_sk,
         ns_id.into(),
         vec![],
         nonce,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             // The member and the credential beside it have to name the SAME
             // account: the apply verifies the credential certifies the signer
             // and speaks for the declared member. A synthetic member beside an
             // unrelated credential is refused before the op reaches whatever
             // the test meant to exercise.
-            member: crate::test_fixtures::account_for(&member_sk.public_key()),
+            member,
             signed_invitation,
+            joined_at: 1,
             account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+            admitter_endorsement,
         }),
     )
     .unwrap();
@@ -5483,10 +5516,16 @@ fn a_peer_refuses_a_join_whose_inviter_holds_no_permission() {
     // Signed by a stranger who is no member of the group, let alone one with
     // CAN_INVITE_MEMBERS.
     let stranger_sk = PrivateKey::random(&mut rng);
+    // Bound in the namespace but not a member of it: the endorsement resolves a
+    // signing key to an account through the bindings, and a real joiner has
+    // those rows before it self-applies — the join bundle's catch-up ops land
+    // first. Without the binding this would fail on the endorsement instead of
+    // on the permission check it exists to pin, which is a different claim.
+    let _ = crate::test_fixtures::enrol_member(&store, &ns_gid, &stranger_sk.public_key());
     let invitation = signed_invitation_for(&stranger_sk, subgroup, [0x81; 32]);
 
     let joiner_sk = PrivateKey::random(&mut rng);
-    let err = apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1)
+    let err = apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1, &stranger_sk)
         .expect_err("a peer must refuse an invitation from an inviter with no permission");
 
     assert!(
@@ -5530,9 +5569,15 @@ fn the_joiner_applies_its_own_join_before_it_can_evaluate_the_inviter() {
     // The same invitation the peer test refuses, from an inviter this node
     // cannot resolve. It applies here, and peers remain free to reject it.
     let stranger_sk = PrivateKey::random(&mut rng);
+    // Bound in the namespace but not a member of it: the endorsement resolves a
+    // signing key to an account through the bindings, and a real joiner has
+    // those rows before it self-applies — the join bundle's catch-up ops land
+    // first. Without the binding this would fail on the endorsement instead of
+    // on the permission check it exists to pin, which is a different claim.
+    let _ = crate::test_fixtures::enrol_member(&store, &ns_gid, &stranger_sk.public_key());
     let invitation = signed_invitation_for(&stranger_sk, subgroup, [0x82; 32]);
 
-    apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1)
+    apply_member_joined(&store, ns_id, &joiner_sk, invitation, 1, &stranger_sk)
         .expect("the joiner must be able to apply its own join op");
 
     assert!(
@@ -5579,7 +5624,7 @@ fn a_removed_member_cannot_rejoin_even_with_a_freshly_issued_invitation() {
     // A brand-new invitation, minted after the kick, with a nonce they have
     // never seen.
     let fresh = signed_invitation_for(&admin_sk, subgroup, [0x77; 32]);
-    let err = apply_member_joined(&store, ns_id, &member_sk, fresh, 1)
+    let err = apply_member_joined(&store, ns_id, &member_sk, fresh, 1, &admin_sk)
         .expect_err("a removed member must not be able to rejoin by invitation");
 
     assert!(
@@ -5674,7 +5719,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
     // Join with invitation A.
     let invite_a = signed_invitation_for(&admin_sk, subgroup, [0xA1; 32]);
-    apply_member_joined(&store, ns_id, &member_sk, invite_a.clone(), 1)
+    apply_member_joined(&store, ns_id, &member_sk, invite_a.clone(), 1, &admin_sk)
         .expect("first join with a fresh invitation must succeed");
     assert!(MembershipRepository::new(&store)
         .has_direct_member(&subgroup, &member)
@@ -5699,7 +5744,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
         .unwrap());
 
     // Replaying invitation A must not readmit them.
-    let err = apply_member_joined(&store, ns_id, &member_sk, invite_a, 2)
+    let err = apply_member_joined(&store, ns_id, &member_sk, invite_a, 2, &admin_sk)
         .expect_err("replaying the invitation they left with must be rejected");
     assert!(
         format!("{err:#}").contains("already used this invitation"),
@@ -5711,7 +5756,7 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
 
     // A freshly issued invitation does.
     let invite_b = signed_invitation_for(&admin_sk, subgroup, [0xB2; 32]);
-    apply_member_joined(&store, ns_id, &member_sk, invite_b, 3)
+    apply_member_joined(&store, ns_id, &member_sk, invite_b, 3, &admin_sk)
         .expect("a re-invited leaver must be able to rejoin");
     assert!(
         MembershipRepository::new(&store)
@@ -5740,7 +5785,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     let shared = signed_invitation_for(&admin_sk, subgroup, [0x5A; 32]);
 
     // Bob joins with the shared link, then leaves — spending it for himself.
-    apply_member_joined(&store, ns_id, &bob_sk, shared.clone(), 1).expect("bob joins");
+    apply_member_joined(&store, ns_id, &bob_sk, shared.clone(), 1, &admin_sk).expect("bob joins");
     let left = SignedGroupOp::sign(
         &bob_sk,
         subgroup.to_bytes().into(),
@@ -5756,7 +5801,7 @@ fn a_shared_open_invitation_still_admits_others_after_one_member_burns_it() {
     apply_local_signed_group_op(&store, &left).expect("bob leaves");
 
     // Carol has never used it, so the same link still lets her in.
-    apply_member_joined(&store, ns_id, &carol_sk, shared, 1)
+    apply_member_joined(&store, ns_id, &carol_sk, shared, 1, &admin_sk)
         .expect("the shared invitation must still admit an identity that never used it");
     assert!(MembershipRepository::new(&store)
         .has_direct_member(
@@ -5908,7 +5953,8 @@ fn member_joined_invite_emits_membership_op_event() {
 
     let mut rx = crate::op_events::subscribe();
     let invite = signed_invitation_for(&admin_sk, subgroup, [0xC1; 32]);
-    apply_member_joined(&store, ns_id, &member_sk, invite, 1).expect("first join succeeds");
+    apply_member_joined(&store, ns_id, &member_sk, invite, 1, &admin_sk)
+        .expect("first join succeeds");
 
     let role = drained_member_joined(&mut rx, subgroup.to_bytes(), member_account).expect(
         "RootOp::MemberJoined apply must emit OpEvent::MemberJoined for the joined subgroup",

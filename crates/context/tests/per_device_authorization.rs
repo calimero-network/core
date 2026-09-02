@@ -479,7 +479,7 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         expiration_timestamp: 0,
         invitation_nonce: [0x21; 32],
         invited_role: 1,
-        admitters: Vec::new(),
+        admitters: vec![admin_account],
     };
     let inv_sig = admin_sk
         .sign(&<sha2::Sha256 as sha2::Digest>::digest(
@@ -495,6 +495,11 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         admitter_addrs: Vec::new(),
     };
 
+    // Bound before the credential moves into the op below, and used for both
+    // the member it names and the endorsement's payload — the two have to be
+    // the same account or the signature covers a different join.
+    let joining_member = credential.statement.account;
+
     let gov = NamespaceGovernance::new(&store, ns_bytes.into());
     let head = gov.read_head_record().expect("read head");
     let join = SignedNamespaceOp::sign(
@@ -503,13 +508,23 @@ fn a_joiners_writer_account_matches_what_its_peers_resolve() {
         head.parent_hashes.clone(),
         head.next_nonce,
         NamespaceOp::Root(
-            calimero_context_client::local_governance::RootOp::MemberJoined {
+            calimero_context_client::local_governance::RootOp::MemberJoinedAt {
                 // The account THIS credential certifies — the test builds its own
                 // rather than using the shared fixture, so the member must come
                 // off it and not from the fixture's derivation.
-                member: credential.statement.account,
+                member: joining_member,
                 signed_invitation: invitation,
+                joined_at: 1,
                 account: credential,
+                admitter_endorsement: Box::new(
+                    calimero_governance_types::AdmitterEndorsement::sign(
+                        &admin_sk,
+                        &ns_bytes,
+                        &joining_member,
+                        &[0x21; 32],
+                    )
+                    .expect("the admin endorses the join"),
+                ),
             },
         ),
     )

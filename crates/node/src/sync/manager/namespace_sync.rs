@@ -809,6 +809,66 @@ impl SyncManager {
             .default_capabilities(&namespace)?
             .unwrap_or(0);
 
+        // Endorse the join, but only if this node is one of the admitters the
+        // invitation names.
+        //
+        // The key and the governance history above are things any member may
+        // pass on; authorising a membership is not. So a responder that is not
+        // an admitter still answers usefully and simply does not sign — the
+        // joiner has to reach one that can, and finds out here rather than after
+        // publishing an op every peer refuses.
+        //
+        // Signed over the payload the apply gate checks, so what this node
+        // asserts and what every other node verifies are the same bytes.
+        let admitter_endorsement_bytes = {
+            // This node's own namespace identity — the key it signs governance
+            // with, and the one whose account the invitation's list is checked
+            // against.
+            let own = calimero_governance_store::NamespaceRepository::new(&store)
+                .resolve_identity(&namespace)
+                .ok()
+                .flatten();
+
+            let self_account = own.as_ref().and_then(|(pk, _)| {
+                calimero_governance_store::member_account_in_namespace(&store, &namespace, pk)
+                    .ok()
+                    .flatten()
+            });
+
+            match self_account {
+                Some(account) if invitation.invitation.admitters.contains(&account) => {
+                    let payload = calimero_governance_types::admitter_endorsement_payload(
+                        &namespace_id,
+                        &joiner_account,
+                        &invitation.invitation.invitation_nonce,
+                    );
+                    // `own` is Some whenever `self_account` resolved from it.
+                    let (signer, secret) = own.expect("identity resolved for the account above");
+                    match calimero_primitives::identity::PrivateKey::from(secret).sign(&payload) {
+                        Ok(signature) => {
+                            let endorsement = calimero_governance_types::AdmitterEndorsement {
+                                signer,
+                                signature: signature.to_bytes(),
+                            };
+                            borsh::to_vec(&endorsement).ok()
+                        }
+                        Err(err) => {
+                            warn!(%err, "namespace join: could not sign the admitter endorsement");
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "namespace join: this node is not an admitter for the invitation, \
+                         answering without an endorsement"
+                    );
+                    None
+                }
+            }
+        };
+
         debug!(
             namespace_id = %hex::encode(namespace_id),
             has_key = !key_envelope_bytes.is_empty(),
@@ -816,6 +876,7 @@ impl SyncManager {
             app_id = %hex::encode(application_id),
             governance_ops_count = governance_ops.len(),
             default_capabilities,
+            endorsed = admitter_endorsement_bytes.is_some(),
             "Sending NamespaceJoinResponse"
         );
 
@@ -827,6 +888,7 @@ impl SyncManager {
                 application_id,
                 governance_ops,
                 default_capabilities,
+                admitter_endorsement_bytes,
             },
             next_nonce: nonce,
         };
@@ -1351,6 +1413,7 @@ impl SyncManager {
                             application_id,
                             governance_ops,
                             default_capabilities,
+                            admitter_endorsement_bytes,
                         },
                     ..
                 })) => {
@@ -1360,6 +1423,7 @@ impl SyncManager {
                         application_id: application_id.into(),
                         governance_ops,
                         default_capabilities,
+                        admitter_endorsement_bytes,
                     });
                 }
                 Ok(Some(StreamMessage::Message {

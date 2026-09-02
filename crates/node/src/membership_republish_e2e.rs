@@ -82,6 +82,17 @@ fn queued_join_op(
             signed_invitation: invitation,
             joined_at: 0,
             account: test_join_account(),
+            // A joiner only ever queues an endorsed join — without one it fails
+            // rather than republishing, so the republish fixture carries one.
+            admitter_endorsement: Box::new(
+                calimero_governance_types::AdmitterEndorsement::sign(
+                    &calimero_primitives::identity::PrivateKey::from([5u8; 32]),
+                    &[7u8; 32],
+                    &test_join_account().statement.account,
+                    &[0u8; 32],
+                )
+                .expect("sign endorsement"),
+            ),
         }),
     )
     .expect("sign join op")

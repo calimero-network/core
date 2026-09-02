@@ -642,6 +642,15 @@ pub enum MessagePayload<'a> {
         /// `DefaultCapabilitiesSet` are respected even before the
         /// governance op finishes propagating to the joiner.
         default_capabilities: u32,
+        /// The responder's endorsement of this join, borsh-encoded, when the
+        /// responder is named in the invitation's `admitters`.
+        ///
+        /// `None` from a responder that may share the key and the governance
+        /// history — things any member may pass on — but may not authorise a
+        /// membership. The joiner then has to reach one that can: an unendorsed
+        /// join is refused by every peer at apply, so there is nothing useful it
+        /// can do with a `None` beyond trying another peer.
+        admitter_endorsement_bytes: Option<Vec<u8>>,
     },
 
     /// The responder rejected the join request.

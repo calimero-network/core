@@ -21,6 +21,18 @@ pub struct JoinBundle {
     /// admin overrides if the `DefaultCapabilitiesSet` governance op
     /// hadn't propagated by join time.
     pub default_capabilities: u32,
+    /// The responder's consent to this join, when the responder was entitled to
+    /// give it.
+    ///
+    /// `None` when the peer that served the exchange is not named in the
+    /// invitation's `admitters` — it can still hand over the key and the
+    /// governance history, because those are things a member may share, but it
+    /// cannot authorise a membership. The joiner must then reach one that can;
+    /// publishing without an endorsement is refused by every peer at apply.
+    ///
+    /// Borsh bytes rather than the type, to keep this crate off
+    /// `calimero-governance-types`.
+    pub admitter_endorsement_bytes: Option<Vec<u8>>,
 }
 
 impl JoinBundle {
@@ -31,10 +43,18 @@ impl JoinBundle {
     /// An empty bundle: no key, no contexts, no governance ops, zero
     /// application id, default capabilities `0`. Used as the graceful
     /// fallback when the direct namespace-join request cannot reach a mesh
-    /// peer, so the joiner can still record local membership from its
-    /// (already signature-verified) invitation and catch the rest up via the
-    /// gossip `KeyDelivery` fallback and namespace sync, rather than aborting
-    /// the join and leaving the node not-a-member.
+    /// peer.
+    ///
+    /// It no longer carries a joinable membership. A join needs an admitter's
+    /// endorsement, and reaching no peer means reaching no admitter — so this
+    /// bundle records what a joiner can still salvage locally, and the join
+    /// itself fails rather than publishing an op every peer will refuse.
+    ///
+    /// It used to be the opposite: the joiner recorded membership from its
+    /// signature-verified invitation and caught up via the gossip
+    /// `KeyDelivery` fallback. That worked because the invitation alone was
+    /// sufficient to admit — which is what made `admitters` unenforceable, so
+    /// the two cannot both be true.
     pub fn empty() -> Self {
         Self {
             key_envelope_bytes: Vec::new(),
@@ -42,6 +62,7 @@ impl JoinBundle {
             application_id: ApplicationId::from([0u8; 32]),
             governance_ops: Vec::new(),
             default_capabilities: 0,
+            admitter_endorsement_bytes: None,
         }
     }
 }

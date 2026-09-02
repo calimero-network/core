@@ -324,6 +324,39 @@ impl<'a> NamespaceRepository<'a> {
         let mut groups = vec![*root_group_id];
         groups.extend(self.collect_visible_descendants(root_group_id, &inviter_account)?);
 
+        // A caller that names nobody gets the namespace's admins and TEE
+        // nodes. The default lives here rather than in the handler above it
+        // because an invitation naming no admitter is one no endorsement can
+        // satisfy — it mints a credential that cannot admit anyone — and a
+        // default applied only at the edge is one the next caller of this
+        // public function silently skips.
+        //
+        // Resolved once at the namespace root, not per descendant: the
+        // endorsement is signed against the namespace, and the gate resolves
+        // the endorser against the namespace's membership, so the accounts
+        // that may admit are the same whichever subgroup the invitation is
+        // for. Resolving per group would name accounts the gate then refuses.
+        let admitters = if admitters.is_empty() {
+            let defaulted =
+                crate::NamespaceMembershipService::default_admitters(self.store, root_group_id)?;
+            // Every group keeps at least one admin — the last cannot be
+            // removed or demoted away — so an empty result is an inconsistent
+            // store, not a namespace without admins. Refused rather than
+            // minted: carrying on would answer an inconsistency by issuing an
+            // invitation that admits nobody, at the moment there is least
+            // reason to trust the store.
+            if defaulted.is_empty() {
+                eyre::bail!(
+                    "refusing to mint invitations for a namespace with no admin and no TEE \
+                     node: every namespace is supposed to have an admin, so this is an \
+                     inconsistent store rather than a namespace to issue invitations for"
+                );
+            }
+            defaulted
+        } else {
+            admitters.to_vec()
+        };
+
         let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -349,7 +382,7 @@ impl<'a> NamespaceRepository<'a> {
                 expiration_timestamp: expiration,
                 invitation_nonce,
                 invited_role,
-                admitters: admitters.to_vec(),
+                admitters: admitters.clone(),
             };
 
             let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;

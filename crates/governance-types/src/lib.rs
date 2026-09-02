@@ -904,8 +904,28 @@ pub enum RootOp {
         /// for the device it is joining with.
         ///
         /// Required and boxed; see [`JoinAccountCredential`] for why this rides
-        /// the join op, why it carries no endorsement, and why it is not optional.
+        /// the join op and why it is not optional.
         account: Box<JoinAccountCredential>,
+        /// An admitter's consent to this join.
+        ///
+        /// Required, not optional, and that is the whole point. `admitters`
+        /// names who may complete a membership, and the joiner signs its own
+        /// join — so without evidence in the op that an admitter agreed, the
+        /// list restricts nothing: a holder of a valid invitation could publish
+        /// and every peer would fold it. An `Option` here would leave exactly
+        /// that hole open under a different name.
+        ///
+        /// Verified by every peer at apply against
+        /// [`admitter_endorsement_payload`], with the signer resolved to an
+        /// account and checked against the invitation's *signed* `admitters`.
+        /// The check reads only the op, so every replica reaches the same
+        /// verdict — a gate that consulted local state instead would make
+        /// membership depend on who was asking.
+        ///
+        /// Boxed for the same reason the credential beside it is: this variant
+        /// is much the largest, and `NamespaceOp` is moved around by value on
+        /// every apply and sync path, so the whole enum would pay for it.
+        admitter_endorsement: Box<AdmitterEndorsement>,
     },
     /// **Namespace genesis (#2474).** The first op in every namespace DAG:
     /// authoritatively records the namespace's founding administrator/owner.
@@ -1323,6 +1343,90 @@ pub struct SignedNamespaceOp {
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 7;
 
 /// Domain separation prefix for Ed25519 signatures over namespace ops.
+/// Domain separator for an admitter's endorsement of a join.
+///
+/// Distinct from every other domain so an endorsement can never be lifted from
+/// this surface and replayed as an op, an ack or a beacon — the property every
+/// domain constant here exists for.
+pub const ADMITTER_ENDORSEMENT_SIGN_DOMAIN: &[u8] = b"calimero.admit.v1";
+
+/// An admitter's consent to one specific join.
+///
+/// `admitters` inside the invitation says who may complete a membership;
+/// `CAN_INVITE_MEMBERS` lets a member mint invitations without being one of
+/// them. Enforcing that split needs evidence *in the op*, because the joiner
+/// signs its own join and every peer folds it: a check that consulted local
+/// state instead would make the verdict depend on which replica was asking,
+/// which is divergence rather than policy.
+///
+/// So the admitter signs a payload naming exactly this join, and the signature
+/// rides along. Every peer resolves the signer to an account and checks that
+/// account appears in the invitation's signed `admitters` list — the same answer
+/// everywhere, from the op alone.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdmitterEndorsement {
+    /// The admitter's namespace signing key.
+    ///
+    /// A key rather than an account because a signature is made by a key, and
+    /// the account it speaks for is resolved from the device bindings — the same
+    /// direction every other authority check here reads.
+    pub signer: PublicKey,
+    /// Signature over [`admitter_endorsement_payload`].
+    pub signature: [u8; 64],
+}
+
+impl AdmitterEndorsement {
+    /// Sign an endorsement for one join.
+    ///
+    /// The caller is asserting it is entitled to — the payload names the
+    /// namespace, the joiner and the invitation, and every peer re-checks the
+    /// signer against the invitation's `admitters` at apply, so signing without
+    /// that entitlement produces an endorsement nobody accepts.
+    pub fn sign(
+        secret: &calimero_primitives::identity::PrivateKey,
+        namespace_id: &[u8; 32],
+        member: &calimero_account::AccountId,
+        invitation_nonce: &[u8; 32],
+    ) -> Result<Self, GovernanceError> {
+        let payload = admitter_endorsement_payload(namespace_id, member, invitation_nonce);
+        let signature = secret.sign(&payload).map_err(GovernanceError::Signature)?;
+        Ok(Self {
+            signer: secret.public_key(),
+            signature: signature.to_bytes(),
+        })
+    }
+}
+
+/// The bytes an admitter signs to endorse one join.
+///
+/// Each field stops a specific reuse. The namespace binds the endorsement to one
+/// group, so it cannot be moved to another. The member binds it to one joiner,
+/// so holding somebody else's endorsement gains nothing. The invitation nonce
+/// binds it to one invitation, so an endorsement issued against one does not
+/// authorise a join on another.
+///
+/// `joined_at` is deliberately NOT here, and that is a sequencing fact rather
+/// than an oversight: the admitter signs during the join exchange, before the
+/// joiner has picked the timestamp it will put in its op, so binding it would
+/// mean the joiner proposing a time for the admitter to endorse. What that would
+/// buy is preventing an endorsement being reused for a later join by the same
+/// member on the same invitation — which repeat-use of an invitation nonce
+/// already governs, through the re-entry gate, and which the expiry ceiling
+/// bounds regardless.
+#[must_use]
+pub fn admitter_endorsement_payload(
+    namespace_id: &[u8; 32],
+    member: &calimero_account::AccountId,
+    invitation_nonce: &[u8; 32],
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(ADMITTER_ENDORSEMENT_SIGN_DOMAIN.len() + 32 + 32 + 32);
+    payload.extend_from_slice(ADMITTER_ENDORSEMENT_SIGN_DOMAIN);
+    payload.extend_from_slice(namespace_id);
+    payload.extend_from_slice(member.as_ref());
+    payload.extend_from_slice(invitation_nonce);
+    payload
+}
+
 pub const NAMESPACE_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.namespace.v1";
 
 /// Bytes that are hashed/signed for a namespace op.
