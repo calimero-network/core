@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use calimero_app_downloader::registry::RegistryMode;
 use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
@@ -15,9 +16,10 @@ use calimero_store::layer::LayerExt;
 use calimero_store::namespace_signer::resolve_owned_namespace_signer;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
+use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use super::NodeClient;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
@@ -69,13 +71,21 @@ impl BlobManager {
             }
         };
 
-        if matches!(expected_content_hash, Some(expected_content_hash) if hash != *expected_content_hash)
-        {
-            bail!("fatal: blob hash mismatch");
-        }
+        let rejection = if matches!(expected_content_hash, Some(expected) if hash != *expected) {
+            Some("fatal: blob hash mismatch")
+        } else if matches!(expected_size, Some(expected) if size != expected) {
+            Some("fatal: blob size mismatch")
+        } else {
+            None
+        };
 
-        if matches!(expected_size, Some(expected_size) if size != expected_size) {
-            bail!("fatal: blob size mismatch");
+        if let Some(rejection) = rejection {
+            // Same cleanup rule as `verify_stored_blob`: nothing reclaims a
+            // rejected artifact's bytes, so they must go before we return.
+            if let Err(err) = self.blobstore.delete(blob_id).await {
+                warn!(%blob_id, %err, "failed to delete mismatched blob");
+            }
+            bail!("{rejection}");
         }
 
         debug!(
@@ -172,12 +182,15 @@ impl NodeClient {
                     "Attempting network discovery"
                 );
 
+                // Provider records are opportunistic (few paths announce, restarts
+                // drop them); the context's subscribers are the authoritative set.
                 let peers = match self
                     .network_client
                     .query_blob(*blob_id, Some(*context_id))
                     .await
                 {
-                    Ok(peers) => peers,
+                    Ok(peers) if !peers.is_empty() => peers,
+                    Ok(_) => self.context_subscribers(context_id).await,
                     Err(e) => {
                         tracing::warn!(
                             blob_id = %blob_id,
@@ -186,11 +199,7 @@ impl NodeClient {
                             error = %e,
                             "Failed to query DHT for blob"
                         );
-                        if attempt < MAX_RETRIES {
-                            tokio::time::sleep(backoff(attempt)).await;
-                            continue;
-                        }
-                        return Err(e);
+                        self.context_subscribers(context_id).await
                     }
                 };
 
@@ -248,13 +257,13 @@ impl NodeClient {
                                 .add_blob(data.as_slice(), Some(data.len() as u64), None)
                                 .await?;
 
-                            // Verify we stored the correct blob
-                            if blob_id_stored != *blob_id {
-                                tracing::warn!(
-                                    expected = %blob_id,
-                                    actual = %blob_id_stored,
-                                    "Downloaded blob ID mismatch"
-                                );
+                            // Shared contract: rejects and deletes, so a lying
+                            // peer cannot grow this node's blobstore per retry.
+                            if let Err(err) = self
+                                .verify_stored_blob(blob_id_stored, Some(*blob_id))
+                                .await
+                            {
+                                tracing::warn!(%peer_id, %err, "rejecting downloaded blob");
                                 continue;
                             }
 
@@ -391,6 +400,14 @@ impl NodeClient {
         }
     }
 
+    /// Connected peers subscribed to a context's topic - who to ask for a blob
+    /// the DHT holds no provider record for.
+    async fn context_subscribers(&self, context_id: &ContextId) -> Vec<PeerId> {
+        self.network_client
+            .subscribed_peers(TopicHash::from_raw(*context_id))
+            .await
+    }
+
     /// Query the network for peers that have a specific blob
     pub async fn find_blob_providers(
         &self,
@@ -402,16 +419,31 @@ impl NodeClient {
             .await
     }
 
-    /// Announce a blob to the network for discovery
+    /// Announce a blob to the network for discovery. Application bytecode an
+    /// http node holds is skipped: it does not serve those bytes either.
     pub async fn announce_blob_to_network(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
         size: u64,
     ) -> eyre::Result<()> {
+        if !self.may_share_blob(blob_id)? {
+            return Ok(());
+        }
         self.network_client
             .announce_blob(*blob_id, *context_id, size)
             .await
+    }
+
+    /// Whether peers may get `blob_id` from this node. Only application
+    /// bytecode is ever withheld; user-data blob sharing is untouched.
+    pub fn may_share_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
+        if self.registry_config().mode == RegistryMode::Dht {
+            return Ok(true);
+        }
+        // A node holds a handful of applications, so scanning their rows costs
+        // less than a reverse blob -> application index would to keep correct.
+        Ok(!self.is_blob_application_artifact(blob_id)?)
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {

@@ -77,12 +77,7 @@ async fn hand_over_blob(from: &NodeClient, into: &NodeClient, blob_id: BlobId) {
 async fn creator(dir: &TempDir, wasm: &[u8]) -> (NodeClient, Application, (TempDir, TempDir)) {
     let (_client, node_client, _store, dirs) = node().await;
     let application_id = node_client
-        .install_application_from_path(
-            bundle(dir, "com.example.paired", "1.0.0", wasm),
-            vec![],
-            None,
-            None,
-        )
+        .install_application_from_path(bundle(dir, "com.example.paired", "1.0.0", wasm))
         .await
         .unwrap();
     let application = node_client

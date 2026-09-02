@@ -9,6 +9,7 @@ license.workspace = true
 publish = true
 
 [dependencies]
+calimero-app-downloader.workspace = true
 calimero-account.workspace = true
 actix.workspace = true
 async-trait.workspace = true
@@ -73,6 +74,7 @@ calimero-dag = { workspace = true, features = ["testing"] }
 # production builds of the node take the plain `[dependencies]` entry
 # without the feature, so the in-memory transport is never compiled in.
 calimero-network-primitives = { workspace = true, features = ["test-utils"] }
+calimero-node-primitives = { workspace = true, features = ["testing"] }
 calimero-storage = { workspace = true, features = ["testing"] }
 ed25519-dalek.workspace = true
 parking_lot.workspace = true

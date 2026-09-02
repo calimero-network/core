@@ -83,15 +83,15 @@ impl<'a> ContextRegistrationService<'a> {
             // keeps a zero here forever, which disarms every path keyed on the
             // group's target blob. It is not folded into `hash_group_state`, so
             // healing it locally cannot diverge this replica.
-            let heal_application = meta.target_application_id == ZERO_APPLICATION_ID;
-            let heal_bytecode = meta.bytecode_id == [0u8; 32];
+            let heal_application = meta.target.application_id == ZERO_APPLICATION_ID;
+            let heal_bytecode = meta.target.bytecode_id == [0u8; 32];
             if heal_application || heal_bytecode {
                 let mut updated = meta;
                 if heal_application {
-                    updated.target_application_id = *application_id;
+                    updated.target.application_id = *application_id;
                 }
                 if heal_bytecode {
-                    updated.bytecode_id = **blob_id;
+                    updated.target.bytecode_id = **blob_id;
                 }
                 MetaRepository::new(self.store).save(&self.group_id, &updated)?;
                 tracing::info!(

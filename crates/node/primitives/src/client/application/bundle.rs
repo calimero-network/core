@@ -261,11 +261,6 @@ pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
     false
 }
 
-/// Check if a path points to a bundle archive (.mpk - Mero Package Kit)
-pub fn is_bundle_archive(path: &camino::Utf8Path) -> bool {
-    path.extension().map(|ext| ext == "mpk").unwrap_or(false)
-}
-
 /// Read the `wanted` paths out of a bundle archive in memory (no extraction to
 /// disk), in one walk. Paths are manifest-relative and matched whole against the
 /// archive under the same [`same_archive_path`] rule the manifest scan uses: a

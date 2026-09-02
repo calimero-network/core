@@ -938,6 +938,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-app-downloader"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "calimero-primitives",
+ "eyre",
+ "reqwest 0.12.28",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "calimero-authz"
 version = "0.0.0"
 dependencies = [
@@ -1029,6 +1044,7 @@ name = "calimero-config"
 version = "0.0.0"
 dependencies = [
  "bs58",
+ "calimero-app-downloader",
  "calimero-context",
  "calimero-network-primitives",
  "calimero-node-primitives",
@@ -1055,6 +1071,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-authz",
  "calimero-context-client",
  "calimero-context-config",
@@ -1099,6 +1116,7 @@ dependencies = [
  "async-stream",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-governance-types",
@@ -1111,6 +1129,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex",
+ "libp2p",
  "rand 0.8.5",
  "serde",
  "sha2 0.10.9",
@@ -1175,6 +1194,7 @@ dependencies = [
  "bip39",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
@@ -1283,6 +1303,7 @@ dependencies = [
  "async-trait",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-client",
@@ -1342,6 +1363,7 @@ dependencies = [
  "base64 0.23.1",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-bundle",
  "calimero-context-config",
@@ -1373,7 +1395,6 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
- "tokio-util",
  "toml",
  "tracing",
  "url",
@@ -1582,7 +1603,6 @@ dependencies = [
  "serde_json",
  "tdx-quote",
  "thiserror 2.0.20",
- "url",
 ]
 
 [[package]]
@@ -5688,6 +5708,7 @@ dependencies = [
  "base64 0.23.1",
  "borsh",
  "calimero-account",
+ "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-build-utils",
  "calimero-config",
@@ -8069,6 +8090,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
 ]
+
+[[package]]
+name = "scaffolding-e2e-multi"
+version = "0.0.0"
 
 [[package]]
 name = "scale-info"

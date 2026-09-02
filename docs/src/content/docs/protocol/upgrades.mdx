@@ -147,7 +147,7 @@ Every install path requires a valid signature, whatever the bundle's source:
 
 | Path | Source | Signature |
 | --- | --- | --- |
-| `install-application` | registry / URL / stored `.mpk` blob | **required** |
+| `install-application` | the node's configured registry, by `package`@`version` | **required** |
 | `install-dev-application` | a local filesystem path | **required** |
 
 There is no unsigned path and no synthetic dev signer. A local dev build signs with
@@ -394,9 +394,10 @@ opt-in.
 Changing an identity-gated type to a plain one (`AuthoredMap → UnorderedMap`,
 `SharedStorage → UnorderedMap`, `AuthoredVector → Vector`, or dropping the field) strips
 per-entry authorship / the writer ACL across the **whole network**. This is refused
-twice: in CI by `cargo mero abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding,
-`crates/wasm-abi/src/downgrade.rs`), and at the node by the upgrade gate, before the
-upgrade op is even emitted.
+twice: in CI by `cargo mero abi diff` (an `UNSAFE_IDENTITY_DOWNGRADE` finding, detected by
+`identity_downgrades()` in `crates/wasm-abi/src/downgrade.rs` and tagged
+`FindingClass::UnsafeIdentityDowngrade` in `tools/calimero-abi/src/diff.rs`), and at the
+node by the upgrade gate, before the upgrade op is even emitted.
 
 ## The stale-schema delta fence
 
@@ -461,6 +462,8 @@ CascadeUpgrade {
     to_state_version: u32,             // max ABI state version across the target's services
     migration: Option<Vec<u8>>,        // the migrate method name (bytes)
     cascade_hlc: HybridTimestamp,      // the fence boundary, stamped once by the initiator
+    package: String,                   // the target's registry coordinates, resolved
+    version: String,                   // against each receiver's OWN registry
 }
 ```
 
@@ -469,6 +472,52 @@ a **single walk per matched descendant** (every descendant whose current `byteco
 equals `from_bytecode_id`), so a receiver cannot reproduce the old out-of-order apply bug
 where target-set ran first and the migration silently matched nothing. The `cascade_hlc`
 is stamped **once** by the initiator so every node records an identical fence boundary.
+
+`package` / `version` are the target's registry coordinates, and they are **mandatory**:
+plain `String`, not `Option`, on all three application-bearing ops.
+Applying the op records them on the group's upgrade ladder beside the rung's `bytecode_id`
+(`LadderRung { bytecode_id, application_id, package, version }`), so each member resolves the
+new bytecode from its **own** configured registry instead of depending on the publisher
+staying reachable - see
+[how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node).
+The ladder is the carrier rather than the application row because a bundle's
+`ApplicationId` is version-stable: one row cannot describe both the version this member has
+installed and the one it is being moved to, and the row deliberately never overwrites a
+local install.
+
+`GroupOp::TargetApplicationSet`, the single-group form of the same change, carries the
+identical pair, and so does `GroupOp::ContextRegistered` - that is how a joiner learns where
+to fetch the application it was just registered against.
+Because the field is mandatory, an emitter that has no coordinates to put there **fails**
+instead of signing an op no receiver could resolve: emitting an upgrade against an
+unaddressable application row, and creating a context against one, both error with the same
+`application <pkg>@<version> has no registry coordinates` message, raised by the shared
+`registry_coords` check both paths call (`crates/context/src/handlers/upgrade_group.rs`).
+There is no coordinate-less arm left to degrade into.
+
+<Aside type="caution" title="Schema v11 is a flag day: upgrade a namespace's peers together">
+Adding the coordinate pair changed the encoding of three variants -
+`GroupOp::TargetApplicationSet` (ordinal 7), `GroupOp::ContextRegistered` (ordinal 8) and
+`GroupOp::CascadeUpgrade` (ordinal 22) - so `SIGNED_GROUP_OP_SCHEMA_VERSION` was bumped from
+**10** to **11**.
+No ordinal moved and no other variant's layout changed.
+
+The version is compared **strictly equal** on decode, so a peer still on 10 rejects *every*
+v11 op - not only those three - loudly, rather than mis-decoding one.
+Governance stops converging across a mixed fleet, and ops already signed under v10 are
+rejected rather than migrated.
+Upgrade every node in a namespace together.
+
+The same release also changes the on-disk layout of the group governance rows:
+`GroupMeta` replaces its flat `bytecode_id` / `target_application_id` fields with a
+nested `target: GroupTarget { application_id, bytecode_id, package, version }`, and
+`LadderRung` gains trailing `package` and `version` fields.
+Borsh is positional, so a row written by a pre-upgrade binary fails to decode - loudly,
+not silently - and `MetaRepository::load` returns that error for every existing group.
+A coordinated restart does not fix this on its own: each node also needs its datastore
+reset, or its existing groups stay unreadable.
+The upgrade is a coordinated restart **and** a state reset, not a restart alone.
+</Aside>
 
 <SeqDiagram
   id="d-cascade-upgrade"
@@ -597,7 +646,9 @@ Two facts decide what a stale context does (`maybe_lazy_upgrade`,
   context is up to date exactly when its marker equals the group's `bytecode_id`
   (`crates/context/src/activation.rs`).
 - The **ladder** — the recorded sequence of upgrade rungs (`bytecode_id` paired with
-  `application_id`) the group has climbed.
+  `application_id`, plus that release's registry coordinates) the group has climbed. The
+  coordinates ride per rung so a context several versions behind fetches each intermediate
+  release from the registry, not only the newest one.
 
 | Context state | Action |
 | --- | --- |
@@ -607,9 +658,11 @@ Two facts decide what a stale context does (`maybe_lazy_upgrade`,
 
 `next_rung` positions a context on the ladder by the **last** occurrence of its bound blob,
 so an `A→B→A` re-pin lands it on the later `A`. A bound blob the ladder never recorded (a
-creation version) starts at the first rung; an empty or stale ladder degrades to a single
-synthesized jump to the current target — the pre-ladder behavior
-(`crates/context/src/activation.rs`). The call site seeds the marker to the replay's
+creation version) starts at the first rung; an empty ladder yields no rung at all, and the
+call proceeds on the version the context already runs
+(`crates/context/src/activation.rs`). A rung is never synthesized: every rung is one an
+upgrade op actually recorded, so it always carries the coordinates its bytecode is fetched
+by. The call site seeds the marker to the replay's
 starting blob before running, binding execution to it, so a blocked hop strands the context
 on its real version rather than running target bytecode on un-migrated state.
 
@@ -636,8 +689,10 @@ The `CascadeUpgrade` records the new target application plus the migration and s
 `cascade_hlc` fence; nothing migrates yet, and every context reshapes its state on first
 access. `A` and `B`, which are actively used, migrate on their next context access: each runs
 `migrate_v1_to_v2` against its own byte-identical `v1` state, the `migration_check` (if any)
-passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: 1, toVersion: 2 }`
-fires. `C`, idle, keeps `DocV1` bytes on disk until it is next accessed.
+passes, the `v2` root commits, and an `AppVersionChanged { fromVersion: "1", toVersion: "2" }`
+fires - the payload carries the application's own package version strings (this example's
+app happens to use bare `"1"`/`"2"` as its semver), not the `state_version` schema generation.
+`C`, idle, keeps `DocV1` bytes on disk until it is next accessed.
 
 **The lagging node.** Say `C` stays offline across a *second* release, v3. While `C` is
 behind, the `v2`/`v3`-schema deltas its migrated peers broadcast arrive under a schema that

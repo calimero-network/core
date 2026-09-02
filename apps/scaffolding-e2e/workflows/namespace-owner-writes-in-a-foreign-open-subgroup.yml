@@ -67,7 +67,7 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: owner-foreign-sub-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
@@ -75,7 +75,7 @@ steps:
   - name: Install application on node-2
     type: install_application
     node: owner-foreign-sub-node-2
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
 
   # ── Node-1 owns the namespace ──────────────────────────────────────

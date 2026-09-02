@@ -15,7 +15,7 @@
 //! | `test_is_builtin_crdt_classification` | Various | Correct classification |
 //! | `test_merge_by_crdt_type_dispatch` | Various | Correct dispatch |
 
-use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use serial_test::serial;
 
 use crate::collections::crdt_meta::MergeError;
@@ -221,7 +221,7 @@ fn test_is_builtin_crdt_classification() {
 
     // Only Custom needs WASM
     assert!(
-        !is_builtin_crdt(&CrdtType::Custom("MyType".to_string())),
+        !is_builtin_crdt(&CrdtType::Custom(CustomTypeId::of("MyType"))),
         "Custom needs WASM"
     );
 }
@@ -236,13 +236,13 @@ fn test_merge_custom_type_returns_wasm_required() {
     let bytes = vec![1, 2, 3, 4];
 
     let result = merge_by_crdt_type(
-        &CrdtType::Custom("MyCustomType".to_string()),
+        &CrdtType::Custom(CustomTypeId::of("MyCustomType")),
         &bytes,
         &bytes,
     );
 
     assert!(
-        matches!(result, Err(MergeError::WasmRequired { type_name }) if type_name == "MyCustomType"),
+        matches!(result, Err(MergeError::WasmRequired { type_id }) if type_id == CustomTypeId::of("MyCustomType")),
         "Custom types should return WasmRequired with the type name"
     );
 }
@@ -355,5 +355,5 @@ fn test_crdt_type_has_required_variants() {
     let _ = CrdtType::Vector;
     let _ = CrdtType::UserStorage;
     let _ = CrdtType::FrozenStorage;
-    let _ = CrdtType::Custom("test".to_string());
+    let _ = CrdtType::Custom(CustomTypeId::of("test"));
 }

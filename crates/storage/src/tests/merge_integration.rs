@@ -3919,7 +3919,7 @@ fn opaque_root_local_write_falls_back_to_lww_when_unregistered() {
 #[serial]
 fn non_opaque_root_local_write_still_errors_when_unregistered() {
     use crate::address::Id;
-    use crate::collections::crdt_meta::{CrdtType, MergeError};
+    use crate::collections::crdt_meta::{CrdtType, CustomTypeId, MergeError};
     use crate::entities::Metadata;
     use crate::error::StorageError;
     use crate::interface::Interface;
@@ -3934,7 +3934,7 @@ fn non_opaque_root_local_write_still_errors_when_unregistered() {
     let root = Id::root();
     // A real (non-opaque) crdt_type marks this as an app-state root that is
     // supposed to merge via a registered `Mergeable`.
-    let crdt = CrdtType::Custom("AppState".to_string());
+    let crdt = CrdtType::Custom(CustomTypeId::of("AppState"));
 
     Interface::<NodeStorage>::save_raw(
         root,

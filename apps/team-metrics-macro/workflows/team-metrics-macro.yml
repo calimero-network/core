@@ -12,7 +12,7 @@ steps:
   - name: Install Team Metrics Macro Application on Node 1
     type: install_application
     node: team-macro-node-1
-    path: res/team_metrics_macro.wasm
+    path: ../../dist/com.calimero.team-metrics-macro-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

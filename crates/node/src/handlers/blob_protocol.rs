@@ -88,7 +88,7 @@ pub async fn handle_blob_protocol_stream(
 /// 3. Send empty chunk to signal end
 ///
 /// Features:
-/// - Timeouts (5 min total, 30 sec per chunk)
+/// - Timeouts (5 min total, no per-chunk timeout)
 /// - Binary chunk encoding for efficiency
 async fn handle_blob_request_stream(
     node_client: NodeClient,
@@ -107,7 +107,13 @@ async fn handle_blob_request_stream(
     let serve_result = timeout(BLOB_SERVE_TIMEOUT, async {
         // Try to get the blob as a stream (handles chunked blobs efficiently)
         info!(%peer_id, blob_id = %blob_request.blob_id, "Attempting to get blob from local storage");
-        let blob_stream = node_client.get_blob(&blob_request.blob_id, None).await?;
+        // An http node resolves applications from its registry, so it is not a
+        // source of their bytes; to the peer that reads as "not held".
+        let blob_stream = if node_client.may_share_blob(&blob_request.blob_id)? {
+            node_client.get_blob(&blob_request.blob_id, None).await?
+        } else {
+            None
+        };
 
         let (response, blob_stream) = if let Some(blob_stream) = blob_stream {
             info!(%peer_id, "Blob found, will stream chunks");
@@ -438,13 +444,92 @@ mod tests {
         NamespaceRepository,
     };
     use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobRequest};
+    use calimero_node_primitives::test_fixtures::node_client;
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::{is_inherited_context_member, is_signed_context_member};
+    use super::{is_inherited_context_member, is_signed_context_member, NodeClient};
+
+    /// The application's own bytes, and an unrelated blob on the same node.
+    const BYTECODE: &[u8] = b"raw wasm, not a bundle";
+    const USER_DATA: &[u8] = b"a user's blob, nothing to do with any application";
+
+    /// Whether the responder reported `blob_id` as held.
+    async fn served(node_client: &NodeClient, blob_id: BlobId) -> bool {
+        use calimero_network_primitives::blob_types::BlobResponse;
+        use calimero_network_primitives::stream::Stream;
+        use futures_util::StreamExt;
+
+        let (mut ours, theirs) = Stream::test_pair();
+        let request = BlobRequest {
+            blob_id,
+            context_id: ContextId::from(CONTEXT),
+            auth: None,
+        };
+        let responder = super::handle_blob_request_stream(
+            node_client.clone(),
+            libp2p::PeerId::random(),
+            request,
+            Box::new(theirs),
+        );
+        let (result, reply) = tokio::join!(responder, ours.next());
+        result.expect("the responder must answer rather than fault");
+        let reply = reply.expect("a reply frame").expect("a readable frame");
+        serde_json::from_slice::<BlobResponse>(&reply.data)
+            .expect("a blob response")
+            .found
+    }
+
+    // The blob protocol is the second serve path. An http node is not a source
+    // of application bytecode over it either - and user data stays served.
+    #[tokio::test]
+    async fn http_mode_refuses_to_serve_app_bytecode_over_the_blob_protocol() {
+        use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
+        use calimero_primitives::application::{ApplicationId, ApplicationSource};
+
+        let (node_client, _store, _data_dir, _blob_dir) = node_client().await;
+
+        let (bytecode, size) = node_client
+            .add_blob(BYTECODE, Some(BYTECODE.len() as u64), None)
+            .await
+            .expect("store bytecode");
+        let (user_blob, _size) = node_client
+            .add_blob(USER_DATA, Some(USER_DATA.len() as u64), None)
+            .await
+            .expect("store user data");
+        let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
+        node_client
+            .write_application_row(
+                &ApplicationId::from([0x7A; 32]),
+                &bytecode,
+                size,
+                &source,
+                None,
+            )
+            .expect("install the application");
+
+        let http = node_client.clone().with_registry(RegistryConfig::new(
+            RegistryMode::Http,
+            Some("https://reg.example".parse().expect("base")),
+        ));
+        assert!(
+            !served(&http, bytecode).await,
+            "an http node must not serve application bytecode over the blob protocol"
+        );
+        assert!(
+            served(&http, user_blob).await,
+            "user-data blob transfer is a different subsystem and stays open"
+        );
+
+        let dht = node_client.with_registry(RegistryConfig::new(RegistryMode::Dht, None));
+        assert!(
+            served(&dht, bytecode).await,
+            "peers are where a dht node's applications come from"
+        );
+    }
 
     const CONTEXT: [u8; 32] = [0xC0; 32];
     const BLOB: [u8; 32] = [0xD0; 32];

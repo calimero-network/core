@@ -18,7 +18,7 @@
 //!                                                              ↓
 //!                                                    merge_by_crdt_type
 
-use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_storage::address::Id;
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::entities::Metadata;
@@ -58,7 +58,7 @@ fn test_various_crdt_types_preserved() {
         (3, CrdtType::lww_register()),
         (4, CrdtType::Rga),
         (5, CrdtType::UnorderedMap),
-        (6, CrdtType::Custom("MyType".to_string())),
+        (6, CrdtType::Custom(CustomTypeId::of("MyType"))),
     ];
 
     for (id, crdt_type) in types_to_test {
@@ -113,7 +113,7 @@ fn test_is_builtin_crdt_classification() {
 
     // Only Custom needs WASM
     assert!(
-        !is_builtin_crdt(&CrdtType::Custom("X".into())),
+        !is_builtin_crdt(&CrdtType::Custom(CustomTypeId::of("X"))),
         "Custom needs WASM"
     );
 }
@@ -141,20 +141,24 @@ fn test_lww_register_returns_incoming() {
     );
 }
 
-/// Verify that Custom types return WasmRequired with correct type name.
+/// Verify that Custom types return WasmRequired with the correct type id.
 #[test]
 fn test_custom_type_returns_wasm_required() {
     let bytes = vec![1, 2, 3, 4];
 
     let result = merge_by_crdt_type(
-        &CrdtType::Custom("MyApp::Counter".to_string()),
+        &CrdtType::Custom(CustomTypeId::of("MyApp::Counter")),
         &bytes,
         &bytes,
     );
 
     match result {
-        Err(MergeError::WasmRequired { type_name }) => {
-            assert_eq!(type_name, "MyApp::Counter", "Type name should be preserved");
+        Err(MergeError::WasmRequired { type_id }) => {
+            assert_eq!(
+                type_id,
+                CustomTypeId::of("MyApp::Counter"),
+                "Type id should be preserved"
+            );
         }
         other => panic!("Expected WasmRequired, got {other:?}"),
     }

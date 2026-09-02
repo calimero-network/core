@@ -51,49 +51,72 @@ async fn resolve_admitter_addrs(
     signer_account: calimero_account::AccountId,
 ) -> Vec<String> {
     let group_id = signed.invitation.group_id;
+
+    // TEE admitters first, then everyone else.
+    //
+    // Not a security ordering — who may admit is the signed list, re-checked at
+    // apply on every peer — but a reachability one. A TEE node is hosted and
+    // stays up; an admin's node is a laptop that is shut as often as not. The
+    // joiner works down this list, so putting the always-on ones at the front is
+    // the difference between a first attempt that answers and a budget spent on
+    // machines that are asleep.
+    let tee_accounts =
+        calimero_governance_store::tee_admission_records(datastore, &group_id).unwrap_or_default();
     let mut addrs = Vec::new();
 
-    // This node, if it is one of the admitters. `external_addrs` rather than
-    // `listen_addrs`: the latter includes `0.0.0.0` and loopback, which are not
-    // addresses anybody else can dial, and the former already carries the
-    // relay-circuit form a NAT'd node is reachable on.
-    if signed.invitation.admitters.contains(&signer_account) {
+    // This node's own addresses, held back until its band is reached. It is
+    // whichever kind it is: a TEE node lists itself with the TEE nodes, an
+    // admin with the admins. `external_addrs` rather than `listen_addrs` —
+    // the latter includes `0.0.0.0` and loopback, which are not addresses
+    // anybody else can dial, and the former already carries the relay-circuit
+    // form a NAT'd node is reachable on.
+    let self_addrs = if signed.invitation.admitters.contains(&signer_account) {
         let status = node_client.network_status().await;
-        addrs.extend(dialable_self_addrs(
-            &status.local_peer_id,
-            &status.external_addrs,
-        ));
-    }
+        dialable_self_addrs(&status.local_peer_id, &status.external_addrs)
+    } else {
+        Vec::new()
+    };
+    let self_is_tee = tee_accounts.contains_key(&signer_account);
 
     // Every other admitter, through the two durable caches. An account is not
     // an address: it fans out to the signing keys its live devices hold, each
     // of which may have been seen on some peer, each of which may have a cached
     // address. Any link missing just means no hint for that admitter.
-    let others: Vec<_> = signed
+    let (tee_admitters, other_admitters): (Vec<_>, Vec<_>) = signed
         .invitation
         .admitters
         .iter()
         .filter(|account| **account != signer_account)
         .copied()
-        .collect();
+        .partition(|account| tee_accounts.contains_key(account));
 
-    if !others.is_empty() {
-        let by_account = calimero_governance_store::AccountBindingRepository::new(datastore)
-            .live_devices_by_account(&group_id)
-            .unwrap_or_default();
-        let identities: Vec<_> = others
+    let by_account = calimero_governance_store::AccountBindingRepository::new(datastore)
+        .live_devices_by_account(&group_id)
+        .unwrap_or_default();
+
+    // Resolved in two passes so the TEE addresses land ahead of the rest, and
+    // ahead of this node's own: an always-on hosted node is a better first try
+    // than a fresher address for a machine that may be off.
+    for (band, is_tee_band) in [(&tee_admitters, true), (&other_admitters, false)] {
+        // This node joins whichever band it belongs to, so a TEE node does not
+        // get demoted behind other TEE nodes for being the one that minted.
+        if is_tee_band == self_is_tee {
+            addrs.extend(self_addrs.iter().cloned());
+        }
+
+        let identities: Vec<_> = band
             .iter()
             .filter_map(|account| by_account.get(account))
             .flat_map(|devices| devices.iter().map(|d| d.sign_pk))
             .collect();
-
-        if !identities.is_empty() {
-            for (peer, addr) in node_client
-                .peer_addrs_for_identities(group_id, identities)
-                .await
-            {
-                addrs.push(format!("{addr}/p2p/{peer}"));
-            }
+        if identities.is_empty() {
+            continue;
+        }
+        for (peer, addr) in node_client
+            .peer_addrs_for_identities(group_id, identities)
+            .await
+        {
+            addrs.push(format!("{addr}/p2p/{peer}"));
         }
     }
 
@@ -243,7 +266,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // joiners would write target_application_id = ZERO
                     // and compute_group_state_hash would diverge from
                     // the inviter's view persistently.
-                    application_id: Some(*meta.target_application_id.as_ref()),
+                    application_id: Some(*meta.target.application_id.as_ref()),
                     // Carry the real bytecode_id (already derived from
                     // blob_id(app_meta.bytecode) at create_group time)
                     // so the joiner's pre-populated GroupMetaValue
@@ -252,7 +275,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // CascadeUpgrade op the joiner
                     // applies silently skips the subtree — divergence
                     // between originator and joiner.
-                    bytecode_id: Some(meta.bytecode_id),
+                    bytecode_id: Some(meta.target.bytecode_id),
                     admitter_addrs,
                 },
                 group_name,

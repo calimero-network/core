@@ -2,12 +2,13 @@ use super::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     MetadataRepository, NamespaceRepository, UpgradeLadderRepository, UpgradesRepository,
 };
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_store::key::{GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
 use super::test_fixtures::{
@@ -30,8 +31,8 @@ fn save_load_delete_group_meta() {
 
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
     let loaded = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(loaded.bytecode_id, meta.bytecode_id);
-    assert_eq!(loaded.target_application_id, meta.target_application_id);
+    assert_eq!(loaded.target.bytecode_id, meta.target.bytecode_id);
+    assert_eq!(loaded.target.application_id, meta.target.application_id);
 
     MetaRepository::new(&store).delete(&gid).unwrap();
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
@@ -170,11 +171,16 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     );
 
     settings
-        .set_target_application(&member_pk, &[0xAB; 32], &app_id)
+        .set_target_application(
+            &member_pk,
+            &[0xAB; 32],
+            &app_id,
+            RegistryCoords::new("com.acme.app", "1.0.0"),
+        )
         .unwrap();
     let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(meta.bytecode_id, [0xAB; 32]);
-    assert_eq!(meta.target_application_id, app_id);
+    assert_eq!(meta.target.bytecode_id, [0xAB; 32]);
+    assert_eq!(meta.target.application_id, app_id);
 
     MetadataRepository::new(&store)
         .set_group(
@@ -218,22 +224,25 @@ fn set_target_application_appends_upgrade_ladder_rung() {
     let app_v2 = ApplicationId::from([0xD2; 32]);
     let app_v3 = ApplicationId::from([0xD3; 32]);
 
+    let coords = |version| RegistryCoords::new("com.acme.app", version);
     settings
-        .set_target_application(&admin_pk, &[0x02; 32], &app_v2)
+        .set_target_application(&admin_pk, &[0x02; 32], &app_v2, coords("2.0.0"))
         .unwrap();
     settings
-        .set_target_application(&admin_pk, &[0x02; 32], &app_v2)
+        .set_target_application(&admin_pk, &[0x02; 32], &app_v2, coords("2.0.0"))
         .unwrap();
     settings
-        .set_target_application(&admin_pk, &[0x03; 32], &app_v3)
+        .set_target_application(&admin_pk, &[0x03; 32], &app_v3, coords("3.0.0"))
         .unwrap();
 
     let rungs = UpgradeLadderRepository::new(&store).load(&gid).unwrap();
     assert_eq!(rungs.len(), 2);
     assert_eq!(rungs[0].bytecode_id, [0x02; 32]);
     assert_eq!(rungs[0].application_id, app_v2);
+    assert_eq!(rungs[0].version, "2.0.0");
     assert_eq!(rungs[1].bytecode_id, [0x03; 32]);
     assert_eq!(rungs[1].application_id, app_v3);
+    assert_eq!(rungs[1].version, "3.0.0");
 }
 
 #[test]
@@ -263,7 +272,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
         .unwrap();
 
     let mut meta = test_meta();
-    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.target.application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
     MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     // Pre-store context meta with zero app id to verify backfill path.
@@ -310,7 +319,8 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             .load(&gid)
             .unwrap()
             .unwrap()
-            .target_application_id,
+            .target
+            .application_id,
         app_id
     );
     let handle = store.handle();
@@ -441,8 +451,8 @@ fn group_with_zeroed_meta(store: &Store, bytecode_id: [u8; 32]) -> (ContextGroup
         .unwrap();
 
     let mut meta = test_meta();
-    meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
-    meta.bytecode_id = bytecode_id;
+    meta.target.application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+    meta.target.bytecode_id = bytecode_id;
     MetaRepository::new(store).save(&gid, &meta).unwrap();
 
     (gid, creator_pk)
@@ -469,8 +479,8 @@ fn context_registered_heals_a_zeroed_bytecode_id() {
         .unwrap();
 
     let healed = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(healed.target_application_id, app_id);
-    assert_eq!(healed.bytecode_id, [0x53; 32]);
+    assert_eq!(healed.target.application_id, app_id);
+    assert_eq!(healed.target.bytecode_id, [0x53; 32]);
 }
 
 /// A group already pinned to a blob - by its own create, an invitation, or an
@@ -491,7 +501,7 @@ fn context_registered_leaves_a_set_bytecode_id_alone() {
         .unwrap();
 
     let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
-    assert_eq!(meta.bytecode_id, [0xBB; 32]);
+    assert_eq!(meta.target.bytecode_id, [0xBB; 32]);
 }
 
 /// Re-applying the same op (e.g. a node's own published op coming back via
@@ -1003,6 +1013,8 @@ fn apply_local_context_alias_admin_or_creator() {
             blob_id: calimero_primitives::blobs::BlobId::from([0u8; 32]),
             source: String::new(),
             service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .unwrap();
@@ -2771,8 +2783,12 @@ fn auto_group_node_identity_is_admin_member() {
         .save(
             &auto_group_id,
             &GroupMetaValue {
-                bytecode_id: [0u8; 32],
-                target_application_id: ApplicationId::from([0xCC; 32]),
+                target: GroupTarget {
+                    application_id: ApplicationId::from([0xCC; 32]),
+                    bytecode_id: [0u8; 32],
+                    package: Box::default(),
+                    version: Box::default(),
+                },
                 created_at: 1_700_000_000,
                 admin_identity: node_account,
                 owner_identity: node_account,
@@ -7200,6 +7216,8 @@ mod auto_follow_tests {
                 blob_id: BlobId::from([0xBB; 32]),
                 source: "test://app".to_owned(),
                 service_name: None,
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .unwrap();
@@ -8619,8 +8637,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
 
         // Root: signer is a direct admin, on `from_bytecode_id`.
         let mut root_meta = sample_meta_with_admin(admin);
-        root_meta.bytecode_id = from_bytecode_id;
-        root_meta.target_application_id = app_v1;
+        root_meta.target.bytecode_id = from_bytecode_id;
+        root_meta.target.application_id = app_v1;
         MetaRepository::new(&store).save(&root, &root_meta).unwrap();
         MembershipRepository::new(&store)
             .add_member(&root, &admin, GroupMemberRole::Admin)
@@ -8630,8 +8648,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
         // Left at the DEFAULT Restricted visibility, so the signer does NOT
         // inherit admin authority across the boundary.
         let mut d_meta = sample_meta_with_admin(other_admin);
-        d_meta.bytecode_id = from_bytecode_id;
-        d_meta.target_application_id = app_v1;
+        d_meta.target.bytecode_id = from_bytecode_id;
+        d_meta.target.application_id = app_v1;
         MetaRepository::new(&store)
             .save(&descendant, &d_meta)
             .unwrap();
@@ -8667,6 +8685,8 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
                 to_state_version: 0,
                 migration: None,
                 cascade_hlc: HybridTimestamp::zero(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign CascadeUpgrade")
@@ -8698,11 +8718,11 @@ fn cascade_authority_is_root_only_and_converges_despite_descendant_cap_skew() {
             .unwrap()
             .expect("descendant meta");
         assert_eq!(
-            d.bytecode_id, to_bytecode_id,
+            d.target.bytecode_id, to_bytecode_id,
             "descendant must be cascaded to the new bytecode_id on the {label} replica"
         );
         assert_eq!(
-            d.target_application_id, app_v2,
+            d.target.application_id, app_v2,
             "descendant must point at the new target on the {label} replica"
         );
         // The sticky cascade fence must be stamped identically on both
@@ -8750,7 +8770,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
         let admin = enrol_member(&store, &root, &admin_pk);
         for gid in [&root, &descendant] {
             let mut meta = sample_meta_with_admin(admin);
-            meta.bytecode_id = from_bytecode_id;
+            meta.target.bytecode_id = from_bytecode_id;
             MetaRepository::new(&store).save(gid, &meta).unwrap();
         }
         MembershipRepository::new(&store)
@@ -8794,6 +8814,8 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
                 to_state_version: 2,
                 migration: None,
                 cascade_hlc: HybridTimestamp::zero(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign CascadeUpgrade");
@@ -8871,6 +8893,8 @@ mod apply_auth_at_cut {
         GroupOp::TargetApplicationSet {
             bytecode_id: BytecodeId::from([0x5A; 32]),
             target_application_id: ApplicationId::from([0x5B; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         }
     }
 
@@ -9002,7 +9026,7 @@ mod apply_auth_at_cut {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta.bytecode_id, [0x5A; 32],
+            meta.target.bytecode_id, [0x5A; 32],
             "the mutation must actually land, not just be reported handled"
         );
     }
@@ -9033,7 +9057,7 @@ mod apply_auth_at_cut {
 
         let after = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            before.bytecode_id, after.bytecode_id,
+            before.target.bytecode_id, after.target.bytecode_id,
             "a rejected settings op must not mutate group meta"
         );
     }
@@ -9103,7 +9127,7 @@ mod apply_auth_at_cut {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_eq!(
-                meta.bytecode_id, [0x5A; 32],
+                meta.target.bytecode_id, [0x5A; 32],
                 "{label}: both replicas must converge on the same bytecode_id"
             );
         }
@@ -9258,6 +9282,8 @@ mod undecidable_authority_parks {
         GroupOp::TargetApplicationSet {
             bytecode_id: BytecodeId::from([0x5A; 32]),
             target_application_id: ApplicationId::from([0x5B; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         }
     }
 
@@ -9321,7 +9347,7 @@ mod undecidable_authority_parks {
 
         let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta.bytecode_id, [0x5A; 32],
+            meta.target.bytecode_id, [0x5A; 32],
             "a parked op must not mutate state — it has not been authorized yet"
         );
     }
@@ -9434,7 +9460,7 @@ mod undecidable_authority_parks {
 
             let meta = MetaRepository::new(store).load(gid).unwrap().unwrap();
             assert_ne!(
-                meta.bytecode_id, [0x5A; 32],
+                meta.target.bytecode_id, [0x5A; 32],
                 "{label}: a parked op must leave state untouched"
             );
         }
@@ -9946,6 +9972,8 @@ mod self_leave_rotation_crypto {
         let before_op = calimero_governance_types::GroupOp::TargetApplicationSet {
             bytecode_id: calimero_context_config::types::BytecodeId::from([0x11; 32]),
             target_application_id: ApplicationId::from([0x12; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         };
         let sealed_before = GroupKeyring::encrypt_op(&key_before, &before_op).expect("encrypt");
         let leaver_key_before = GroupKeyring::new(&leaver_store, ns_gid)
@@ -10021,6 +10049,8 @@ mod self_leave_rotation_crypto {
         let after_op = calimero_governance_types::GroupOp::TargetApplicationSet {
             bytecode_id: calimero_context_config::types::BytecodeId::from([0x21; 32]),
             target_application_id: ApplicationId::from([0x22; 32]),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         };
         let sealed_after = GroupKeyring::encrypt_op(&key_after, &after_op).expect("encrypt");
 
@@ -10224,6 +10254,8 @@ mod parked_op_retries_to_success {
             GroupOp::TargetApplicationSet {
                 bytecode_id: BytecodeId::from([0x5A; 32]),
                 target_application_id: ApplicationId::from([0x5B; 32]),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign TargetApplicationSet");
@@ -10239,7 +10271,7 @@ mod parked_op_retries_to_success {
         // The park must be inert. Any residue here turns "retry later" into "never".
         let meta_after_park = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_ne!(
-            meta_after_park.bytecode_id, [0x5A; 32],
+            meta_after_park.target.bytecode_id, [0x5A; 32],
             "a parked op must not half-apply"
         );
         assert_eq!(
@@ -10257,11 +10289,11 @@ mod parked_op_retries_to_success {
 
         let meta_after_retry = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
         assert_eq!(
-            meta_after_retry.bytecode_id, [0x5A; 32],
+            meta_after_retry.target.bytecode_id, [0x5A; 32],
             "the retried op must actually take effect"
         );
         assert_eq!(
-            meta_after_retry.target_application_id,
+            meta_after_retry.target.application_id,
             ApplicationId::from([0x5B; 32]),
             "the retried op's full mutation must land, not just part of it"
         );
@@ -11202,6 +11234,275 @@ mod account_plane_apply {
             repo.account_key(&gid, account).unwrap().map(|r| r.0),
             Some(1),
             "a replayed rotation must not advance the epoch twice"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// An upgrade op seeds the row for the application it targets.
+// -----------------------------------------------------------------------
+
+/// A raw-wasm upgrade names a new application id; a peer holding no row for it
+/// stranded silently. The apply seeds the row the migrate binds its bytes to.
+mod target_application_row_seeding {
+    use super::*;
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
+    use calimero_context_client::local_governance::RootOp;
+    use calimero_context_config::types::BytecodeId;
+    use calimero_governance_types::GroupOp;
+    use calimero_primitives::application::ApplicationSource;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    const FROM_BYTECODE: [u8; 32] = [0xBB; 32];
+    const TO_BYTECODE: [u8; 32] = [0x88; 32];
+
+    fn target() -> ApplicationId {
+        ApplicationId::from([0x77; 32])
+    }
+
+    /// A group sitting on `test_meta`'s bytecode, i.e. the `from` side of the
+    /// upgrade ops below.
+    fn group(store: &Store) -> (ContextGroupId, PublicKey) {
+        let gid = test_group_id();
+        MetaRepository::new(store).save(&gid, &test_meta()).unwrap();
+        (gid, PublicKey::from([0x11; 32]))
+    }
+
+    fn apply(store: &Store, gid: &ContextGroupId, signer: &PublicKey, op: &GroupOp) {
+        let (handled, _divergence, _events) =
+            apply_group_op_mutations(store, gid, signer, op, &CUT, &FixedAuthorizer(true))
+                .expect("apply must succeed");
+        assert!(handled, "the dispatcher must handle the op");
+    }
+
+    fn target_row(store: &Store) -> Option<(String, String, String, [u8; 32])> {
+        let handle = store.handle();
+        handle
+            .get(&calimero_store::key::ApplicationMeta::new(target()))
+            .expect("row read")
+            .map(|row| {
+                (
+                    row.source.to_string(),
+                    row.package.to_string(),
+                    row.version.to_string(),
+                    *row.bytecode.blob_id().as_ref(),
+                )
+            })
+    }
+
+    fn target_application_set(package: &str, version: &str) -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(TO_BYTECODE),
+            target_application_id: target(),
+            package: package.to_owned(),
+            version: version.to_owned(),
+        }
+    }
+
+    fn cascade_upgrade(from_bytecode_id: [u8; 32]) -> GroupOp {
+        GroupOp::CascadeUpgrade {
+            from_bytecode_id: BytecodeId::from(from_bytecode_id),
+            bytecode_id: BytecodeId::from(TO_BYTECODE),
+            target_application_id: target(),
+            to_state_version: 0,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_upgrade_to_an_unknown_target_seeds_the_row_the_migrate_needs() {
+        let store = test_store();
+        let (gid, signer) = group(&store);
+        assert!(
+            target_row(&store).is_none(),
+            "the stranding precondition: no row binds the target id"
+        );
+
+        apply(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set("com.example.app", "2.0.0"),
+        );
+
+        let (source, package, version, blob) =
+            target_row(&store).expect("the migrate resolves the target through this row");
+        assert_eq!(blob, TO_BYTECODE, "the row must name the blob the op named");
+        assert_eq!(package, "com.example.app");
+        assert_eq!(version, "2.0.0");
+        assert_eq!(
+            source, PENDING_BLOB_SHARE_SOURCE,
+            "a seeded row names no location; the coordinates are the route"
+        );
+        // The resolver parses this field, so an empty source strands the peer
+        // just as thoroughly as an absent row.
+        let _parsed: ApplicationSource = source.parse().expect("the seeded source must parse");
+    }
+
+    #[test]
+    fn a_seeded_row_never_overwrites_the_local_install() {
+        let store = test_store();
+        let (gid, signer) = group(&store);
+        {
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &calimero_store::key::ApplicationMeta::new(target()),
+                    &calimero_store::types::ApplicationMeta::new(
+                        calimero_store::key::BlobMeta::new([0x99; 32].into()),
+                        7,
+                        "file:///local/install.mpk".into(),
+                        Box::default(),
+                        calimero_store::key::BlobMeta::new([0_u8; 32].into()),
+                        calimero_store::types::PackageInfo {
+                            package: "com.example.app".into(),
+                            version: "3.0.0".into(),
+                            signer_id: String::new().into_boxed_str(),
+                            state_version: 0,
+                        },
+                    ),
+                )
+                .unwrap();
+        }
+
+        apply(
+            &store,
+            &gid,
+            &signer,
+            &target_application_set("com.example.app", "2.0.0"),
+        );
+
+        let (source, _package, version, blob) = target_row(&store).expect("row still present");
+        assert_eq!(version, "3.0.0", "a local install must not be overwritten");
+        assert_eq!(blob, [0x99; 32]);
+        assert_eq!(source, "file:///local/install.mpk");
+    }
+
+    #[test]
+    fn an_upgrade_naming_no_target_seeds_no_row() {
+        // A zero id and a zero blob are both placeholders, not a location to
+        // bind bytes to; a row under either is junk no fetch can ever satisfy.
+        for op in [
+            GroupOp::TargetApplicationSet {
+                bytecode_id: BytecodeId::from(TO_BYTECODE),
+                target_application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            },
+            GroupOp::TargetApplicationSet {
+                bytecode_id: BytecodeId::from([0_u8; 32]),
+                target_application_id: target(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            },
+        ] {
+            let store = test_store();
+            let (gid, signer) = group(&store);
+
+            apply(&store, &gid, &signer, &op);
+
+            let handle = store.handle();
+            for id in [
+                calimero_primitives::application::ZERO_APPLICATION_ID,
+                target(),
+            ] {
+                assert!(
+                    handle
+                        .get(&calimero_store::key::ApplicationMeta::new(id))
+                        .expect("row read")
+                        .is_none(),
+                    "a placeholder id or blob must seed nothing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cascade_seeds_the_target_row_for_a_matched_descendant() {
+        let store = test_store();
+        let (gid, signer) = group(&store);
+
+        apply(&store, &gid, &signer, &cascade_upgrade(FROM_BYTECODE));
+
+        let (source, package, version, blob) =
+            target_row(&store).expect("a cascaded group needs the same row an upgrade does");
+        assert_eq!(blob, TO_BYTECODE);
+        assert_eq!(package, "com.example.app");
+        assert_eq!(version, "2.0.0");
+        assert_eq!(source, PENDING_BLOB_SHARE_SOURCE);
+    }
+
+    #[test]
+    fn a_cascade_that_matches_nothing_seeds_no_row() {
+        // Nothing on this node moves to the target, so a row for it would be a
+        // row no context ever reads.
+        let store = test_store();
+        let (gid, signer) = group(&store);
+
+        apply(&store, &gid, &signer, &cascade_upgrade([0x5E; 32]));
+
+        assert!(
+            target_row(&store).is_none(),
+            "an unmatched cascade must seed nothing"
+        );
+    }
+
+    /// A subgroup inherits its parent's target, so it must inherit the coordinates
+    /// too - it has no ladder of its own to recover them from.
+    #[test]
+    fn a_subgroup_inherits_coordinates_with_the_target_they_address() {
+        let ns_id = [0x5A; 32];
+        let sub_id = [0x5B; 32];
+        let store = test_store();
+        let ((admin_sk, _admin_pk), admin_account) =
+            crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
+
+        let ns_gid = ContextGroupId::from(ns_id);
+        let mut parent_meta = MetaRepository::new(&store).load(&ns_gid).unwrap().unwrap();
+        parent_meta.target.package = "com.acme.app".into();
+        parent_meta.target.version = "2.0.0".into();
+        MetaRepository::new(&store)
+            .save(&ns_gid, &parent_meta)
+            .unwrap();
+
+        // GroupCreated is published under the namespace key, so the apply path
+        // refuses it in the clear and the fixture has to hold one to seal with.
+        let _ = crate::GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x5Au8; 32])
+            .expect("mint the namespace key the fixture omits");
+        let sealed = crate::seal_root_op_for_publish(
+            &store,
+            ns_id.into(),
+            RootOp::GroupCreated {
+                admin: admin_account,
+                group_id: sub_id.into(),
+                parent_id: ns_id.into(),
+                restricted: false,
+            },
+        )
+        .expect("seal the subgroup-creation op");
+        let op = SignedNamespaceOp::sign(&admin_sk, ns_id.into(), vec![], 1, sealed).unwrap();
+        NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .unwrap();
+
+        let sub_meta = MetaRepository::new(&store)
+            .load(&ContextGroupId::from(sub_id))
+            .unwrap()
+            .expect("the subgroup must have a meta row");
+        assert_eq!(
+            sub_meta.target.application_id, parent_meta.target.application_id,
+            "the subgroup inherits its parent's target"
+        );
+        assert_eq!(
+            stored_coords(&sub_meta.target.package, &sub_meta.target.version)
+                .map(|c| (c.package.to_owned(), c.version.to_owned())),
+            Some(("com.acme.app".to_owned(), "2.0.0".to_owned())),
+            "an inherited target the subgroup cannot address is unfetchable"
         );
     }
 }

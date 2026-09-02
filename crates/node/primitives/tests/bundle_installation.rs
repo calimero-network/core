@@ -2,18 +2,10 @@
 
 use std::fs;
 
-use std::sync::Arc;
-
-use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::bundle::{
     derive_signer_id_did_key, sign_manifest_json, BundleManifest,
 };
-use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
-use calimero_store::db::InMemoryDB;
-use calimero_store::Store;
-use calimero_utils_actix::LazyRecipient;
+use calimero_node_primitives::client::NodeClient;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
@@ -23,7 +15,9 @@ use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use tar::Builder;
 use tempfile::TempDir;
-use tokio::sync::{broadcast, mpsc};
+
+mod common;
+use common::{create_test_bundle, create_test_node_client};
 
 /// Signs a manifest JSON value and adds the signature field.
 /// This is a convenience wrapper around the shared sign_manifest_json function.
@@ -37,168 +31,6 @@ fn artifact_hash(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
-}
-
-/// Create a test bundle archive with manifest.json, app.wasm, abi.json, and migrations
-fn create_test_bundle(
-    temp_dir: &TempDir,
-    package: &str,
-    version: &str,
-    wasm_content: &[u8],
-    abi_content: Option<&[u8]>,
-    migrations: Vec<(&str, &[u8])>,
-) -> Utf8PathBuf {
-    let bundle_path = temp_dir.path().join(format!("{package}-{version}.mpk"));
-    let bundle_file = fs::File::create(&bundle_path).unwrap();
-    let encoder = GzEncoder::new(bundle_file, Compression::default());
-    let mut tar = Builder::new(encoder);
-
-    // Generate a signing key for the test bundle
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
-
-    // Create manifest.json (without signature initially)
-    let manifest = BundleManifest {
-        version: "1.0".to_string(),
-        package: package.to_string(),
-        app_version: version.to_string(),
-        signer_id: Some(signer_id),
-        min_runtime_version: "0.1.0".to_string(),
-        metadata: None,
-        handlers: None,
-        interfaces: None,
-        wasm: Some(calimero_node_primitives::bundle::BundleArtifact {
-            path: "app.wasm".to_string(),
-            hash: artifact_hash(wasm_content),
-            size: wasm_content.len() as u64,
-        }),
-        abi: abi_content.map(|content| calimero_node_primitives::bundle::BundleArtifact {
-            path: "abi.json".to_string(),
-            hash: artifact_hash(content),
-            size: content.len() as u64,
-        }),
-        links: None,
-        services: None,
-        signature: None,
-    };
-
-    // Serialize to JSON value, sign it, then re-serialize
-    let mut manifest_json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
-    sign_manifest(&mut manifest_json, &signing_key);
-
-    // Note: The manifest struct's signature field is not used after this point
-    // since manifest_json is what gets serialized to the bundle. The struct
-    // signature field remains None, which is fine since only the JSON is used.
-
-    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
-    let mut manifest_header = tar::Header::new_gnu();
-    manifest_header.set_path("manifest.json").unwrap();
-    manifest_header.set_size(manifest_bytes.len() as u64);
-    manifest_header.set_cksum();
-    tar.append(&manifest_header, manifest_bytes.as_slice())
-        .unwrap();
-
-    // Add WASM file
-    let mut wasm_header = tar::Header::new_gnu();
-    wasm_header.set_path("app.wasm").unwrap();
-    wasm_header.set_size(wasm_content.len() as u64);
-    wasm_header.set_cksum();
-    tar.append(&wasm_header, wasm_content).unwrap();
-
-    // Add ABI file if provided
-    if let Some(abi_content) = abi_content {
-        let mut abi_header = tar::Header::new_gnu();
-        abi_header.set_path("abi.json").unwrap();
-        abi_header.set_size(abi_content.len() as u64);
-        abi_header.set_cksum();
-        tar.append(&abi_header, abi_content).unwrap();
-    }
-
-    // Add migrations
-    for (path, content) in migrations {
-        let mut migration_header = tar::Header::new_gnu();
-        migration_header.set_path(path).unwrap();
-        migration_header.set_size(content.len() as u64);
-        migration_header.set_cksum();
-        tar.append(&migration_header, content).unwrap();
-    }
-
-    tar.finish().unwrap();
-    bundle_path.try_into().unwrap()
-}
-
-/// Create a test NodeClient with temporary directories
-///
-/// The `datastore` parameter allows injecting a custom Store implementation.
-/// If `None` is provided, defaults to `InMemoryDB` (no file I/O, faster tests).
-async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempDir, TempDir) {
-    let data_dir = TempDir::new().unwrap();
-    let blob_dir = TempDir::new().unwrap();
-
-    // Default to InMemoryDB if no store is provided (avoids dependency on calimero-store-rocksdb)
-    let datastore = datastore.unwrap_or_else(|| Store::new(Arc::new(InMemoryDB::owned())));
-
-    // Nest the blobstore one level down: the node derives its root as the blob
-    // root's parent, so a bare TempDir would make every node share the OS temp
-    // dir as its root.
-    let blob_root = blob_dir.path().join("blobs");
-    let blob_store = BlobStore::new(
-        datastore.clone(),
-        FileSystem::new(&BlobStoreConfig::new(blob_root.try_into().unwrap()))
-            .await
-            .unwrap(),
-    );
-    let blob_manager = BlobManager::new(blob_store);
-
-    let (event_sender, _) = broadcast::channel(256);
-    let (ctx_sync_tx, _) = mpsc::channel(64);
-    let (ns_sync_tx, _) = mpsc::channel(64);
-    let (ns_join_tx, _) = mpsc::channel(16);
-    let (open_subgroup_join_tx, _) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
-
-    let node_client = NodeClient::new(
-        datastore,
-        blob_manager,
-        NetworkClient::new(LazyRecipient::new()),
-        LazyRecipient::new(),
-        event_sender,
-        sync_client,
-        None, // Not used in tests
-    );
-
-    (node_client, data_dir, blob_dir)
-}
-
-#[tokio::test]
-async fn test_bundle_detection() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
-
-    // Test single WASM file (should not be detected as bundle)
-    let wasm_path = temp_dir.path().join("app.wasm");
-    fs::write(&wasm_path, b"wasm content").unwrap();
-    let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
-
-    let result = node_client
-        .install_application_from_path(wasm_path_utf8, vec![], None, None)
-        .await;
-    assert!(result.is_ok(), "Single WASM installation should work");
-
-    // Test bundle file (should be detected as bundle)
-    let bundle_path = create_test_bundle(
-        &temp_dir,
-        "com.example.bundle",
-        "1.0.0",
-        b"wasm content",
-        None,
-        vec![],
-    );
-
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
-    assert!(result.is_ok(), "Bundle installation should work");
 }
 
 #[tokio::test]
@@ -227,7 +59,7 @@ async fn test_bundle_installation() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path.clone(), vec![], None, None)
+        .install_application_from_path(bundle_path.clone())
         .await
         .expect("Bundle installation should succeed");
 
@@ -272,7 +104,7 @@ async fn test_bundle_get_application_bytes() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect("Bundle installation should succeed");
 
@@ -308,9 +140,7 @@ async fn test_bundle_manifest_validation() {
     // Install bundle - package/version will be extracted from manifest
     // Since we're extracting from manifest, this test no longer makes sense
     // The package/version will always match because they come from the manifest
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_ok(),
@@ -363,7 +193,7 @@ async fn test_bundle_validation_missing_fields() {
 
     // Installation should fail with validation error
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![], None, None)
+        .install_application_from_path(bundle_path_utf8)
         .await;
 
     assert!(
@@ -377,40 +207,6 @@ async fn test_bundle_validation_missing_fields() {
         error_msg.contains("missing field `package`"),
         "the absent package field must be what refuses the bundle, got: {error_msg}"
     );
-}
-
-#[tokio::test]
-async fn test_bundle_backward_compatibility() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
-
-    // Test that single WASM files still work
-    let wasm_path = temp_dir.path().join("app.wasm");
-    fs::write(&wasm_path, b"single wasm content").unwrap();
-    let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
-
-    let application_id = node_client
-        .install_application_from_path(wasm_path_utf8, vec![], None, None)
-        .await
-        .expect("Single WASM installation should work");
-
-    // Verify it was installed correctly
-    let application = node_client
-        .get_application(&application_id)
-        .expect("Application should exist");
-    assert!(
-        application.is_some(),
-        "Single WASM application should be found"
-    );
-
-    // Verify we can get bytes
-    let bytes = node_client
-        .get_application_bytes(&application_id, None)
-        .await
-        .expect("Should get application bytes")
-        .expect("Application bytes should exist");
-
-    assert_eq!(bytes.as_ref(), b"single wasm content", "Bytes should match");
 }
 
 /// Create a test bundle with custom WASM path
@@ -491,7 +287,7 @@ async fn test_bundle_custom_wasm_path() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect("Bundle installation should succeed");
 
@@ -526,7 +322,7 @@ async fn test_bundle_no_metadata() {
 
     // Install bundle (metadata is extracted from manifest in Registry v2)
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect("Bundle installation should succeed");
 
@@ -597,7 +393,7 @@ async fn test_bundle_validation_empty_package() {
     let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![], None, None)
+        .install_application_from_path(bundle_path_utf8)
         .await;
 
     assert!(
@@ -653,7 +449,7 @@ async fn test_bundle_validation_empty_app_version() {
     let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![], None, None)
+        .install_application_from_path(bundle_path_utf8)
         .await;
 
     assert!(
@@ -708,7 +504,7 @@ async fn test_bundle_validation_missing_app_version() {
     let bundle_path_utf8: Utf8PathBuf = bundle_path.try_into().unwrap();
 
     let result = node_client
-        .install_application_from_path(bundle_path_utf8, vec![], None, None)
+        .install_application_from_path(bundle_path_utf8)
         .await;
 
     assert!(
@@ -742,7 +538,7 @@ async fn test_bundle_package_version_extracted_from_manifest() {
 
     // Install without providing package/version (should extract from manifest)
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect("Bundle installation should succeed");
 
@@ -936,57 +732,6 @@ async fn test_install_application_from_bundle_blob_missing_blob() {
     );
 }
 
-#[tokio::test]
-async fn test_simple_wasm_installation_still_works() {
-    let temp_dir = TempDir::new().unwrap();
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
-
-    // Test that simple WASM installation still works (backward compatibility)
-    let wasm_path = temp_dir.path().join("app.wasm");
-    fs::write(&wasm_path, b"simple wasm bytecode").unwrap();
-    let wasm_path_utf8: Utf8PathBuf = wasm_path.try_into().unwrap();
-
-    let application_id = node_client
-        .install_application_from_path(wasm_path_utf8, vec![], None, None)
-        .await
-        .expect("Single WASM installation should work");
-
-    // Verify it was installed correctly
-    let application = node_client
-        .get_application(&application_id)
-        .expect("Application should exist");
-    assert!(
-        application.is_some(),
-        "Single WASM application should be found"
-    );
-
-    // Verify we can get bytes
-    let bytes = node_client
-        .get_application_bytes(&application_id, None)
-        .await
-        .expect("Should get application bytes")
-        .expect("Application bytes should exist");
-
-    assert_eq!(
-        bytes.as_ref(),
-        b"simple wasm bytecode",
-        "Bytes should match"
-    );
-
-    // Verify it's not detected as a bundle
-    let app = application.unwrap();
-    let blob_bytes = node_client
-        .get_blob_bytes(&app.blob.bytecode, None)
-        .await
-        .expect("Should get blob bytes")
-        .expect("Blob bytes should exist");
-
-    assert!(
-        !NodeClient::is_bundle_blob(&blob_bytes),
-        "Simple WASM should not be detected as bundle"
-    );
-}
-
 /// Integration test simulating the bundle blob sharing flow:
 /// User 1 installs bundle → User 2 receives blob → User 2 installs automatically
 ///
@@ -1035,7 +780,7 @@ async fn test_bundle_blob_sharing_integration() {
     );
 
     let application_id_user1 = node_client_1
-        .install_application_from_path(bundle_path.clone(), vec![], None, None)
+        .install_application_from_path(bundle_path.clone())
         .await
         .expect("User 1 should install bundle successfully");
 
@@ -1073,9 +818,10 @@ async fn test_bundle_blob_sharing_integration() {
 
     // Step 3: User 2 doesn't have the application yet
     assert!(
-        !node_client_2
-            .has_application(&application_id_user1)
-            .unwrap(),
+        node_client_2
+            .get_application(&application_id_user1)
+            .unwrap()
+            .is_none(),
         "User 2 should not have application before sync"
     );
 
@@ -1457,7 +1203,7 @@ async fn test_unsigned_bundle_installation_is_rejected() {
         create_unsigned_bundle(&temp_dir, "com.example.unsigned", "1.0.0", b"wasm content");
 
     let err = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect_err("an unsigned bundle must not install");
     assert!(
@@ -1480,9 +1226,7 @@ async fn test_bundle_installation_fails_with_invalid_signature() {
         create_tampered_bundle(&temp_dir, "com.example.tampered", "1.0.0", b"wasm content");
 
     // Installation should fail due to invalid signature
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -1515,9 +1259,7 @@ async fn test_bundle_installation_fails_signer_id_mismatch() {
     );
 
     // Installation should fail
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -1569,7 +1311,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     let app_id_a = node_client
-        .install_application_from_path(bundle_a, vec![], None, None)
+        .install_application_from_path(bundle_a)
         .await
         .expect("Bundle A installation should succeed");
 
@@ -1584,7 +1326,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     let app_id_b = node_client
-        .install_application_from_path(bundle_b, vec![], None, None)
+        .install_application_from_path(bundle_b)
         .await
         .expect("Bundle B installation should succeed");
 
@@ -1599,7 +1341,7 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
     );
 
     let app_id_c = node_client
-        .install_application_from_path(bundle_c, vec![], None, None)
+        .install_application_from_path(bundle_c)
         .await
         .expect("Bundle C installation should succeed");
 
@@ -1624,11 +1366,11 @@ async fn test_bundle_application_id_derived_from_package_and_signer_id() {
 
     // Verify all applications can be retrieved
     assert!(
-        node_client.has_application(&app_id_a).unwrap(),
+        node_client.get_application(&app_id_a).unwrap().is_some(),
         "Application A should exist"
     );
     assert!(
-        node_client.has_application(&app_id_b).unwrap(),
+        node_client.get_application(&app_id_b).unwrap().is_some(),
         "Application B should exist"
     );
     // Note: app_id_c == app_id_a, so it's the same application (version upgrade)
@@ -1684,7 +1426,7 @@ async fn test_bundle_get_application_bytes_needs_no_disk_copy() {
 
     // Install the bundle
     let application_id = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect("Bundle installation should succeed");
 
@@ -1725,7 +1467,7 @@ async fn test_get_latest_version_semantic_ordering() {
             create_test_bundle(&temp_dir, package, version, b"wasm content", None, vec![]);
 
         let app_id = node_client
-            .install_application_from_path(bundle_path, vec![], None, None)
+            .install_application_from_path(bundle_path)
             .await
             .expect("Bundle installation should succeed");
 
@@ -1760,7 +1502,7 @@ async fn test_get_latest_version_mixed_semver_and_non_semver() {
             create_test_bundle(&temp_dir, package, version, b"wasm content", None, vec![]);
 
         let app_id = node_client
-            .install_application_from_path(bundle_path, vec![], None, None)
+            .install_application_from_path(bundle_path)
             .await
             .expect("Bundle installation should succeed");
 
@@ -1846,9 +1588,7 @@ async fn test_bundle_validation_path_traversal_in_package() {
     let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
 
     // Installation should fail due to path traversal
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -1893,9 +1633,7 @@ async fn test_bundle_validation_path_traversal_in_version() {
     let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
 
     // Installation should fail due to path traversal
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -1944,7 +1682,7 @@ async fn test_bundle_validation_path_traversal_in_service_wasm_path() {
     let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
 
     let err = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
+        .install_application_from_path(bundle_path)
         .await
         .expect_err("a service wasm path with '..' must not install");
 
@@ -1986,9 +1724,7 @@ async fn test_bundle_validation_forward_slash_in_package() {
     let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
 
     // Installation should fail due to directory separator
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -2033,9 +1769,7 @@ async fn test_bundle_validation_backslash_in_package() {
     let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
 
     // Installation should fail due to directory separator
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -2080,9 +1814,7 @@ async fn test_bundle_validation_windows_absolute_path_in_package() {
     let bundle_path = create_bundle_with_custom_manifest(&temp_dir, manifest, b"wasm content");
 
     // Installation should fail due to absolute path
-    let result = node_client
-        .install_application_from_path(bundle_path, vec![], None, None)
-        .await;
+    let result = node_client.install_application_from_path(bundle_path).await;
 
     assert!(
         result.is_err(),
@@ -2122,15 +1854,36 @@ async fn test_bundle_validation_valid_package_names() {
             vec![],
         );
 
-        let result = node_client
-            .install_application_from_path(bundle_path, vec![], None, None)
-            .await;
+        let result = node_client.install_application_from_path(bundle_path).await;
 
         assert!(
             result.is_ok(),
             "Bundle with valid package '{}' should install successfully, got error: {:?}",
             package,
             result.err()
+        );
+    }
+}
+
+/// Raw wasm is not an application: only a signed `.mpk` carries a re-derivable
+/// id. The filename is not the check, so both spellings must be refused.
+#[tokio::test]
+async fn a_raw_wasm_payload_is_refused() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    for name in ["app.wasm", "app.mpk"] {
+        let path = temp_dir.path().join(name);
+        fs::write(&path, b"\0asm\x01\0\0\0").unwrap();
+        let path: Utf8PathBuf = path.try_into().unwrap();
+
+        let err = node_client
+            .install_application_from_path(path)
+            .await
+            .expect_err("raw wasm must not install");
+        assert!(
+            err.to_string().contains("not a signed application bundle"),
+            "{name} got: {err}"
         );
     }
 }

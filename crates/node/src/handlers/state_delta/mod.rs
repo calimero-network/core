@@ -2480,7 +2480,9 @@ mod tests {
         use calimero_primitives::identity::PublicKey;
         use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
         use calimero_store::db::InMemoryDB;
-        use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+        use calimero_store::key::{
+            GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue,
+        };
         use calimero_store::Store;
         use core::num::NonZeroU128;
 
@@ -2512,8 +2514,12 @@ mod tests {
                 .save(
                     &group_id,
                     &GroupMetaValue {
-                        bytecode_id: APP_V2,
-                        target_application_id: ApplicationId::from([0xCC; 32]),
+                        target: GroupTarget {
+                            application_id: ApplicationId::from([0xCC; 32]),
+                            bytecode_id: APP_V2,
+                            package: Box::default(),
+                            version: Box::default(),
+                        },
                         created_at: 1_700_000_000,
                         admin_identity: dummy_pk,
                         owner_identity: dummy_pk,

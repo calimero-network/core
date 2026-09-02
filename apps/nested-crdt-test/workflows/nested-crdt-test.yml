@@ -12,7 +12,7 @@ steps:
   - name: Install Nested CRDT Application on Node 1
     type: install_application
     node: nested-node-1
-    path: res/nested_crdt_test.wasm
+    path: ../../dist/com.calimero.nested-crdt-test-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

@@ -9,9 +9,8 @@ set -euo pipefail
 # vacuously.
 cd "$(git rev-parse --show-toplevel)"
 
-# The retired spellings are legitimate only where they are a back-compat shim:
-# a serde/clap `alias`, a `rename` restoring a pre-refactor wire name, and the
-# CLI reference listing an accepted flag alias.
+# Retired spellings are legitimate only as back-compat shims: serde/clap
+# aliases, wire-name renames, and the CLI reference's accepted flag alias.
 readonly DELIBERATE='(alias|rename) = "(appKey|app-key|app_key)"|alias: `--app-key`|// wire-pin'
 
 # Stems, not whole identifiers, so a compound name cannot slip past.

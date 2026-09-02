@@ -27,7 +27,7 @@ pub(crate) fn namespace_rows_for_applications(
     }
     Ok(entries
         .into_iter()
-        .filter(|(_, meta)| applications.contains(&meta.target_application_id))
+        .filter(|(_, meta)| applications.contains(&meta.target.application_id))
         .collect())
 }
 
@@ -99,6 +99,7 @@ impl Handler<ListNamespacesRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_client::group::NamespaceSummary;
@@ -130,8 +131,12 @@ mod tests {
 
     fn test_meta(application_id: [u8; 32]) -> GroupMetaValue {
         GroupMetaValue {
-            bytecode_id: [0xAA; 32],
-            target_application_id: ApplicationId::from(application_id),
+            target: GroupTarget {
+                application_id: ApplicationId::from(application_id),
+                bytecode_id: [0xAA; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: calimero_account::AccountId::from([0x01; 32]),
             owner_identity: calimero_account::AccountId::from([0x01; 32]),
@@ -246,8 +251,12 @@ mod tests {
         let node_identity_pk = node_identity_sk.public_key();
 
         let meta = GroupMetaValue {
-            bytecode_id: [0x55; 32],
-            target_application_id: ApplicationId::from([0x66; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0x66; 32]),
+                bytecode_id: [0x55; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&node_identity_pk),
             owner_identity: crate::test_support::account_for(&node_identity_pk),

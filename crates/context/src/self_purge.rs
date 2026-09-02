@@ -1527,6 +1527,7 @@ mod tests {
     //! column families on the subgroup-only and namespace-root branches,
     //! and the cascade is idempotent (no errors / state divergence on a
     //! second call).
+    use calimero_store::key::GroupTarget;
 
     use std::sync::Arc;
 
@@ -1552,8 +1553,12 @@ mod tests {
 
     fn make_meta(admin: PublicKey) -> GroupMetaValue {
         GroupMetaValue {
-            bytecode_id: [0xBB; 32],
-            target_application_id: ApplicationId::from([0xCC; 32]),
+            target: GroupTarget {
+                application_id: ApplicationId::from([0xCC; 32]),
+                bytecode_id: [0xBB; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: crate::test_support::account_for(&admin),
             owner_identity: crate::test_support::account_for(&admin),
@@ -2928,6 +2933,8 @@ mod tests {
             blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
             source: "calimero://stub-app".to_owned(),
             service_name: None,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         };
         let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt op");
         let ctx_registered_op = SignedNamespaceOp::sign(

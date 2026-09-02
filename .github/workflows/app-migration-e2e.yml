@@ -166,13 +166,14 @@ jobs:
   # workflow. fail-fast disabled so a flaky scenario doesn't mask
   # other failures in the same run.
   scenario:
-    name: ${{ matrix.workflow }}
+    name: ${{ matrix.workflow }} (${{ matrix.mode }})
     needs: [build-merod, build-wasms]
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        mode: [dht]
         workflow:
           - 00-single-group-migration-baseline
           - 01-namespace-cascade-migration
@@ -212,8 +213,15 @@ jobs:
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
+        # The only suite that advances a group's target, so the only place
+        # registry coordinates are ever resolved. dht ignores them, so without
+        # an http lane that resolution never runs against a real registry.
+        include:
+          - workflow: 01-namespace-cascade-migration
+            mode: http
     env:
       WORKFLOW: ${{ matrix.workflow }}
+      MODE: ${{ matrix.mode }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -239,6 +247,14 @@ jobs:
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
+      # The image carries the node's application source, so the http lane needs
+      # its base_url stamped at the address this runner's registry came up on.
+      - name: Serve the fixtures over an http registry
+        if: matrix.mode == 'http'
+        run: |
+          url=$(./scripts/e2e-fixture-registry.sh)
+          scripts/set-registry-mode.sh merod:local http "$url"
+
       - name: Run workflow
         run: |
           mkdir -p docker-logs
@@ -248,10 +264,12 @@ jobs:
           # regardless of `stop_all_nodes` (calimero-network/merobox#207).
           # This replaces the old background `docker logs -f` watcher.
 
+          [ "$MODE" = dht ] && IMAGE_SUFFIX=-dht || IMAGE_SUFFIX=
+
           set +e
           set -o pipefail
           merobox bootstrap run "workflows/app-migration/${WORKFLOW}.yml" \
-              --image merod:local \
+              --image "merod:local${IMAGE_SUFFIX}" \
               --e2e-mode \
               --verbose 2>&1 | tee "docker-logs/merobox-${WORKFLOW}.log"
           wf_exit=${PIPESTATUS[0]}
@@ -262,6 +280,14 @@ jobs:
               [ -e "$f" ] || continue
               cp -f "$f" "$LOGDIR/$(basename "$f")"
           done
+
+          # A green http lane proves nothing on its own: the node logs an
+          # acquisition whether the registry or a peer served it. Ask the fixture.
+          if [ "$MODE" = http ] && [ "$wf_exit" -eq 0 ] \
+              && ! docker logs fixture-registry 2>&1 | grep -q 'GET /artifacts/'; then
+              echo "::error::${WORKFLOW} fetched nothing from fixture-registry; it did not use the http registry"
+              wf_exit=1
+          fi
 
           exit "$wf_exit"
 

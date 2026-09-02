@@ -65,10 +65,13 @@ jobs:
         run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build scaffolding-e2e multi-service bundle
-        run: cargo mero bundle --dev --no-icon --app-version 0.1.0 --manifest-path apps/scaffolding-e2e/Cargo.toml
+        run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
 
       - name: Build xcall-example app
         run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
+
+      - name: Build xcall-example bundle
+        run: (cd apps/xcall-example && cargo mero bundle --dev --no-icon)
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -76,10 +79,16 @@ jobs:
           name: e2e-rust-apps-release-build-artifacts
           path: |
             apps/scaffolding-e2e/res/*.wasm
-            apps/scaffolding-e2e/dist/*.mpk
             apps/scaffolding-e2e/res/abi.json
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
+          retention-days: 1
+
+      - name: Upload app bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-rust-apps-release-bundles
+          path: dist/*.mpk
           retention-days: 1
 
   test:
@@ -98,6 +107,12 @@ jobs:
           name: e2e-rust-apps-release-build-artifacts
           path: apps
 
+      - name: Download app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-rust-apps-release-bundles
+          path: dist
+
       - name: Determine Docker image tag
         id: image-tag
         env:
@@ -110,6 +125,14 @@ jobs:
               "${{ github.repository }}" \
               "${{ github.head_ref }}" \
               "$GH_TOKEN"
+
+      # Smoke-tests the released image itself, so its nodes stay on the
+      # peer-to-peer source rather than on a registry this job would have to run.
+      - name: Select the application source
+        run: |
+          image=ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }}
+          docker pull "$image"
+          ./scripts/set-registry-mode.sh "$image" dht
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -378,10 +401,10 @@ jobs:
           path: |
             apps/scaffolding-e2e/res/*.wasm
             apps/scaffolding-e2e/res/abi.json
-            apps/scaffolding-e2e/dist/*.mpk
             apps/scaffolding-e2e/res/state-schema.json
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
+            dist/*.mpk
           retention-days: 7
           if-no-files-found: warn
 

@@ -21,7 +21,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupTarget};
 use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -39,8 +39,12 @@ use crate::NodeState;
 
 fn sample_meta(admin: calimero_account::AccountId) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -2007,6 +2011,8 @@ async fn restricted_ctx_redriven_after_group_created() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
 
@@ -2254,6 +2260,8 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDFu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&namespace_key, &inner_op).expect("encrypt group op");
 
@@ -2654,6 +2662,8 @@ async fn tee_matrix_restricted_late_join() {
         blob_id: calimero_primitives::blobs::BlobId::from([0xDDu8; 32]),
         source: "calimero://stub-app".to_owned(),
         service_name: None,
+        package: "com.example.app".to_owned(),
+        version: "2.0.0".to_owned(),
     };
     let encrypted = GroupKeyring::encrypt_op(&subgroup_key, &inner_op).expect("encrypt group op");
     let ctx_registered_op = SignedNamespaceOp::sign(

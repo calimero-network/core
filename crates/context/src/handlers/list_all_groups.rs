@@ -46,8 +46,8 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
                         .and_then(|r| r.name);
                     summaries.push(GroupSummary {
                         group_id,
-                        bytecode_id: meta.bytecode_id.into(),
-                        target_application_id: meta.target_application_id,
+                        bytecode_id: meta.target.bytecode_id.into(),
+                        target_application_id: meta.target.application_id,
                         created_at: meta.created_at,
                         name,
                     });

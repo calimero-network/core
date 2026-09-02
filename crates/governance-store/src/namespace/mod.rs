@@ -18,6 +18,9 @@ mod retry;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+use self::governance::effective_stub_source;
+
 pub use self::core::MAX_NAMESPACE_DEPTH;
 
 pub use self::core::{

@@ -41,6 +41,7 @@
 //! predicate-skip branch, which is the C1 regression guard.
 
 use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
@@ -80,8 +81,12 @@ fn meta(
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: target,
+        target: GroupTarget {
+            application_id: target,
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -148,6 +153,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign op_a");
@@ -169,6 +176,8 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
             to_state_version: 0,
             migration: None,
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign op_b");
@@ -221,7 +230,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         // groups are still on K1.
         let pre = MetaRepository::new(&store_b).load(&root).unwrap().unwrap();
         assert_eq!(
-            pre.bytecode_id, BYTECODE_ID_1,
+            pre.target.bytecode_id, BYTECODE_ID_1,
             "replica B must still be on K1 while op_b is pending"
         );
 
@@ -251,44 +260,44 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
     let final_b_child = MetaRepository::new(&store_b).load(&child).unwrap().unwrap();
 
     assert_eq!(
-        final_a_root.bytecode_id, BYTECODE_ID_2,
+        final_a_root.target.bytecode_id, BYTECODE_ID_2,
         "replica A: causal-winner op_a moved every group to K2"
     );
     assert_eq!(
-        final_a_root.target_application_id,
+        final_a_root.target.application_id,
         app_id_2(),
         "replica A: target_application_id == APP_ID_2"
     );
-    assert_eq!(final_a_child.bytecode_id, BYTECODE_ID_2);
-    assert_eq!(final_a_child.target_application_id, app_id_2());
+    assert_eq!(final_a_child.target.bytecode_id, BYTECODE_ID_2);
+    assert_eq!(final_a_child.target.application_id, app_id_2());
 
     // Cross-replica convergence: replica B ends in the EXACT same
     // state as replica A — bytes-equal on every field of GroupMeta.
     assert_eq!(
-        final_b_root.bytecode_id, final_a_root.bytecode_id,
+        final_b_root.target.bytecode_id, final_a_root.target.bytecode_id,
         "convergence: replica B root bytecode_id must match replica A"
     );
     assert_eq!(
-        final_b_root.target_application_id, final_a_root.target_application_id,
+        final_b_root.target.application_id, final_a_root.target.application_id,
         "convergence: replica B root target_application_id must match replica A"
     );
     assert_eq!(
-        final_b_child.bytecode_id, final_a_child.bytecode_id,
+        final_b_child.target.bytecode_id, final_a_child.target.bytecode_id,
         "convergence: replica B child bytecode_id must match replica A"
     );
     assert_eq!(
-        final_b_child.target_application_id, final_a_child.target_application_id,
+        final_b_child.target.application_id, final_a_child.target.application_id,
         "convergence: replica B child target_application_id must match replica A"
     );
 
     // Loser bytecode_id (K3) won on neither replica — op_b's predicate
     // skip was correctly triggered both times.
     assert_ne!(
-        final_a_root.bytecode_id, BYTECODE_ID_3,
+        final_a_root.target.bytecode_id, BYTECODE_ID_3,
         "loser op_b must NOT have written K3 on replica A"
     );
     assert_ne!(
-        final_b_root.bytecode_id, BYTECODE_ID_3,
+        final_b_root.target.bytecode_id, BYTECODE_ID_3,
         "loser op_b must NOT have written K3 on replica B"
     );
 }
