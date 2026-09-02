@@ -291,6 +291,20 @@ impl ProtocolSelector {
                             .await;
                         }
 
+                        // Same pass for custom-typed entries. Both dispatchers
+                        // run here rather than inside the DFS because neither
+                        // can call into WASM from a synchronous apply.
+                        if !stats.deferred_custom_merges.is_empty() {
+                            dispatch_deferred_custom_merges(
+                                &self.context_client,
+                                &store,
+                                context_id,
+                                our_identity,
+                                &stats.deferred_custom_merges,
+                            )
+                            .await;
+                        }
+
                         // P6.S3: the post-sync governance-divergence pull moved to
                         // a single check in the manager (`handle_dag_sync`, after
                         // `execute` returns) so it covers EVERY data backend —
@@ -434,6 +448,20 @@ impl ProtocolSelector {
                             .await;
                         }
 
+                        // Same pass for custom-typed entries. Both dispatchers
+                        // run here rather than inside the DFS because neither
+                        // can call into WASM from a synchronous apply.
+                        if !stats.deferred_custom_merges.is_empty() {
+                            dispatch_deferred_custom_merges(
+                                &self.context_client,
+                                &store,
+                                context_id,
+                                our_identity,
+                                &stats.deferred_custom_merges,
+                            )
+                            .await;
+                        }
+
                         // P6.S3: post-sync governance pull centralised in the
                         // manager (covers all data backends); see the HashComparison
                         // arm above.
@@ -504,6 +532,161 @@ impl ProtocolSelector {
 /// partial progress is preferable to dropping the whole batch on a
 /// single failure. The next sync tick will re-attempt anything that
 /// stays divergent.
+/// Apply the custom-typed ENTRY merges that sync deferred, for the same reason
+/// [`dispatch_deferred_root_merges`] exists: the apply is synchronous and inside
+/// the storage env, so it cannot reach a rule that lives in the app's module.
+///
+/// Doing it here — after the session, with nothing nested — is what makes a
+/// second WASM instance unnecessary. Per entry:
+///
+/// 1. Read the locally-stored entry bytes + metadata.
+/// 2. Send both sides plus the entry's `CustomTypeId` into
+///    `__calimero_merge_custom`, which resolves the id against the registry the
+///    module populated at load.
+/// 3. Write the merged bytes back with `write_pre_merged_root_state`, which
+///    updates storage and the Merkle index without re-running the merge.
+///
+/// An entry with no local bytes is SKIPPED rather than accepted: unlike a root
+/// there is no bootstrap case to serve, and a merge of one side is not a merge.
+/// The plain apply path stores such an entry on its own.
+///
+/// Failures are per-entry and logged. Nothing falls back to LWW — that would
+/// resolve a conflict the app declared itself responsible for, and resolve it
+/// differently depending on arrival order. The entity stays divergent until the
+/// next round, which is recoverable; a silently wrong value is not.
+pub(crate) async fn dispatch_deferred_custom_merges(
+    context_client: &ContextClient,
+    store: &calimero_store::Store,
+    context_id: ContextId,
+    our_identity: PublicKey,
+    deferred: &[(
+        [u8; 32],
+        calimero_primitives::crdt::CustomTypeId,
+        Vec<u8>,
+        u64,
+    )],
+) {
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::Metadata;
+    use calimero_storage::env::with_runtime_env;
+    use calimero_storage::index::Index;
+    use calimero_storage::interface::Interface;
+    use calimero_storage::merge::MergeCustomRequest;
+    use calimero_storage::store::{MainStorage, StorageAdaptor};
+
+    let Ok(account) = calimero_governance_store::account_for_context(store, &context_id) else {
+        tracing::warn!(
+            %context_id,
+            "cannot resolve this node's account for the context; skipping the \
+             deferred custom-merge pass (retried on the next sync tick)"
+        );
+        return;
+    };
+    let runtime_env = calimero_node_primitives::sync::create_runtime_env(
+        store,
+        context_id,
+        our_identity,
+        account,
+    );
+
+    for (key, type_id, incoming, incoming_hlc_ts) in deferred {
+        let entity_id = Id::new(*key);
+
+        let read_result: eyre::Result<(Option<Vec<u8>>, Metadata)> =
+            with_runtime_env(runtime_env.clone(), || {
+                let meta = Index::<MainStorage>::get_index(entity_id)
+                    .map_err(|e| eyre::eyre!("get_index: {e}"))?
+                    .map(|idx| idx.metadata)
+                    .unwrap_or_default();
+                let existing = <MainStorage as StorageAdaptor>::storage_read(
+                    calimero_storage::store::Key::Entry(entity_id),
+                );
+                Ok((existing, meta))
+            });
+
+        let (existing, existing_metadata) = match read_result {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::warn!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    %err,
+                    "deferred custom merge: failed to read the stored entry, skipping"
+                );
+                continue;
+            }
+        };
+
+        let Some(existing) = existing else {
+            tracing::debug!(
+                %context_id,
+                entity_id = %hex::encode(key),
+                "deferred custom merge: nothing stored locally, leaving it to the \
+                 plain apply path"
+            );
+            continue;
+        };
+
+        let existing_ts: u64 = *existing_metadata.updated_at;
+
+        let merged = match context_client
+            .merge_custom(
+                &context_id,
+                &our_identity,
+                MergeCustomRequest {
+                    type_id: *type_id,
+                    existing,
+                    incoming: incoming.clone(),
+                },
+            )
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    ?err,
+                    "deferred custom merge: WASM dispatch failed, leaving the entity \
+                     divergent for the next round"
+                );
+                continue;
+            }
+        };
+
+        // `updated_at` advances past both inputs so the next LWW comparison
+        // resolves consistently, exactly as the root path does. The entry's
+        // `crdt_type` is preserved: `update_hash_for` only overwrites the stored
+        // tag when handed `Some`, and this path passes `None` for a non-root id
+        // — so the entry stays stamped and keeps dispatching.
+        let mut new_metadata = existing_metadata.clone();
+        new_metadata.updated_at = existing_ts.max(*incoming_hlc_ts).into();
+
+        let write_result = with_runtime_env(runtime_env.clone(), || {
+            Interface::<MainStorage>::write_pre_merged_root_state(entity_id, &merged, new_metadata)
+                .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
+        });
+
+        match write_result {
+            Ok(_full_hash) => {
+                tracing::info!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    "deferred custom merge: applied"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    %err,
+                    "deferred custom merge: failed to write merged bytes back"
+                );
+            }
+        }
+    }
+}
+
 pub(crate) async fn dispatch_deferred_root_merges(
     context_client: &ContextClient,
     store: &calimero_store::Store,

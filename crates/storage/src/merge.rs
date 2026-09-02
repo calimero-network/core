@@ -72,7 +72,7 @@ pub use custom_registry::clear_custom_merge_registry;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::collections::crdt_meta::{CrdtType, MergeError, Mergeable};
+use crate::collections::crdt_meta::{CrdtType, CustomTypeId, MergeError, Mergeable};
 use crate::collections::{Counter, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
@@ -103,6 +103,40 @@ pub struct MergeRootStateRequest {
 /// having to panic in WASM.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub enum MergeRootStateResponse {
+    Ok(Vec<u8>),
+    Err(String),
+}
+
+/// Request the host sends into WASM to merge one custom-typed ENTRY.
+///
+/// Sibling of [`MergeRootStateRequest`], and deliberately smaller. A root
+/// merge needs `existing_created_at` for its bootstrap fast-path, where a
+/// freshly-materialised default state must accept `incoming` wholesale. An
+/// entry has no such state: it exists because something wrote it, so there is
+/// nothing to bootstrap and both sides are real history.
+///
+/// Timestamps are absent for a stronger reason — an app-defined rule that
+/// consults them is not commutative, and the whole point of dispatching is
+/// that the app's rule decides. The host advances `updated_at` on the write
+/// back, exactly as the root path does.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct MergeCustomRequest {
+    /// Which app-defined type this entry holds, as stamped on the entry.
+    pub type_id: CustomTypeId,
+    /// The receiver's stored entry bytes.
+    pub existing: Vec<u8>,
+    /// The entry bytes that arrived over the wire.
+    pub incoming: Vec<u8>,
+}
+
+/// Response from the WASM-side custom-merge dispatcher.
+///
+/// `Err(message)` covers both a genuine merge failure and an id this build's
+/// app no longer registers — an app-upgrade skew. Either way the host logs it
+/// and leaves the entity for the next sync round rather than resolving it by
+/// LWW, which would be the wrong answer for a conflict the app owns.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub enum MergeCustomResponse {
     Ok(Vec<u8>),
     Err(String),
 }

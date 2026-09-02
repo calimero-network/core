@@ -41,7 +41,7 @@
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     generate_nonce, get_local_root_hash_for_context, handle_entity_push,
-    is_leaf_currently_authorized, LeafOutcome, MAX_ENTITIES_PER_PUSH,
+    is_leaf_currently_authorized, LeafDisposition, LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
@@ -51,7 +51,7 @@ use calimero_node_primitives::sync::{
     TreeLeafData, TreeNode, TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
-use calimero_primitives::crdt::CrdtType;
+use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -160,6 +160,15 @@ pub struct HashComparisonStats {
     /// the dispatch uses the actual remote write time instead of a
     /// synthetic value.
     pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+
+    /// Custom-typed ENTRIES deferred for the same reason, with the id the
+    /// entry declares so the dispatch does not have to re-read it.
+    ///
+    /// Without this the host resolves such an entry by LWW while the in-WASM
+    /// delta path resolves it by the app's rule — the same conflict settling
+    /// two different ways depending on which path delivered it. An app rule is
+    /// only a CRDT if it is the only thing deciding.
+    pub deferred_custom_merges: Vec<([u8; 32], CustomTypeId, Vec<u8>, u64)>,
 }
 
 /// HashComparison sync protocol.
@@ -393,14 +402,28 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // `apply_leaf_with_crdt_merge` which LWW-writes
                     // them directly (no Mergeable to dispatch).
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    let is_opaque = leaf_data.metadata.crdt_type.is_opaque_leaf();
-                    if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
-                        stats.deferred_root_merges.push((
-                            leaf_data.key,
-                            leaf_data.value.clone(),
-                            leaf_data.metadata.hlc_timestamp,
-                        ));
-                        continue;
+                    match crate::sync::helpers::classify_leaf(
+                        entity_id,
+                        &leaf_data.metadata.crdt_type,
+                    ) {
+                        LeafDisposition::DeferRoot => {
+                            stats.deferred_root_merges.push((
+                                leaf_data.key,
+                                leaf_data.value.clone(),
+                                leaf_data.metadata.hlc_timestamp,
+                            ));
+                            continue;
+                        }
+                        LeafDisposition::DeferCustom(type_id) => {
+                            stats.deferred_custom_merges.push((
+                                leaf_data.key,
+                                type_id,
+                                leaf_data.value.clone(),
+                                leaf_data.metadata.hlc_timestamp,
+                            ));
+                            continue;
+                        }
+                        LeafDisposition::Apply => {}
                     }
 
                     // PR-6b Task 6b.7: gate on the loaded reader. The HC repair
