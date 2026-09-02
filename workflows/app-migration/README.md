@@ -62,7 +62,7 @@ and the namespace-cascade additions designed in
 | `38-namespace-invite-join-regression.yml` | Namespace invite + join regression guard for the `MemberJoinedAt` invitation-expiry wire change (2-node). |
 | `39-missing-abi-refused.yml` | Negative path: an upgrade whose target build has no embedded ABI is REFUSED (missing migration evidence) rather than silently proceeding code-only (1-node, core#3285). |
 
-### Out of scope (not in this PR)
+### Out of scope
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.
 * `Coordinated` multi-node upgrade policy — all scenarios exercise the lazy per-node upgrade model (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.

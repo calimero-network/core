@@ -41,7 +41,7 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     // only by a scope that names none either.
     let application = MetaRepository::new(store)
         .load(namespace)?
-        .map(|meta| meta.target_application_id);
+        .map(|meta| meta.target.application_id);
     if !cert.covers(application) {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
@@ -316,8 +316,11 @@ mod tests {
             .save(
                 namespace,
                 &GroupMetaValue {
-                    bytecode_id: [0xAA; 32],
-                    target_application_id: app(application),
+                    target: calimero_store::key::GroupTarget {
+                        application_id: app(application),
+                        bytecode_id: [0xAA; 32],
+                        ..Default::default()
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: calimero_account::AccountId::from([0x01; 32]),
                     owner_identity: calimero_account::AccountId::from([0x01; 32]),
@@ -446,8 +449,13 @@ mod tests {
             .save(
                 &ns,
                 &GroupMetaValue {
-                    bytecode_id: [0xAA; 32],
-                    target_application_id: app(APP_ONE),
+                    target: calimero_store::key::GroupTarget {
+                        application_id: app(APP_ONE),
+
+                        bytecode_id: [0xAA; 32],
+
+                        ..Default::default()
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: calimero_account::AccountId::from([0x01; 32]),
                     owner_identity: calimero_account::AccountId::from([0x01; 32]),

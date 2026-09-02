@@ -1229,15 +1229,14 @@ impl SyncManager {
             let blob_id = calimero_primitives::blobs::BlobId::from(bound);
             if self.node_client.has_blob(&blob_id).unwrap_or(false) {
                 match self.context_client.get_context(&context_id) {
-                    Ok(Some(mut context)) => {
+                    Ok(Some(context)) => {
                         let mut application: Option<calimero_primitives::application::Application> =
                             None;
                         if let Err(err) = self
                             .install_bundle_after_blob_sharing(
                                 &context_id,
                                 &blob_id,
-                                &None,
-                                &mut context,
+                                &context,
                                 &mut application,
                             )
                             .await
@@ -2407,7 +2406,7 @@ fn settle_snapshot_activation(
     // group target only when the snapshot carried no schema stamp.
     let bind = data_schema
         .filter(|k| *k != [0u8; 32])
-        .unwrap_or(meta.bytecode_id);
+        .unwrap_or(meta.target.bytecode_id);
     if bind == [0u8; 32] {
         return None; // zero-key group: no bytecode signal to bind
     }
@@ -2421,8 +2420,8 @@ fn settle_snapshot_activation(
     if let Some(app_id) = calimero_context::activation::application_for_schema(
         &ladder,
         bind,
-        meta.bytecode_id,
-        meta.target_application_id,
+        meta.target.bytecode_id,
+        meta.target.application_id,
     ) {
         calimero_context::activation::reconcile_context_application(store, &context_id, app_id);
     }
@@ -2439,6 +2438,7 @@ fn settle_snapshot_activation(
 
 #[cfg(test)]
 mod tests {
+    use calimero_store::key::GroupTarget;
     use std::collections::BTreeSet;
     use std::sync::Arc;
     use std::time::Duration;
@@ -3394,8 +3394,12 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    bytecode_id: BYTECODE_ID,
-                    target_application_id: ApplicationId::from([0xAA; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xAA; 32]),
+                        bytecode_id: BYTECODE_ID,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
@@ -3464,8 +3468,12 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    bytecode_id: [0x2B; 32],
-                    target_application_id: ApplicationId::from([0xAB; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xAB; 32]),
+                        bytecode_id: [0x2B; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x08; 32]),
                     owner_identity: calimero_primitives::identity::AccountId::from([0x08; 32]),
@@ -3532,8 +3540,12 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    bytecode_id: [0x2B; 32],
-                    target_application_id: ApplicationId::from([0xAB; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xAB; 32]),
+                        bytecode_id: [0x2B; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
@@ -3576,8 +3588,12 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    bytecode_id: TARGET_KEY,
-                    target_application_id: ApplicationId::from([0xAC; 32]),
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xAC; 32]),
+                        bytecode_id: TARGET_KEY,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
@@ -3624,8 +3640,12 @@ mod tests {
             .save(
                 &gid,
                 &key::GroupMetaValue {
-                    bytecode_id: TARGET_KEY,
-                    target_application_id: target_app,
+                    target: GroupTarget {
+                        application_id: target_app,
+                        bytecode_id: TARGET_KEY,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
                     owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),

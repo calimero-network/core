@@ -12,7 +12,7 @@ steps:
   - name: Install KV Store Init Application
     type: install_application
     node: kv-store-init-node-1
-    path: res/kv_store_init.wasm
+    path: ../../dist/com.calimero.kv-store-init-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId

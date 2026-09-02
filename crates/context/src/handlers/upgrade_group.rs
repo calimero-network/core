@@ -1,21 +1,29 @@
-use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
+use calimero_app_downloader::registry::{stored_coords, RegistryCoords, RegistryCoordsBuf};
 use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::GroupMigrationPayload;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
+use calimero_store::types::ApplicationMeta;
 use calimero_wasm_abi::downgrade::identity_downgrades;
-use calimero_wasm_abi::embed::{read_embedded_state_schema_versioned, EmbeddedSchema};
+use calimero_wasm_abi::embed::{
+    read_embedded_state_schema, read_embedded_state_schema_versioned, EmbeddedSchema,
+};
 use calimero_wasm_abi::schema::Manifest;
+
+use crate::migration_plan::{plan_upgrade, UpgradeAction};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
@@ -96,9 +104,6 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // here would race the lazy path and migrate the same context twice.
         let datastore = self.datastore.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let target_blob_bytes: Option<[u8; 32]> = app_meta_for_contract
-            .as_ref()
-            .map(|m| *m.bytecode.blob_id().as_ref());
 
         // Persisted SYNCHRONOUSLY: two concurrent requests would otherwise both
         // clear `validate_upgrade` and emit racing op pairs. The async block
@@ -132,19 +137,17 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 // installed intermediates so the group moves rung by rung
                 // and behind members replay the same sequence.
                 let (rungs, target_state_version) = {
-                    let target_blob = target_blob_bytes
-                        .ok_or_else(|| eyre::eyre!("target application not found"))?;
-                    let target_size = app_meta_for_contract
+                    let target_meta = app_meta_for_contract
                         .as_ref()
-                        .map(|m| m.size)
-                        .unwrap_or_default();
+                        .ok_or_else(|| eyre::eyre!("target application not found"))?;
                     plan_emit_ladder(
                         &node_client,
                         &target_application_id,
                         current_bytecode_id,
-                        target_blob,
-                        target_size,
+                        *target_meta.bytecode.blob_id().as_ref(),
+                        target_meta.size,
                         force_code_only,
+                        registry_coords(target_meta)?.to_buf(),
                     )
                     .await?
                 };
@@ -193,6 +196,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             GroupOp::TargetApplicationSet {
                                 bytecode_id: rung.bytecode_id.into(),
                                 target_application_id,
+                                package: rung.coords.package.clone(),
+                                version: rung.coords.version.clone(),
                             },
                         )
                         .await?;
@@ -218,7 +223,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 let mut meta = MetaRepository::new(&datastore)
                     .load(&group_id)?
                     .ok_or_else(|| eyre::eyre!("group not found"))?;
-                meta.target_application_id = target_application_id;
+                meta.target.application_id = target_application_id;
                 meta.migration = migration_bytes.clone();
                 MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
@@ -395,6 +400,19 @@ struct EmitRung {
     bytecode_id: [u8; 32],
     size: u64,
     migration: Option<MigrationParams>,
+    coords: RegistryCoordsBuf, // this rung's own: an intermediate is another release
+}
+
+/// The coordinates an emitted op must carry. An unaddressable row is refused
+/// here rather than signed onto an immutable op no receiver can resolve.
+pub fn registry_coords(meta: &ApplicationMeta) -> eyre::Result<RegistryCoords<'_>> {
+    stored_coords(&meta.package, &meta.version).ok_or_else(|| {
+        eyre::eyre!(
+            "application {}@{} has no registry coordinates",
+            meta.package,
+            meta.version
+        )
+    })
 }
 
 /// Max `state_version` across the blob's services, from its embedded ABIs.
@@ -403,9 +421,6 @@ pub(crate) async fn blob_max_state_version(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
 ) -> Option<u32> {
-    use calimero_primitives::blobs::BlobId;
-    use calimero_wasm_abi::embed::read_embedded_state_schema;
-
     let blob_id = BlobId::from(blob);
     let services = node_client.bundle_service_names(&blob_id).await.ok()??;
     let mut max_sv = None;
@@ -444,8 +459,6 @@ async fn resolve_blob_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     blob: [u8; 32],
 ) -> EmbeddedSchema {
-    use calimero_primitives::blobs::BlobId;
-
     let Ok(Some(bytes)) = node_client
         .application_bytes_from_blob(&BlobId::from(blob), None)
         .await
@@ -471,6 +484,7 @@ async fn plan_emit_ladder(
     target_blob: [u8; 32],
     target_size: u64,
     force_code_only: bool,
+    target_coords: RegistryCoordsBuf,
 ) -> eyre::Result<(Vec<EmitRung>, u32)> {
     let from_sv = blob_max_state_version(node_client, current_bytecode_id).await;
     let to_sv = blob_max_state_version(node_client, target_blob).await;
@@ -489,6 +503,7 @@ async fn plan_emit_ladder(
                 bytecode_id: target_blob,
                 size: target_size,
                 migration,
+                coords: target_coords,
             }],
             target_state_version,
         ));
@@ -517,14 +532,19 @@ async fn plan_emit_ladder(
 
     let mut rungs = Vec::new();
     let mut prev = current_bytecode_id;
-    for (blob, size) in intermediates {
-        let migration = resolve_upgrade_from_abis(node_client, prev, blob, force_code_only).await?;
+    for cand in intermediates {
+        let migration =
+            resolve_upgrade_from_abis(node_client, prev, cand.bytecode_id, force_code_only).await?;
+        // The inventory only yields blobs of the target's own package, so the
+        // package carries over and only the version is per-rung.
+        let coords = RegistryCoordsBuf::new(target_coords.package.clone(), cand.version.clone());
         rungs.push(EmitRung {
-            bytecode_id: blob,
-            size,
+            bytecode_id: cand.bytecode_id,
+            size: cand.size,
             migration,
+            coords,
         });
-        prev = blob;
+        prev = cand.bytecode_id;
     }
     let migration =
         resolve_upgrade_from_abis(node_client, prev, target_blob, force_code_only).await?;
@@ -532,6 +552,7 @@ async fn plan_emit_ladder(
         bytecode_id: target_blob,
         size: target_size,
         migration,
+        coords: target_coords,
     });
     Ok((rungs, target_state_version))
 }
@@ -555,9 +576,7 @@ pub(crate) fn select_intermediate_rungs(
     from_sv: u32,
     to_sv: u32,
     candidates: &[ChainCandidate],
-) -> eyre::Result<Vec<([u8; 32], u64)>> {
-    use std::collections::BTreeMap;
-
+) -> eyre::Result<Vec<&ChainCandidate>> {
     let mut best: BTreeMap<u32, &ChainCandidate> = BTreeMap::new();
     for cand in candidates {
         if cand.state_version <= from_sv || cand.state_version >= to_sv {
@@ -591,7 +610,7 @@ pub(crate) fn select_intermediate_rungs(
                 to_sv - from_sv,
             );
         };
-        rungs.push((cand.bytecode_id, cand.size));
+        rungs.push(*cand);
     }
     Ok(rungs)
 }
@@ -635,8 +654,6 @@ fn decide_service_upgrade(
     target_abi: Option<&Manifest>,
     force_code_only: bool,
 ) -> eyre::Result<Option<String>> {
-    use crate::migration_plan::{plan_upgrade, UpgradeAction};
-
     match plan_upgrade(current_abi, target_abi) {
         Ok(UpgradeAction::CodeOnly) => Ok(None),
         Ok(UpgradeAction::Migrate { method, from, to }) => {
@@ -695,9 +712,6 @@ pub(crate) async fn resolve_upgrade_from_abis(
     target_blob: [u8; 32],
     force_code_only: bool,
 ) -> eyre::Result<Option<MigrationParams>> {
-    use calimero_primitives::blobs::BlobId;
-    use calimero_wasm_abi::embed::read_embedded_state_schema;
-
     let target_blob_id = BlobId::from(target_blob);
     let services = node_client
         .bundle_service_names(&target_blob_id)
@@ -907,12 +921,12 @@ fn validate_upgrade(
     //    races a concurrent in-place install (installs bypass this actor);
     //    the worst case either way is a rejected retry or a no-op upgrade op,
     //    never state corruption, so the window is accepted.
-    if meta.target_application_id == *target_application_id {
+    if meta.target.application_id == *target_application_id {
         let target_blob = datastore
             .handle()
             .get(&key::ApplicationMeta::new(*target_application_id))?
             .map(|app| *app.bytecode.blob_id().as_ref());
-        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.bytecode_id);
+        let bytecode_unchanged = target_blob.is_none_or(|blob| blob == meta.target.bytecode_id);
         if bytecode_unchanged {
             bail!("group is already targeting this application");
         }
@@ -931,7 +945,7 @@ fn validate_upgrade(
     let handle = datastore.handle();
 
     let from_version = handle
-        .get(&key::ApplicationMeta::new(meta.target_application_id))?
+        .get(&key::ApplicationMeta::new(meta.target.application_id))?
         .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version));
 
     let to_version = handle
@@ -942,8 +956,8 @@ fn validate_upgrade(
         total_contexts: contexts.len(),
         from_version,
         to_version,
-        current_application_id: meta.target_application_id,
-        current_bytecode_id: meta.bytecode_id,
+        current_application_id: meta.target.application_id,
+        current_bytecode_id: meta.target.bytecode_id,
     })
 }
 
@@ -1366,7 +1380,7 @@ fn dispatch_cascade(
     // only the blob. Mirrors `validate_upgrade` rule 5; this duplicate
     // originally kept the id-only comparison and rejected every same-id
     // bundle cascade as "already targeting".
-    if meta.target_application_id == target_application_id {
+    if meta.target.application_id == target_application_id {
         let target_blob = {
             let handle = actor.datastore.handle();
             match handle.get(&key::ApplicationMeta::new(target_application_id)) {
@@ -1374,7 +1388,7 @@ fn dispatch_cascade(
                 Err(err) => return ActorResponse::reply(Err(err.into())),
             }
         };
-        if target_blob.is_none_or(|blob| blob == meta.bytecode_id) {
+        if target_blob.is_none_or(|blob| blob == meta.target.bytecode_id) {
             return ActorResponse::reply(Err(eyre::eyre!(
                 "group is already targeting this application and no migration was requested"
             )));
@@ -1397,11 +1411,11 @@ fn dispatch_cascade(
     let target_blob_info = (app_meta.bytecode.blob_id(), app_meta.size);
     let to_version: String = String::from(app_meta.version.clone());
 
-    let from_bytecode_id = meta.bytecode_id;
+    let from_bytecode_id = meta.target.bytecode_id;
     let from_version = {
         let handle = actor.datastore.handle();
         handle
-            .get(&key::ApplicationMeta::new(meta.target_application_id))
+            .get(&key::ApplicationMeta::new(meta.target.application_id))
             .ok()
             .flatten()
             .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
@@ -1462,6 +1476,11 @@ fn dispatch_cascade(
         pre_spawn_totals.push(total);
     }
 
+    let cascade_coords = match registry_coords(&app_meta) {
+        Ok(coords) => coords.to_buf(),
+        Err(err) => return ActorResponse::reply(Err(err)),
+    };
+
     let datastore = actor.datastore.clone();
     let node_client = actor.node_client.clone();
     let ack_router = Arc::clone(&actor.ack_router);
@@ -1475,8 +1494,8 @@ fn dispatch_cascade(
     // the "old" schema source for the L1 identity-downgrade gate. The cascade
     // op rewrites every matched descendant from `from_bytecode_id` to the new app,
     // so a single gate check on the signed group's app pair covers the family.
-    let current_application_id = meta.target_application_id;
-    let current_bytecode_id_for_gate = meta.bytecode_id;
+    let current_application_id = meta.target.application_id;
+    let current_bytecode_id_for_gate = meta.target.bytecode_id;
 
     // Stamp the cascade_hlc ONCE at the initiator so every receiver
     // applies the same fence boundary (Task 3 apply handler stores this
@@ -1530,6 +1549,8 @@ fn dispatch_cascade(
                 to_state_version: target_state_version,
                 migration: migration_bytes_for_publish.clone(),
                 cascade_hlc,
+                package: cascade_coords.package.clone(),
+                version: cascade_coords.version.clone(),
             },
         )
         .await?;
@@ -1702,9 +1723,59 @@ fn spawn_propagator_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{select_intermediate_rungs, ChainCandidate};
+    use std::sync::Arc;
+
+    use calimero_app_downloader::registry::RegistryCoords;
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{
+        BlobMeta, GroupMetaValue, GroupTarget, GroupUpgradeStatus, GroupUpgradeValue,
+    };
+    use calimero_store::types::{ApplicationMeta, PackageInfo};
+    use calimero_store::Store;
     use calimero_wasm_abi::embed::EmbeddedSchema;
+
+    use super::{registry_coords, select_intermediate_rungs, ChainCandidate};
+
+    fn app_meta(package: &str, version: &str, source: &str) -> ApplicationMeta {
+        ApplicationMeta::new(
+            BlobMeta::new(BlobId::from([0x11; 32])),
+            1,
+            source.into(),
+            Box::default(),
+            BlobMeta::new(BlobId::from([0x22; 32])),
+            PackageInfo {
+                package: package.into(),
+                version: version.into(),
+                signer_id: "".into(),
+                state_version: 1,
+            },
+        )
+    }
+
+    /// A pre-coordinates row pairs the `unknown`/`0.0.0` placeholder with a
+    /// publisher URL; signing that on would aim receivers at nothing.
+    #[test]
+    fn placeholder_coordinates_never_reach_the_wire() {
+        const URL: &str = "https://apps.calimero.network/artifacts/kv/1.0.0/kv-1.0.0.mpk";
+        assert!(registry_coords(&app_meta("unknown", "0.0.0", URL)).is_err());
+        assert!(registry_coords(&app_meta("", "", URL)).is_err());
+        // The install source says where THIS node got the app, never whether a
+        // receiver's own registry has it - so it no longer gates the pair.
+        assert_eq!(
+            registry_coords(&app_meta("com.calimero.kv", "1.0.0", "/tmp/kv.mpk")).unwrap(),
+            RegistryCoords::new("com.calimero.kv", "1.0.0")
+        );
+        assert_eq!(
+            registry_coords(&app_meta("com.calimero.kv", "1.0.0", URL)).unwrap(),
+            RegistryCoords::new("com.calimero.kv", "1.0.0")
+        );
+    }
 
     /// Wrap a downgrade-test manifest as a supported embedded schema.
     fn supported(fields: &str) -> EmbeddedSchema {
@@ -1816,6 +1887,14 @@ mod tests {
         );
     }
 
+    fn selected(candidates: &[ChainCandidate], from_sv: u32, to_sv: u32) -> Vec<([u8; 32], u64)> {
+        select_intermediate_rungs(from_sv, to_sv, candidates)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.bytecode_id, c.size))
+            .collect()
+    }
+
     fn cand(sv: u32, ver: &str, byte: u8) -> ChainCandidate {
         ChainCandidate {
             state_version: sv,
@@ -1828,7 +1907,7 @@ mod tests {
     #[test]
     fn chain_selects_one_blob_per_intermediate_state_version_in_order() {
         let candidates = [cand(2, "0.2.0", 0x02), cand(3, "0.3.0", 0x03)];
-        let rungs = select_intermediate_rungs(1, 4, &candidates).unwrap();
+        let rungs = selected(&candidates, 1, 4);
         assert_eq!(rungs, vec![([0x02; 32], 2), ([0x03; 32], 3)]);
     }
 
@@ -1836,7 +1915,7 @@ mod tests {
     fn chain_tie_breaks_by_highest_semver_not_lexicographic() {
         // "0.10.0" > "0.9.0" — a lexicographic compare would invert this.
         let candidates = [cand(2, "0.9.0", 0x09), cand(2, "0.10.0", 0x0A)];
-        let rungs = select_intermediate_rungs(1, 3, &candidates).unwrap();
+        let rungs = selected(&candidates, 1, 3);
         assert_eq!(rungs, vec![([0x0A; 32], 10)]);
     }
 
@@ -1862,7 +1941,7 @@ mod tests {
             cand(3, "0.3.0", 0x03),
             cand(5, "0.5.0", 0x05),
         ];
-        let rungs = select_intermediate_rungs(1, 3, &candidates).unwrap();
+        let rungs = selected(&candidates, 1, 3);
         assert_eq!(rungs, vec![([0x02; 32], 2)]);
     }
 
@@ -1873,16 +1952,6 @@ mod tests {
         // is refused rather than emitting a second racing op pair. This pins
         // the guard that makes that work: with an InProgress record present,
         // `validate_upgrade` bails.
-        use std::sync::Arc;
-
-        use calimero_primitives::application::ApplicationId;
-        use calimero_primitives::context::GroupMemberRole;
-        use calimero_primitives::identity::PublicKey;
-        use calimero_store::db::InMemoryDB;
-        use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
-        use calimero_store::Store;
-
-        use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group_id = gid(0xA0);
@@ -1894,8 +1963,12 @@ mod tests {
             .save(
                 &group_id,
                 &GroupMetaValue {
-                    bytecode_id: [0x11; 32],
-                    target_application_id: current_app,
+                    target: GroupTarget {
+                        application_id: current_app,
+                        bytecode_id: [0x11; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 1_700_000_000,
                     admin_identity: crate::test_support::account_for(&signer),
                     owner_identity: crate::test_support::account_for(&signer),
@@ -2048,5 +2121,48 @@ mod tests {
             None
         );
         assert!(super::decide_service_upgrade("svc", None, None, false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod registry_coords_tests {
+    use calimero_app_downloader::registry::RegistryCoords;
+    use calimero_store::key::BlobMeta;
+    use calimero_store::types::{ApplicationMeta, PackageInfo};
+
+    use super::registry_coords;
+
+    fn row(package: &str, version: &str) -> ApplicationMeta {
+        let blob = BlobMeta::new([0x01; 32].into());
+        ApplicationMeta::new(
+            blob,
+            0,
+            "".into(),
+            Box::new([]),
+            blob,
+            PackageInfo {
+                package: package.into(),
+                version: version.into(),
+                signer_id: "".into(),
+                state_version: 0,
+            },
+        )
+    }
+
+    /// The registry addresses an artifact by path, not by semver, so a bundle
+    /// that installs and upgrades under `1.0` must register a context too.
+    #[test]
+    fn a_non_semver_version_is_still_addressable() {
+        assert_eq!(
+            registry_coords(&row("com.acme.app", "1.0")).unwrap(),
+            RegistryCoords::new("com.acme.app", "1.0")
+        );
+    }
+
+    #[test]
+    fn an_empty_half_is_refused() {
+        for meta in [row("com.acme.app", ""), row("", "1.0.0")] {
+            let _err = registry_coords(&meta).expect_err("unaddressable row must be refused");
+        }
     }
 }

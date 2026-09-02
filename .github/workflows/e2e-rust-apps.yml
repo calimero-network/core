@@ -14,6 +14,7 @@ on:
     paths:
       - "crates/**"
       - "apps/scaffolding-e2e/**"
+      - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
@@ -38,6 +39,7 @@ on:
     paths:
       - "crates/**"
       - "apps/scaffolding-e2e/**"
+      - "apps/scaffolding-e2e-multi/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - "apps/components-demo/**"
@@ -100,6 +102,8 @@ jobs:
         run: pip install --quiet pyyaml
       - name: Lint merobox scenarios for unbarriered convergence reads
         run: python3 scripts/lint-e2e-convergence.py
+      - name: Lint merobox scenarios for unnamed multi-service bundles
+        run: python3 scripts/lint-e2e-bundle-shape.py
 
   # ── Auth seam: client-token e2e over real HTTP ──
   # Proves a client token minted the way the auth frontend mints it can call
@@ -153,6 +157,7 @@ jobs:
           MERO_AUTH_ADMIN_PASSWORD: dev-password
           MERO_E2E_USER: dev
           MERO_E2E_PASS: dev-password
+          CALIMERO_REGISTRY_MODE: dht
         run: |
           merobox bootstrap run workflows/auth-seam.yml \
             --no-docker --binary-path ./merod --auth-mode embedded
@@ -189,35 +194,67 @@ jobs:
       - name: Build scaffolding-e2e app
         run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
-      - name: Build scaffolding-e2e multi-service bundle
-        run: cargo mero bundle --dev --no-icon --app-version 0.1.0 --manifest-path apps/scaffolding-e2e/Cargo.toml
+      - name: Build scaffolding-e2e bundle
+        run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
+
+      # apps/scaffolding-e2e-multi declares services backed by scaffolding-e2e's
+      # wasm and builds none of its own, so it only needs a bundle step.
+      - name: Build scaffolding-e2e-multi bundle
+        run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
 
       - name: Build xcall-example app
         run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
 
+      - name: Build xcall-example bundle
+        run: (cd apps/xcall-example && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-with-shared-storage app
         run: cargo mero build --manifest-path apps/kv-store-with-shared-storage/Cargo.toml
+
+      - name: Build kv-store-with-shared-storage bundle
+        run: (cd apps/kv-store-with-shared-storage && cargo mero bundle --dev --no-icon)
 
       - name: Build components-demo app
         run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
+      - name: Build components-demo bundle
+        run: (cd apps/components-demo && cargo mero bundle --dev --no-icon)
+
       - name: Build blobs app
         run: cargo mero build --manifest-path apps/blobs/Cargo.toml
+
+      - name: Build blobs bundle
+        run: (cd apps/blobs && cargo mero bundle --dev --no-icon)
 
       - name: Build abi_conformance app
         run: cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
 
+      - name: Build abi_conformance bundle
+        run: (cd apps/abi_conformance && cargo mero bundle --dev --no-icon)
+
       - name: Build collaborative-editor app
         run: cargo mero build --manifest-path apps/collaborative-editor/Cargo.toml
+
+      - name: Build collaborative-editor bundle
+        run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
 
       - name: Build kv-store-init app
         run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
+      - name: Build kv-store-init bundle
+        run: (cd apps/kv-store-init && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-with-handlers app
         run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
 
+      - name: Build kv-store-with-handlers bundle
+        run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store-with-user-and-frozen-storage app
         run: cargo mero build --manifest-path apps/kv-store-with-user-and-frozen-storage/Cargo.toml
+
+      - name: Build kv-store-with-user-and-frozen-storage bundle
+        run: (cd apps/kv-store-with-user-and-frozen-storage && cargo mero bundle --dev --no-icon)
 
       - name: Build kv-store app
         run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
@@ -225,16 +262,29 @@ jobs:
       - name: Build nested-crdt-test app
         run: cargo mero build --manifest-path apps/nested-crdt-test/Cargo.toml
 
+      - name: Build nested-crdt-test bundle
+        run: (cd apps/nested-crdt-test && cargo mero bundle --dev --no-icon)
+
       - name: Build private_data app
         run: cargo mero build --manifest-path apps/private_data/Cargo.toml
+
+      - name: Build private_data bundle
+        run: (cd apps/private_data && cargo mero bundle --dev --no-icon)
 
       - name: Build team-metrics-custom app
         run: cargo mero build --manifest-path apps/team-metrics-custom/Cargo.toml
 
+      - name: Build team-metrics-custom bundle
+        run: (cd apps/team-metrics-custom && cargo mero bundle --dev --no-icon)
+
       - name: Build team-metrics-macro app
         run: cargo mero build --manifest-path apps/team-metrics-macro/Cargo.toml
+
+      - name: Build team-metrics-macro bundle
+        run: (cd apps/team-metrics-macro && cargo mero bundle --dev --no-icon)
+
       - name: Build kv-store bundle
-        run: cargo mero bundle --dev --no-icon --app-version 0.0.0 --manifest-path apps/kv-store/Cargo.toml
+        run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
 
       - name: Verify every built app wasm embeds the ABI (core#3287)
         run: ./scripts/check-embedded-abi.sh
@@ -246,7 +296,6 @@ jobs:
           path: |
             apps/scaffolding-e2e/res/*.wasm
             apps/scaffolding-e2e/res/abi.json
-            apps/scaffolding-e2e/dist/*.mpk
             apps/scaffolding-e2e/res/state-schema.json
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
@@ -269,7 +318,13 @@ jobs:
             apps/private_data/res/*
             apps/team-metrics-custom/res/*
             apps/team-metrics-macro/res/*
-            apps/kv-store/dist/*.mpk
+          retention-days: 1
+
+      - name: Upload app bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-app-bundles
+          path: dist/*.mpk
           retention-days: 1
 
   # ── Test phase: run each workflow in parallel ──
@@ -280,6 +335,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # A node needs bytecode only to run a context, not to join a group. So
+        # `image: merod:local-dht` is for the three scenarios that ARE the peer
+        # route's coverage; `registry_fetch: "false"` is for the ones that never
+        # run a context at all. Everything else fetches, on http.
         include:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml
@@ -287,12 +346,8 @@ jobs:
           - workflow: frozen-rga-convergence
             file: workflows/frozen-rga-convergence.yml
             app: scaffolding-e2e
-          # A member holding no node writes through a relay that runs the method
-          # for it. The only scenario in which a delta's author is not its signer,
-          # so it is the only one that exercises the delegated envelope, the
-          # at-cut authorship grant and the warrant nonce ledger on real nodes.
-          # The author is a key rather than a container, which is why its half
-          # runs from a script — see workflows/delegated-authorship.yml.
+          # The only scenario where a delta's author is not its signer - the sole
+          # real-node coverage of the delegated envelope and warrant nonce ledger.
           - workflow: delegated-authorship
             file: workflows/delegated-authorship.yml
             app: scaffolding-e2e
@@ -340,6 +395,7 @@ jobs:
           - workflow: group-late-joiner
             file: workflows/group-late-joiner.yml
             app: scaffolding-e2e
+            image: merod:local-dht
           - workflow: group-governance-late-joiner
             file: workflows/group-governance-late-joiner.yml
             app: scaffolding-e2e
@@ -364,6 +420,7 @@ jobs:
           - workflow: account-facts-cross-namespace
             file: workflows/account-facts-cross-namespace.yml
             app: scaffolding-e2e
+            image: merod:local-dht
           # Account-level pairing: only real nodes can say whether the link
           # lands where the application scope aimed it.
           - workflow: account-pairing-application-scope
@@ -378,12 +435,18 @@ jobs:
           - workflow: group-leave-context
             file: workflows/group-leave-context.yml
             app: scaffolding-e2e
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-leave-member
             file: workflows/group-leave-member.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-leave-namespace
             file: workflows/group-leave-namespace.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: group-kick-and-rejoin-keyshare
             file: workflows/group-kick-and-rejoin-keyshare.yml
             app: scaffolding-e2e
@@ -405,6 +468,7 @@ jobs:
           - workflow: group-member-channel-lifecycle
             file: workflows/group-member-channel-lifecycle.yml
             app: scaffolding-e2e
+            image: merod:local-dht
           - workflow: group-metadata
             file: workflows/group-metadata.yml
             app: scaffolding-e2e
@@ -432,15 +496,19 @@ jobs:
           - workflow: namespace-owner-writes-in-a-foreign-open-subgroup
             file: workflows/namespace-owner-writes-in-a-foreign-open-subgroup.yml
             app: scaffolding-e2e
+            image: merod:local-dht
           - workflow: group-join-via-inheritance
             file: workflows/group-join-via-inheritance.yml
             app: scaffolding-e2e
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-list-subgroups-restricted-hidden
             file: workflows/group-list-subgroups-restricted-hidden.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: member-removed-multi-context-convergence
             file: workflows/member-removed-multi-context-convergence.yml
             app: scaffolding-e2e
@@ -460,15 +528,19 @@ jobs:
           # `apply_group_op_mutations`; this e2e needs a more
           # surgical partition primitive (e.g. iptables-level drop
           # on a specific peer pair) to be deterministic.
+          # Governance only - no node ever joins a context, so nothing
+          # needs bytecode and the registry is never asked.
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: group-reparent
             file: workflows/group-reparent.yml
             app: scaffolding-e2e
           - workflow: group-reparent-and-cascade-delete
             file: workflows/group-reparent-and-cascade-delete.yml
             app: scaffolding-e2e
+            image: merod:local-dht
           - workflow: group-multi-service
             file: workflows/group-multi-service.yml
             app: scaffolding-e2e
@@ -478,6 +550,7 @@ jobs:
           - workflow: xcall-example
             file: workflows/xcall.yml
             app: xcall-example
+            image: merod:local-dht
           - workflow: shared-storage
             file: workflows/test_shared_storage.yml
             app: kv-store-with-shared-storage
@@ -499,6 +572,7 @@ jobs:
           - workflow: blob-announce-membership
             file: workflows/blob-announce-namespace-membership.yml
             app: blobs
+            image: merod:local-dht
           # These need the kad server-mode fix in crates/network/src/behaviour.rs
           # (same PR). Before it, a bare two-node fleet could never resolve a
           # provider record: libp2p starts every node in Mode::Client, which
@@ -521,6 +595,7 @@ jobs:
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
             app: scaffolding-e2e
+            image: merod:local-dht
           - workflow: root-bootstrap-converge
             file: workflows/root-bootstrap-converge.yml
             app: scaffolding-e2e
@@ -569,9 +644,12 @@ jobs:
           - workflow: auto-follow-flag-flipped-late
             file: workflows/auto-follow/auto-follow-flag-flipped-late.yml
             app: scaffolding-e2e
+          # node-2 opts out of auto-follow and never materialises a context, so
+          # by design nothing acquires from the registry in this scenario.
           - workflow: auto-follow-no-rejection-spam
             file: workflows/auto-follow/no-unknown-context-rejection-spam.yml
             app: scaffolding-e2e
+            registry_fetch: "false"
           - workflow: auto-follow-asymmetric-context-membership
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
@@ -665,9 +743,11 @@ jobs:
           - workflow: bundle-invitation
             file: workflows/bundle-invitation-test.yml
             app: kv-store
+          # Single node, and it installs the app itself - nothing to acquire.
           - workflow: kv-store-simple
             file: workflows/simple-store.yml
             app: kv-store
+            registry_fetch: "false"
           - workflow: kv-store-workflow-example
             file: workflows/workflow-example.yml
             app: kv-store
@@ -706,12 +786,7 @@ jobs:
           - workflow: xcall-example-scenario
             file: workflows/xcall-example.yml
             app: xcall-example
-          # Shipped unregistered with #3435 and could not pass until a
-          # calimero-client-py built against a core carrying `revokedIn`
-          # was released (0.6.28).
-          - workflow: account-facts-cross-namespace
-            file: workflows/account-facts-cross-namespace.yml
-            app: scaffolding-e2e
+            image: merod:local-dht
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -732,6 +807,19 @@ jobs:
         with:
           name: e2e-apps
           path: apps
+
+      - name: Download app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-app-bundles
+          path: dist
+
+      # Nodes fetch bundles from here rather than from each other. The URL is
+      # discovered on this runner, so it is stamped in rather than prebuilt.
+      - name: Serve app bundles from a fixture registry
+        run: |
+          url=$(./scripts/e2e-fixture-registry.sh)
+          ./scripts/set-registry-mode.sh merod:local http "$url"
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -801,10 +889,19 @@ jobs:
 
           if merobox bootstrap run \
               "${{ matrix.file }}" \
-              --image merod:local \
+              --image ${{ matrix.image || 'merod:local' }} \
               --e2e-mode; then
               success=true
           else
+              success=false
+          fi
+
+          # A green http scenario proves nothing on its own: the node logs an
+          # acquisition either way, so ask the fixture whether it served one.
+          if [ "${{ matrix.image }}" != merod:local-dht ] \
+              && [ "${{ matrix.registry_fetch }}" != "false" ] \
+              && ! docker logs fixture-registry 2>&1 | grep -q 'GET /artifacts/'; then
+              echo "::error::${{ matrix.workflow }} fetched nothing from fixture-registry; it did not use the http registry"
               success=false
           fi
 

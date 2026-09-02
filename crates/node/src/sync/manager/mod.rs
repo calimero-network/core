@@ -6,6 +6,7 @@ use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceR
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use calimero_app_downloader::registry::RegistryMode;
 use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
@@ -1862,7 +1863,7 @@ impl SyncManager {
     ) -> eyre::Result<SyncProtocol> {
         let sync_start = Instant::now();
 
-        let mut context = self
+        let context = self
             .context_client
             .sync_context_config(context_id, None)
             .await?;
@@ -1952,7 +1953,7 @@ impl SyncManager {
         let mut application = self.node_client.get_application(&context.application_id)?;
 
         // Get blob_id and app config for later use
-        let (blob_id, app_config_opt) = self.get_blob_info(&context_id, &application).await?;
+        let blob_id = self.get_blob_info(&context_id, &application).await?;
 
         let identities = self
             .context_client
@@ -1980,41 +1981,32 @@ impl SyncManager {
             "Phase 1/3 complete: key share"
         );
 
-        // Phase 2: Blob share (if needed)
+        // Phase 2: the context's application bytecode, from the ONE source this
+        // node is configured with. Never fatal - a source with nothing yet
+        // leaves the rest of the session (delta sync included) to run.
         if !self.node_client.has_blob(&blob_id)? {
             let phase_start = Instant::now();
-            // Get size from application config if we don't have application yet
-            let size = self
-                .get_application_size(&context_id, &application, &app_config_opt)
-                .await?;
+            let acquired = match application.as_ref() {
+                Some(app) => self.acquire_context_bytecode(&context, app).await,
+                None => false,
+            };
+            if acquired {
+                application = self.node_client.get_application(&context.application_id)?;
+            } else {
+                warn!(
+                    %context_id,
+                    %blob_id,
+                    "application bytecode unavailable from the configured source; \
+                     continuing the session and retrying on next access"
+                );
+            }
 
-            self.initiate_blob_share_process(&context, our_identity, blob_id, size, &mut stream)
-                .await
-                .wrap_err("blob share")?;
-
-            let blob_share_elapsed = phase_start.elapsed();
             debug!(
                 %context_id,
                 %chosen_peer,
-                ?blob_share_elapsed,
-                "Phase 2/3 complete: blob share"
+                blob_share_elapsed = ?phase_start.elapsed(),
+                "Phase 2/3 complete: bytecode acquisition"
             );
-
-            // After blob sharing, try to install application if it doesn't exist
-            // or if we only have a stub (size==0 from join_context bootstrap)
-            let needs_install =
-                application.is_none() || application.as_ref().is_some_and(|app| app.size == 0);
-            if needs_install {
-                self.install_bundle_after_blob_sharing(
-                    &context_id,
-                    &blob_id,
-                    &app_config_opt,
-                    &mut context,
-                    &mut application,
-                )
-                .await
-                .wrap_err("install bundle after blob share")?;
-            }
         }
 
         // Same-id (bundle) upgrades move only the bytecode under an unchanged
@@ -3939,6 +3931,13 @@ impl SyncManager {
     /// randomly-seeded `bytecode_id`) costs a bounded number of doomed
     /// BlobShares, not one per window forever.
     fn should_attempt_stage(&self, context_id: ContextId, blob: [u8; 32]) -> bool {
+        // Pre-staging fetches application bytecode over BlobShare, which is the
+        // peer route. An http node resolves its upgrade target through
+        // `ensure_blob_local` on next access instead.
+        if self.node_client.registry_config().mode != RegistryMode::Dht {
+            return false;
+        }
+
         const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
         const MAX_ATTEMPTS: u32 = 12; // ~1h of retries, then give up
 
@@ -4038,18 +4037,18 @@ fn staged_bytecode_for(
     store: &calimero_store::Store,
     meta: &calimero_store::key::GroupMetaValue,
 ) -> Option<[u8; 32]> {
-    if meta.bytecode_id == [0u8; 32] {
+    if meta.target.bytecode_id == [0u8; 32] {
         return None;
     }
     let row_blob = store
         .handle()
         .get(&calimero_store::key::ApplicationMeta::new(
-            meta.target_application_id,
+            meta.target.application_id,
         ))
         .ok()
         .flatten()
         .map(|app| *app.bytecode.blob_id().as_ref())?;
-    (row_blob != meta.bytecode_id).then_some(meta.bytecode_id)
+    (row_blob != meta.target.bytecode_id).then_some(meta.target.bytecode_id)
 }
 
 /// One-load variant for `context_id` (group + meta resolved internally) —
@@ -4076,7 +4075,7 @@ pub(crate) fn pending_upgrade_staged_bytecode(
 ///   `ApplicationId = hash(package, signer)` is version-stable so the id
 ///   never moves; mirrors `maybe_lazy_upgrade`'s same-id condition. Keyed
 ///   off `meta.migration` + the per-context applied marker (NOT a raw
-///   `meta.bytecode_id` blob comparison): groups created before `bytecode_id` was
+///   `meta.target.bytecode_id` blob comparison): groups created before `bytecode_id` was
 ///   blob-derived hold a random `bytecode_id`, and a blob comparison would gate
 ///   their state sync forever.
 pub(crate) fn pending_upgrade_target_in(
@@ -4106,7 +4105,7 @@ pub(crate) fn pending_upgrade_info(
         .ok()
         .flatten()?;
     let meta = MetaRepository::new(store).load(&group_id).ok().flatten()?;
-    let target = meta.target_application_id;
+    let target = meta.target.application_id;
     // Only gate a context that is bound to a REAL application. A context with
     // no app yet (`current_app == ZERO`, e.g. a freshly-joined node still
     // bootstrapping its state) must be allowed to sync — gating it would
@@ -4129,7 +4128,7 @@ pub(crate) fn pending_upgrade_info(
     // they never gate.) "Applied" is the per-context activation marker.
     let _migration_present = meta.migration.as_ref()?;
     let applied = calimero_context::activation::activated_bytecode(store, context_id)
-        == Some(meta.bytecode_id);
+        == Some(meta.target.bytecode_id);
     (!applied).then(|| (target, staged_bytecode_for(store, &meta)))
 }
 
@@ -4229,6 +4228,7 @@ mod init_pop_gate_tests {
 
 #[cfg(test)]
 mod pending_upgrade_tests {
+    use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -4259,8 +4259,12 @@ mod pending_upgrade_tests {
         // which reads bytecode ids rather than principals.
         let admin = calimero_primitives::identity::AccountId::from([0x07; 32]);
         let meta = GroupMetaValue {
-            bytecode_id: [0x11; 32],
-            target_application_id: target,
+            target: GroupTarget {
+                application_id: target,
+                bytecode_id: [0x11; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             created_at: 1_700_000_000,
             admin_identity: admin,
             owner_identity: admin,

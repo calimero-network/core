@@ -75,7 +75,18 @@ CLI — `app`, `context`, `namespace`, `call`).
    ```
 
    One command compiles, optimizes, and embeds the ABI; the wasm lands at
-   `res/<crate_name>.wasm`, ready to bundle.
+   `res/<crate_name>.wasm`.
+
+4. Package and sign it into the installable `.mpk`:
+
+   ```sh
+   cargo mero bundle --dev --no-icon
+   ```
+
+   The bundle is named from the manifest's `package` and `version`, not the
+   crate name: `dist/com.example.my-app-0.1.0.mpk`. `--dev` signs with the
+   well-known development key, which the registry refuses - see
+   [Packaging & signing](/build/packaging-signing/) for release keys.
 
 </Steps>
 
@@ -103,19 +114,17 @@ configured alias) or `--api <URL>`.
 
 <Steps>
 
-1. **Install** the WASM module. The node returns an application id:
+1. **Install** the signed bundle. The node returns an application id:
 
    ```sh
-   meroctl --node node1 app install \
-     --path ./res/my_app.wasm \
-     --package com.example.myapp \
-     --version 1.0.0
+   meroctl --node node1 app install --path ./dist/com.example.my-app-0.1.0.mpk
    ```
 
    List what is installed with `meroctl --node node1 app ls`.
 
-   Installing the raw wasm is the fast dev loop; for a signed, distributable
-   `.mpk` run `cargo mero bundle` and pass the bundle to `--path` instead - see
+   Only a signed `.mpk` installs: its `package` and `signerId` are what the
+   application id is derived from, so every node derives the same one.
+   Run `cargo mero bundle` to produce it - see
    [Packaging & signing](/build/packaging-signing/).
 
 2. **Attach the app to a context.** A context is a running instance of an app
@@ -166,7 +175,7 @@ install the code, attach a context over shared state, then call into it:
     { label: 'Context', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'app install --path my_app.wasm' },
+    { from: 0, to: 1, label: 'app install --path com.example.my-app-0.1.0.mpk' },
     { from: 1, to: 0, label: 'application id', dashed: true },
     { from: 0, to: 1, label: 'namespace create --application-id' },
     { from: 1, to: 2, label: 'bootstrap root group + attach app' },

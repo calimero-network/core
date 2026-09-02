@@ -79,21 +79,35 @@ just points the `default` alias at a chosen target.
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `get <APP_ID>`                     | Fetch application details.                        | `APP_ID`                                                      |
-| `install`                          | Install an application.                           | `--path`/`-p`, `--url`/`-u`, `--metadata`/`-m`, `--content-hash` (alias: `--hash`), `--watch`/`-w`, `--package`, `--version` |
+| `install`                          | Install a signed `.mpk` application bundle.       | `PACKAGE@VERSION`, `--path`/`-p`, `--watch`/`-w`                |
 | `list` (`ls`)                      | List installed applications.                      | —                                                            |
 | `uninstall <APP_ID>`               | Uninstall an application.                         | `APP_ID`                                                      |
 | `versions <APP_ID>`                | List locally installed versions of an app.        | `APP_ID`                                                      |
-| `watch`                            | Watch a WASM file and update all contexts using the app. | `--path`/`-p`, `--metadata`, `--current-app-id`, `--package`, `--version` |
-| `list-packages`                    | List all packages.                                | —                                                            |
-| `list-versions <package>`          | List registry versions of a package.              | `package`                                                    |
-| `get-latest-version <package>`     | Get the latest version of a package.              | `package`                                                    |
+| `watch`                            | Watch a `.mpk` bundle and update all contexts using the app. | `--path`/`-p`, `--current-app-id` |
+| `list-packages`                    | List the packages installed on this node.         | —                                                            |
+| `list-versions <package>`          | List this node's installed versions of a package. | `package`                                                    |
+| `get-latest-version <package>`     | Highest installed version of a package.           | `package`                                                    |
 
 ```sh
-meroctl --node node1 app install --package com.example.myapp --version 1.0.0 --path ./my-app.wasm
+meroctl --node node1 app install com.example.myapp@1.0.0
+meroctl --node node1 app install --path ./my-app.mpk
 meroctl --node node1 app ls
 ```
 
-`--path` and `--url` are mutually exclusive; `--version` defaults to `0.0.0`.
+Positional `PACKAGE@VERSION` installs a published version from the one application
+source the node is configured with (its [`[registry]`](/operate/config/#registry)
+section); `--path` installs a local signed bundle. The two are mutually exclusive,
+and `--watch` applies to a `--path` install only.
+
+A `.mpk` bundle is the only thing either form installs - there is no raw-`.wasm`
+path and no way to name a URL. A node in `dht` mode has no registry to ask, so
+`PACKAGE@VERSION` reports the coordinates as unpublished there; use `--path`, or let
+governance deliver the application.
+
+`list-packages`, `list-versions` and `get-latest-version` all read this node's own
+installed rows, not the registry. Because a bundle's application id is version-stable,
+a package occupies one row, so `list-versions` reports the version this node currently
+holds.
 
 ---
 
@@ -102,10 +116,10 @@ meroctl --node node1 app ls
 | Subcommand (aliases)               | Purpose                                          | Key args                                                       |
 | ---------------------------------- | ------------------------------------------------ | ------------------------------------------------------------- |
 | `list` (`ls`)                      | List all contexts.                                | —                                                            |
-| `create`                           | Create a new context.                             | `--application-id`/`-a`, `--group-id` (required), `--params`/`-p`, `--watch`/`-w` `<path>`, `--seed`/`-s`, `--name` (context alias), `--service`, `--identity-secret`, `--group-name`, positional `metadata` (requires `--watch`) |
+| `create`                           | Create a new context.                             | `--application-id`/`-a`, `--group-id` (required), `--params`/`-p`, `--watch`/`-w` `<path>`, `--seed`/`-s`, `--name` (context alias), `--service`, `--identity-secret`, `--group-name` |
 | `get <CONTEXT>`                    | Fetch context details: `info`, `client-keys`, or `storage`. | `CONTEXT`, subcommand                                  |
 | `delete` (`del`) `<CONTEXT>`       | Delete a context.                                 | `CONTEXT`                                     |
-| `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--metadata`, `--watch`/`-w` |
+| `update`                           | Update the application in a context.              | `--context`/`-c`, `--application-id`/`-a`, `--path`, `--watch`/`-w` |
 | `watch` (`ws`)                     | Stream context events, optionally run a command.  | `--context`, `-x`/`--exec`, `-n`/`--count`                  |
 | `sync`                             | Explicitly request a sync.                        | `--context`/`-c`, `--all`                                    |
 | `identity`                         | Manage context identities (see below).            | subcommand                                                    |
@@ -289,11 +303,11 @@ meroctl --node <NODE> call -i --context <CONTEXT_ID>
 
 | Subcommand        | Purpose                                                   | Key args                                                                 |
 | ----------------- | --------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `start <path>`    | Build, install, create/reuse a context, optionally watch. | `--group-id` (required), `--watch`/`-w`, `--new`, `--params`/`-p`, `--seed`/`-s`, `--no-build`, `--metadata` |
+| `start <path>`    | Build, install, create/reuse a context, optionally watch. | `--group-id` (required), `--watch`/`-w`, `--new`, `--params`/`-p`, `--seed`/`-s`, `--no-build` |
 
-`<path>` may be a `.wasm`, a `.mpk` bundle, or a project directory with a
-`Cargo.toml` (which is built with `cargo build --target wasm32-unknown-unknown
---release`).
+`<path>` may be a signed `.mpk` bundle, or a project directory with a
+`Cargo.toml` (which is bundled with `cargo mero bundle --dev --no-icon` into
+`dist/dev.mpk`).
 
 ```sh
 meroctl --node node1 dev start ./my-app --group-id <group_id> --watch
@@ -392,17 +406,15 @@ url = "https://node.example.com/"
 
 ## End-to-end session
 
-A complete run from an installed WASM module to reading back state. Each command
-below adds `--output-format json` so the ids you need to copy forward are
-machine-readable; drop it to get the default human-readable table.
+A complete run from an installed application bundle to reading back state. Each
+command below adds `--output-format json` so the ids you need to copy forward
+are machine-readable; drop it to get the default human-readable table.
 
 1. **Install the application.** The node returns an `applicationId`:
 
    ```bash
    meroctl --node node1 app install \
-     --path ./kv_store.wasm \
-     --package com.example.kvstore \
-     --version 0.1.0 \
+     --path ./dist/com.example.kv-store-0.1.0.mpk \
      --output-format json
    ```
 

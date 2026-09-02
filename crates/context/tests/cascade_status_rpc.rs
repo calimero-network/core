@@ -4,6 +4,7 @@
 //! entry per group that has an upgrade record, with the correct `cascade_hlc`
 //! stamped by the atomic `CascadeUpgrade` op.
 
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 
 use calimero_context::handlers::get_cascade_status::collect_cascade_status;
@@ -41,8 +42,12 @@ fn meta(
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: target,
+        target: GroupTarget {
+            application_id: target,
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -103,6 +108,8 @@ fn collect_cascade_status_returns_entries_for_all_three_groups() {
             to_state_version: 0,
             migration: Some(b"migrate_v2".to_vec()),
             cascade_hlc: fence,
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");

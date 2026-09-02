@@ -107,16 +107,10 @@ steps:
   - name: Install application on backup-node-1
     type: install_application
     node: backup-node-1
-    path: res/scaffolding_e2e.wasm
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
-
-  - name: Install application on backup-node-2
-    type: install_application
-    node: backup-node-2
-    path: res/scaffolding_e2e.wasm
-    dev: true
 
   - name: Node-1 creates the namespace
     type: create_namespace
@@ -385,12 +379,6 @@ steps:
   # The node's IDENTITY is new — the old member row belongs to a keypair that no
   # longer exists — so it needs a fresh invitation. The ACCOUNT is not new, and
   # that is the whole point: grants naming the account still name this node.
-
-  - name: Reinstall the application on the recovered node
-    type: install_application
-    node: backup-node-2
-    path: res/scaffolding_e2e.wasm
-    dev: true
 
   - name: Invite the recovered node back
     type: create_namespace_invitation

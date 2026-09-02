@@ -1,0 +1,23 @@
+[package]
+name = "calimero-app-downloader"
+version.workspace = true
+description.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = true
+
+[dependencies]
+async-trait.workspace = true
+eyre.workspace = true
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+url.workspace = true
+
+calimero-primitives.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+toml.workspace = true

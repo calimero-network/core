@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_stream::stream;
+use calimero_app_downloader::registry::RegistryConfig;
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::SharedKey;
 use calimero_governance_types::SignedNamespaceOp;
@@ -32,7 +33,7 @@ pub use crate::join_bundle::JoinBundle;
 
 mod alias;
 pub use alias::AliasExists;
-mod application;
+pub mod application;
 mod blob;
 
 pub use blob::BlobManager;
@@ -219,6 +220,7 @@ pub struct NodeClient {
     /// (NodeManager event handler) and readers (concurrent publishers)
     /// see the same map without an actor mailbox round-trip.
     known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
+    registry: RegistryConfig, // the one source
 }
 
 impl NodeClient {
@@ -247,7 +249,22 @@ impl NodeClient {
             sync_client,
             local_delta_tx,
             known_subscribers: Arc::new(DashMap::new()),
+            registry: RegistryConfig::default(),
         }
+    }
+
+    /// Set this node's registry settings. Builder-style so the existing
+    /// call sites of `new` stay untouched.
+    #[must_use]
+    pub fn with_registry(mut self, registry: RegistryConfig) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    /// This node's registry settings. Wired from `[registry]` at startup.
+    #[must_use]
+    pub fn registry_config(&self) -> RegistryConfig {
+        self.registry.clone()
     }
 
     /// Record that `peer_id` subscribed to `topic`. Called from the

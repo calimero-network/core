@@ -1,5 +1,4 @@
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{InstallApplicationRequest, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -8,43 +7,42 @@ use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use url::Url;
 
-use crate::cli::validation::{valid_url, validate_file_exists};
+use crate::cli::validation::validate_file_exists;
 use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
 pub struct InstallCommand {
-    #[arg(long, short, conflicts_with = "url", help = "Path to the application")]
-    pub path: Option<Utf8PathBuf>,
-
-    #[clap(long, short, conflicts_with = "path", help = "Url of the application", value_parser = valid_url)]
-    pub url: Option<String>,
-
-    #[clap(short, long, help = "Metadata for the application")]
-    pub metadata: Option<String>,
-
-    #[clap(
-        long,
-        alias = "hash",
-        help = "Expected content hash of the application"
+    #[arg(
+        value_name = "PACKAGE@VERSION",
+        conflicts_with = "path",
+        help = "Coordinates of a published application, e.g. com.example.myapp@1.0.0"
     )]
-    pub content_hash: Option<Hash>,
+    pub coords: Option<String>,
+
+    #[arg(
+        long,
+        short,
+        conflicts_with = "coords",
+        help = "Path to the application's signed .mpk bundle"
+    )]
+    pub path: Option<Utf8PathBuf>,
 
     #[clap(long, short = 'w', requires = "path")]
     pub watch: bool,
+}
 
-    #[clap(
-        long,
-        help = "Package name (e.g., com.example.myapp)",
-        default_value = "unknown"
-    )]
-    pub package: String,
-
-    #[clap(long, help = "Version (e.g., 1.0.0)", default_value = "0.0.0")]
-    pub version: String,
+/// Split `package@version`. Both halves are required: a lone package is not a
+/// location, and the node addresses one published version.
+fn split_coords(coords: &str) -> Result<(String, String)> {
+    match coords.split_once('@') {
+        Some((package, version)) if !package.is_empty() && !version.is_empty() => {
+            Ok((package.to_owned(), version.to_owned()))
+        }
+        _ => bail!("expected PACKAGE@VERSION, got '{coords}'"),
+    }
 }
 
 impl InstallCommand {
@@ -57,36 +55,21 @@ impl InstallCommand {
     }
 
     pub async fn install_app(&self, environment: &mut Environment) -> Result<ApplicationId> {
-        let metadata = self
-            .metadata
-            .as_ref()
-            .map(|s| s.as_bytes().to_vec())
-            .unwrap_or_default();
-
         let client = environment.client()?;
 
         let response = if let Some(app_path) = self.path.as_ref() {
             // Validate file exists before attempting to install
             validate_file_exists(app_path.as_std_path())?;
 
-            let request = InstallDevApplicationRequest::new(
-                app_path.canonicalize_utf8()?,
-                metadata,
-                Some(self.package.clone()),
-                Some(self.version.clone()),
-            );
+            let request = InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?);
             client.install_dev_application(request).await?
-        } else if let Some(app_url) = self.url.as_ref() {
-            let request = InstallApplicationRequest::new(
-                Url::parse(app_url)?,
-                self.content_hash,
-                metadata,
-                Some(self.package.clone()),
-                Some(self.version.clone()),
-            );
-            client.install_application(request).await?
+        } else if let Some(coords) = self.coords.as_ref() {
+            let (package, version) = split_coords(coords)?;
+            client
+                .install_application(InstallApplicationRequest::new(package, version))
+                .await?
         } else {
-            bail!("Either path or url must be provided");
+            bail!("Either a PACKAGE@VERSION or --path must be provided");
         };
 
         environment.output.write(&response);
@@ -139,17 +122,33 @@ impl InstallCommand {
             }
 
             let _application_id = InstallCommand {
+                coords: None,
                 path: Some(path.clone()),
-                url: None,
-                metadata: self.metadata.clone(),
-                content_hash: None,
                 watch: false,
-                package: self.package.clone(),
-                version: self.version.clone(),
             }
             .install_app(environment)
             .await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_coords;
+
+    #[test]
+    fn splits_a_coordinate_pair() {
+        assert_eq!(
+            split_coords("com.example.myapp@1.0.0").expect("valid"),
+            ("com.example.myapp".to_owned(), "1.0.0".to_owned())
+        );
+    }
+
+    #[test]
+    fn refuses_a_half_pair() {
+        for bad in ["com.example.myapp", "@1.0.0", "com.example.myapp@", ""] {
+            assert!(split_coords(bad).is_err(), "{bad} must be refused");
+        }
     }
 }

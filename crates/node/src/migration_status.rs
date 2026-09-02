@@ -1173,6 +1173,7 @@ mod tests {
         SignableMigrationHeartbeat, MIGRATION_HEARTBEAT_SIGN_DOMAIN,
     };
     use calimero_primitives::identity::PrivateKey;
+    use calimero_store::key::GroupTarget;
 
     use super::*;
 
@@ -1890,10 +1891,12 @@ mod tests {
             .save(
                 group_id,
                 &calimero_store::key::GroupMetaValue {
-                    bytecode_id,
-                    target_application_id: calimero_primitives::application::ApplicationId::from(
-                        ctx,
-                    ),
+                    target: GroupTarget {
+                        application_id: calimero_primitives::application::ApplicationId::from(ctx),
+                        bytecode_id,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
                     created_at: 0,
                     admin_identity: account,
                     owner_identity: account,

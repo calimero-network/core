@@ -1,4 +1,5 @@
 use crate::{CapabilitiesRepository, MetaRepository, UpgradeLadderRepository};
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -74,10 +75,11 @@ impl<'a> GroupSettingsService<'a> {
         signer: &PublicKey,
         bytecode_id: &[u8; 32],
         target_application_id: &ApplicationId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_manage_application(signer, "set target application")?;
-        self.set_target_application_unchecked(bytecode_id, target_application_id)
+        self.set_target_application_unchecked(bytecode_id, target_application_id, coords)
     }
 
     /// Write the target-application mutation WITHOUT the per-group
@@ -93,10 +95,13 @@ impl<'a> GroupSettingsService<'a> {
         &self,
         bytecode_id: &[u8; 32],
         target_application_id: &ApplicationId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         let mut meta = self.load_required_meta()?;
-        meta.bytecode_id = *bytecode_id;
-        meta.target_application_id = *target_application_id;
+        meta.target.bytecode_id = *bytecode_id;
+        meta.target.application_id = *target_application_id;
+        meta.target.package = coords.package.into();
+        meta.target.version = coords.version.into();
         // Append the ladder rung BEFORE advancing meta. This is the one capture
         // point for the upgrade ladder a behind context replays rung by rung,
         // and the ordering matters when the two writes can't be atomic: a
@@ -109,6 +114,8 @@ impl<'a> GroupSettingsService<'a> {
             LadderRung {
                 bytecode_id: *bytecode_id,
                 application_id: *target_application_id,
+                package: coords.package.to_owned(),
+                version: coords.version.to_owned(),
             },
         )?;
         MetaRepository::new(self.store).save(&self.group_id, &meta)

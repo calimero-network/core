@@ -12,6 +12,7 @@
 //! free-function form takes the cache/notify as explicit args and is
 //! callable from any holder of those Arcs (server handlers, tests,
 //! [`NodeManager`] internals).
+use calimero_store::key::GroupTarget;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -220,10 +221,14 @@ pub async fn join_namespace(
         // confers nothing and stops being read the moment a real admin exists.
         let seeded_admin = calimero_governance_store::placeholder_admin_identity();
         let meta = GroupMetaValue {
+            target: GroupTarget {
+                application_id: ApplicationId::from([0u8; 32]),
+                bytecode_id: [0u8; 32],
+                package: Box::default(),
+                version: Box::default(),
+            },
             admin_identity: seeded_admin,
             owner_identity: seeded_admin,
-            target_application_id: ApplicationId::from([0u8; 32]),
-            bytecode_id: [0u8; 32],
             migration: None,
             created_at: 0,
             auto_join: true,

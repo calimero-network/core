@@ -1629,8 +1629,12 @@ fn the_bootstrap_inviter_hint_is_admitted_only_before_an_admin_exists() {
     // the bootstrap it was for.
     let admin = AccountId::from([0x01; 32]);
     let meta = GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: calimero_store::key::GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -1658,8 +1662,12 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     let admin = AccountId::from([0x01; 32]);
 
     let meta = GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: calimero_store::key::GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -1686,8 +1694,12 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
     let other = AccountId::from([0x02; 32]);
 
     let meta = GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: calimero_store::key::GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -1815,8 +1827,12 @@ fn trusted_anchors_includes_owner_distinct_from_legacy_admin() {
     let creator = AccountId::from([0x01; 32]);
     let new_owner = AccountId::from([0x02; 32]);
     let meta = GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: calimero_store::key::GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: creator,
         owner_identity: new_owner,
@@ -1940,8 +1956,12 @@ fn trusted_anchors_mixed_roles() {
     let read_only = AccountId::from([0xB2; 32]);
 
     let meta = GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        target: calimero_store::key::GroupTarget {
+            application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: legacy_admin,
         owner_identity: owner,
@@ -2456,8 +2476,12 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     let stranger = AccountId::from([0x05; 32]);
 
     let meta = GroupMetaValue {
-        bytecode_id: [0xBB; 32],
-        target_application_id: ApplicationId::from([0xCC; 32]),
+        target: calimero_store::key::GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: owner,
         owner_identity: owner,

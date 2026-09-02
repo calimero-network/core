@@ -42,6 +42,7 @@ mod transfer_ownership;
 
 pub(crate) use context::GroupApplyCtx;
 
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_context_client::local_governance::GroupOp;
 use eyre::Result as EyreResult;
 
@@ -103,7 +104,14 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
         GroupOp::TargetApplicationSet {
             bytecode_id,
             target_application_id,
-        } => target_application_set::apply(ctx, &bytecode_id.to_bytes(), target_application_id)?,
+            package,
+            version,
+        } => target_application_set::apply(
+            ctx,
+            &bytecode_id.to_bytes(),
+            target_application_id,
+            RegistryCoords::new(package, version),
+        )?,
         GroupOp::ContextRegistered {
             context_id,
             application_id,
@@ -173,6 +181,8 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             to_state_version,
             migration,
             cascade_hlc,
+            package,
+            version,
         } => cascade_upgrade::apply(
             ctx,
             &from_bytecode_id.to_bytes(),
@@ -181,6 +191,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             *to_state_version,
             migration,
             *cascade_hlc,
+            RegistryCoords::new(package, version),
         )?,
         // `GroupOp` is `#[non_exhaustive]` from a different crate,
         // so the wildcard is required by the compiler. When a new

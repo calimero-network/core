@@ -1,9 +1,8 @@
-//! Context configuration synchronization and application installation.
-//!
-//! This module handles syncing context configuration from external sources,
-//! installing applications (both bundles and regular WASM), and managing
-//! context metadata updates.
+//! Context configuration synchronization: the join bootstrap that writes a
+//! context's store entries and acquires the bytecode its group named.
 
+use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
+use calimero_app_downloader::{AppRequest, Outcome};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
@@ -12,7 +11,6 @@ use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use eyre::WrapErr;
 use tokio::sync::oneshot;
-use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
 use url::Url;
 
@@ -20,193 +18,6 @@ use super::ContextClient;
 use crate::messages::{ContextMessage, SyncRequest};
 
 impl ContextClient {
-    // Constants for application installation
-    const DEFAULT_PACKAGE: &str = "unknown";
-    const DEFAULT_VERSION: &str = "0.0.0";
-    const MAX_BLOB_RETRIES: u32 = 20;
-    const BLOB_RETRY_DELAY_MS: u64 = 1000;
-    /// Try to install application from URL (for HTTP/HTTPS sources)
-    async fn try_install_from_url(
-        &self,
-        source: &Url,
-        metadata: &[u8],
-    ) -> eyre::Result<Option<ApplicationId>> {
-        match source.scheme() {
-            "http" | "https" => Ok(Some(
-                self.node_client
-                    .install_application_from_url(source.clone(), metadata.to_vec(), None)
-                    .await?,
-            )),
-            _ => Ok(None),
-        }
-    }
-
-    /// Install a regular (non-bundle) application
-    async fn install_regular_application(
-        &self,
-        blob_id: &BlobId,
-        size: u64,
-        source: &Url,
-        metadata: &[u8],
-    ) -> eyre::Result<ApplicationId> {
-        self.node_client.install_raw_wasm(
-            blob_id,
-            size,
-            &source.clone().into(),
-            metadata.to_vec(),
-            Self::DEFAULT_PACKAGE,
-            Self::DEFAULT_VERSION,
-        )
-    }
-
-    /// Check if blob is a bundle and install accordingly
-    async fn check_bundle_and_install(
-        &self,
-        blob_id: &BlobId,
-        blob_bytes: &[u8],
-        source: &Url,
-        size: u64,
-        metadata: &[u8],
-    ) -> eyre::Result<ApplicationId> {
-        let blob_bytes_clone = blob_bytes.to_vec();
-        let is_bundle =
-            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
-                .await?;
-
-        if is_bundle {
-            debug!(
-                blob_id = %blob_id,
-                "Blob is a bundle, installing from bundle blob"
-            );
-            self.node_client
-                .install_application_from_bundle_blob(blob_id, &source.clone().into())
-                .await
-        } else {
-            debug!(
-                blob_id = %blob_id,
-                "Blob is not a bundle, using regular installation"
-            );
-            self.install_regular_application(blob_id, size, source, metadata)
-                .await
-        }
-    }
-
-    /// Install application from existing blob (checks if bundle and installs accordingly)
-    async fn install_from_existing_blob(
-        &self,
-        blob_id: &BlobId,
-        source: &Url,
-        size: u64,
-        metadata: &[u8],
-    ) -> eyre::Result<ApplicationId> {
-        debug!(
-            blob_id = %blob_id,
-            "Blob exists locally, checking if it's a bundle"
-        );
-
-        // Check if blob is a bundle
-        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
-            debug!(
-                blob_id = %blob_id,
-                "Failed to read blob, falling back to regular installation"
-            );
-            // Failed to read blob, fall back to regular installation
-            return self
-                .install_regular_application(blob_id, size, source, metadata)
-                .await;
-        };
-
-        // Check if bundle and install accordingly
-        self.check_bundle_and_install(blob_id, &blob_bytes, source, size, metadata)
-            .await
-    }
-
-    /// Wait for blob to arrive and install bundle (with retry logic)
-    async fn wait_for_blob_and_install(
-        &self,
-        blob_id: &BlobId,
-        source: &Url,
-        size: u64,
-        metadata: &[u8],
-        expected_app_id: ApplicationId,
-    ) -> eyre::Result<ApplicationId> {
-        debug!(
-            blob_id = %blob_id,
-            "Source indicates bundle (.mpk), waiting for blob to arrive via blob sharing"
-        );
-        // For bundles, we need the blob to extract package/version from manifest
-        // Wait a bit for blob sharing to deliver it, then retry
-
-        for _ in 0..Self::MAX_BLOB_RETRIES {
-            // Check if blob is available
-            if !self.node_client.has_blob(blob_id)? {
-                sleep(Duration::from_millis(Self::BLOB_RETRY_DELAY_MS)).await;
-                continue;
-            }
-
-            // Blob arrived, try to read and install
-            let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
-                sleep(Duration::from_millis(Self::BLOB_RETRY_DELAY_MS)).await;
-                continue;
-            };
-
-            debug!(
-                blob_id = %blob_id,
-                "Blob arrived, installing bundle"
-            );
-
-            // Check if bundle and install
-            return self
-                .check_bundle_and_install(blob_id, &blob_bytes, source, size, metadata)
-                .await;
-        }
-
-        // Retries exhausted
-        warn!(
-            blob_id = %blob_id,
-            "Blob didn't arrive within retry window - bundle installation will be retried when blob arrives"
-        );
-        // Blob didn't arrive in time - we can't install without package/version from manifest
-        // Return the ApplicationId from context config to pass the check
-        // The application will be installed when blob arrives via blob sharing
-        // This will cause initiate_sync_inner to fail with "application not found",
-        // but blob sharing will happen and installation will succeed on retry
-        Ok(expected_app_id)
-    }
-
-    /// Install application when blob doesn't exist locally yet
-    async fn install_when_blob_missing(
-        &self,
-        blob_id: &BlobId,
-        source: &Url,
-        size: u64,
-        metadata: &[u8],
-        expected_app_id: ApplicationId,
-    ) -> eyre::Result<ApplicationId> {
-        debug!(
-            blob_id = %blob_id,
-            "Blob doesn't exist locally, checking source for bundle detection"
-        );
-        // Blob doesn't exist yet - try to detect if it's a bundle from source URL
-        // If source ends with .mpk, it's likely a bundle
-        let is_bundle_from_source = source.path().ends_with(".mpk");
-
-        if is_bundle_from_source {
-            // Wait for blob to arrive and install bundle
-            self.wait_for_blob_and_install(blob_id, source, size, metadata, expected_app_id)
-                .await
-        } else {
-            debug!(
-                blob_id = %blob_id,
-                "Blob doesn't exist locally, using regular installation"
-            );
-            // Blob doesn't exist yet - create ApplicationMeta entry anyway
-            // The blob will be shared later in initiate_sync_inner
-            self.install_regular_application(blob_id, size, source, metadata)
-                .await
-        }
-    }
-
     /// Put `application_id`'s bytecode on this node, the way a joiner gets it.
     ///
     /// A joiner reaches the chain below through a context bootstrap. A device
@@ -242,14 +53,23 @@ impl ContextClient {
         }
         // A zero blob is the context bootstrap's stub, which names no bytecode to
         // fetch; the peer rung below declines it on its own, and the registry rung
-        // can still resolve such a row from its source.
+        // can still resolve such a row from its coordinates.
         let blob_id = application.blob.bytecode;
         let source: Url = application.source.into();
-        let metadata = application.metadata.clone();
 
-        // First rung of the joiner's chain, and the one that needs no peer.
-        if let Some(installed) = self.try_install_from_url(&source, &metadata).await? {
-            return Self::installed_as_expected(application_id, installed);
+        // First rung of the joiner's chain, and the one that needs no peer. A
+        // stub row records no coordinates, so there is nothing to address yet.
+        let version = application.version.as_ref().map(ToString::to_string);
+        if let (package, Some(version)) = (application.package.as_str(), version.as_deref()) {
+            if let Some(coords) = stored_coords(package, version) {
+                if let Some(installed) = self
+                    .node_client
+                    .install_by_coords(coords.package, coords.version)
+                    .await?
+                {
+                    return Self::installed_as_expected(application_id, installed);
+                }
+            }
         }
 
         // Fetches from peers when absent and persists what it gets, so this both
@@ -334,14 +154,8 @@ impl ContextClient {
             ));
         };
 
-        // Bootstrap path: resolve application and create store entries.
-        //
-        // The application_id is supplied by the caller (looked up from the
-        // group store) because `ContextMeta` has not been written yet — it is
-        // created below.  If the application is already installed locally we
-        // run the full installation checks; otherwise we write the metadata
-        // and let blob-sharing + sync retries deliver the binary later.
-
+        // The caller supplies application_id (from the group store) because
+        // `ContextMeta` has not been written yet — it is created below.
         let application_id = if let Some(ctx) = &context {
             ctx.application.application_id()
         } else if let Some(id) = config.application_id {
@@ -352,65 +166,53 @@ impl ContextClient {
                 "bootstrap: no application_id available yet; \
                  writing placeholder — sync will populate it"
             );
-            ApplicationId::from([0u8; 32])
+            ApplicationId::zero()
         };
 
-        if let Some(application) = self.node_client().get_application(&application_id)? {
-            let is_stub = application.source.to_string().starts_with("calimero://");
-            if !self.node_client.has_application(&application_id)? && !is_stub {
-                let source: Url = application.source.into();
-                let metadata = application.metadata.clone();
-                let blob_id = application.blob.bytecode;
+        // One resolver for both planes, and the row stays under the id
+        // governance named: a re-derived raw-wasm id varies per node.
+        if application_id != ApplicationId::zero() {
+            let bytecode_id = key::ApplicationMeta::new(application_id);
+            if let Some(row) = handle.get(&bytecode_id)? {
+                // The coordinates governance seeded onto the row: this is the
+                // only registry signal a joiner has before its first sync.
+                let coords = stored_coords(&row.package, &row.version);
 
-                let derived_application_id = {
-                    if let Some(app_id) = self.try_install_from_url(&source, &metadata).await? {
-                        app_id
-                    } else if self.node_client.has_blob(&blob_id)? {
-                        self.install_from_existing_blob(
-                            &blob_id,
-                            &source,
-                            application.size,
-                            &metadata,
-                        )
-                        .await?
-                    } else {
-                        self.install_when_blob_missing(
-                            &blob_id,
-                            &source,
-                            application.size,
-                            &metadata,
-                            application_id,
-                        )
-                        .await?
-                    }
-                };
+                let outcome = self
+                    .node_client
+                    .acquire_bytecode(&AppRequest {
+                        bytecode_id: Some(row.bytecode.blob_id()),
+                        application_id: Some(application_id),
+                        package: coords.map_or("", |coords| coords.package),
+                        version: coords.map_or("", |coords| coords.version),
+                        context_id: Some(&context_id),
+                    })
+                    .await;
 
-                if application_id != derived_application_id {
-                    eyre::bail!(
-                        "application mismatch: expected {}, got {}",
-                        application_id,
-                        derived_application_id
-                    )
+                if outcome == Outcome::Unavailable {
+                    // Not fatal: the configured source had nothing yet, and
+                    // every later access re-runs this same acquisition.
+                    warn!(
+                        %context_id,
+                        %application_id,
+                        "bootstrap could not acquire bytecode yet; will retry on next access"
+                    );
                 }
-            }
-        } else {
-            debug!(
-                %context_id,
-                %application_id,
-                "application not available locally during bootstrap; \
-                 writing stub — blob sharing will deliver it"
-            );
-            let zero_app = ApplicationId::from([0u8; 32]);
-            if application_id != zero_app {
-                let bytecode_id = key::ApplicationMeta::new(application_id);
-                if !handle.has(&bytecode_id)? {
-                    let zero_blob =
-                        key::BlobMeta::new(calimero_primitives::blobs::BlobId::from([0u8; 32]));
-                    let stub_meta = types::ApplicationMeta::new(
+            } else {
+                debug!(
+                    %context_id,
+                    %application_id,
+                    "application not available locally during bootstrap; writing stub \
+                     — the configured source delivers it once governance names a blob"
+                );
+                let zero_blob = key::BlobMeta::new(BlobId::from([0_u8; 32]));
+                handle.put(
+                    &bytecode_id,
+                    &types::ApplicationMeta::new(
                         zero_blob,
                         0,
-                        "calimero://pending-blob-share".to_owned().into_boxed_str(),
-                        Vec::new().into_boxed_slice(),
+                        PENDING_BLOB_SHARE_SOURCE.to_owned().into_boxed_str(),
+                        Box::default(),
                         zero_blob,
                         types::PackageInfo {
                             package: String::new().into_boxed_str(),
@@ -418,14 +220,8 @@ impl ContextClient {
                             signer_id: String::new().into_boxed_str(),
                             state_version: 0,
                         },
-                    );
-                    handle.put(&bytecode_id, &stub_meta)?;
-                    debug!(
-                        %context_id,
-                        %application_id,
-                        "wrote stub application entry for blob sharing"
-                    );
-                }
+                    ),
+                )?;
             }
         }
 

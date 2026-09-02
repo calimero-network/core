@@ -83,6 +83,9 @@ jobs:
       - name: Build kv-store-with-handlers WASM
         run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
 
+      - name: Build kv-store-with-handlers bundle
+        run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)
+
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
@@ -104,7 +107,7 @@ jobs:
           set -o pipefail
           merobox bootstrap run \
               workflows/sync-tests/opaque-leaf-regression.yml \
-              --image merod:local \
+              --image merod:local-dht \
               --e2e-mode \
               --verbose 2>&1 | tee docker-logs/merobox-output.log
           exit_code=$?

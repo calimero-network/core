@@ -9,6 +9,7 @@ description.workspace = true
 publish = true
 
 [dependencies]
+calimero-app-downloader.workspace = true
 calimero-account.workspace = true
 actix.workspace = true
 async-stream.workspace = true
@@ -36,5 +37,6 @@ calimero-utils-actix.workspace = true
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives = { workspace = true, features = ["testing"] }
+libp2p.workspace = true
 tempfile = "3.23"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

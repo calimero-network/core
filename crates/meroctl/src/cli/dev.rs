@@ -18,6 +18,10 @@ use tokio::sync::mpsc;
 use crate::cli::Environment;
 use crate::client::Client;
 
+// The dev loop's own bundle: one fixed name, rebuilt in place on every reload.
+const DEV_BUNDLE_NAME: &str = "dev.mpk";
+const BUNDLE_CMD: &str = "cargo mero bundle --dev --no-icon";
+
 #[derive(Debug, Parser)]
 #[command(about = "Developer workflow commands")]
 pub struct DevCommand {
@@ -33,7 +37,7 @@ pub enum DevSubCommands {
 #[derive(Debug, Parser)]
 #[command(about = "Start a dev session: build, install, create context, watch")]
 pub struct StartCommand {
-    /// Path to .wasm, .mpk bundle, or project directory with manifest.json
+    /// Path to a signed .mpk bundle, or a project directory to build one from
     pub path: Utf8PathBuf,
 
     /// Watch for file changes and auto-reinstall
@@ -56,10 +60,6 @@ pub struct StartCommand {
     #[arg(long)]
     pub no_build: bool,
 
-    /// Application metadata (JSON string)
-    #[arg(long)]
-    pub metadata: Option<String>,
-
     /// Group ID (hex) to attach created contexts to
     #[arg(long, required = true)]
     pub group_id: String,
@@ -78,16 +78,9 @@ impl StartCommand {
         // Step 1: Resolve artifact (build if needed)
         let artifact_path = resolve_artifact(&self.path, self.no_build)?;
 
-        let metadata = self
-            .metadata
-            .clone()
-            .map(String::into_bytes)
-            .unwrap_or_default();
-
         // Step 3: Install app + create/reuse context
-        let (application_id, context_id, member_public_key) = self
-            .initial_setup(environment, &artifact_path, &metadata)
-            .await?;
+        let (application_id, context_id, member_public_key) =
+            self.initial_setup(environment, &artifact_path).await?;
 
         // Step 4: Print summary
         self.print_summary(environment, application_id, context_id, member_public_key)
@@ -109,7 +102,6 @@ impl StartCommand {
                     project_path: self.path.clone(),
                 },
                 self.no_build,
-                metadata,
                 member_public_key,
             )
             .await?;
@@ -122,18 +114,12 @@ impl StartCommand {
         &self,
         environment: &mut Environment,
         path: &Utf8PathBuf,
-        metadata: &[u8],
     ) -> Result<(ApplicationId, ContextId, PublicKey)> {
         let client = environment.client()?;
 
         eprintln!("Installing application from {path}...");
         let install_response = client
-            .install_dev_application(InstallDevApplicationRequest::new(
-                path.clone(),
-                metadata.to_vec(),
-                None,
-                None,
-            ))
+            .install_dev_application(InstallDevApplicationRequest::new(path.clone()))
             .await?;
         let application_id = install_response.data.application_id;
         eprintln!("  ApplicationId: {application_id}");
@@ -270,11 +256,10 @@ fn resolve_artifact(input: &Utf8PathBuf, no_build: bool) -> Result<Utf8PathBuf> 
     let std_path = input.as_std_path();
 
     if std_path.is_file() {
-        let ext = std_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext == "wasm" || ext == "mpk" {
+        if std_path.extension().and_then(|e| e.to_str()) == Some("mpk") {
             return input.canonicalize_utf8().map_err(Into::into);
         }
-        bail!("Unsupported file type: {input} (expected .wasm or .mpk)");
+        bail!("Unsupported file type: {input} (expected a signed .mpk; run `{BUNDLE_CMD}`)");
     }
 
     if !std_path.is_dir() {
@@ -283,65 +268,42 @@ fn resolve_artifact(input: &Utf8PathBuf, no_build: bool) -> Result<Utf8PathBuf> 
 
     let cargo_toml = std_path.join("Cargo.toml");
     if !cargo_toml.exists() {
-        bail!("Directory {input} has no Cargo.toml — cannot build. Pass a .wasm or .mpk directly.");
+        bail!("Directory {input} has no Cargo.toml — cannot build. Pass a .mpk directly.");
     }
 
+    let output = dev_bundle_path(std_path)?;
     if no_build {
-        return find_wasm_in_project(std_path);
+        if output.as_std_path().is_file() {
+            return Ok(output);
+        }
+        bail!("No bundle at {output}; drop --no-build, or run `{BUNDLE_CMD} --output {output}`");
     }
 
-    build_rust_wasm(std_path)?;
-    find_wasm_in_project(std_path)
+    build_bundle(std_path, &output)?;
+    Ok(output)
 }
 
-fn build_rust_wasm(project_dir: &Path) -> Result<()> {
-    eprintln!("Building WASM (cargo build --target wasm32-unknown-unknown --release)...");
+/// One fixed path per project, so the reload loop reinstalls what it just built
+/// rather than whatever `dist/` happens to hold.
+fn dev_bundle_path(project_dir: &Path) -> Result<Utf8PathBuf> {
+    let canonical = Utf8PathBuf::try_from(project_dir.canonicalize()?)?;
+    Ok(canonical.join("dist").join(DEV_BUNDLE_NAME))
+}
+
+fn build_bundle(project_dir: &Path, output: &Utf8PathBuf) -> Result<()> {
+    eprintln!("Building bundle ({BUNDLE_CMD})...");
 
     let status = std::process::Command::new("cargo")
-        .args(["build", "--target", "wasm32-unknown-unknown", "--release"])
+        .args(["mero", "bundle", "--dev", "--no-icon", "--output"])
+        .arg(output)
         .current_dir(project_dir)
         .status()?;
 
     if !status.success() {
-        bail!("cargo build failed with exit code {status}");
+        bail!("cargo mero bundle failed with exit code {status}");
     }
 
     Ok(())
-}
-
-fn find_wasm_in_project(project_dir: &Path) -> Result<Utf8PathBuf> {
-    let res_dir = project_dir.join("res");
-    if res_dir.is_dir() {
-        if let Some(wasm) = find_first_wasm_in(&res_dir)? {
-            return Ok(wasm);
-        }
-    }
-
-    let target_dir = project_dir.join("target/wasm32-unknown-unknown/release");
-    if target_dir.is_dir() {
-        if let Some(wasm) = find_first_wasm_in(&target_dir)? {
-            return Ok(wasm);
-        }
-    }
-
-    bail!(
-        "No .wasm file found. Checked:\n  - {}/res/\n  - {}/target/wasm32-unknown-unknown/release/",
-        project_dir.display(),
-        project_dir.display()
-    )
-}
-
-fn find_first_wasm_in(dir: &Path) -> Result<Option<Utf8PathBuf>> {
-    let mut wasm_files: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("wasm"))
-        .collect();
-    wasm_files.sort();
-    match wasm_files.into_iter().next() {
-        Some(path) => Ok(Some(Utf8PathBuf::try_from(path)?)),
-        None => Ok(None),
-    }
 }
 
 async fn watch_and_reload(
@@ -349,7 +311,6 @@ async fn watch_and_reload(
     context_id: ContextId,
     paths: ReloadPaths,
     no_build: bool,
-    metadata: Vec<u8>,
     member_public_key: PublicKey,
 ) -> Result<()> {
     let ReloadPaths {
@@ -411,14 +372,10 @@ async fn watch_and_reload(
         let start = Instant::now();
 
         let install_path = if is_project && !no_build {
-            match build_rust_wasm(project_path.as_std_path()) {
-                Ok(()) => match find_wasm_in_project(project_path.as_std_path()) {
-                    Ok(p) => p,
-                    Err(err) => {
-                        eprintln!("  Build succeeded but WASM not found: {err}");
-                        continue;
-                    }
-                },
+            match dev_bundle_path(project_path.as_std_path()).and_then(|output| {
+                build_bundle(project_path.as_std_path(), &output).map(|()| output)
+            }) {
+                Ok(output) => output,
                 Err(err) => {
                     eprintln!("  Build failed: {err}");
                     continue;
@@ -431,12 +388,7 @@ async fn watch_and_reload(
         let client = environment.client()?;
 
         let install_response = match client
-            .install_dev_application(InstallDevApplicationRequest::new(
-                install_path,
-                metadata.clone(),
-                None,
-                None,
-            ))
+            .install_dev_application(InstallDevApplicationRequest::new(install_path))
             .await
         {
             Ok(r) => r,

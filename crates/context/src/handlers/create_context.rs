@@ -100,7 +100,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             .load(&group_id)
             .ok()
             .flatten()
-            .map(|m| m.bytecode_id)
+            .map(|m| m.target.bytecode_id)
             .filter(|k| *k != [0u8; 32])
             .map(calimero_primitives::blobs::BlobId::from)
             .filter(|b| self.node_client.has_blob(b).unwrap_or(false));
@@ -235,13 +235,13 @@ impl Prepared<'_> {
             );
         }
 
-        if effective_app_id != meta.target_application_id {
+        if effective_app_id != meta.target.application_id {
             warn!(
                 requested=?effective_app_id,
-                group_target=?meta.target_application_id,
+                group_target=?meta.target.application_id,
                 "overriding application_id with group target"
             );
-            effective_app_id = meta.target_application_id;
+            effective_app_id = meta.target.application_id;
         }
 
         let mut rng = rand::thread_rng();
@@ -607,6 +607,16 @@ async fn create_context(
 
     drop(handle);
 
+    // A joiner resolves the app from its OWN registry, so the op announces where
+    // this node's copy is published. An unaddressable row is refused here rather
+    // than signed onto an op no receiver can resolve.
+    let source = application.source.to_string();
+    let row = datastore
+        .handle()
+        .get(&key::ApplicationMeta::new(context.application_id))?
+        .ok_or_eyre("application not found")?;
+    let coords = super::upgrade_group::registry_coords(&row)?.to_buf();
+
     // Register context in group BEFORE subscribing so that a registration
     // failure does not leave a subscribed-but-unregistered context.
     // Note: membership was verified in Prepared::new(); a TOCTOU gap exists
@@ -624,8 +634,10 @@ async fn create_context(
                 context_id: context.id,
                 application_id: context.application_id,
                 blob_id: application.blob.bytecode,
-                source: application.source.to_string(),
+                source,
                 service_name: context.service_name.clone(),
+                package: coords.package,
+                version: coords.version,
             },
         )
         .await?;

@@ -1175,13 +1175,35 @@ pub struct GroupOpHeadValue {
     pub dag_heads: Vec<[u8; 32]>,
 }
 
+/// The application a group runs, with the coordinates addressing it. One field,
+/// so copying a target cannot take the id and leave the release behind.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupTarget {
+    pub application_id: ApplicationId,
+    pub bytecode_id: [u8; 32],
+    pub package: Box<str>, // empty until governance names one; read via `stored_coords`
+    pub version: Box<str>,
+}
+
+impl Default for GroupTarget {
+    /// The unset target a cold-start seed writes before governance names one.
+    fn default() -> Self {
+        Self {
+            application_id: ApplicationId::from([0u8; 32]),
+            bytecode_id: [0u8; 32],
+            package: Box::default(),
+            version: Box::default(),
+        }
+    }
+}
+
 /// Stored against [`GroupMeta`]. Captures the immutable + mutable metadata of a
 /// context group.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMetaValue {
-    pub bytecode_id: [u8; 32],
-    pub target_application_id: ApplicationId,
+    pub target: GroupTarget,
     pub created_at: u64,
     /// The founding admin, named by **account**. Both this and
     /// `owner_identity` are principals — they answer "who may act" — so they
@@ -1291,14 +1313,15 @@ pub struct GroupUpgradeValue {
     pub to_state_version: u32,
 }
 
-/// One rung of a group's upgrade ladder: the bytecode blob (`bytecode_id`) and
-/// application id an upgrade op targeted. Stored in causal-application order
-/// inside [`UpgradeLadderValue`].
+/// One rung of a group's upgrade ladder, in causal order. Coordinates are per
+/// rung because a bundle's application id is stable across every release.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct LadderRung {
     pub bytecode_id: [u8; 32],
     pub application_id: ApplicationId,
+    pub package: String,
+    pub version: String,
 }
 
 /// Stored against [`GroupUpgradeLadder`]. Append-only fold state: every op
@@ -3649,15 +3672,19 @@ mod tests {
         use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 
         use super::super::{
-            AutoFollowFlags, GroupMemberValue, GroupMetaValue, GroupUpgradeStatus,
+            AutoFollowFlags, GroupMemberValue, GroupMetaValue, GroupTarget, GroupUpgradeStatus,
             GroupUpgradeValue,
         };
 
         #[test]
         fn group_meta_value_roundtrip() {
             let value = GroupMetaValue {
-                bytecode_id: [0xAA; 32],
-                target_application_id: ApplicationId::from([0xBB; 32]),
+                target: GroupTarget {
+                    application_id: ApplicationId::from([0xBB; 32]),
+                    bytecode_id: [0xAA; 32],
+                    package: "com.acme.app".into(),
+                    version: "1.0.0".into(),
+                },
                 created_at: 1_700_000_000,
                 admin_identity: AccountId::from([0xCC; 32]),
                 owner_identity: AccountId::from([0xCC; 32]),
@@ -3668,8 +3695,8 @@ mod tests {
             let bytes = to_vec(&value).expect("serialize");
             let decoded: GroupMetaValue = from_slice(&bytes).expect("deserialize");
 
-            assert_eq!(decoded.bytecode_id, value.bytecode_id);
-            assert_eq!(decoded.target_application_id, value.target_application_id);
+            assert_eq!(decoded.target.bytecode_id, value.target.bytecode_id);
+            assert_eq!(decoded.target.application_id, value.target.application_id);
             assert_eq!(decoded.created_at, value.created_at);
             assert_eq!(decoded.admin_identity, value.admin_identity);
         }
@@ -3679,8 +3706,12 @@ mod tests {
         // written before the removal must fail loudly, never shift into garbage.
         fn group_meta_value_with_legacy_policy_tag_is_rejected() {
             let value = GroupMetaValue {
-                bytecode_id: [0x11; 32],
-                target_application_id: ApplicationId::from([0x22; 32]),
+                target: GroupTarget {
+                    application_id: ApplicationId::from([0x22; 32]),
+                    bytecode_id: [0x11; 32],
+                    package: "com.acme.app".into(),
+                    version: "1.0.0".into(),
+                },
                 created_at: 1_700_000_000,
                 admin_identity: AccountId::from([0x33; 32]),
                 owner_identity: AccountId::from([0x33; 32]),
@@ -3688,13 +3719,10 @@ mod tests {
                 auto_join: true,
             };
 
-            // Re-create the old layout: the policy tag sat between
-            // `target_application_id` and `created_at`.
+            // Re-create the old layout: the policy tag sat between the target
+            // fields and `created_at`.
             let mut bytes = to_vec(&value).expect("serialize");
-            let tag_offset = to_vec(&value.bytecode_id).expect("serialize").len()
-                + to_vec(&value.target_application_id)
-                    .expect("serialize")
-                    .len();
+            let tag_offset = to_vec(&value.target).expect("serialize").len();
             bytes.insert(tag_offset, 0);
 
             assert!(

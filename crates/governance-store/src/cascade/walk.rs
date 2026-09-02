@@ -106,7 +106,7 @@ pub fn walk_for_predicate(
         // that guarantee.
         let matched = meta_opt
             .as_ref()
-            .map(|m| m.bytecode_id == from_bytecode_id)
+            .map(|m| m.target.bytecode_id == from_bytecode_id)
             .unwrap_or(false);
         // `bytecode_id` is exposed for diagnostic logging only — defaulting
         // to zero when meta is missing is fine here because the value
@@ -116,7 +116,7 @@ pub fn walk_for_predicate(
         // (non-zero, non-matching) in the skip log.
         let bytecode_id = meta_opt
             .as_ref()
-            .map(|m| m.bytecode_id)
+            .map(|m| m.target.bytecode_id)
             .unwrap_or([0u8; 32]);
         out.push(WalkEntry {
             group_id: current,

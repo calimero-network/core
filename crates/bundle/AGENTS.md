@@ -38,7 +38,7 @@ cargo test -p calimero-bundle
 
 This crate is the single source of truth for the bundle schema: `cargo-mero` builds a `BundleManifest` directly (no `..Default::default()`), `mero-sign` re-exports the canonicalization/signing functions for its CLI, and `calimero-node-primitives` (re-exported there as `bundle`) reads and verifies installed bundles against the same type. Because none of the three fill in fields with a wildcard, a new `BundleManifest` field must be handled at every one of those call sites before the workspace compiles - that's deliberate, to keep the node and the tool that builds bundles for it from silently drifting apart.
 
-`handlers` (the deep-link `slug`) is a sibling of `metadata`, not nested inside it, so it never reaches `to_metadata_json()` and never participates in the raw-wasm `ApplicationId` derivation (`hash(bytecode, size, source, metadata)`); only `package` + `signerId` decide a bundle's identity (see `ApplicationId::for_bundle` in `calimero-primitives`).
+`handlers` (the deep-link `slug`) is a sibling of `metadata`, not nested inside it, so it never reaches `to_metadata_json()` and never reaches the display metadata an install stores; only `package` + `signerId` decide a bundle's identity (see `ApplicationId::for_bundle` in `calimero-primitives`).
 
 Signing is two SHA-256 hashes over the same canonical bytes: `canonicalize_manifest` clones the manifest, drops `signature` and any `_`-prefixed field (the transient-field convention: `_binary`, `_overwrite`, and any future underscore-prefixed key), then RFC 8785-canonicalizes what's left. `compute_bundle_hash`/`compute_signing_payload` are the same SHA-256 in v0 - kept as two names because a future manifest version may split them. `sign_manifest_json` signs that hash with Ed25519 and writes both `signerId` (always overwritten to match the signing key) and `signature` back into the `Value`; `verify_manifest_signature` reverses this and additionally checks the manifest's declared `signerId` matches the one the public key derives to, so a manifest can't claim a different signer than the key that actually signed it.
 
@@ -53,6 +53,6 @@ Signing is two SHA-256 hashes over the same canonical bytes: `canonicalize_manif
 
 - **No `..` in `BundleManifest::artifacts()`.** Keep the exhaustive destructure; it is the trip-wire that forces every new field through a deliberate classification instead of silently being skipped.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
-- **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` and out of the raw-wasm application-id hash - see `handlers_does_not_affect_metadata_or_app_id` in `lib.rs`.
+- **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 
 Part of [crates/](../AGENTS.md).

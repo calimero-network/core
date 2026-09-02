@@ -1,8 +1,9 @@
 //! `GroupOp::TargetApplicationSet` apply handler. Extracted from
 //! `apply_group_op_mutations` in #2304.
 
-use super::context::GroupApplyCtx;
+use super::context::{seed_target_application_row, GroupApplyCtx};
 use crate::{MetaRepository, MetadataRepository};
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::ApplicationId;
 use calimero_store::key::ApplicationMeta;
 use eyre::Result as EyreResult;
@@ -11,6 +12,7 @@ pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     bytecode_id: &[u8; 32],
     target_application_id: &ApplicationId,
+    coords: RegistryCoords<'_>,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
@@ -24,10 +26,12 @@ pub(crate) fn apply(
         .load(group_id)
         .ok()
         .flatten()
-        .map(|meta| meta.target_application_id);
+        .map(|meta| meta.target.application_id);
 
     ctx.settings()
-        .set_target_application(signer, bytecode_id, target_application_id)?;
+        .set_target_application(signer, bytecode_id, target_application_id, coords)?;
+
+    seed_target_application_row(store, target_application_id, bytecode_id, coords)?;
 
     // A multi-hop upgrade emits one of these ops per ladder rung, all naming
     // the same target application. Announce on the rung that actually lands the

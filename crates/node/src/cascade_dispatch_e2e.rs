@@ -20,6 +20,7 @@ use calimero_governance_store::{
     MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     UpgradeLadderRepository, UpgradesRepository,
 };
+use calimero_store::key::GroupTarget;
 use std::time::Duration;
 
 use calimero_context_client::group::{
@@ -135,8 +136,12 @@ fn meta_for(
     target: ApplicationId,
 ) -> GroupMetaValue {
     GroupMetaValue {
-        bytecode_id,
-        target_application_id: target,
+        target: GroupTarget {
+            application_id: target,
+            bytecode_id,
+            package: Box::default(),
+            version: Box::default(),
+        },
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -399,7 +404,7 @@ const NO_SECOND_EVENT_WINDOW: Duration = Duration::from_millis(750);
 ///
 ///   * `GroupMeta.bytecode_id` for NS, G1, G2 has flipped from
 ///     `BYTECODE_ID_V1` to `BYTECODE_ID_V2` (target's `bytecode.blob_id()`).
-///   * `GroupMeta.target_application_id` is `app_v2`.
+///   * `GroupMeta.target.application_id` is `app_v2`.
 ///   * A per-descendant `GroupUpgradeValue { status: InProgress }`
 ///     row exists for NS, G1, G2 with `total = context_count(group)`.
 ///
@@ -442,13 +447,13 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
-            meta.bytecode_id,
+            meta.target.bytecode_id,
             blobs.v2,
             "group {} must have rotated bytecode_id",
             hex::encode(gid.to_bytes())
         );
         assert_eq!(
-            meta.target_application_id,
+            meta.target.application_id,
             app_id_v2(),
             "group {} must point at app_v2",
             hex::encode(gid.to_bytes())
@@ -608,6 +613,8 @@ async fn receiver_announces_a_cascade_it_did_not_initiate() {
             to_state_version: 2,
             migration: Some(b"migrate_v1_to_v2".to_vec()),
             cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
         },
     )
     .expect("sign CascadeUpgrade");
@@ -681,6 +688,8 @@ async fn receiver_announces_a_single_group_upgrade_once_per_ladder() {
             GroupOp::TargetApplicationSet {
                 bytecode_id: bytecode_id.into(),
                 target_application_id: app_id_v2(),
+                package: "com.example.app".to_owned(),
+                version: "2.0.0".to_owned(),
             },
         )
         .expect("sign TargetApplicationSet")
@@ -949,12 +958,12 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
-            meta.bytecode_id,
+            meta.target.bytecode_id,
             blobs.v2,
             "{} must migrate",
             hex::encode(gid.to_bytes())
         );
-        assert_eq!(meta.target_application_id, app_id_v2());
+        assert_eq!(meta.target.application_id, app_id_v2());
     }
 
     // G2 untouched: predicate skip on heterogeneous bytecode_id.
@@ -963,10 +972,10 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
         .expect("load_group_meta g2")
         .expect("g2 meta exists");
     assert_eq!(
-        meta_g2.bytecode_id, blobs.other,
+        meta_g2.target.bytecode_id, blobs.other,
         "G2 must NOT be touched — predicate skip on heterogeneous bytecode_id"
     );
-    assert_eq!(meta_g2.target_application_id, app_id_other());
+    assert_eq!(meta_g2.target.application_id, app_id_other());
 
     // No InProgress row for G2 (the matched-descendant loop never ran
     // for it). Reads must be `Ok(None)`.
@@ -1187,7 +1196,7 @@ async fn lazy_upgrade_emits_multi_hop_ladder() {
         .expect("load meta")
         .expect("meta exists");
     assert_eq!(
-        meta.bytecode_id, blobs.v3,
+        meta.target.bytecode_id, blobs.v3,
         "group must land on the target blob"
     );
     assert_eq!(
@@ -1253,7 +1262,7 @@ async fn lazy_upgrade_multi_hop_missing_intermediate_rejects_with_floor() {
         .expect("load meta")
         .expect("meta exists");
     assert_eq!(
-        meta.bytecode_id, blobs.v1,
+        meta.target.bytecode_id, blobs.v1,
         "rejected upgrade must not move the group"
     );
     assert!(

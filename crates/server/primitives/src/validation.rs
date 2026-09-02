@@ -5,9 +5,6 @@
 
 use thiserror::Error as ThisError;
 
-/// Maximum size for metadata fields (e.g., application metadata)
-pub const MAX_METADATA_SIZE: usize = 64 * 1024; // 64 KB
-
 /// Maximum size for initialization parameters
 pub const MAX_INIT_PARAMS_SIZE: usize = 1024 * 1024; // 1 MB
 
@@ -25,9 +22,6 @@ pub const MAX_HASH_LENGTH: usize = 64;
 
 /// Maximum length for base64-encoded quote
 pub const MAX_QUOTE_B64_LENGTH: usize = 64 * 1024; // 64 KB
-
-/// Maximum length for URL strings
-pub const MAX_URL_LENGTH: usize = 2048;
 
 /// Maximum length for file paths
 pub const MAX_PATH_LENGTH: usize = 4096;
@@ -134,15 +128,12 @@ pub mod helpers {
         }
     }
 
-    /// Validate optional string length
-    pub fn validate_optional_string_length(
-        value: &Option<String>,
-        field: &'static str,
-        max: usize,
-    ) -> Option<ValidationError> {
-        value
-            .as_ref()
-            .and_then(|s| validate_string_length(s, field, max))
+    /// Validate that a string carries a value at all.
+    pub fn validate_non_empty(value: &str, field: &'static str) -> Option<ValidationError> {
+        value.is_empty().then(|| ValidationError::InvalidFormat {
+            field,
+            reason: "must not be empty".to_owned(),
+        })
     }
 
     /// Validate byte slice size
@@ -233,108 +224,6 @@ pub mod helpers {
         } else {
             None
         }
-    }
-
-    /// Validate a URL the node will fetch from (e.g. application install).
-    ///
-    /// Beyond the length cap this is the first line of SSRF defense: it enforces
-    /// an `http`/`https` scheme and rejects URLs whose host is a literal
-    /// loopback / private / link-local / unspecified IP, or `localhost`. This
-    /// blocks the obvious metadata-service and internal-service targets
-    /// (`http://169.254.169.254/...`, `http://127.0.0.1`, `http://10.0.0.1`,
-    /// `http://[::1]`, `http://localhost`).
-    ///
-    /// It does NOT catch a public hostname that *resolves* to a private address
-    /// (DNS rebinding) or a redirect to a private address — those require
-    /// resolution at fetch time and are enforced separately by the download
-    /// path. Keep both layers.
-    pub fn validate_url(value: &url::Url, field: &'static str) -> Option<ValidationError> {
-        let url_str = value.as_str();
-        if url_str.len() > MAX_URL_LENGTH {
-            return Some(ValidationError::StringTooLong {
-                field,
-                max: MAX_URL_LENGTH,
-                actual: url_str.len(),
-            });
-        }
-
-        match value.scheme() {
-            "http" | "https" => {}
-            other => {
-                return Some(ValidationError::InvalidFormat {
-                    field,
-                    reason: format!(
-                        "unsupported URL scheme '{other}'; only http and https are allowed"
-                    ),
-                });
-            }
-        }
-
-        match value.host() {
-            Some(host) if url_host_is_blocked(&host) => Some(ValidationError::InvalidFormat {
-                field,
-                reason:
-                    "URL host is a loopback, private, link-local, or otherwise non-public address"
-                        .to_owned(),
-            }),
-            Some(_) => None,
-            None => Some(ValidationError::InvalidFormat {
-                field,
-                reason: "URL has no host".to_owned(),
-            }),
-        }
-    }
-
-    /// Whether a URL host must be refused as an SSRF target (literal private/
-    /// loopback/link-local/unspecified IP, or a `localhost` domain).
-    ///
-    /// SYNC(#3053): the same blocked-range logic is duplicated in
-    /// `calimero-node-primitives` (`client/application/install.rs::host_is_blocked`),
-    /// which applies it at fetch time to also cover redirect hops. The two
-    /// crates do not share a dependency; if you change the blocked ranges here
-    /// (e.g. add CGNAT 100.64.0.0/10 or a new IPv6 special prefix), update that
-    /// copy too. Tracked for deduplication into a shared crate in #3053.
-    pub fn url_host_is_blocked(host: &url::Host<&str>) -> bool {
-        match host {
-            url::Host::Ipv4(ip) => ipv4_is_blocked(*ip),
-            url::Host::Ipv6(ip) => ipv6_is_blocked(*ip),
-            url::Host::Domain(domain) => {
-                let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-                domain == "localhost" || domain.ends_with(".localhost")
-            }
-        }
-    }
-
-    /// Blocked IPv4 ranges: loopback (127/8), private (10/8, 172.16/12,
-    /// 192.168/16), link-local (169.254/16 — incl. the cloud metadata IP),
-    /// unspecified (0.0.0.0), broadcast, and CGNAT (100.64.0.0/10, RFC 6598 —
-    /// used by some cloud providers for internal/metadata reachability).
-    fn ipv4_is_blocked(ip: std::net::Ipv4Addr) -> bool {
-        let o = ip.octets();
-        // 100.64.0.0/10: first octet 100, second octet 64..=127. `is_shared()`
-        // would cover this but is unstable, so check the prefix directly.
-        let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 0x40;
-        ip.is_loopback()
-            || ip.is_private()
-            || ip.is_link_local()
-            || ip.is_unspecified()
-            || ip.is_broadcast()
-            || is_cgnat
-    }
-
-    /// Blocked IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
-    /// link-local (fe80::/10), and IPv4-mapped addresses whose embedded v4 is
-    /// blocked. (Avoids unstable `Ipv6Addr` helpers by checking segments.)
-    fn ipv6_is_blocked(ip: std::net::Ipv6Addr) -> bool {
-        if ip.is_loopback() || ip.is_unspecified() {
-            return true;
-        }
-        if let Some(v4) = ip.to_ipv4_mapped() {
-            return ipv4_is_blocked(v4);
-        }
-        let first = ip.segments()[0];
-        // fc00::/7 (unique-local) and fe80::/10 (link-local).
-        (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
     }
 
     /// Validate a local filesystem path supplied by a client (e.g. dev install).
@@ -468,66 +357,9 @@ pub mod helpers {
 }
 
 #[cfg(test)]
-mod ssrf_and_path_tests {
-    use url::Url;
-
-    use super::helpers::{validate_safe_path, validate_url};
+mod path_tests {
+    use super::helpers::validate_safe_path;
     use super::ValidationError;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
-
-    #[test]
-    fn ssrf_targets_are_rejected() {
-        for bad in [
-            "http://169.254.169.254/latest/meta-data/", // cloud metadata
-            "http://127.0.0.1:6379",
-            "http://localhost:8080/admin",
-            "https://LOCALHOST/x",
-            "http://10.0.0.5/internal",
-            "http://172.16.3.4/",
-            "http://192.168.1.1/",
-            "http://100.64.0.1/", // CGNAT (RFC 6598)
-            "http://0.0.0.0/",
-            "http://[::1]/",
-            "http://[fe80::1]/",
-            "http://[fc00::1]/",
-            "http://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
-        ] {
-            assert!(
-                matches!(
-                    validate_url(&url(bad), "url"),
-                    Some(ValidationError::InvalidFormat { .. })
-                ),
-                "{bad} must be rejected as an SSRF target",
-            );
-        }
-    }
-
-    #[test]
-    fn non_http_schemes_are_rejected() {
-        for bad in ["file:///etc/passwd", "ftp://example.com/x", "gopher://x/"] {
-            assert!(matches!(
-                validate_url(&url(bad), "url"),
-                Some(ValidationError::InvalidFormat { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn public_urls_are_allowed() {
-        for ok in [
-            "https://registry.example.com/app.wasm",
-            "http://93.184.216.34/app.mpk", // public literal IP
-            "https://calimero.network/pkg/v1.mpk",
-        ] {
-            assert!(
-                validate_url(&url(ok), "url").is_none(),
-                "{ok} must be allowed",
-            );
-        }
-    }
 
     #[test]
     fn path_traversal_is_rejected_absolute_allowed() {

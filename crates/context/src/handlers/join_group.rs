@@ -158,10 +158,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     // the other entry point into this same cold-start window.
                     let seeded_admin = calimero_governance_store::placeholder_admin_identity();
                     let meta = calimero_store::key::GroupMetaValue {
+                        // Coordinates stay unset until governance names them.
+                        target: calimero_store::key::GroupTarget {
+                            application_id: target_application_id,
+                            bytecode_id,
+                            ..Default::default()
+                        },
                         admin_identity: seeded_admin,
                         owner_identity: seeded_admin,
-                        target_application_id,
-                        bytecode_id,
                         migration: None,
                         created_at: 0,
                         auto_join: true,
@@ -711,7 +715,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                     Some(app_id)
                                 } else {
                                     MetaRepository::new(&datastore).load(&group_id)?
-                                        .map(|m| m.target_application_id)
+                                        .map(|m| m.target.application_id)
                                         .filter(|id| *id != zero_app)
                                 };
                                 let svc_name =

@@ -69,23 +69,11 @@ pub async fn handler(
         }
         .into_response();
     }
-    let metadata_len = req.metadata.len();
-    debug!(
-        path=%req.path,
-        metadata_len,
-        package = req.package.as_deref().unwrap_or("unknown"),
-        version = req.version.as_deref().unwrap_or("0.0.0"),
-        "install_dev_application request received"
-    );
+    debug!(path=%req.path, "install_dev_application request received");
 
     match state
         .node_client
-        .install_application_from_path(
-            req.path.clone(),
-            req.metadata,
-            req.package.clone(),
-            req.version.clone(),
-        )
+        .install_application_from_path(req.path.clone())
         .await
     {
         Ok(application_id) => {
@@ -96,13 +84,7 @@ pub async fn handler(
             .into_response()
         }
         Err(err) => {
-            error!(
-                path=%req.path,
-                package = req.package.as_deref().unwrap_or("unknown"),
-                version = req.version.as_deref().unwrap_or("0.0.0"),
-                error = ?err,
-                "Failed to install dev application"
-            );
+            error!(path=%req.path, error=?err, "Failed to install dev application");
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
         }
     }
