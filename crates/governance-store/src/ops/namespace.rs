@@ -106,12 +106,13 @@ pub(crate) fn dispatch_root_op(
             member,
             signed_invitation,
             account,
-        } => member_joined::apply(ctx, op, member, signed_invitation, None, account),
+        } => member_joined::apply(ctx, op, member, signed_invitation, None, account, None),
         RootOp::MemberJoinedAt {
             member,
             signed_invitation,
             joined_at,
             account,
+            admitter_endorsement,
         } => member_joined::apply(
             ctx,
             op,
@@ -119,6 +120,7 @@ pub(crate) fn dispatch_root_op(
             signed_invitation,
             Some(*joined_at),
             account,
+            Some(&**admitter_endorsement),
         ),
         RootOp::MemberJoinedOpen {
             member,

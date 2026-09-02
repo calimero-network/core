@@ -42,6 +42,7 @@ fn sign_invitation(
     group_id: ContextGroupId,
     expiration_timestamp: u64,
     invited_role: u8,
+    admitter: calimero_account::AccountId,
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
@@ -49,7 +50,7 @@ fn sign_invitation(
         expiration_timestamp,
         invitation_nonce: [0x42; 32],
         invited_role,
-        admitters: Vec::new(),
+        admitters: vec![admitter],
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_sig = admin_sk
@@ -63,6 +64,31 @@ fn sign_invitation(
         bytecode_id: None,
         admitter_addrs: Vec::new(),
     }
+}
+
+/// The endorsement every `MemberJoinedAt` now carries.
+///
+/// A join is authorised by an admitter the invitation named, signing
+/// separately from the inviter — so a fixture has to produce both halves or the
+/// apply refuses it for a reason unrelated to what the test is about. Taking
+/// the invitation rather than a bare nonce is what keeps the two in step: the
+/// signature covers the nonce, so reading it back off the invitation being
+/// used means a fixture cannot silently endorse a different one.
+fn endorse_join(
+    admitter_sk: &PrivateKey,
+    ns_id: &[u8; 32],
+    member: &calimero_account::AccountId,
+    signed_invitation: &SignedGroupOpenInvitation,
+) -> Box<calimero_governance_types::AdmitterEndorsement> {
+    Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            admitter_sk,
+            ns_id,
+            member,
+            &signed_invitation.invitation.invitation_nonce,
+        )
+        .expect("sign admitter endorsement"),
+    )
 }
 
 /// `MemberRemoved` with placeholder cross-DAG claims for tests that
@@ -322,7 +348,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
-        admitters: Vec::new(),
+        admitters: vec![calimero_context::test_support::account_for(&admin_pk)],
     };
 
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
@@ -337,18 +363,27 @@ fn two_nodes_converge_on_namespace_member_joined() {
         admitter_addrs: Vec::new(),
     };
 
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
+            joined_at: 1,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
-    .expect("sign MemberJoined");
+    .expect("sign MemberJoinedAt");
 
     calimero_governance_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
     calimero_governance_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
@@ -399,7 +434,20 @@ fn member_joined_at_rejects_expired_invitation() {
         )
         .unwrap();
 
-    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        1_000_000,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
 
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
@@ -411,6 +459,7 @@ fn member_joined_at_rejects_expired_invitation() {
             signed_invitation,
             joined_at: 2_000_000,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -432,8 +481,22 @@ fn member_joined_at_rejects_expired_invitation() {
     );
 }
 
+/// The legacy variant cannot admit anybody any more, whatever its invitation
+/// says.
+///
+/// This used to check a narrower rule — `MemberJoined` with an invitation that
+/// set an expiration was malformed, because it had nowhere to put the
+/// `joined_at` the expiry gate needs. The endorsement requirement strictly
+/// supersedes it: `MemberJoined` has no field to carry consent either, so it
+/// is refused before the expiry gate is reached and for every invitation
+/// rather than only the ones with an expiration.
+///
+/// Keeping the case pinned matters more than the reason it fails: this is the
+/// variant an attacker would reach for precisely because it is the one that
+/// cannot express an admitter, so "the older op is not a way around the gate"
+/// is the property worth a test.
 #[test]
-fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
+fn the_legacy_member_joined_variant_can_no_longer_admit() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     let mut rng = OsRng;
@@ -460,9 +523,16 @@ fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
         )
         .unwrap();
 
-    // MemberJoined (legacy, no joined_at) with a non-zero expiration is a
-    // malformed op — the caller should have used MemberJoinedAt.
-    let signed_invitation = sign_invitation(&admin_sk, gid, 9_999_999_999, 1);
+    // A perfectly good invitation, in window and naming a real admitter — so
+    // the refusal below is about the op's variant and nothing else.
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        9_999_999_999,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
@@ -477,10 +547,12 @@ fn member_joined_rejects_when_expiration_set_and_joined_at_absent() {
     .expect("sign MemberJoined");
 
     let err = calimero_governance_store::apply_signed_namespace_op(&store, &ns_op)
-        .expect_err("MemberJoined with non-zero expiration must be rejected");
+        .expect_err("the legacy variant must not be able to admit a member");
     assert!(
-        format!("{err:#}").contains("joined_at is absent"),
-        "rejection must come from the absent-joined_at gate: {err:#}"
+        format!("{err:#}").contains("no admitter endorsement"),
+        "rejection must come from the endorsement gate — if it starts coming \
+         from somewhere else, the variant is being refused for an incidental \
+         reason and the gate may no longer be the thing stopping it: {err:#}"
     );
     assert!(
         !MembershipRepository::new(&store)
@@ -526,7 +598,20 @@ fn member_joined_at_accepts_in_window_invitation() {
 
     // Boundary: joined_at exactly equals expiry. The gate is
     // `joined_at > expiration`, so the boundary must be accepted (not `>=`).
-    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        1_000_000,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
@@ -537,6 +622,7 @@ fn member_joined_at_accepts_in_window_invitation() {
             signed_invitation,
             joined_at: 1_000_000,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -589,7 +675,20 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
         .unwrap();
 
     // Invitation expired at t=1_000_000, but the joiner backdates joined_at to 0.
-    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        1_000_000,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
@@ -600,6 +699,7 @@ fn member_joined_at_backdated_joined_at_bypasses_apply_gate_documented_residual(
             signed_invitation,
             joined_at: 0,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -651,7 +751,20 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
     // claimed `joined_at` is still within the window. A local-clock check
     // would reject this on every node; the deterministic gate accepts it,
     // so two independently-applying nodes converge instead of split-brain.
-    let signed_invitation = sign_invitation(&admin_sk, gid, 1_000_000, 1);
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        1_000_000,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
@@ -662,6 +775,7 @@ fn member_joined_at_in_window_converges_when_expiration_already_past_wallclock()
             signed_invitation,
             joined_at: 999_999,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -707,7 +821,20 @@ fn member_joined_at_ignores_zero_expiration() {
         )
         .unwrap();
 
-    let signed_invitation = sign_invitation(&admin_sk, gid, 0, 1);
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        0,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
@@ -718,6 +845,7 @@ fn member_joined_at_ignores_zero_expiration() {
             signed_invitation,
             joined_at: u64::MAX,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
     .expect("sign MemberJoinedAt");
@@ -815,6 +943,12 @@ fn recursive_invite_joins_all_descendant_groups() {
     // Joiner publishes MemberJoinedAt for each invitation (expiration is set,
     // so joined_at must be provided; use 1 which is safely before any future expiry).
     for (i, (_gid, signed_inv)) in invitations.iter().enumerate() {
+        let admitter_endorsement = endorse_join(
+            &admin_sk,
+            &ns_id.to_bytes(),
+            &calimero_context::test_support::account_for(&joiner_pk),
+            signed_inv,
+        );
         let ns_op = SignedNamespaceOp::sign(
             &joiner_sk,
             ns_id.to_bytes().into(),
@@ -825,6 +959,7 @@ fn recursive_invite_joins_all_descendant_groups() {
                 signed_invitation: signed_inv.clone(),
                 joined_at: 1,
                 account: calimero_context::test_support::credential(&joiner_pk),
+                admitter_endorsement,
             }),
         )
         .expect("sign MemberJoinedAt");
@@ -2152,7 +2287,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         expiration_timestamp: 0,
         invitation_nonce: [0x42; 32],
         invited_role: 1,
-        admitters: Vec::new(),
+        admitters: vec![calimero_context::test_support::account_for(&admin_pk)],
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_hash = Sha256::digest(&inv_bytes);
@@ -2166,18 +2301,27 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         admitter_addrs: Vec::new(),
     };
 
+    let admitter_endorsement = endorse_join(
+        &admin_sk,
+        &ns_id,
+        &calimero_context::test_support::account_for(&joiner_pk),
+        &signed_invitation,
+    );
+
     let ns_op = SignedNamespaceOp::sign(
         &joiner_sk,
         ns_id.into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner_pk),
             signed_invitation,
+            joined_at: 1,
             account: calimero_context::test_support::credential(&joiner_pk),
+            admitter_endorsement,
         }),
     )
-    .expect("sign MemberJoined");
+    .expect("sign MemberJoinedAt");
     let op_hash = ns_op.content_hash().expect("content_hash");
 
     // The bug is in one store's head-set bookkeeping, so a single store that
@@ -2217,4 +2361,266 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
             &calimero_context::test_support::account_for(&joiner_pk)
         )
         .unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// The admitter endorsement is an authority check
+// ---------------------------------------------------------------------------
+
+/// One well-formed join, everything except the endorsement held constant.
+///
+/// The endorsement is the only authority the join carries, so the tests that
+/// matter are the ones where it must NOT pass — and each of those is only
+/// meaningful if nothing *else* about the op is also wrong. Building the whole
+/// join here once, and varying a single argument, is what makes "the gate
+/// refused this" the only available explanation for a failure.
+struct JoinFixture {
+    store: Store,
+    ns_id: [u8; 32],
+    admin_sk: PrivateKey,
+    joiner_sk: PrivateKey,
+    member: calimero_account::AccountId,
+    signed_invitation: SignedGroupOpenInvitation,
+}
+
+/// A namespace with an enrolled admin, and an in-window invitation naming that
+/// admin — and only that admin — as its admitter.
+fn join_fixture() -> JoinFixture {
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+    let store = empty_store();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    MetaRepository::new(&store)
+        .save(
+            &gid,
+            &sample_meta(calimero_context::test_support::account_for(&admin_pk)),
+        )
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(
+            &gid,
+            &calimero_context::test_support::enrol(&store, &gid, &admin_pk),
+            GroupMemberRole::Admin,
+        )
+        .unwrap();
+
+    let signed_invitation = sign_invitation(
+        &admin_sk,
+        gid,
+        9_999_999_999,
+        1,
+        calimero_context::test_support::account_for(&admin_pk),
+    );
+
+    JoinFixture {
+        store,
+        ns_id,
+        admin_sk,
+        joiner_sk,
+        member: calimero_context::test_support::account_for(&joiner_pk),
+        signed_invitation,
+    }
+}
+
+/// Apply the fixture's join carrying `endorsement`, and report what the apply
+/// said about it.
+fn apply_join_endorsed(
+    f: &JoinFixture,
+    endorsement: Box<calimero_governance_types::AdmitterEndorsement>,
+) -> Result<(), String> {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let ns_op = SignedNamespaceOp::sign(
+        &f.joiner_sk,
+        f.ns_id.into(),
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: f.member,
+            signed_invitation: f.signed_invitation.clone(),
+            joined_at: 1,
+            account: calimero_context::test_support::credential(&f.joiner_sk.public_key()),
+            admitter_endorsement: endorsement,
+        }),
+    )
+    .expect("sign MemberJoinedAt");
+
+    calimero_governance_store::apply_signed_namespace_op(&f.store, &ns_op)
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The endorsement the fixture's own admitter would produce: the control.
+///
+/// Without this the negative cases below prove nothing — a gate that refused
+/// everything would pass all of them.
+#[test]
+fn member_joined_at_accepts_an_endorsement_from_the_named_admitter() {
+    let f = join_fixture();
+    let endorsement = endorse_join(&f.admin_sk, &f.ns_id, &f.member, &f.signed_invitation);
+
+    apply_join_endorsed(&f, endorsement).expect("the named admitter's endorsement must admit");
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .is_member(&sample_group_id(), &f.member)
+            .unwrap(),
+        "the join was accepted, so the member must be recorded"
+    );
+}
+
+/// The check `admitters` was always supposed to be.
+///
+/// A second enrolled admin is a member in good standing whose signature
+/// verifies and whose account resolves — everything except being named. Before
+/// the endorsement existed this join was indistinguishable from a legitimate
+/// one, because nothing on the op said who had agreed to it.
+#[test]
+fn member_joined_at_rejects_an_endorsement_from_an_account_the_invitation_did_not_name() {
+    let mut rng = OsRng;
+    let f = join_fixture();
+
+    let other_sk = PrivateKey::random(&mut rng);
+    let other_pk = other_sk.public_key();
+    MembershipRepository::new(&f.store)
+        .add_member(
+            &sample_group_id(),
+            &calimero_context::test_support::enrol(&f.store, &sample_group_id(), &other_pk),
+            GroupMemberRole::Admin,
+        )
+        .unwrap();
+
+    let err = apply_join_endorsed(
+        &f,
+        endorse_join(&other_sk, &f.ns_id, &f.member, &f.signed_invitation),
+    )
+    .expect_err("an admin the invitation did not name must not be able to admit");
+
+    assert!(
+        err.contains("does not name"),
+        "the refusal must come from the admitter check rather than an earlier \
+         gate: {err}"
+    );
+    assert!(
+        !MembershipRepository::new(&f.store)
+            .is_member(&sample_group_id(), &f.member)
+            .unwrap(),
+        "a refused join must leave no membership behind"
+    );
+}
+
+/// The signature is over the joiner, so somebody else's endorsement is not
+/// transferable to this one.
+#[test]
+fn member_joined_at_rejects_an_endorsement_bound_to_a_different_joiner() {
+    let mut rng = OsRng;
+    let f = join_fixture();
+    let someone_else =
+        calimero_context::test_support::account_for(&PrivateKey::random(&mut rng).public_key());
+
+    let err = apply_join_endorsed(
+        &f,
+        endorse_join(&f.admin_sk, &f.ns_id, &someone_else, &f.signed_invitation),
+    )
+    .expect_err("an endorsement naming a different joiner must not admit this one");
+
+    assert!(
+        err.contains("signature is invalid"),
+        "the payload binds the member, so this must fail as a signature \
+         mismatch: {err}"
+    );
+}
+
+/// The signature is over the namespace, so an endorsement does not travel
+/// between groups.
+#[test]
+fn member_joined_at_rejects_an_endorsement_issued_for_another_namespace() {
+    let f = join_fixture();
+
+    let err = apply_join_endorsed(
+        &f,
+        endorse_join(&f.admin_sk, &[0x5A; 32], &f.member, &f.signed_invitation),
+    )
+    .expect_err("an endorsement issued for another namespace must not admit here");
+
+    assert!(
+        err.contains("signature is invalid"),
+        "the payload binds the namespace: {err}"
+    );
+}
+
+/// A key nobody has bound to an account speaks for no account, so naming an
+/// account in `admitters` is not satisfied by signing with an unrelated key.
+#[test]
+fn member_joined_at_rejects_an_endorsement_from_a_key_bound_to_no_account() {
+    let mut rng = OsRng;
+    let f = join_fixture();
+    let stranger_sk = PrivateKey::random(&mut rng);
+
+    let err = apply_join_endorsed(
+        &f,
+        endorse_join(&stranger_sk, &f.ns_id, &f.member, &f.signed_invitation),
+    )
+    .expect_err("an unenrolled signer must not be able to admit");
+
+    assert!(
+        err.contains("speaks for no account"),
+        "the refusal must be the account resolution, not the signature — the \
+         signature itself is perfectly valid: {err}"
+    );
+}
+
+/// Tampering with the signature bytes of an otherwise legitimate endorsement.
+#[test]
+fn member_joined_at_rejects_a_tampered_endorsement_signature() {
+    let f = join_fixture();
+    let mut endorsement = endorse_join(&f.admin_sk, &f.ns_id, &f.member, &f.signed_invitation);
+    endorsement.signature[0] ^= 0xFF;
+
+    let err = apply_join_endorsed(&f, endorsement)
+        .expect_err("a tampered endorsement signature must not admit");
+
+    assert!(
+        err.contains("signature is invalid"),
+        "expected the signature check to reject it: {err}"
+    );
+}
+
+/// An invitation naming nobody cannot be endorsed by anybody.
+///
+/// This is the case that used to mean "anyone may admit". It now fails closed,
+/// which is only safe because minting refuses to produce such an invitation —
+/// so one arriving on the wire is hand-built rather than legitimate.
+#[test]
+fn member_joined_at_rejects_a_join_against_an_invitation_naming_no_admitter() {
+    let mut f = join_fixture();
+
+    // Re-sign the invitation with an empty list so it is genuinely
+    // admin-signed, not merely edited — otherwise the inviter-signature check
+    // would reject it first and this would prove nothing.
+    f.signed_invitation.invitation.admitters = Vec::new();
+    let inv_bytes = borsh_to_vec(&f.signed_invitation.invitation).expect("borsh invitation");
+    f.signed_invitation.inviter_signature = hex::encode(
+        f.admin_sk
+            .sign(&Sha256::digest(&inv_bytes))
+            .expect("re-sign invitation")
+            .to_bytes(),
+    );
+
+    let err = apply_join_endorsed(
+        &f,
+        endorse_join(&f.admin_sk, &f.ns_id, &f.member, &f.signed_invitation),
+    )
+    .expect_err("an invitation naming no admitter must not admit anyone");
+
+    assert!(
+        err.contains("names no admitters"),
+        "expected the fail-closed empty-list branch: {err}"
+    );
 }

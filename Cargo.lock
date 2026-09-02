@@ -1311,6 +1311,7 @@ dependencies = [
  "calimero-crypto",
  "calimero-dag",
  "calimero-governance-store",
+ "calimero-governance-types",
  "calimero-network",
  "calimero-network-primitives",
  "calimero-node-primitives",

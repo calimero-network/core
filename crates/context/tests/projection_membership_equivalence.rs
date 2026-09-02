@@ -80,21 +80,39 @@ fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
 /// because an invitation is spent once an identity joins with it: presenting the
 /// same one again after they exit cannot readmit them, so a re-invite has to
 /// carry a fresh nonce. Real invitations get a random one per issue.
+/// The admitter endorsement every join op now carries.
+///
+/// Signed over the NAMESPACE root even for a subgroup invitation, because that
+/// is what the apply checks the signer against — the accounts that may admit
+/// are the namespace's, whichever group the invitation names.
+fn endorse(
+    admitter_sk: &PrivateKey,
+    ns: &[u8; 32],
+    member: &calimero_account::AccountId,
+    nonce: &[u8; 32],
+) -> Box<calimero_governance_types::AdmitterEndorsement> {
+    Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(admitter_sk, ns, member, nonce)
+            .expect("sign admitter endorsement"),
+    )
+}
+
 fn sign_invitation(
     admin_sk: &PrivateKey,
     group: ContextGroupId,
     role: u8,
     nonce: [u8; 32],
+    admitter: calimero_account::AccountId,
 ) -> SignedGroupOpenInvitation {
     let invitation = GroupInvitationFromAdmin {
         inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
         group_id: group,
-        // 0 is the canonical "no expiry" sentinel — MemberJoined carries no
-        // joined_at, so any non-zero expiration causes the apply gate to reject it.
+        // 0 is the canonical "no expiry" sentinel, so these fixtures are not
+        // also exercising the expiry gate.
         expiration_timestamp: 0,
         invitation_nonce: nonce,
         invited_role: role,
-        admitters: Vec::new(),
+        admitters: vec![admitter],
     };
     let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
     let inv_sig = admin_sk
@@ -241,10 +259,23 @@ fn projection_matches_live_across_inherited_join_and_root_removal() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x42; 32],
+            ),
         }),
     )
     .expect("sign join_ns");
@@ -408,10 +439,23 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x42; 32],
+            ),
         }),
     )
     .unwrap();
@@ -491,10 +535,23 @@ fn projection_matches_live_across_leave_and_rejoin_inheritance() {
         ns.to_bytes().into(),
         vec![],
         3,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x43; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x43; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x43; 32],
+            ),
         }),
     )
     .unwrap();
@@ -581,10 +638,23 @@ fn projection_defers_when_cut_ancestry_incomplete() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x42; 32],
+            ),
         }),
     )
     .unwrap();
@@ -700,10 +770,23 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x42; 32],
+            ),
         }),
     )
     .unwrap();
@@ -879,10 +962,18 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         ns.to_bytes().into(),
         vec![],
         7,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: admin_account,
-            signed_invitation: sign_invitation(&admin_sk, ns, 2, [0x77; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                2,
+                [0x77; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: admin_credential,
+            admitter_endorsement: endorse(&admin_sk, &ns.to_bytes(), &admin_account, &[0x77; 32]),
         }),
     )
     .expect("sign admin root-join");
@@ -920,10 +1011,23 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, ns, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                ns,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: real_join_account_for(&joiner, [0x3E; 32]),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x42; 32],
+            ),
         }),
     )
     .expect("sign join_ns");
@@ -1578,10 +1682,23 @@ fn the_grant_path_defers_when_an_ancestor_is_unreadable() {
         ns.to_bytes().into(),
         vec![],
         1,
-        NamespaceOp::Root(RootOp::MemberJoined {
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
             member: calimero_context::test_support::account_for(&joiner),
-            signed_invitation: sign_invitation(&admin_sk, subgroup, 1, [0x42; 32]),
+            signed_invitation: sign_invitation(
+                &admin_sk,
+                subgroup,
+                1,
+                [0x42; 32],
+                calimero_context::test_support::account_for(&admin_sk.public_key()),
+            ),
+            joined_at: 1,
             account: test_join_account_for(&joiner),
+            admitter_endorsement: endorse(
+                &admin_sk,
+                &ns.to_bytes(),
+                &calimero_context::test_support::account_for(&joiner),
+                &[0x42; 32],
+            ),
         }),
     )
     .expect("sign join");

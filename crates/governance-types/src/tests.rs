@@ -795,7 +795,11 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_AT: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0,
+    0, 253, 23, 36, 56, 90, 160, 199, 91, 100, 251, 120, 205, 96, 47, 161, 217, 145, 253, 235, 247,
+    107, 19, 197, 142, 215, 2, 234, 200, 53, 233, 246, 24, 34, 248, 147, 216, 134, 95, 199, 255,
+    139, 123, 113, 113, 41, 102, 216, 17, 205, 215, 186, 145, 232, 68, 250, 143, 63, 92, 68, 158,
+    220, 239, 127, 72, 115, 104, 53, 223, 2, 229, 188, 6, 206, 115, 142, 11, 180, 61, 164, 199, 54,
+    124, 48, 244, 58, 167, 129, 99, 247, 92, 198, 122, 168, 119, 65, 12,
 ];
 
 /// NamespaceOp::Root(RootOp::NamespaceCreated) — RootOp ordinal 9
@@ -1799,6 +1803,7 @@ mod governance_op_storage_roundtrip {
             signed_invitation: sample_invitation(),
             joined_at: 1_800_000_000,
             account: sample_join_account(),
+            admitter_endorsement: Box::new(deterministic_endorsement()),
         })));
     }
 
@@ -1849,6 +1854,7 @@ mod governance_op_storage_roundtrip {
                 signed_invitation: sample_invitation(),
                 joined_at: 42,
                 account: sample_join_account(),
+                admitter_endorsement: Box::new(deterministic_endorsement()),
             },
         ];
         for root in ops {
@@ -1917,6 +1923,7 @@ mod governance_op_storage_roundtrip {
                 signed_invitation: invitation,
                 joined_at: 1_900_000_000,
                 account,
+                admitter_endorsement: Box::new(deterministic_endorsement()),
             }),
             signature: [0u8; 64],
         }
@@ -2226,6 +2233,17 @@ fn an_empty_coordinate_fails_validation() {
 }
 
 /// All-zero credential, so the printed vector is reproducible.
+/// A fixed endorsement, so the golden vector below is reproducible.
+fn deterministic_endorsement() -> AdmitterEndorsement {
+    AdmitterEndorsement::sign(
+        &PrivateKey::from([9u8; 32]),
+        &[0u8; 32],
+        &AccountId::from([0u8; 32]),
+        &[0u8; 32],
+    )
+    .expect("sign endorsement")
+}
+
 fn deterministic_credential() -> Box<JoinAccountCredential> {
     let genesis = calimero_account::AccountGenesis::new(PublicKey::from([0u8; 32]));
     Box::new(JoinAccountCredential {
@@ -2285,6 +2303,7 @@ fn emit_golden_root_op_vectors() {
                 signed_invitation: minimal_invitation.clone(),
                 joined_at: 0,
                 account: deterministic_credential(),
+                admitter_endorsement: Box::new(deterministic_endorsement()),
             }),
         ),
     ] {

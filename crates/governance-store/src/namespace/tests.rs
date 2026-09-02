@@ -182,19 +182,56 @@ fn test_signed_invitation_with_admitters(
     }
 }
 
+/// A fixture invitation and the endorsement that makes it admissible.
+///
+/// These are only valid as a pair: the apply resolves the endorsement's signer
+/// to an account and refuses the join unless the invitation named that account
+/// an admitter. Returning both from one place is what stops a fixture from
+/// naming one admitter and endorsing with another, which would fail the test
+/// for a reason that has nothing to do with what it is checking.
+fn endorsed_invitation(
+    admitter_sk: &PrivateKey,
+    ns_id: calimero_governance_types::NamespaceId,
+    member: &calimero_account::AccountId,
+) -> (
+    calimero_context_config::types::SignedGroupOpenInvitation,
+    Box<calimero_governance_types::AdmitterEndorsement>,
+) {
+    let admitter = crate::test_fixtures::account_for(&admitter_sk.public_key());
+    let signed = test_signed_invitation_with_admitters(
+        admitter_sk,
+        ContextGroupId::from(ns_id.to_bytes()),
+        0,
+        vec![admitter],
+    );
+    let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+        admitter_sk,
+        &ns_id.to_bytes(),
+        member,
+        &signed.invitation.invitation_nonce,
+    )
+    .expect("sign admitter endorsement");
+    (signed, Box::new(endorsement))
+}
+
 #[actix::test]
 async fn sign_apply_and_publish_returns_the_signed_op() {
     use calimero_context_client::local_governance::{hash_scoped_namespace, NamespaceOp, RootOp};
 
     let (store, node_client, ack_router, ns_id, sk, _tmp, _node_msgs) =
         namespace_publish_fixture().await;
+    // The member and the credential name the same account, which the apply
+    // requires: the signer has to hold a credential for the member it names.
+    // `sk` is the namespace admin the fixture enrolled, so it is also the one
+    // identity here that can endorse its own admission.
+    let member = crate::test_fixtures::account_for(&sk.public_key());
+    let (signed_invitation, admitter_endorsement) = endorsed_invitation(&sk, ns_id, &member);
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        // The member and the credential name the same account, which the apply
-        // requires: the signer has to hold a credential for the member it names.
-        member: crate::test_fixtures::account_for(&sk.public_key()),
-        signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
+        member,
+        signed_invitation,
         joined_at: 0,
         account: crate::test_fixtures::real_join_account(&sk.public_key()),
+        admitter_endorsement,
     });
 
     let (report, signed) = NamespaceGovernance::new(&store, ns_id)
@@ -228,11 +265,14 @@ async fn a_published_op_is_fed_to_the_local_apply_path() {
 
     let (store, node_client, ack_router, ns_id, sk, _tmp, mut node_msgs) =
         namespace_publish_fixture().await;
+    let member = crate::test_fixtures::account_for(&sk.public_key());
+    let (signed_invitation, admitter_endorsement) = endorsed_invitation(&sk, ns_id, &member);
     let op = NamespaceOp::Root(RootOp::MemberJoinedAt {
-        member: crate::test_fixtures::account_for(&sk.public_key()),
-        signed_invitation: test_signed_invitation(&sk, ContextGroupId::from(ns_id.to_bytes()), 0),
+        member,
+        signed_invitation,
         joined_at: 0,
         account: crate::test_fixtures::real_join_account(&sk.public_key()),
+        admitter_endorsement,
     });
 
     let (_report, signed) = NamespaceGovernance::new(&store, ns_id)
@@ -319,8 +359,16 @@ async fn the_publish_only_path_also_feeds_the_local_apply_path() {
 }
 
 /// An unrestricted invitation is admissible by anyone, as before.
+/// An invitation naming nobody is admissible by nobody.
+///
+/// Empty used to mean "anyone may admit". It cannot mean that any more: the
+/// apply requires an endorsement from an account the invitation named, so an
+/// empty list is a list no endorsement can satisfy. Minting refuses to produce
+/// one, and this pins the other half — a node asked to act on an empty
+/// invitation declines here, instead of doing the work and producing a join
+/// every replica then rejects.
 #[test]
-fn any_node_may_admit_an_unrestricted_invitation() {
+fn an_invitation_naming_no_admitter_is_admissible_by_nobody() {
     use rand::rngs::OsRng;
 
     let mut rng = OsRng;
@@ -330,9 +378,18 @@ fn any_node_may_admit_an_unrestricted_invitation() {
     let stranger = calimero_account::AccountId::from([0x99; 32]);
 
     assert!(
-        NamespaceMembershipService::require_may_admit(&signed, &stranger).is_ok(),
-        "an empty admitter list is every invitation minted before the field, and \
-         must keep working"
+        NamespaceMembershipService::require_may_admit(&signed, &stranger).is_err(),
+        "an invitation that names no admitter must be refused, not treated as \
+         open season"
+    );
+    assert!(
+        NamespaceMembershipService::require_may_admit(
+            &signed,
+            &crate::test_fixtures::account_for(&admin_sk.public_key())
+        )
+        .is_err(),
+        "not even the inviter may admit against an empty list; the field is the \
+         authority and it names nobody"
     );
 }
 

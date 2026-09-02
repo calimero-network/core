@@ -6,6 +6,7 @@ use crate::NetworkManager;
 
 mod announce_blob;
 mod bootstrap;
+mod connected_peers;
 pub(crate) mod dial;
 mod listen;
 mod mesh_peer_count;
@@ -53,6 +54,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::PeerAddrs { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::ConnectedPeers { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::PeerCount { request, outcome } => {

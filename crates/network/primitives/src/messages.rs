@@ -121,6 +121,10 @@ pub enum NetworkMessage {
         request: PeerCount,
         outcome: oneshot::Sender<<PeerCount as actix::Message>::Result>,
     },
+    ConnectedPeers {
+        request: ConnectedPeers,
+        outcome: oneshot::Sender<<ConnectedPeers as actix::Message>::Result>,
+    },
     /// Get the list of mesh peers for a topic.
     MeshPeers {
         request: MeshPeers,
@@ -239,6 +243,23 @@ impl actix::Message for MeshPeers {
 /// on `SUBSCRIBE` (no GRAFT required). Distinct from [`MeshPeers`], which
 /// returns only the bounded grafted mesh: a peer can be connected and
 /// subscribed yet not (yet/still) in the mesh. Sync peer-selection uses
+/// Every peer this node currently holds a connection to, regardless of topic.
+///
+/// The topic-scoped listings above answer "who announced this topic", which is
+/// what sync wants nearly always. This answers "who could I ask right now",
+/// which is what a joiner needs when the two differ: a peer can be connected
+/// for many seconds before its subscription is known — gossipsub announces a
+/// subscription to peers connected at the time it subscribes, so a peer that
+/// connected first and subscribed later may never have told us. A join that
+/// can only see announced subscribers is then stuck holding a live connection
+/// to the one node that could serve it.
+#[derive(Clone, Debug)]
+pub struct ConnectedPeers;
+
+impl actix::Message for ConnectedPeers {
+    type Result = Vec<PeerId>;
+}
+
 /// this so it can reconcile with any subscribed peer it's connected to,
 /// independent of mesh health.
 #[derive(Clone, Debug)]
