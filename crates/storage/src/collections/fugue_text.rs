@@ -2159,3 +2159,191 @@ mod index_tests {
         }
     }
 }
+
+/// Convergence through the REAL receive path — [`Interface::apply_action`] —
+/// rather than through [`FugueText::merge_blocks_from`].
+///
+/// # Why this module exists at all
+///
+/// Every other convergence test in this file calls `merge_blocks_from`
+/// directly. That is the *join*, and it is correct — but it is not what a node
+/// runs when a delta lands off the wire. A `TextBlock` lives as an entry of an
+/// `UnorderedMap`, and an entry entity is created by `Element::new(id)`, which
+/// stamps no `crdt_type`. Only the COLLECTION element carries
+/// `CrdtType::FugueText`. So a value collision on the same `BlockKey` reaches
+/// `Interface::try_merge_non_root` with `crdt_type: None` and is resolved by
+/// last-writer-wins — the block join never runs.
+///
+/// RGA is immune because an `RgaChar` is immutable once written, so two
+/// replicas can never hold different values for one key. `FugueText` mutates
+/// existing keys — `materialize` grows a run in place when it coalesces, and
+/// `write_segments` shrinks it in place when it splits — so a value collision
+/// on one key is not exotic, it is the ordinary consequence of one writer
+/// typing at the end while another edits the middle.
+///
+/// These tests drive that path.
+#[cfg(test)]
+mod apply_path_tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use super::FugueText;
+    use crate::collections::Root;
+    use crate::delta::{clear_pending_delta, StorageDelta};
+    use crate::env::{self, RuntimeEnv};
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage};
+
+    /// An in-memory main-storage backend owned by one replica. Same shape as
+    /// `crate::testing`'s, kept local so these tests need no feature flag.
+    type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
+
+    /// Every replica in these tests is the same context.
+    const CONTEXT_ID: [u8; 32] = [7_u8; 32];
+
+    /// Both replicas must derive the SAME collection id or their actions build
+    /// two parallel documents that never meet — see `INTERLEAVED_DOC_FIELD` in
+    /// `tools/storage-cost`.
+    const FIELD: &str = "apply_path_doc";
+
+    fn new_store() -> Store {
+        Rc::new(RefCell::new(HashMap::new()))
+    }
+
+    /// A [`RuntimeEnv`] routing all `MainStorage` I/O into `store`, under the
+    /// given device id. The device is what `local_replica` derives a Fugue
+    /// replica id from, so it is what makes two replicas mint distinct nodes.
+    fn env_for(store: &Store, device: [u8; 32]) -> RuntimeEnv {
+        let r = Rc::clone(store);
+        let reader = Rc::new(move |key: &Key| r.borrow().get(&key.to_bytes()).cloned());
+        let w = Rc::clone(store);
+        let writer = Rc::new(move |key: Key, value: &[u8]| {
+            w.borrow_mut()
+                .insert(key.to_bytes(), value.to_vec())
+                .is_some()
+        });
+        let rm = Rc::clone(store);
+        let remover = Rc::new(move |key: &Key| rm.borrow_mut().remove(&key.to_bytes()).is_some());
+        let mut account = device;
+        account[1] = 0xAC;
+        RuntimeEnv::new(reader, writer, remover, CONTEXT_ID, device, account)
+    }
+
+    /// Device id of replica `n`. Distinct in the first 8 bytes, which is the
+    /// only part `local_replica` reads.
+    fn device(n: u8) -> [u8; 32] {
+        let mut id = [n; 32];
+        id[..8].copy_from_slice(&u64::from(n).to_be_bytes());
+        id
+    }
+
+    /// Run `f` in `store` under `device`, returning the delta its commit emits.
+    fn edit(
+        store: &Store,
+        device: [u8; 32],
+        f: impl FnOnce(&mut Root<FugueText<MainStorage>>),
+    ) -> Vec<u8> {
+        clear_pending_delta();
+        env::with_runtime_env(env_for(store, device), || {
+            let mut doc =
+                Root::<FugueText<MainStorage>>::fetch().expect("document root should exist");
+            f(&mut doc);
+            doc.commit();
+            env::take_last_artifact().expect("commit should emit a delta")
+        })
+    }
+
+    /// Land `delta` in `store` the way the sync path does: decode it into
+    /// actions and push each through `Interface::apply_action`, skipping the
+    /// sender's root entry (which is not the receiver's to overwrite). Copied
+    /// from `land_remote_char` in `tools/storage-cost/src/workloads.rs`.
+    fn land(store: &Store, device: [u8; 32], delta: &[u8]) {
+        let actions = match borsh::from_slice::<StorageDelta>(delta).expect("delta should decode") {
+            StorageDelta::Actions(actions) => actions,
+            StorageDelta::CausalActions { actions, .. } => actions,
+        };
+        env::with_runtime_env(env_for(store, device), || {
+            for action in actions {
+                if action.id().is_root() {
+                    continue;
+                }
+                Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+                    .expect("remote apply_action should succeed");
+            }
+        });
+    }
+
+    /// The document text as `store` sees it.
+    fn text_in(store: &Store, device: [u8; 32]) -> String {
+        env::with_runtime_env(env_for(store, device), || {
+            Root::<FugueText<MainStorage>>::fetch()
+                .expect("document root should exist")
+                .get_text()
+                .expect("get_text should succeed")
+        })
+    }
+
+    /// The scenario: one writer typing at the END while another edits the
+    /// MIDDLE — the single most common collaborative pattern.
+    ///
+    /// * A holds `(A,0) = "ab"`; A types `'c'` at the end, which COALESCES,
+    ///   rewriting key `(A,0)` as `"abc"` at HLC `t1`.
+    /// * B types `'X'` between `'a'` and `'b'`. Fugue picks side L on `(A,1)`
+    ///   at offset 1 > 0, so `write_segments` SPLITS, rewriting the same key
+    ///   `(A,0)` as `"a"` (plus `(A,1) = "b"` and `(B,0) = "X"`) at `t2 > t1`.
+    /// * Both replicas now hold a different value for key `(A,0)`.
+    ///
+    /// The join in `merge_blocks_from` takes the longer text, so `(A,0)`
+    /// resolves to `"abc"` and the document is `"aXbc"`. The APPLY path
+    /// resolves it by LWW, so `(A,0)` becomes `"a"` on both replicas: node
+    /// `(A,2) = 'c'` is in no block and is silently, permanently gone
+    /// everywhere. Note that both replicas still AGREE — this is not caught by
+    /// a convergence check, only by checking the merged VALUE.
+    #[test]
+    fn coalesce_meeting_a_split_on_the_apply_path_keeps_every_node() {
+        env::reset_environment();
+        let (dev_a, dev_b) = (device(1), device(2));
+
+        // Genesis, authored by A so its nodes are A's to coalesce into.
+        let genesis = new_store();
+        clear_pending_delta();
+        env::with_runtime_env(env_for(&genesis, dev_a), || {
+            let mut doc = Root::new(|| FugueText::<MainStorage>::new_with_field_name(FIELD));
+            doc.insert_str(0, "ab").expect("seed insert should succeed");
+            doc.commit();
+            let _ignored = env::take_last_artifact();
+        });
+
+        // Both replicas start from the identical genesis bytes.
+        let store_a = genesis;
+        let store_b: Store = Rc::new(RefCell::new(store_a.borrow().clone()));
+
+        // A appends 'c' -> coalesces into key (A,0), which becomes "abc".
+        let delta_a = edit(&store_a, dev_a, |doc| {
+            doc.insert(2, 'c').expect("append should succeed");
+        });
+        // B inserts 'X' at 1 -> splits key (A,0), which becomes "a".
+        let delta_b = edit(&store_b, dev_b, |doc| {
+            doc.insert(1, 'X').expect("middle insert should succeed");
+        });
+
+        land(&store_a, dev_a, &delta_b);
+        land(&store_b, dev_b, &delta_a);
+
+        let after_a = text_in(&store_a, dev_a);
+        let after_b = text_in(&store_b, dev_b);
+        assert_eq!(
+            after_a, "aXbc",
+            "replica A lost a node: the coalesced run's tail was overwritten by the \
+             remote SPLIT copy of the same block key through the LWW branch of \
+             `try_merge_non_root`, instead of joining with it"
+        );
+        assert_eq!(
+            after_b, "aXbc",
+            "replica B lost a node: the split copy of the block key was kept over the \
+             remote COALESCED copy through the LWW branch of `try_merge_non_root`, \
+             instead of joining with it"
+        );
+    }
+}
