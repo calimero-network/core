@@ -71,6 +71,31 @@
 
 ### Changed
 
+- **Storage wire formats changed in six ways, and nodes should be upgraded
+  together.** App-defined merge now actually runs for a custom type stored in a
+  collection — it previously resolved last-write-wins with the app's rule never
+  called — and getting there moved several stored and transmitted formats:
+  `CrdtType`'s borsh tags to `0x80+` ([#3743]), `Custom(String)` to a
+  `Custom(CustomTypeId)` digest at a new tag ([#3789]), map entries to
+  value-first ([#3796]), and entries gained a `crdt_type` stamp ([#3799]).
+  `Message::sequence_id` and `Init::pop` were already lockstep before this.
+
+  Five of the six announce themselves: they move a discriminant, so a
+  pre-upgrade node hits an unknown tag and fails the decode. **The map-entry
+  reorder does not.** `Entry<(K, V)>` became `Entry<(V, K)>` — the same fields,
+  the same total length, no tag — so a stale reader takes the value bytes for
+  the key and carries on. Depending on the key type that surfaces as a decode
+  error or as plausible nonsense, and neither is reliable.
+
+  There is no in-band detection: the handshake versioning that would have
+  refused an incompatible peer was never wired to the live path and has been
+  removed rather than left looking functional ([#3811]); [#3810] tracks building
+  the negotiation CIP §2.3 specifies. Until then the upgrade order is a
+  convention, not something the code enforces.
+
+  Low stakes while the network is alpha and upgrades are coordinated — noted so
+  the constraint is written down somewhere before that stops being true
+
 - **`POST admin-api/namespaces/:namespace_id/join`** names the id it returns
   `namespaceId`, not `groupId`. The endpoint shared its response DTO with
   `POST admin-api/groups/join`, so it leaked the internal noun - a namespace is
@@ -861,3 +886,9 @@ Integrations:
 [#3530]: https://github.com/calimero-network/core/pull/3530
 [#3595]: https://github.com/calimero-network/core/pull/3595
 [#3607]: https://github.com/calimero-network/core/pull/3607
+[#3743]: https://github.com/calimero-network/core/pull/3743
+[#3789]: https://github.com/calimero-network/core/pull/3789
+[#3796]: https://github.com/calimero-network/core/pull/3796
+[#3799]: https://github.com/calimero-network/core/pull/3799
+[#3810]: https://github.com/calimero-network/core/issues/3810
+[#3811]: https://github.com/calimero-network/core/pull/3811
