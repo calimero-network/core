@@ -35,6 +35,40 @@ steps:
       member_public_key: memberPublicKey
 
   # ============================================
+  # Settle node 2's context state before the concurrent phase.
+  #
+  # create_mesh only joins node 2 to the namespace; its context state is not
+  # yet initialized, so an immediate write from node 2 is rejected with
+  # "context state not initialized, awaiting state sync". Wait for sync and
+  # then prove node 2's state is genuinely live (not just hope the wait was
+  # long enough) before the four concurrent edits below. This settle step
+  # sits BEFORE all four edits; no wait or sync goes between them, or they
+  # stop being concurrent.
+  # ============================================
+
+  - name: Wait for Node 2 to settle after mesh creation
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - calimero-node-1
+      - calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get Initial Text (Node 2)
+    type: call
+    node: calimero-node-2
+    context_id: "{{context_id}}"
+    method: get_text
+    outputs:
+      initial_text_node2: result
+
+  - name: Assert Node 2 document is initially empty
+    type: json_assert
+    statements:
+      - 'json_equal({{initial_text_node2}}, {"output": ""})'
+
+  # ============================================
   # Scenario: backward-insertion interleaving (paper Figure 2)
   #
   # This scenario is the acceptance test for the Fugue rework. Each node
