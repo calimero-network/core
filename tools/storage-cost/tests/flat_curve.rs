@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use storage_cost::workloads::{all, CostShape, QUADRATIC_SIZES, SIZES};
+use storage_cost::workloads::{all, CostShape, QUADRATIC_SIZES};
 use storage_cost::{measure, Costs};
 
 /// Cost may grow by at most this factor between the smallest and largest
@@ -54,8 +54,25 @@ const LINEAR_FLOOR_DIVISOR: f64 = 100.0;
 /// …and at most `n * LINEAR_CEILING_FACTOR`. Past that it is superlinear.
 const LINEAR_CEILING_FACTOR: f64 = 4.0;
 
-const SMALLEST: usize = SIZES[0];
-const LARGEST: usize = SIZES[SIZES.len() - 1];
+/// The smallest and largest `n` a workload was actually measured at.
+///
+/// Derived from its own measured points rather than read off [`SIZES`]: not
+/// every workload is measured at the same sizes. The `QuadraticBuild` set has
+/// always used [`QUADRATIC_SIZES`], and the `fugue_simple_*` control set uses
+/// them for its point READS too — a `FugueTextSimple` document of `n`
+/// characters is `n` entities built by an `O(n^2)` loop, so `n = 10_000` is not
+/// reachable in a debug-profile test run whatever shape the measurement has.
+/// Indexing a fixed `SIZES[..]` here would panic on those rows rather than
+/// check them.
+fn span(points: &BTreeMap<usize, f64>) -> (usize, usize) {
+    let (&smallest, _) = points
+        .first_key_value()
+        .expect("a measured workload has at least one point");
+    let (&largest, _) = points
+        .last_key_value()
+        .expect("a measured workload has at least one point");
+    (smallest, largest)
+}
 
 /// A `QuadraticBuild` reads/entry (i.e. average per-call cost over the whole
 /// build — see `series`'s `FlatPerEntry` divisor, which this shape also
@@ -124,7 +141,8 @@ fn report(failures: Vec<String>, headline: &str) {
 fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
     let mut failures = Vec::new();
     for (name, points) in &series(shape, metric) {
-        let (small, large) = (points[&SMALLEST], points[&LARGEST]);
+        let (smallest, largest) = span(points);
+        let (small, large) = (points[&smallest], points[&largest]);
         // A zero baseline is not a free pass. `small == 0.0` means the workload
         // does none of this metric at the smallest size — `unordered_map_get`
         // and `unordered_map_len` write nothing, and should keep writing
@@ -135,14 +153,14 @@ fn assert_bounded(unit: &str, shape: CostShape, metric: fn(Costs) -> u64) {
         if small == 0.0 {
             if large > 0.0 {
                 failures.push(format!(
-                    "{name}: {unit} went 0 (n={SMALLEST}) -> {large:.1} (n={LARGEST}); \
+                    "{name}: {unit} went 0 (n={smallest}) -> {large:.1} (n={largest}); \
                      an operation that did none of this now does some"
                 ));
             }
         } else if large > small * MAX_GROWTH {
             failures.push(format!(
-                "{name}: {unit} grew {small:.1} (n={SMALLEST}) -> {large:.1} \
-                 (n={LARGEST}), {:.1}x — budget is {MAX_GROWTH}x",
+                "{name}: {unit} grew {small:.1} (n={smallest}) -> {large:.1} \
+                 (n={largest}), {:.1}x — budget is {MAX_GROWTH}x",
                 large / small
             ));
         }
@@ -178,16 +196,17 @@ fn point_operation_cost_does_not_grow_with_collection_size() {
 /// documentation still describes the wall.
 #[test]
 fn known_linear_costs_are_still_exactly_linear() {
-    let floor = LARGEST as f64 / LINEAR_FLOOR_DIVISOR;
-    let ceiling = LARGEST as f64 * LINEAR_CEILING_FACTOR;
     let mut failures = Vec::new();
 
     for (name, points) in &series(CostShape::KnownLinearInN, |c| c.rows_read) {
-        let large = points[&LARGEST];
+        let (_, largest) = span(points);
+        let floor = largest as f64 / LINEAR_FLOOR_DIVISOR;
+        let ceiling = largest as f64 * LINEAR_CEILING_FACTOR;
+        let large = points[&largest];
 
         if large < floor {
             failures.push(format!(
-                "{name}: reads/call at n={LARGEST} is {large:.0}, below the {floor:.0} \
+                "{name}: reads/call at n={largest} is {large:.0}, below the {floor:.0} \
                  floor that marks a linear cost — this appears to have been FIXED. That \
                  is good news, and it must be recorded: move it to \
                  CostShape::ConstantPerCall, regenerate \
@@ -196,7 +215,7 @@ fn known_linear_costs_are_still_exactly_linear() {
             ));
         } else if large > ceiling {
             failures.push(format!(
-                "{name}: reads/call at n={LARGEST} is {large:.0}, above the \
+                "{name}: reads/call at n={largest} is {large:.0}, above the \
                  {ceiling:.0} ceiling — worse than linear, i.e. a regression stacked on \
                  top of a known-bad cost"
             ));
@@ -224,6 +243,11 @@ fn quadratic_build_costs_are_still_exactly_quadratic() {
     let mut failures = Vec::new();
 
     for (name, points) in &series(CostShape::QuadraticBuild, |c| c.rows_read) {
+        let (_, largest) = span(points);
+        assert_eq!(
+            largest, QUADRATIC_LARGEST,
+            "{name} is QuadraticBuild but was not measured at n={QUADRATIC_LARGEST}"
+        );
         let large = points[&QUADRATIC_LARGEST];
 
         if large < floor {
