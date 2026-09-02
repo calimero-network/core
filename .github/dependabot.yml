@@ -20,6 +20,22 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # wasmer 7 removed every compiler backend on Windows (cranelift,
+      # singlepass and llvm all `compile_error!` there from 7.0.0), and its
+      # suggested V8 backend has no `CompilerConfig`, so gas metering cannot be
+      # installed. A 7.x bump therefore drops `merod.exe` from the release --
+      # see the pin note in the workspace Cargo.toml.
+      #
+      # Ignoring the majors, not the family: minor and patch updates within 6.x
+      # still arrive normally. Drop this once wasmer has a Windows compiler
+      # backend again.
+      - dependency-name: "wasmer"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "wasmer-types"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "wasmer-middlewares"
+        update-types: ["version-update:semver-major"]
     groups:
       # Families that version in lockstep, matched first so no member is ever bumped alone:
       # each appears in the others' public API, so a lone bump lands two incompatible types.

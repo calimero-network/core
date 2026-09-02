@@ -287,6 +287,8 @@ pub(crate) const BLOB_WRITE_CHANNEL_CAPACITY: usize = 4;
 /// if serialization is ever added.
 #[derive(Debug, Clone, Copy)]
 pub struct VMLimits {
+    /// The maximum number of memory pages allowed.
+    pub max_memory_pages: u32,
     /// The maximum stack size in bytes.
     pub max_stack_size: usize,
     /// The maximum number of registers that can be used.
@@ -425,6 +427,7 @@ impl Default for VMLimits {
         }
 
         Self {
+            max_memory_pages: ONE_KIB,
             max_stack_size: DEFAULT_MAX_STACK_SIZE_KIB * ONE_KIB as usize,
             max_registers: DEFAULT_MAX_REGISTERS,
             max_register_size: is_valid(
@@ -1429,6 +1432,7 @@ mod tests {
     fn test_default_limits() {
         let limits = VMLimits::default();
         assert_eq!(limits.max_module_size, 128 << 20); // 128 MiB
+        assert_eq!(limits.max_memory_pages, 1 << 10);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);

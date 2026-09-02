@@ -316,6 +316,56 @@ pub async fn join_namespace(
 /// Document this asymmetry rather than wrap the publish in another
 /// timeout layer (which would race with the publish's own ack-collection
 /// logic).
+/// How many of an invitation's addresses this node will dial.
+///
+/// Deliberately far below the decode bound. `admitter_addrs` sits outside the
+/// inviter's signature, so anyone relaying an invitation may rewrite it, and
+/// dialing is an action taken on a stranger's say-so. A real invitation names a
+/// handful of admitters; anything past that is not a joiner being helped.
+const MAX_ADMITTER_DIALS: usize = 8;
+
+/// Dial the addresses an invitation offers, best-effort, before publishing.
+///
+/// Failures are expected and ignored: an address is a snapshot from mint time
+/// and may be stale, the peer may be down, and none of that should fail a join
+/// that gossip may well complete anyway. What this buys is the case gossip
+/// cannot cover — a joiner connected to nobody who may admit.
+///
+/// Nothing here trusts the address. libp2p authenticates the peer id during the
+/// handshake, and admission is decided by the *signed* `admitters` list at
+/// apply, on every peer. A wrong address costs a failed dial.
+async fn dial_admitter_addrs(node_client: &NodeClient, op: &NamespaceOp) {
+    let NamespaceOp::Root(RootOp::MemberJoinedAt {
+        signed_invitation, ..
+    }) = op
+    else {
+        return;
+    };
+
+    let mut dialed = 0usize;
+    for addr in &signed_invitation.admitter_addrs {
+        if dialed == MAX_ADMITTER_DIALS {
+            tracing::debug!(
+                offered = signed_invitation.admitter_addrs.len(),
+                dialed,
+                "invitation offers more admitter addresses than this node will dial"
+            );
+            break;
+        }
+        let Ok(parsed) = addr.parse::<libp2p::Multiaddr>() else {
+            tracing::debug!(%addr, "skipping unparseable admitter address");
+            continue;
+        };
+        dialed += 1;
+        match node_client.network_client().dial(parsed).await {
+            Ok(()) => tracing::debug!(%addr, "dialed an admitter named by the invitation"),
+            // Stale or unreachable is the ordinary case, not a fault: the
+            // address was recorded when the invitation was minted.
+            Err(err) => tracing::debug!(%addr, %err, "admitter address did not dial"),
+        }
+    }
+}
+
 pub async fn await_namespace_ready(
     store: &Store,
     node_client: &NodeClient,
@@ -431,6 +481,13 @@ pub async fn await_namespace_ready(
         joined_at: now_secs,
         account: join_account,
     });
+    // Reach an admitter before publishing. The op goes out on the namespace
+    // topic, so it only lands if somebody who may admit is actually connected —
+    // and a joiner that has synced nothing has no reason to be connected to
+    // anyone in particular. Dialing first is what turns the addresses the
+    // invitation carries into a join that completes.
+    dial_admitter_addrs(node_client, &op).await;
+
     let report = NamespaceGovernance::new(store, namespace_id.into())
         .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op, None)
         .await
