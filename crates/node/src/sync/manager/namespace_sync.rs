@@ -1159,54 +1159,49 @@ impl SyncManager {
     /// authenticates the peer id on connect, and admission is decided by the
     /// signed `admitters` list at apply on every peer. A wrong address costs a
     /// failed dial.
-    async fn dial_admitters(&self, invitation_bytes: &[u8]) {
-        let Ok(invitation) = borsh::from_slice::<
-            calimero_context_config::types::SignedGroupOpenInvitation,
-        >(invitation_bytes) else {
-            return;
-        };
-
-        let by_machine = super::namespace_join::group_admitter_routes(
-            &invitation.admitter_addrs,
-            MAX_ADMITTER_MACHINES_DIALED,
-        );
-
-        for (peer, routes) in by_machine {
-            for addr in routes {
-                match self.network_client.dial(addr.clone()).await {
-                    Ok(()) => {
-                        debug!(%peer, %addr, "dialed an admitter named by the invitation");
-                        break;
-                    }
-                    Err(err) => {
-                        debug!(%peer, %addr, %err, "admitter address did not dial")
-                    }
-                }
-            }
-        }
-    }
-
-    fn admitter_peer_ids(invitation_bytes: &[u8]) -> Vec<PeerId> {
+    /// The admitter machines the invitation points at, capped and parsed once.
+    ///
+    /// One call feeds both consumers — the dial below and the peer preference
+    /// handed to the connect loop — so the set that gets dialed and the set
+    /// that gets tried first are the same by construction. They used to be
+    /// derived separately, and only one of them was capped: the preference list
+    /// could hold an entry per address (up to `MAX_ADMITTER_ADDRS`), each of
+    /// which the connect loop would try ahead of discovery at a full
+    /// stream-open timeout apiece.
+    fn admitter_routes(invitation_bytes: &[u8]) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
         let Ok(invitation) = borsh::from_slice::<
             calimero_context_config::types::SignedGroupOpenInvitation,
         >(invitation_bytes) else {
             return Vec::new();
         };
 
-        let mut out = Vec::new();
-        for addr in &invitation.admitter_addrs {
-            let Ok(parsed) = addr.parse::<libp2p::Multiaddr>() else {
-                continue;
-            };
-            // The peer id is the only part of the address this cares about; the
-            // transport half is the dialer's problem, and it has already run.
-            if let Some(libp2p::multiaddr::Protocol::P2p(peer)) = parsed.iter().last() {
-                if !out.contains(&peer) {
-                    out.push(peer);
-                }
-            }
-        }
-        out
+        super::namespace_join::group_admitter_routes(
+            &invitation.admitter_addrs,
+            MAX_ADMITTER_MACHINES_DIALED,
+        )
+    }
+
+    /// Reach the invitation's admitters before asking discovery about them.
+    ///
+    /// `open_namespace_join_stream` prefers them, but preference only helps
+    /// among peers it can open a stream to, and `subscribed_peers` reports who
+    /// is on the topic mesh — which is exactly what has not converged in the
+    /// case this join path exists for. Dialing first is what turns an address
+    /// the invitation carries into a peer the loop can use.
+    ///
+    /// The bounded-and-concurrent part lives in
+    /// [`namespace_join::dial_admitter_machines`] so its timing can be tested
+    /// against a fake dialer, the same reason the connect loop was extracted.
+    /// Reuses the per-peer stream-open timeout rather than adding a second
+    /// knob: both answer "how long is one unreachable peer worth", and a dial
+    /// that has not completed in that long will not be what unblocks this join.
+    async fn dial_admitters(&self, routes_by_machine: Vec<(PeerId, Vec<libp2p::Multiaddr>)>) {
+        super::namespace_join::dial_admitter_machines(
+            routes_by_machine,
+            self.sync_config.open_stream_timeout,
+            |addr| async move { self.network_client.dial(addr).await },
+        )
+        .await;
     }
 
     /// Initiator side: open a stream to a mesh peer and perform the
@@ -1250,15 +1245,16 @@ impl SyncManager {
         // typical 1–3 mesh peers plus headroom.
         const MAX_PROTOCOL_RETRIES: usize = 5;
 
-        // The peers the invitation named as admitters, if it named any
-        // reachable ones. Derived here rather than passed in because the
-        // invitation is already in `params` — the addresses ride along with it,
-        // outside the inviter's signature.
+        // The admitter machines the invitation named. Derived here rather than
+        // passed in because the invitation is already in `params` — the
+        // addresses ride along with it, outside the inviter's signature.
         //
         // Only an admitter can complete this join, so trying one first is not a
         // preference so much as the difference between a round trip that can
         // succeed and one that can only be refused.
-        let admitter_peers = Self::admitter_peer_ids(&params.invitation_bytes);
+        let admitter_routes = Self::admitter_routes(&params.invitation_bytes);
+        let admitter_peers: Vec<libp2p::PeerId> =
+            admitter_routes.iter().map(|(peer, _)| *peer).collect();
 
         // Reach those admitters before asking discovery about them.
         //
@@ -1273,7 +1269,7 @@ impl SyncManager {
         // stream attempts. Failures are ordinary — an address is a snapshot
         // from mint time — and none of them should fail a join that gossip may
         // still complete.
-        self.dial_admitters(&params.invitation_bytes).await;
+        self.dial_admitters(admitter_routes).await;
 
         for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
             let (mut stream, peer) = match super::namespace_join::open_namespace_join_stream(
@@ -2862,5 +2858,84 @@ mod join_target_tests {
         // Pairing a valid invitation with someone else's namespace must not
         // release that namespace's key material.
         assert!(join_target_group(&store, namespace, &invitation_to(&admin_sk, stranger)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod admitter_derivation_tests {
+    //! What the joiner derives from an invitation's addresses, and the cap that
+    //! has to apply to it.
+    //!
+    //! The dialed set and the preferred set come from one call now, which is
+    //! the point: they used to be derived separately and only the dial was
+    //! capped, so the preference list could carry an entry per address — up to
+    //! `MAX_ADMITTER_ADDRS` of them — each one tried ahead of discovery at a
+    //! full stream-open timeout apiece.
+
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+
+    use super::{SyncManager, MAX_ADMITTER_MACHINES_DIALED};
+
+    /// An invitation carrying `count` addresses, each naming a different peer.
+    fn invitation_naming_distinct_machines(count: usize) -> Vec<u8> {
+        let addrs = (0..count)
+            .map(|i| {
+                // A distinct, well-formed peer id per address, so these count
+                // as separate machines rather than routes to one.
+                let peer = libp2p::identity::Keypair::generate_ed25519()
+                    .public()
+                    .to_peer_id();
+                format!("/ip4/10.0.0.1/udp/{}/quic-v1/p2p/{peer}", 9000 + i)
+            })
+            .collect();
+
+        borsh::to_vec(&SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: SignerId::from([0xA1; 32]),
+                group_id: ContextGroupId::from([0xB2; 32]),
+                expiration_timestamp: 0,
+                invitation_nonce: [0xC3; 32],
+                invited_role: 1,
+                admitters: Vec::new(),
+            },
+            inviter_signature: String::new(),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: addrs,
+        })
+        .expect("borsh the invitation")
+    }
+
+    #[test]
+    fn more_machines_than_the_cap_are_dropped_not_carried() {
+        let over = MAX_ADMITTER_MACHINES_DIALED + 4;
+        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(over));
+
+        assert_eq!(
+            routes.len(),
+            MAX_ADMITTER_MACHINES_DIALED,
+            "an invitation naming {over} machines must be capped at \
+             {MAX_ADMITTER_MACHINES_DIALED}; without the cap every one of them \
+             is tried ahead of discovery at a stream-open timeout each"
+        );
+    }
+
+    #[test]
+    fn fewer_machines_than_the_cap_are_all_kept() {
+        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(3));
+        assert_eq!(routes.len(), 3, "the cap must not drop what fits under it");
+    }
+
+    /// Undecodable bytes are a relayed invitation this node cannot read, not a
+    /// reason to fail the join — the addresses are unsigned hints either way.
+    #[test]
+    fn an_invitation_that_does_not_decode_yields_no_machines() {
+        assert!(
+            SyncManager::admitter_routes(b"not an invitation").is_empty(),
+            "a hint set that cannot be read is empty, not an error"
+        );
     }
 }
