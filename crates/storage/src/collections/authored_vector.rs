@@ -111,7 +111,10 @@ where
     ///
     /// # Errors
     /// Returns any underlying storage error.
-    pub fn push(&mut self, value: V) -> Result<Id, StoreError> {
+    pub fn push(&mut self, value: V) -> Result<Id, StoreError>
+    where
+        V: 'static,
+    {
         let storage_type = super::authored_common::make_owner_stamp();
         self.inner.push_with_storage_type(value, storage_type)
     }

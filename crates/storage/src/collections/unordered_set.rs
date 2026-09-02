@@ -80,7 +80,12 @@ where
             let id = super::compute_id(parent, v.as_ref());
             let _ = self
                 .inner
-                .insert_with_storage_type(Some(id), v, storage_type)
+                .insert_with_storage_type(
+                    Some(id),
+                    v,
+                    storage_type,
+                    crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+                )
                 .expect("re-insert set element during re-key");
         }
     }
@@ -202,7 +207,12 @@ where
             let id = super::compute_id(parent, value.as_ref());
             let _ = self
                 .inner
-                .insert_with_storage_type(Some(id), value, storage_type)
+                .insert_with_storage_type(
+                    Some(id),
+                    value,
+                    storage_type,
+                    crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+                )
                 .expect("failed to re-insert element during migration");
         }
     }
@@ -643,7 +653,7 @@ mod tests {
         let pre_id = compute_id(set.inner.id(), "x".as_bytes());
         let _ignored = set
             .inner
-            .insert_with_storage_type(Some(pre_id), "x".to_owned(), shared)
+            .insert_with_storage_type(Some(pre_id), "x".to_owned(), shared, None)
             .expect("seed shared entry");
 
         set.reassign_deterministic_id("tags");

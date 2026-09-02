@@ -372,9 +372,12 @@ where
 
         // Insert into the inner collection.
         // Pass the `StorageType` directly to the `Collection`.
-        let _ignored = self
-            .inner
-            .insert_with_storage_type(Some(id), (value, key), storage_type)?;
+        let _ignored = self.inner.insert_with_storage_type(
+            Some(id),
+            (value, key),
+            storage_type,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
 
         Ok(None)
     }

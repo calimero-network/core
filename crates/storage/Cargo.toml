@@ -75,3 +75,7 @@ required-features = ["testing"]
 [[test]]
 name = "custom_merge_dispatch"
 required-features = ["testing"]
+
+[[test]]
+name = "custom_merge_e2e"
+required-features = ["testing"]

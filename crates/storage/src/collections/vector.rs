@@ -169,10 +169,16 @@ where
         &mut self,
         value: V,
         storage_type: crate::entities::StorageType,
-    ) -> Result<Id, StoreError> {
-        let (id, _item) = self
-            .inner
-            .insert_with_storage_type(None, value, storage_type)?;
+    ) -> Result<Id, StoreError>
+    where
+        V: 'static,
+    {
+        let (id, _item) = self.inner.insert_with_storage_type(
+            None,
+            value,
+            storage_type,
+            crate::merge::custom_type_id_of::<V>().map(CrdtType::Custom),
+        )?;
         // The id, not `len - 1`.
         //
         // `len - 1` meant "the new entry is last", which held only while
