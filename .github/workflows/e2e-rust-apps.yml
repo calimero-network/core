@@ -223,22 +223,18 @@ jobs:
       # Pinned exactly, like `setup-merobox` does: a floor would let a later
       # release change what this gate means without anyone choosing it.
       #
-      # 0.6.74 is the first release that can drive a node here at all — 0.6.73
-      # brought native Windows process management, and 0.6.74 stopped script
-      # steps from being run with a literal `/bin/sh`, which is a path Windows
-      # does not have.
+      # Each of these releases fixed something that stopped a node running here:
+      # 0.6.73 native Windows process management (teardown called
+      # `signal.SIGKILL`, which does not exist there), 0.6.74 script steps run
+      # with a literal `/bin/sh`, and 0.6.75 a crash printing merobox's own
+      # emoji banner to a cp1252 stdout. The last of those is why this step no
+      # longer sets `PYTHONIOENCODING`.
       - name: Install merobox
-        run: pip install merobox==0.6.74
+        run: pip install merobox==0.6.75
 
       - name: Run auth-seam e2e (merobox, embedded auth)
         shell: bash
         env:
-          # merobox prints emoji, and Python on Windows defaults stdout to
-          # cp1252, which cannot encode them — it dies on its own banner with
-          # `UnicodeEncodeError: '\U0001f680'` before starting a single node.
-          # Belongs in merobox, which should not depend on every caller
-          # remembering; this unblocks the lane until it lands there.
-          PYTHONIOENCODING: utf-8
           # Same values and same reasoning as the Linux job above: the admin
           # root key is minted at `merod init` from these, and the script step
           # inherits them to log in with. CI-only values for an ephemeral
