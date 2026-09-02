@@ -228,6 +228,12 @@ jobs:
       - name: Run auth-seam e2e (merobox, embedded auth)
         shell: bash
         env:
+          # merobox prints emoji, and Python on Windows defaults stdout to
+          # cp1252, which cannot encode them — it dies on its own banner with
+          # `UnicodeEncodeError: '\U0001f680'` before starting a single node.
+          # Belongs in merobox, which should not depend on every caller
+          # remembering; this unblocks the lane until it lands there.
+          PYTHONIOENCODING: utf-8
           # Same values and same reasoning as the Linux job above: the admin
           # root key is minted at `merod init` from these, and the script step
           # inherits them to log in with. CI-only values for an ephemeral
